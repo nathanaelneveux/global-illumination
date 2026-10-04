@@ -126,10 +126,57 @@ pub struct GpuTransportCache {
 pub(crate) struct GpuProbePatchQueue {
     probe_buffer: Handle<ShaderBuffer>,
     hash_buffer: Handle<ShaderBuffer>,
-    pending_probes: Arc<Mutex<HashMap<usize, GpuProbe>>>,
-    pending_hash: Arc<Mutex<HashMap<usize, GpuHashEntry>>>,
-    probe_mirror: Arc<Mutex<Vec<u8>>>,
-    hash_mirror: Arc<Mutex<Vec<u8>>>,
+    // A generation owns its buffers AND its pending writes. Extraction clones
+    // this Arc; replacing a generation must never mutate an older frame's Arc.
+    state: Arc<Mutex<ProbePatchState>>,
+}
+
+#[derive(Default)]
+struct ProbePatchState {
+    pending_probes: HashMap<usize, GpuProbe>,
+    pending_hash: HashMap<usize, GpuHashEntry>,
+    probe_mirror: Vec<u8>,
+    hash_mirror: Vec<u8>,
+}
+
+impl ProbePatchState {
+    /// Validate the entire transaction before submitting either buffer. On a
+    /// missing/undersized destination the caller retries without losing writes.
+    fn upload(
+        &mut self,
+        probe_bytes: u64,
+        hash_bytes: u64,
+        mut write: impl FnMut(bool, usize, &[u8]),
+    ) -> Result<(), &'static str> {
+        if probe_bytes < self.probe_mirror.len() as u64
+            || hash_bytes < self.hash_mirror.len() as u64
+        {
+            return Err("GPU destination is smaller than its cache generation");
+        }
+        if self
+            .pending_probes
+            .keys()
+            .any(|slot| *slot >= self.probe_mirror.len() / GPU_PROBE_BYTES)
+            || self
+                .pending_hash
+                .keys()
+                .any(|slot| *slot >= self.hash_mirror.len() / 16)
+        {
+            return Err("dirty slot is outside its cache generation");
+        }
+        for range in patch_ranges(
+            self.pending_probes.keys().copied().collect(),
+            GPU_PROBE_BYTES,
+        ) {
+            write(true, range.start, &self.probe_mirror[range]);
+        }
+        for range in patch_ranges(self.pending_hash.keys().copied().collect(), 16) {
+            write(false, range.start, &self.hash_mirror[range]);
+        }
+        self.pending_probes.clear();
+        self.pending_hash.clear();
+        Ok(())
+    }
 }
 
 #[derive(Resource, Default)]
@@ -164,10 +211,7 @@ pub fn install_render_assets(app: &mut App) {
     app.insert_resource(GpuProbePatchQueue {
         probe_buffer: probes,
         hash_buffer: hash_entries,
-        pending_probes: Arc::new(Mutex::new(HashMap::new())),
-        pending_hash: Arc::new(Mutex::new(HashMap::new())),
-        probe_mirror: Arc::new(Mutex::new(Vec::new())),
-        hash_mirror: Arc::new(Mutex::new(Vec::new())),
+        state: default(),
     });
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
         render_app.add_systems(
@@ -269,16 +313,41 @@ pub(crate) fn build_gpu_cache(snapshot: Vec<(IVec3, GpuProbe)>) -> GpuCacheBuild
 pub(crate) fn install_gpu_cache(
     build: GpuCacheBuild,
     cache: &mut GpuTransportCache,
-    patches: &GpuProbePatchQueue,
-    assets: &VoxelTransportAssets,
+    patches: &mut GpuProbePatchQueue,
+    assets: &mut VoxelTransportAssets,
     buffers: &mut Assets<ShaderBuffer>,
     materials: &mut Assets<VoxelTransportMaterial>,
     material_handle: &Handle<VoxelTransportMaterial>,
 ) {
-    patches.pending_probes.lock().unwrap().clear();
-    patches.pending_hash.lock().unwrap().clear();
-    *patches.probe_mirror.lock().unwrap() = build.probe_data.clone();
-    *patches.hash_mirror.lock().unwrap() = build.hash_data.clone();
+    let state = ProbePatchState {
+        probe_mirror: build.probe_data.clone(),
+        hash_mirror: build.hash_data.clone(),
+        ..default()
+    };
+    // Fresh asset identities also handle equal-size rebuilds: a size check alone
+    // cannot tell that hash indices have been reassigned. Old handles stay alive
+    // for as long as the extracted frame/material needs them.
+    assets.hash_entries = buffers.add(ShaderBuffer {
+        data: Some(build.hash_data),
+        buffer_description: bevy::render::render_resource::BufferDescriptor {
+            label: Some("Voxel GI display hash"),
+            ..ShaderBuffer::default().buffer_description
+        },
+        ..default()
+    });
+    assets.probes = buffers.add(ShaderBuffer {
+        data: Some(build.probe_data),
+        buffer_description: bevy::render::render_resource::BufferDescriptor {
+            label: Some("Voxel GI display probes"),
+            ..ShaderBuffer::default().buffer_description
+        },
+        ..default()
+    });
+    *patches = GpuProbePatchQueue {
+        probe_buffer: assets.probes.clone(),
+        hash_buffer: assets.hash_entries.clone(),
+        state: Arc::new(Mutex::new(state)),
+    };
     cache.slots = build.slots;
     cache.hash_slots = build.hash_slots;
     cache.hash_entries = build.hash_entries;
@@ -286,13 +355,9 @@ pub(crate) fn install_gpu_cache(
     cache.probe_capacity = build.probe_capacity;
     cache.high_water = build.high_water;
     cache.ready = true;
-    if let Some(mut buffer) = buffers.get_mut(&assets.hash_entries) {
-        buffer.data = Some(build.hash_data);
-    }
-    if let Some(mut buffer) = buffers.get_mut(&assets.probes) {
-        buffer.data = Some(build.probe_data);
-    }
     if let Some(mut material) = materials.get_mut(material_handle) {
+        material.extension.hash_entries = assets.hash_entries.clone();
+        material.extension.probes = assets.probes.clone();
         material.extension.settings.hash_mask = cache.hash_entries.len() as u32 - 1;
         material.extension.settings.probe_count = cache.high_water as u32;
     }
@@ -309,18 +374,17 @@ pub(crate) fn patch_gpu_topology(
     materials: &mut Assets<VoxelTransportMaterial>,
     material_handle: &Handle<VoxelTransportMaterial>,
 ) -> bool {
-    let mut hash_pending = patches.pending_hash.lock().unwrap();
-    let mut probe_pending = patches.pending_probes.lock().unwrap();
-    let mut hash_mirror = patches.hash_mirror.lock().unwrap();
-    let mut probe_mirror = patches.probe_mirror.lock().unwrap();
+    let mut state = patches.state.lock().unwrap();
     for voxel in removed {
         if let Some(probe_slot) = cache.slots.remove(voxel) {
             cache.free_probe_slots.push(probe_slot);
         }
         if let Some(hash_slot) = cache.hash_slots.remove(voxel) {
             cache.hash_entries[hash_slot] = GpuHashEntry::TOMBSTONE;
-            hash_pending.insert(hash_slot, GpuHashEntry::TOMBSTONE);
-            write_hash_entry(&mut hash_mirror, hash_slot, GpuHashEntry::TOMBSTONE);
+            state
+                .pending_hash
+                .insert(hash_slot, GpuHashEntry::TOMBSTONE);
+            write_hash_entry(&mut state.hash_mirror, hash_slot, GpuHashEntry::TOMBSTONE);
         }
     }
     for voxel in added {
@@ -359,11 +423,11 @@ pub(crate) fn patch_gpu_topology(
         cache.hash_entries[hash_slot] = entry;
         cache.slots.insert(*voxel, probe_slot);
         cache.hash_slots.insert(*voxel, hash_slot);
-        hash_pending.insert(hash_slot, entry);
-        write_hash_entry(&mut hash_mirror, hash_slot, entry);
+        state.pending_hash.insert(hash_slot, entry);
+        write_hash_entry(&mut state.hash_mirror, hash_slot, entry);
         let gpu_probe = gpu_probe(probe);
-        probe_pending.insert(probe_slot, gpu_probe);
-        write_probe(&mut probe_mirror, probe_slot, gpu_probe);
+        state.pending_probes.insert(probe_slot, gpu_probe);
+        write_probe(&mut state.probe_mirror, probe_slot, gpu_probe);
     }
     if let Some(mut material) = materials.get_mut(material_handle) {
         material.extension.settings.probe_count = cache.high_water as u32;
@@ -377,15 +441,14 @@ pub(crate) fn patch_probe_values(
     probes: &HashMap<IVec3, SurfaceProbe>,
     dirty_voxels: &HashSet<IVec3>,
 ) {
-    let mut pending = patches.pending_probes.lock().unwrap();
-    let mut mirror = patches.probe_mirror.lock().unwrap();
+    let mut state = patches.state.lock().unwrap();
     for voxel in dirty_voxels {
         let (Some(slot), Some(probe)) = (cache.slots.get(voxel), probes.get(voxel)) else {
             continue;
         };
         let gpu_probe = gpu_probe(probe);
-        pending.insert(*slot, gpu_probe);
-        write_probe(&mut mirror, *slot, gpu_probe);
+        state.pending_probes.insert(*slot, gpu_probe);
+        write_probe(&mut state.probe_mirror, *slot, gpu_probe);
     }
 }
 
@@ -393,6 +456,7 @@ fn apply_probe_patches(
     patches: Res<GpuProbePatchQueue>,
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
     queue: Res<RenderQueue>,
+    mut failed: Local<bool>,
 ) {
     let (Some(probe_buffer), Some(hash_buffer)) = (
         buffers.get(&patches.probe_buffer),
@@ -400,23 +464,31 @@ fn apply_probe_patches(
     ) else {
         return;
     };
-    // Lock in the same order as producers so a mirror and its dirty indices
-    // form one coherent snapshot. Copying/uploading a whole 30MB buffer merely
-    // because 2,049 probes changed is deliberately avoided.
-    let mut pending = patches.pending_probes.lock().unwrap();
-    let mirror = patches.probe_mirror.lock().unwrap();
-    for range in patch_ranges(pending.keys().copied().collect(), GPU_PROBE_BYTES) {
-        queue.write_buffer(&probe_buffer.buffer, range.start as u64, &mirror[range]);
+    // One lock covers both mirrors and both dirty sets: never publish a hash
+    // entry before its probe, even while next-frame topology changes arrive.
+    let result = patches.state.lock().unwrap().upload(
+        probe_buffer.buffer.size(),
+        hash_buffer.buffer.size(),
+        |probe, offset, bytes| {
+            let buffer = if probe {
+                &probe_buffer.buffer
+            } else {
+                &hash_buffer.buffer
+            };
+            queue.write_buffer(buffer, offset as u64, bytes);
+        },
+    );
+    if let Err(reason) = result {
+        if !*failed {
+            error!(
+                reason,
+                "voxel GI display upload deferred; pending writes retained"
+            );
+        }
+        *failed = true;
+    } else {
+        *failed = false;
     }
-    pending.clear();
-    drop(mirror);
-    drop(pending);
-    let mut pending = patches.pending_hash.lock().unwrap();
-    let mirror = patches.hash_mirror.lock().unwrap();
-    for range in patch_ranges(pending.keys().copied().collect(), 16) {
-        queue.write_buffer(&hash_buffer.buffer, range.start as u64, &mirror[range]);
-    }
-    pending.clear();
 }
 
 fn patch_ranges(mut slots: Vec<usize>, stride: usize) -> Vec<std::ops::Range<usize>> {
@@ -739,10 +811,11 @@ mod tests {
         let patches = GpuProbePatchQueue {
             probe_buffer: Handle::default(),
             hash_buffer: Handle::default(),
-            pending_probes: Arc::new(Mutex::new(HashMap::new())),
-            pending_hash: Arc::new(Mutex::new(HashMap::new())),
-            probe_mirror: Arc::new(Mutex::new(build.probe_data.clone())),
-            hash_mirror: Arc::new(Mutex::new(build.hash_data.clone())),
+            state: Arc::new(Mutex::new(ProbePatchState {
+                probe_mirror: build.probe_data.clone(),
+                hash_mirror: build.hash_data.clone(),
+                ..default()
+            })),
         };
         let old_slot = build.slots[&voxel_a];
         let mut cache = GpuTransportCache {
@@ -844,26 +917,23 @@ mod tests {
         probes.get_mut(&b).unwrap().radiance[2] = EnergySpectrum::ONE * 3.0;
         let build = build_gpu_cache(snapshot);
         let mut buffers = Assets::<ShaderBuffer>::default();
-        let assets = VoxelTransportAssets {
+        let mut assets = VoxelTransportAssets {
             texture: Handle::default(),
             hash_entries: buffers.add(ShaderBuffer::from(vec![GpuHashEntry::EMPTY])),
             probes: buffers.add(ShaderBuffer::from(vec![GpuProbe::default()])),
         };
-        let patches = GpuProbePatchQueue {
+        let mut patches = GpuProbePatchQueue {
             probe_buffer: assets.probes.clone(),
             hash_buffer: assets.hash_entries.clone(),
-            pending_probes: default(),
-            pending_hash: default(),
-            probe_mirror: default(),
-            hash_mirror: default(),
+            state: default(),
         };
         let mut cache = GpuTransportCache::default();
         let mut materials = Assets::default();
         install_gpu_cache(
             build,
             &mut cache,
-            &patches,
-            &assets,
+            &mut patches,
+            &mut assets,
             &mut buffers,
             &mut materials,
             &Handle::default(),
@@ -881,12 +951,117 @@ mod tests {
         assert_eq!(cache.slots.len(), probes.len());
         assert!(!cache.slots.contains_key(&a));
         assert!(!cache.slots.contains_key(&transient));
-        let mirror = patches.probe_mirror.lock().unwrap();
+        let state = patches.state.lock().unwrap();
         for (voxel, probe) in &probes {
             let offset = cache.slots[voxel] * GPU_PROBE_BYTES;
             let expected = ShaderBuffer::from(vec![gpu_probe(probe)]).data.unwrap();
-            assert_eq!(&mirror[offset..offset + GPU_PROBE_BYTES], &expected);
+            assert_eq!(
+                &state.probe_mirror[offset..offset + GPU_PROBE_BYTES],
+                &expected
+            );
         }
+    }
+
+    #[test]
+    fn extracted_generations_survive_growth_shrink_and_equal_size_rebuilds() {
+        let mut buffers = Assets::<ShaderBuffer>::default();
+        let mut assets = VoxelTransportAssets {
+            texture: default(),
+            hash_entries: buffers.add(ShaderBuffer::from(vec![GpuHashEntry::EMPTY])),
+            probes: buffers.add(ShaderBuffer::from(vec![GpuProbe::default()])),
+        };
+        let mut materials = Assets::default();
+        let material = materials.add(material_template(&assets));
+        let mut patches = GpuProbePatchQueue {
+            probe_buffer: assets.probes.clone(),
+            hash_buffer: assets.hash_entries.clone(),
+            state: default(),
+        };
+        let mut cache = GpuTransportCache::default();
+        for (generation, count) in [1, 7, 3, 3, 0, 9].into_iter().enumerate() {
+            // This is the previous frame, still rendering while main installs
+            // a new cache. It must not observe any new generation's mutation.
+            let extracted = patches.clone();
+            let old_probe = extracted.state.lock().unwrap().probe_mirror.clone();
+            let old_hash = extracted.state.lock().unwrap().hash_mirror.clone();
+            let probes: HashMap<_, _> = (0..count)
+                .map(|x| {
+                    let voxel = IVec3::new(x, generation as i32, 0);
+                    (voxel, SurfaceProbe::new(voxel, 4, EnergySpectrum::ONE))
+                })
+                .collect();
+            let order: Vec<_> = probes.keys().copied().collect();
+            install_gpu_cache(
+                build_gpu_cache(snapshot_gpu_probes(&probes, &order)),
+                &mut cache,
+                &mut patches,
+                &mut assets,
+                &mut buffers,
+                &mut materials,
+                &material,
+            );
+            patch_probe_values(&cache, &patches, &probes, &order.iter().copied().collect());
+            assert_ne!(extracted.probe_buffer.id(), patches.probe_buffer.id());
+            assert_ne!(extracted.hash_buffer.id(), patches.hash_buffer.id());
+            assert!(!Arc::ptr_eq(&extracted.state, &patches.state));
+            assert_eq!(extracted.state.lock().unwrap().probe_mirror, old_probe);
+            assert_eq!(extracted.state.lock().unwrap().hash_mirror, old_hash);
+            let settings = &materials.get(&material).unwrap().extension;
+            assert_eq!(settings.probes.id(), patches.probe_buffer.id());
+            assert_eq!(settings.hash_entries.id(), patches.hash_buffer.id());
+            assert_eq!(settings.settings.probe_count, count as u32);
+            // A delayed old-frame drain cannot consume new-frame updates.
+            extracted
+                .state
+                .lock()
+                .unwrap()
+                .upload(old_probe.len() as u64, old_hash.len() as u64, |_, _, _| {})
+                .unwrap();
+            assert_eq!(
+                patches.state.lock().unwrap().pending_probes.len(),
+                count as usize
+            );
+        }
+    }
+
+    #[test]
+    fn upload_validates_both_buffers_before_writing_and_preserves_retry() {
+        let mut state = ProbePatchState {
+            probe_mirror: vec![7; GPU_PROBE_BYTES * 2],
+            hash_mirror: vec![3; 64],
+            pending_probes: HashMap::from([(1, GpuProbe::default())]),
+            pending_hash: HashMap::from([(3, GpuHashEntry::EMPTY)]),
+        };
+        // Smaller old hash allocation, even though the probe buffer fits.
+        assert!(
+            state
+                .upload((GPU_PROBE_BYTES * 2) as u64, 32, |_, _, _| panic!(
+                    "partial upload"
+                ))
+                .is_err()
+        );
+        assert_eq!(state.pending_probes.len(), 1);
+        assert_eq!(state.pending_hash.len(), 1);
+        let mut writes = Vec::new();
+        state
+            .upload((GPU_PROBE_BYTES * 2) as u64, 64, |probe, offset, bytes| {
+                writes.push((probe, offset, bytes.len()))
+            })
+            .unwrap();
+        assert_eq!(
+            writes,
+            [(true, GPU_PROBE_BYTES, GPU_PROBE_BYTES), (false, 48, 16)]
+        );
+        assert!(state.pending_probes.is_empty() && state.pending_hash.is_empty());
+        state.pending_hash.insert(usize::MAX, GpuHashEntry::EMPTY);
+        assert!(
+            state
+                .upload((GPU_PROBE_BYTES * 2) as u64, 64, |_, _, _| panic!(
+                    "invalid slot uploaded"
+                ))
+                .is_err()
+        );
+        assert_eq!(state.pending_hash.len(), 1);
     }
 
     #[test]
@@ -894,5 +1069,91 @@ mod tests {
         let ranges = patch_ranges(vec![0, 1, 10, 100_000, 100_001], 96);
         assert_eq!(ranges, vec![0..1056, 9_600_000..9_600_192]);
         assert_eq!(ranges.iter().map(|r| r.len()).sum::<usize>(), 1248);
+    }
+
+    #[test]
+    #[ignore = "requires a native compute adapter; run explicitly on supported hardware"]
+    fn gpu_display_upload_retries_the_reported_out_of_bounds_offset() {
+        use bevy::tasks::block_on;
+        const OFFSET: usize = 63_420_448;
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+        let (device, queue) =
+            block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let create = |size, usage| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("display generation regression"),
+                size,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        let usage = wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
+        let probe_buffer = create(GPU_PROBE_BYTES as u64, usage);
+        let old_hash = create(33_554_432, usage);
+        let new_hash = create(67_108_864, usage);
+        let expected = GpuHashEntry {
+            voxel: IVec3::new(12, -5, 8),
+            probe_index: 0,
+        };
+        let mut state = ProbePatchState {
+            probe_mirror: vec![0; GPU_PROBE_BYTES],
+            hash_mirror: vec![0; new_hash.size() as usize],
+            pending_hash: HashMap::from([(OFFSET / 16, expected)]),
+            ..default()
+        };
+        write_hash_entry(&mut state.hash_mirror, OFFSET / 16, expected);
+        assert!(
+            state
+                .upload(probe_buffer.size(), old_hash.size(), |_, _, _| panic!(
+                    "stale allocation used"
+                ))
+                .is_err()
+        );
+        assert_eq!(state.pending_hash.len(), 1);
+        state
+            .upload(
+                probe_buffer.size(),
+                new_hash.size(),
+                |probe, offset, bytes| {
+                    queue.write_buffer(
+                        if probe { &probe_buffer } else { &new_hash },
+                        offset as u64,
+                        bytes,
+                    );
+                },
+            )
+            .unwrap();
+        let readback = create(
+            16,
+            wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        );
+        let mut encoder = device.create_command_encoder(&default());
+        encoder.copy_buffer_to_buffer(&new_hash, OFFSET as u64, &readback, 0, 16);
+        let submission = queue.submit([encoder.finish()]);
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                sender.send(result).unwrap();
+            });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(std::time::Duration::from_secs(5)),
+            })
+            .unwrap();
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            &*readback.slice(..).get_mapped_range(),
+            &state.hash_mirror[OFFSET..OFFSET + 16]
+        );
+        readback.unmap();
+        assert!(block_on(scope.pop()).is_none());
     }
 }

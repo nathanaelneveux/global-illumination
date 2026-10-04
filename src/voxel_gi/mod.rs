@@ -1040,8 +1040,8 @@ fn update_stats_from_counters(
 fn upload_transport_cache(
     mut runtime: ResMut<VoxelGiRuntime>,
     field: Res<VoxelEnergyField>,
-    assets: Res<VoxelTransportAssets>,
-    patch_queue: Res<GpuProbePatchQueue>,
+    mut assets: ResMut<VoxelTransportAssets>,
+    mut patch_queue: ResMut<GpuProbePatchQueue>,
     mut cache: ResMut<GpuTransportCache>,
     material_handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
@@ -1062,8 +1062,8 @@ fn upload_transport_cache(
         install_gpu_cache(
             build,
             &mut cache,
-            &patch_queue,
-            &assets,
+            &mut patch_queue,
+            &mut assets,
             &mut buffers,
             &mut materials,
             &material_handle.handle,

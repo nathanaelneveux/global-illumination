@@ -16,6 +16,7 @@ The implementation draws on [vxray](https://github.com/Nelarius/vxray), its [dev
 - Edits invalidate local histories, retain existing display values, and reject obsolete in-flight geometry results. Nearby work is prioritized; at least one quarter of dispatch slots are reserved for an uninterrupted all-loaded-world sweep. Moving sources shorten affected histories instead of repeatedly clearing the world.
 - Scene building, cache construction, dispatch, and readback run asynchronously. The GPU tracer adapts its batch size toward a configurable time budget. A CPU mirror provides gameplay estimates; this is not a wholly GPU-resident authoritative field.
 - Sparse display uploads preserve stable slots during edits. Growing the hash cache keeps the previous display available until its replacement is ready.
+- Display-cache rebuilds publish fresh buffer identities and generation-owned patch queues. In-flight render frames retain their old generation; paired hash/probe uploads are bounds-checked and deferred updates are retained.
 
 The core lives in [`src/voxel_gi/`](src/voxel_gi):
 
@@ -65,6 +66,7 @@ The implemented renderer is diffuse GI for opaque axis-aligned voxels, with Bevy
 cargo run
 cargo test --all-targets
 cargo test gpu_matches_cpu -- --ignored --nocapture
+cargo test gpu_display_upload -- --ignored --nocapture
 cargo clippy --all-targets -- -D warnings
 ```
 
