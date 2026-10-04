@@ -29,6 +29,13 @@ block-mesh-bgm = "0.2.4"
 ndshape = "0.3"
 noiz = "0.5"
 serde = { version = "1", features = ["derive"] }
+rayon = "1"
+wgpu = { version = "29", default-features = false, features = ["wgsl"] }
+# Material-scoped PBR hooks; keep Bevy's lighting implementation intact.
+naga_oil = { version = "0.22", default-features = false, features = ["override_any"] }
+
+[dev-dependencies]
+naga = { version = "29", features = ["wgsl-in"] }
 
 # Set max log levels. This helps avoid unwanted low-severity log spam, which can affect performance.
 log = { version = "0.4", features = [
@@ -47,9 +54,13 @@ nonstandard_macro_braces = "warn"
 
 [profile.dev]
 opt-level = 1
+debug = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+# Full debug symbols for Bevy/wgpu can consume tens of GB across feature sets.
+# Keep application line tables while keeping dependency builds compact.
+debug = 0
 
 # Remove expensive debug assertions due to <https://github.com/bevyengine/bevy/issues/14291>
 [profile.dev.package.wgpu-types]

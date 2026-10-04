@@ -6,6 +6,7 @@ mod player;
 mod terrain;
 mod terrain_meshing;
 mod terrain_noise;
+pub mod voxel_gi;
 mod world_environment;
 
 use app_controls::AppControlsPlugin;
@@ -15,18 +16,27 @@ use bevy::asset::AssetMetaCheck;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::render::{RenderPlugin, render_resource::WgpuFeatures, settings::WgpuSettings};
+use bevy::window::WindowPlugin;
 use bevy_ahoy::prelude::AhoyPlugins;
 use bevy_enhanced_input::prelude::EnhancedInputPlugin;
 
 use chunk_colliders::ChunkColliderPlugin;
 use player::PlayerPlugin;
 use terrain::TerrainPlugin;
+use voxel_gi::VoxelGiPlugin;
 use world_environment::WorldEnvironmentPlugin;
 
 fn main() {
     App::new()
         .add_plugins(
             DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Voxel GI Lab".into(),
+                        ..default()
+                    }),
+                    ..default()
+                })
                 .set(AssetPlugin {
                     meta_check: AssetMetaCheck::Never,
                     watch_for_changes_override: Some(true),
@@ -52,6 +62,7 @@ fn main() {
             AssetSupportPlugin,
             WorldEnvironmentPlugin,
             AppControlsPlugin,
+            VoxelGiPlugin,
             TerrainPlugin,
             ChunkColliderPlugin,
             PlayerPlugin,

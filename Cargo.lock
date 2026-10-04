@@ -5326,10 +5326,14 @@ dependencies = [
  "block-mesh",
  "block-mesh-bgm",
  "log",
+ "naga",
+ "naga_oil",
  "ndshape",
  "noiz",
+ "rayon",
  "serde",
  "tracing",
+ "wgpu",
 ]
 
 [[package]]

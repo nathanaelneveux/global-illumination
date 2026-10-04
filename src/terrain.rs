@@ -9,6 +9,10 @@ use bevy_voxel_world::prelude::*;
 use crate::assets::{PrototypeConfig, TemplateAssets};
 use crate::terrain_meshing::build_chunk_mesh;
 use crate::terrain_noise::{BEDROCK_FLOOR_Y, MAX_SURFACE_Y, TerrainColumn, TerrainNoise};
+use crate::voxel_gi::{
+    VoxelGiDirty,
+    render::{VoxelTransportAssets, material_template},
+};
 
 pub type MaterialIndex = u8;
 
@@ -64,8 +68,12 @@ pub struct TerrainPlugin;
 
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(VoxelWorldPlugin::with_config(PrototypeWorld::default()))
-            .add_systems(Update, apply_live_prototype_config);
+        let transport_assets = app.world().resource::<VoxelTransportAssets>().clone();
+        app.add_plugins(
+            VoxelWorldPlugin::with_config(PrototypeWorld::default())
+                .with_material(material_template(&transport_assets)),
+        )
+        .add_systems(Update, apply_live_prototype_config);
     }
 }
 
@@ -99,6 +107,15 @@ impl PrototypeWorld {
 
     pub fn voxel_texture_layers(&self) -> u32 {
         self.config.voxel_texture_layers
+    }
+
+    pub fn generated_voxel(&self, position: IVec3) -> WorldVoxel<MaterialIndex> {
+        if position.y <= BEDROCK_FLOOR_Y {
+            return TerrainMaterial::Brick.voxel();
+        }
+
+        let column = terrain_column(&self.noise, position.x, position.z);
+        terrain_voxel(position, column)
     }
 
     fn matches_config(&self, config: &PrototypeConfig) -> bool {
@@ -154,30 +171,9 @@ impl VoxelWorldConfig for PrototypeWorld {
 
                 let column = *column_cache
                     .entry((pos.x, pos.z))
-                    .or_insert_with(|| noise.sample_column(pos.x, pos.z));
+                    .or_insert_with(|| terrain_column(&noise, pos.x, pos.z));
 
-                if pos.y > column.surface_y {
-                    return WorldVoxel::Air;
-                }
-
-                let depth = column.surface_y - pos.y;
-                let material = if depth == 0 {
-                    if column.surface_y <= WATERLINE_Y {
-                        TerrainMaterial::Snow
-                    } else {
-                        TerrainMaterial::Grass
-                    }
-                } else if depth <= column.soil_depth {
-                    if column.surface_y <= WATERLINE_Y {
-                        TerrainMaterial::Snow
-                    } else {
-                        TerrainMaterial::SnowBrick
-                    }
-                } else {
-                    TerrainMaterial::Brick
-                };
-
-                material.voxel()
+                terrain_voxel(pos, column)
             })
         })
     }
@@ -208,11 +204,82 @@ impl VoxelWorldConfig for PrototypeWorld {
     }
 }
 
+fn terrain_column(noise: &TerrainNoise, x: i32, z: i32) -> TerrainColumn {
+    if (-10..=10).contains(&x) && (-28..=-8).contains(&z) {
+        TerrainColumn {
+            surface_y: 10,
+            soil_depth: 4,
+        }
+    } else {
+        noise.sample_column(x, z)
+    }
+}
+
+fn terrain_voxel(position: IVec3, column: TerrainColumn) -> WorldVoxel<MaterialIndex> {
+    if let Some(voxel) = gi_showcase_voxel(position) {
+        return voxel;
+    }
+    if position.y > column.surface_y {
+        return WorldVoxel::Air;
+    }
+
+    let depth = column.surface_y - position.y;
+    let material = if depth == 0 {
+        if column.surface_y <= WATERLINE_Y {
+            TerrainMaterial::Snow
+        } else {
+            TerrainMaterial::Grass
+        }
+    } else if depth <= column.soil_depth {
+        if column.surface_y <= WATERLINE_Y {
+            TerrainMaterial::Snow
+        } else {
+            TerrainMaterial::SnowBrick
+        }
+    } else {
+        TerrainMaterial::Brick
+    };
+
+    material.voxel()
+}
+
+fn gi_showcase_voxel(position: IVec3) -> Option<WorldVoxel<MaterialIndex>> {
+    if !(-6..=6).contains(&position.x)
+        || !(-24..=-12).contains(&position.z)
+        || !(11..=17).contains(&position.y)
+    {
+        return None;
+    }
+
+    let roof = position.y == 17;
+    let west_wall = position.x == -6;
+    let east_wall = position.x == 6;
+    let north_wall = position.z == -24;
+    let south_wall = position.z == -12;
+    let doorway = south_wall && position.x.abs() <= 1 && position.y <= 14;
+    let window = (north_wall || south_wall)
+        && (-2..=2).contains(&position.x)
+        && (13..=14).contains(&position.y);
+
+    if roof {
+        Some(TerrainMaterial::Snow.voxel())
+    } else if west_wall && !doorway {
+        Some(TerrainMaterial::Grass.voxel())
+    } else if east_wall {
+        Some(TerrainMaterial::Brick.voxel())
+    } else if (north_wall || south_wall) && !doorway && !window {
+        Some(TerrainMaterial::SnowBrick.voxel())
+    } else {
+        Some(WorldVoxel::Air)
+    }
+}
+
 fn apply_live_prototype_config(
     template_assets: Option<Res<TemplateAssets>>,
     prototype_configs: Res<Assets<PrototypeConfig>>,
     mut prototype_config_events: MessageReader<AssetEvent<PrototypeConfig>>,
     mut prototype_world: ResMut<PrototypeWorld>,
+    mut voxel_gi_dirty: ResMut<VoxelGiDirty>,
     mut commands: Commands,
     chunks: Query<Entity, (With<Chunk<PrototypeWorld>>, Without<NeedsDespawn>)>,
 ) {
@@ -242,6 +309,7 @@ fn apply_live_prototype_config(
     }
 
     *prototype_world = PrototypeWorld::from_config(config.clone());
+    voxel_gi_dirty.mark_all_loaded();
 
     for entity in &chunks {
         commands.entity(entity).try_insert(NeedsDespawn);

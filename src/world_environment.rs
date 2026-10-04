@@ -35,9 +35,5 @@ fn setup_lighting(mut commands: Commands) {
         cascade_shadow_config,
     ));
 
-    commands.insert_resource(GlobalAmbientLight {
-        color: Color::srgb(0.72, 0.78, 0.9),
-        brightness: 500.0,
-        affects_lightmapped_meshes: true,
-    });
+    commands.insert_resource(GlobalAmbientLight::NONE);
 }

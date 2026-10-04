@@ -10,6 +10,7 @@ use bevy_enhanced_input::prelude::*;
 use bevy_voxel_world::prelude::{VoxelWorld, VoxelWorldCamera, WorldVoxel};
 
 use crate::terrain::{PrototypeWorld, TERRAIN_VIEW_DISTANCE, TerrainMaterial};
+use crate::voxel_gi::VoxelGiDirty;
 use crate::world_environment::sky_color;
 
 const FOG_START: f32 = 96.0;
@@ -46,7 +47,7 @@ impl Plugin for PlayerPlugin {
 }
 
 #[derive(Component)]
-struct Player;
+pub(crate) struct Player;
 
 #[derive(Component, Default)]
 struct PlayerInput;
@@ -247,6 +248,7 @@ fn edit_voxels(
     cursor_options: Single<&CursorOptions, With<PrimaryWindow>>,
     camera: Single<&GlobalTransform, (With<PlayerCamera>, Without<Player>)>,
     mut voxel_world: VoxelWorld<PrototypeWorld>,
+    mut voxel_gi_dirty: ResMut<VoxelGiDirty>,
 ) {
     let breaking = break_events.contains(ActionEvents::START);
     let placing = place_events.contains(ActionEvents::START);
@@ -264,6 +266,7 @@ fn edit_voxels(
     if breaking {
         let edited_position = hit.position.as_ivec3();
         voxel_world.set_voxel(edited_position, WorldVoxel::Air);
+        voxel_gi_dirty.mark_voxel(edited_position);
     }
 
     if placing {
@@ -277,6 +280,7 @@ fn edit_voxels(
             WorldVoxel::Air | WorldVoxel::Unset
         ) {
             voxel_world.set_voxel(placement_position, TerrainMaterial::Grass.voxel());
+            voxel_gi_dirty.mark_voxel(placement_position);
         }
     }
 }

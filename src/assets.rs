@@ -46,7 +46,7 @@ impl Default for PrototypeConfig {
             terrain_period: 256.0,
             player_spawn_height_offset: 8.0,
             voxel_texture_layers: 4,
-            ambient_occlusion: true,
+            ambient_occlusion: false,
         }
     }
 }

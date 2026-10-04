@@ -1,0 +1,90 @@
+use super::spectrum::EnergySpectrum;
+use super::world::SurfaceProbe;
+use bevy::prelude::*;
+use std::collections::HashMap;
+use std::time::Duration;
+
+/// The authoritative world-space energy field. The infrared and ionizing
+/// channels can be read by offscreen simulation systems.
+#[derive(Resource, Default)]
+pub struct VoxelEnergyField {
+    pub(super) probes: HashMap<IVec3, SurfaceProbe>,
+    pub(super) order: Vec<IVec3>,
+    pub(super) pages: HashMap<IVec3, Vec<IVec3>>,
+    pub(super) source_revision: u64,
+}
+
+/// An unfiltered surface measurement, never the spatially smoothed display
+/// value. Bands currently use normalized transport units, not watts or dose.
+#[derive(Clone, Copy, Debug)]
+pub struct EnergyEstimate {
+    pub incident: EnergySpectrum,
+    pub variance: EnergySpectrum,
+    pub effective_samples: u32,
+    pub age: Duration,
+    pub sources_current: bool,
+}
+
+impl VoxelEnergyField {
+    /// Compatibility helper. Simulation code should use `estimate` to enforce
+    /// its own age, confidence and source-revision requirements.
+    pub fn sample(&self, voxel: IVec3, normal: Vec3) -> Option<EnergySpectrum> {
+        self.estimate(voxel, normal).map(|sample| sample.incident)
+    }
+
+    pub fn estimate(&self, voxel: IVec3, normal: Vec3) -> Option<EnergyEstimate> {
+        let probe = self.probes.get(&voxel)?;
+        let normal = normal.normalize_or_zero();
+        if normal == Vec3::ZERO {
+            return None;
+        }
+        let weights = normal * normal;
+        let mut incident = EnergySpectrum::ZERO;
+        let mut variance = EnergySpectrum::ZERO;
+        let mut samples = u32::MAX;
+        for axis in 0..3 {
+            if weights[axis] < 1e-6 {
+                continue;
+            }
+            let face = axis * 2 + usize::from(normal[axis] < 0.0);
+            if probe.face_mask & (1 << face) == 0 || probe.samples[face] == 0 {
+                return None;
+            }
+            incident += (probe.radiance[face] + probe.direct[face]) * weights[axis];
+            variance += (probe.second_moment[face] - probe.radiance[face] * probe.radiance[face])
+                .finite_or_zero()
+                * (weights[axis] * weights[axis]);
+            samples = samples.min(probe.samples[face]);
+        }
+        Some(EnergyEstimate {
+            incident,
+            variance,
+            effective_samples: samples,
+            age: probe.updated_at?.elapsed(),
+            sources_current: probe.source_revision == self.source_revision,
+        })
+    }
+
+    pub fn probe_count(&self) -> usize {
+        self.probes.len()
+    }
+
+    pub(super) fn update_indices(
+        &mut self,
+        added: &[IVec3],
+        removed: &HashMap<IVec3, SurfaceProbe>,
+    ) {
+        let mut indices: Vec<_> = removed.values().map(|probe| probe.order_index).collect();
+        indices.sort_unstable_by(|a, b| b.cmp(a));
+        for index in indices {
+            self.order.swap_remove(index);
+            if index < self.order.len() {
+                self.probes.get_mut(&self.order[index]).unwrap().order_index = index;
+            }
+        }
+        for voxel in added {
+            self.probes.get_mut(voxel).unwrap().order_index = self.order.len();
+            self.order.push(*voxel);
+        }
+    }
+}
