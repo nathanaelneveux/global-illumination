@@ -12,8 +12,10 @@ The implementation draws on [vxray](https://github.com/Nelarius/vxray), its [dev
 - GPU compute traces four new paths per exposed face per dispatch, with cosine-weighted directions, three diffuse bounces, visibility-tested analytic sources, Russian roulette, and power-weighted emissive-face sampling with multiple importance sampling. A CPU reference/fallback uses the same transport model.
 - Independently rotated low-discrepancy sequences continue advancing after the 256-sample history limit. Eight samples is only a bootstrap milestone, not convergence; sampling never stops there.
 - Display reconstruction averages connected, coplanar neighboring face samples at **virtual voxel corners**, then bilinearly blends across each face. Greedy quads stay intact: no additional mesh vertices are needed. Missing faces and disconnected diagonals are excluded to limit light leaking across edges.
+- New faces start with a conservative dark display or a low-confidence estimate from fresh, same-facing pre-edit neighbors connected through loaded air. They never initialize to unoccluded sky. A separate presentation history filters measured indirect RGB; confidence-weighted corner reconstruction favors measured faces. Deterministic direct-sun visibility responds without temporal filtering.
 - Bevy PBR retains ordinary visible direct/specular lighting. The extension adds cached indirect RGB, standalone/custom-emitter RGB, and voxel self-emission without counting ordinary direct light twice. Simulation queries receive direct plus indirect energy before display smoothing.
 - Edits invalidate local histories, retain existing display values, and reject obsolete in-flight geometry results. Nearby work is prioritized; at least one quarter of dispatch slots are reserved for an uninterrupted all-loaded-world sweep. Moving sources shorten affected histories instead of repeatedly clearing the world.
+- Adaptive scheduling ranks bounded rotating windows by age, source revision, and per-band relative uncertainty. RGB cannot mask uncertain infrared/ionizing transport. Edit/bootstrap/simulation requests take priority, while the reserved world sweep still prevents starvation; scheduling currently selects whole voxel probes, tracing their exposed faces together.
 - Scene building, cache construction, dispatch, and readback run asynchronously. The GPU tracer adapts its batch size toward a configurable time budget. A CPU mirror provides gameplay estimates; this is not a wholly GPU-resident authoritative field.
 - Sparse display uploads preserve stable slots during edits. Growing the hash cache keeps the previous display available until its replacement is ready.
 - Display-cache rebuilds publish fresh buffer identities and generation-owned patch queues. In-flight render frames retain their old generation; paired hash/probe uploads are bounds-checked and deferred updates are retained.
@@ -52,6 +54,8 @@ An Apple M4 Metal development-build stress run at 2560×1440 completed 79 edit/r
 
 Unmeasured, geometry-invalidated, and buried faces return `None`. `sample` is a convenience method that returns only incident energy. These are unfiltered surface estimates, not volume samples or the smoothed display value.
 
+`request_refresh(voxel)` queues a deduplicated, asynchronous refresh for a loaded probe when a simulation needs fresher data. It returns false for an unloaded voxel and never blocks or guarantees immediate completion. Borrowed/filtered display values do not enter this API's measurements, sample counts, or moments. Uncertainty used by the scheduler is a heuristic, not a calibrated confidence interval.
+
 `EnergyEmitter` augments a `PointLight` or `DirectionalLight`, or works with a transform alone as a point source, for any combination of bands. `VoxelMaterialTransportTable::set` changes diffuse response and emission for a material index and triggers progressive resampling. Reflectance is constrained to [0, 1]; non-finite/negative energy inputs are rejected or sanitized. Emissive voxels both glow and illuminate other surfaces.
 
 All bands currently use normalized transport units, **not watts, temperature, or dose**. A thermal simulation can integrate suitable fresh estimates with heat capacity, absorption, conduction, cooling, and phase-change rules, then turn a hot block into an emissive material. That simulation and physical unit calibration are not implemented here. Ionizing transport uses the same opaque diffuse model: it does not model penetration, energy-dependent attenuation, scattering physics, or biological dose.
@@ -67,10 +71,11 @@ cargo run
 cargo test --all-targets
 cargo test gpu_matches_cpu -- --ignored --nocapture
 cargo test gpu_display_upload -- --ignored --nocapture
+cargo test gpu_headless_renderer -- --ignored --nocapture
 cargo clippy --all-targets -- -D warnings
 ```
 
-The explicit ignored test requires a native compute adapter. It compares GPU and CPU results for sky, analytic sources, all transport bands, and an enclosed emissive room, and checks incremental geometry uploads. Regular tests cover traversal against a DDA reference, no sky leakage in a sealed room, corner continuity, sparse allocation/uploads, continuous sequences, scheduler fairness, and streaming/in-flight consistency.
+The explicit ignored tests require a native compute adapter. They compare GPU and CPU results for sky, analytic sources, all transport bands, and an enclosed emissive room, check incremental geometry uploads, validate the reported out-of-bounds offset, and exercise actual Bevy buffer/material preparation across cache generations without a window. Regular tests also cover dark tunnel edits, neighbor compatibility, display/measurement separation, temporal response, confidence-weighted corner continuity, adaptive scheduling, and global fairness.
 
 For the repeatable 72-second end-to-end workload:
 
@@ -80,6 +85,8 @@ VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_EXIT=1 cargo run
 ```
 
 Keep the game window visible and the machine otherwise idle. In development builds this captures flat/corner/GI-disabled/irradiance-only images, performs repeated edits, animates a point light, places an emissive voxel, streams terrain, restores temporary block/material/source changes, and saves phase frame-time percentiles to `target/gi-validation/report.json`. Screenshots are saved alongside it. The workload runs only when explicitly enabled; it does not edit terrain files. The player remains at the final test position if automatic exit is omitted.
+
+Add `VOXEL_GI_VALIDATE_TOGGLES=1` to stress all combinations of F4-F7 display uniforms eight times per second during edits and streaming. The report includes mode-change count. This changes the rendering workload, so do not compare its timings directly with the default validation run.
 
 Use `VOXEL_GI_BACKEND=cpu cargo run` to exercise the bounded CPU reference fallback. GPU initialization/dispatch failures also fall back with a warning. CPU fallback has the same model but not the same throughput guarantee. Startup and five-second status logs report the selected backend, coverage, history, age, and build/trace timings.
 
@@ -110,6 +117,8 @@ For a sky-light A/B comparison, leave F5 on its default corner blending and pres
 The material uses scoped naga-oil function overrides for Bevy's directional-light and shadow evaluation; no Bevy shader source is copied or modified. Ordinary materials are unaffected. Directional lights should represent global sky sources here; per-camera light-layer filtering and directional light textures are not represented in the shared world-space cache.
 
 `VoxelGiSettings` can be inserted before `VoxelGiPlugin` or adjusted as a resource at runtime. Defaults target a 4 ms trace dispatch, up to 8,192 probes per dispatch, and a 50 ms display-upload interval. These are scheduling controls, not world-coverage limits or hard real-time deadlines. Smaller budgets reduce throughput; measure estimate age as well as FPS.
+
+`display_response` defaults to 75 ms and controls only the presentation filter. An initial four-ray estimate has bounded influence; subsequent measurements approach persistent changes without permanent brightness clamping. This time constant is not a settling-time guarantee: cadence depends on available tracing budget. Reservoir/path reuse, GPU-resident accumulation, and wavefront tracing remain future work; neither history smoothing nor adaptive scheduling implements ReSTIR.
 
 ## License
 

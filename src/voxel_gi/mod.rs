@@ -2,10 +2,12 @@ mod emission;
 mod field;
 mod gpu;
 mod gpu_scene;
+mod history;
 mod naadf;
 mod reconstruction;
 pub(crate) mod render;
 mod sampling;
+mod scheduling;
 mod settings;
 mod spectrum;
 mod tracer;
@@ -170,6 +172,7 @@ struct VoxelGiRuntime {
     source_influences: Vec<(Vec3, f32)>,
     nearby: Vec<IVec3>,
     nearby_cursor: usize,
+    adaptive_cursor: usize,
     focus_page: Option<IVec3>,
     focus_topology: u64,
     pending: VecDeque<IVec3>,
@@ -231,6 +234,7 @@ impl Default for VoxelGiRuntime {
             source_influences: Vec::new(),
             nearby: Vec::new(),
             nearby_cursor: 0,
+            adaptive_cursor: 0,
             focus_page: None,
             focus_topology: u64::MAX,
             pending: VecDeque::new(),
@@ -493,14 +497,46 @@ fn apply_scene_task(
         }
     }
 
-    let environment = runtime.sources.environment;
+    // Read the pre-edit field before moving any descriptors. In particular,
+    // newly seeded faces must never become donors later in this same rebuild.
+    let now = Instant::now();
+    let mut seeds = HashMap::new();
+    if old_count > 0 {
+        for descriptor in &result.descriptors {
+            let old_mask = old_affected
+                .get(&descriptor.voxel)
+                .map_or(0, |probe| probe.face_mask);
+            let new_faces = descriptor.face_mask & !old_mask;
+            if new_faces == 0 {
+                continue;
+            }
+            let mut display = [history::FaceDisplay::default(); 6];
+            for (face, value) in display.iter_mut().enumerate() {
+                if new_faces & (1 << face) != 0 {
+                    *value = history::seed_face(
+                        &runtime.scene,
+                        descriptor.voxel,
+                        face,
+                        runtime.source_revision,
+                        now,
+                        |voxel| {
+                            old_affected
+                                .get(&voxel)
+                                .or_else(|| field.probes.get(&voxel))
+                        },
+                    );
+                }
+            }
+            seeds.insert(descriptor.voxel, (new_faces, display));
+        }
+    }
     let mut invalidated = HashSet::new();
     let mut added = Vec::new();
     for descriptor in result.descriptors {
         let mut probe = old_affected.remove(&descriptor.voxel).unwrap_or_else(|| {
             invalidated.insert(descriptor.voxel);
             added.push(descriptor.voxel);
-            let mut probe = SurfaceProbe::new(descriptor.voxel, descriptor.face_mask, environment);
+            let mut probe = SurfaceProbe::new(descriptor.voxel, descriptor.face_mask);
             probe.revision = runtime.generation << 32;
             probe
         });
@@ -511,7 +547,14 @@ fn apply_scene_task(
         }
         probe.material = descriptor.material;
         probe.emission = runtime.materials.get(descriptor.material).emission;
-        probe.update_face_mask(descriptor.face_mask, environment);
+        probe.update_face_mask(descriptor.face_mask);
+        if let Some((mask, display)) = seeds.remove(&descriptor.voxel) {
+            for (face, value) in display.into_iter().enumerate() {
+                if mask & (1 << face) != 0 {
+                    probe.display[face] = value;
+                }
+            }
+        }
         if old_mask != descriptor.face_mask {
             invalidated.insert(descriptor.voxel);
         }
@@ -626,6 +669,7 @@ fn invalidate_near_voxel(
             runtime.completed_samples = runtime.completed_samples.saturating_sub(samples);
             runtime.covered_faces = runtime.covered_faces.saturating_sub(covered);
             probe.invalidate();
+            runtime.gpu_value_dirty.insert(voxel);
             invalidated.insert(voxel);
         }
     }
@@ -764,7 +808,7 @@ fn enqueue_urgent(runtime: &mut VoxelGiRuntime, voxels: impl IntoIterator<Item =
 
 fn start_trace_task(
     mut runtime: ResMut<VoxelGiRuntime>,
-    field: Res<VoxelEnergyField>,
+    mut field: ResMut<VoxelEnergyField>,
     mut stats: ResMut<VoxelGiStats>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
     gpu_device: Option<Res<gpu::GpuTransportDevice>>,
@@ -773,6 +817,13 @@ fn start_trace_task(
     if runtime.trace_task.is_some() || field.order.is_empty() {
         return;
     }
+    let requested = std::mem::take(&mut field.requested);
+    enqueue_urgent(
+        &mut runtime,
+        requested
+            .into_iter()
+            .filter(|voxel| field.probes.contains_key(voxel)),
+    );
     let focus = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
         page_of(camera.translation().floor().as_ivec3())
     });
@@ -879,6 +930,18 @@ fn update_focus(runtime: &mut VoxelGiRuntime, field: &VoxelEnergyField, focus: I
 fn select_probes(runtime: &mut VoxelGiRuntime, field: &VoxelEnergyField) -> Vec<SurfaceProbe> {
     let mut selected = Vec::with_capacity(runtime.batch_size);
     let mut seen = HashSet::with_capacity(runtime.batch_size);
+    let mut adaptive = if runtime.urgent_pending.len() + runtime.pending.len() < runtime.batch_size
+    {
+        scheduling::ranked_candidates(
+            field,
+            &runtime.nearby,
+            &mut runtime.adaptive_cursor,
+            Instant::now(),
+            runtime.batch_size,
+        )
+    } else {
+        Vec::new()
+    };
     for index in 0..runtime.batch_size.min(field.order.len()) {
         let mut voxel = None;
         if index % 4 != 0 {
@@ -888,9 +951,17 @@ fn select_probes(runtime: &mut VoxelGiRuntime, field: &VoxelEnergyField) -> Vec<
             } else if let Some(next) = runtime.pending.pop_front() {
                 runtime.queued.remove(&next);
                 voxel = Some(next);
-            } else if !runtime.nearby.is_empty() {
-                voxel = Some(runtime.nearby[runtime.nearby_cursor % runtime.nearby.len()]);
-                runtime.nearby_cursor = (runtime.nearby_cursor + 1) % runtime.nearby.len();
+            } else {
+                while let Some(candidate) = adaptive.pop() {
+                    if !seen.contains(&candidate) {
+                        voxel = Some(candidate);
+                        break;
+                    }
+                }
+                if voxel.is_none() && !runtime.nearby.is_empty() {
+                    voxel = Some(runtime.nearby[runtime.nearby_cursor % runtime.nearby.len()]);
+                    runtime.nearby_cursor = (runtime.nearby_cursor + 1) % runtime.nearby.len();
+                }
             }
         }
         let voxel = voxel.unwrap_or_else(|| {
@@ -974,6 +1045,7 @@ fn apply_trace_task(
             continue;
         }
         probe.preserve_topology_from(old);
+        probe.resolve_display(old, Instant::now(), settings.display_response_seconds());
         let (_, old_samples, old_covered) = probe_metrics(old);
         let (_, new_samples, new_covered) = probe_metrics(&probe);
         runtime.completed_samples =
@@ -1318,9 +1390,7 @@ mod tests {
         for x in 0..64 {
             let voxel = IVec3::new(x, 0, 0);
             field.order.push(voxel);
-            field
-                .probes
-                .insert(voxel, SurfaceProbe::new(voxel, 4, EnergySpectrum::ZERO));
+            field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
         }
         let mut runtime = VoxelGiRuntime {
             batch_size: 8,
@@ -1345,9 +1415,7 @@ mod tests {
         let mut field = VoxelEnergyField::default();
         let voxels = [IVec3::ZERO, IVec3::X, IVec3::Y, IVec3::Z];
         for voxel in voxels {
-            field
-                .probes
-                .insert(voxel, SurfaceProbe::new(voxel, 4, EnergySpectrum::ZERO));
+            field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
         }
         field.update_indices(&voxels, &HashMap::new());
         let mut pending_result = field.probes[&IVec3::Z].clone();
@@ -1369,7 +1437,7 @@ mod tests {
     #[test]
     fn moving_sources_preserve_history_and_work_queues() {
         let voxel = IVec3::ZERO;
-        let mut probe = SurfaceProbe::new(voxel, 4, EnergySpectrum::ZERO);
+        let mut probe = SurfaceProbe::new(voxel, 4);
         probe.samples[2] = 64;
         probe.sequence[2] = 100;
         let mut field = VoxelEnergyField::default();
@@ -1450,9 +1518,7 @@ mod tests {
     fn simulation_rejects_unmeasured_or_buried_faces_and_reports_stale_sources() {
         let voxel = IVec3::ZERO;
         let mut field = VoxelEnergyField::default();
-        field
-            .probes
-            .insert(voxel, SurfaceProbe::new(voxel, 4, EnergySpectrum::ONE));
+        field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
         assert!(field.estimate(voxel, Vec3::Y).is_none());
         let probe = field.probes.get_mut(&voxel).unwrap();
         probe.samples[2] = 8;
@@ -1488,7 +1554,7 @@ mod tests {
                 direct: [EnergySpectrum::ZERO; 6],
                 samples: [1; 6],
                 updated_at: Some(Instant::now()),
-                ..SurfaceProbe::new(voxel, 0b11_1111, EnergySpectrum::ZERO)
+                ..SurfaceProbe::new(voxel, 0b11_1111)
             },
         );
         let energy = field.sample(voxel, Vec3::new(1.0, 1.0, 0.0)).unwrap();

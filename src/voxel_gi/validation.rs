@@ -19,6 +19,7 @@ pub(super) struct ValidationRun {
     captures: u32,
     edits: u32,
     moves: u32,
+    mode_changes: u32,
     light: Option<Entity>,
     center: Vec3,
     removed: Option<(IVec3, WorldVoxel<u8>)>,
@@ -123,6 +124,21 @@ pub(super) fn run_validation(
         run.captures = 7;
     }
     if (25.0..65.0).contains(&elapsed) {
+        if std::env::var_os("VOXEL_GI_VALIDATE_TOGGLES").is_some()
+            && let Some(handle) = handle.as_ref()
+            && let Some(mut material) = materials.get_mut(&handle.handle)
+        {
+            let step = ((elapsed - 25.0) * 8.0) as u32;
+            if step >= run.mode_changes {
+                // Exercise the same uniforms as F4-F7 while geometry/cache
+                // generations are changing, independently of OS key injection.
+                material.extension.settings.enabled = step & 1;
+                material.extension.settings.reconstruction = (step >> 1) & 1;
+                material.extension.settings.debug_irradiance = (step >> 2) & 1;
+                material.extension.settings.voxel_sky = (step >> 3) & 1;
+                run.mode_changes = step + 1;
+            }
+        }
         if !run.emitter_started {
             let position = IVec3::new(0, 12, -18);
             run.emissive = Some((
@@ -215,6 +231,15 @@ pub(super) fn run_validation(
         }
     }
     if elapsed >= 65.0 {
+        if run.mode_changes > 0
+            && let Some(handle) = handle.as_ref()
+            && let Some(mut material) = materials.get_mut(&handle.handle)
+        {
+            material.extension.settings.enabled = 1;
+            material.extension.settings.reconstruction = 1;
+            material.extension.settings.debug_irradiance = 0;
+            material.extension.settings.voxel_sky = 0;
+        }
         if let Some((position, voxel, transport)) = run.emissive.take() {
             world.set_voxel(position, voxel);
             dirty.mark_voxel(position);
@@ -234,11 +259,12 @@ pub(super) fn run_validation(
             format!("{{\"phase\":{phase},\"frames\":{},\"p50_ms\":{:.3},\"p95_ms\":{:.3},\"p99_ms\":{:.3}}}", values.len(), percentile(&values, 0.50), percentile(&values, 0.95), percentile(&values, 0.99))
         }).collect();
         let report = format!(
-            "{{\"backend\":\"{}\",\"phases\":[{}],\"edits\":{},\"moves\":{},\"max_loaded_pages\":{},\"max_near_sample_age_ms\":{:.3},\"coverage\":{:.5},\"mean_history\":{:.2}}}\n",
+            "{{\"backend\":\"{}\",\"phases\":[{}],\"edits\":{},\"moves\":{},\"mode_changes\":{},\"max_loaded_pages\":{},\"max_near_sample_age_ms\":{:.3},\"coverage\":{:.5},\"mean_history\":{:.2}}}\n",
             stats.backend,
             phases.join(","),
             run.edits,
             run.moves,
+            run.mode_changes,
             run.max_pages,
             run.max_near_age_ms,
             stats.interactive_coverage,

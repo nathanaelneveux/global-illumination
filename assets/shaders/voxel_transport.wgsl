@@ -135,11 +135,13 @@ fn lookup_face(voxel: vec3<i32>, face: u32, sky: bool) -> vec4<f32> {
 // component containing this face contributes. In particular, a diagonal face
 // across two missing/occluded edge faces cannot leak light into this surface.
 fn corner_value(center: vec4<f32>, edge_u: vec4<f32>, edge_v: vec4<f32>, diagonal: vec4<f32>) -> vec3<f32> {
-    var sum = center + edge_u + edge_v;
+    var sum = vec4(center.rgb * center.w, center.w)
+        + vec4(edge_u.rgb * edge_u.w, edge_u.w)
+        + vec4(edge_v.rgb * edge_v.w, edge_v.w);
     if edge_u.w > 0.0 || edge_v.w > 0.0 {
-        sum += diagonal;
+        sum += vec4(diagonal.rgb * diagonal.w, diagonal.w);
     }
-    return sum.rgb / max(sum.w, 1.0);
+    return sum.rgb / max(sum.w, 0.000001);
 }
 
 fn probe_irradiance(position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec3<f32> {

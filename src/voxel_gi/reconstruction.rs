@@ -2,10 +2,15 @@
 //! Kept independent of simulation estimates and of mesh tessellation.
 #[cfg(test)]
 mod tests {
-    fn corner(center: f32, u: Option<f32>, v: Option<f32>, diagonal: Option<f32>) -> f32 {
-        let mut sum = center;
-        let mut count = 1.0;
-        for value in [
+    fn weighted_corner(
+        center: (f32, f32),
+        u: Option<(f32, f32)>,
+        v: Option<(f32, f32)>,
+        diagonal: Option<(f32, f32)>,
+    ) -> f32 {
+        let mut sum = center.0 * center.1;
+        let mut weight = center.1;
+        for (value, w) in [
             u,
             v,
             if u.is_some() || v.is_some() {
@@ -17,10 +22,39 @@ mod tests {
         .into_iter()
         .flatten()
         {
-            sum += value;
-            count += 1.0;
+            sum += value * w;
+            weight += w;
         }
-        sum / count
+        sum / weight.max(0.000001)
+    }
+
+    #[test]
+    fn confidence_weighting_preserves_constants_and_reduces_unmeasured_neighbors() {
+        assert_eq!(
+            weighted_corner((2.5, 0.03125), Some((2.5, 0.125)), None, None),
+            2.5
+        );
+        assert_eq!(weighted_corner((2.5, 0.03125), None, None, None), 2.5);
+        let a = weighted_corner((0.0, 0.03125), Some((8.0, 1.0)), None, None);
+        let b = weighted_corner((8.0, 1.0), Some((0.0, 0.03125)), None, None);
+        assert_eq!(a, b, "shared corners agree even with different confidence");
+        assert!(
+            a > 7.7,
+            "an unmeasured face should not halve measured lighting"
+        );
+        assert_eq!(
+            weighted_corner((0.0, 0.125), None, None, Some((100.0, 1.0))),
+            0.0
+        );
+    }
+
+    fn corner(center: f32, u: Option<f32>, v: Option<f32>, diagonal: Option<f32>) -> f32 {
+        weighted_corner(
+            (center, 1.0),
+            u.map(|value| (value, 1.0)),
+            v.map(|value| (value, 1.0)),
+            diagonal.map(|value| (value, 1.0)),
+        )
     }
 
     #[test]
@@ -35,10 +69,25 @@ mod tests {
                 }
                 let value = |i: usize| (mask & (1_u32 << i) != 0).then_some(values[i]);
                 let ca = corner(values[a], value(a ^ 1), value(a ^ 2), value(a ^ 3));
+                let weighted =
+                    |i: usize| value(i).map(|value| (value, [0.03125, 0.125, 0.5, 1.0][i]));
+                let wa = weighted_corner(
+                    weighted(a).unwrap(),
+                    weighted(a ^ 1),
+                    weighted(a ^ 2),
+                    weighted(a ^ 3),
+                );
                 for b in [a ^ 1, a ^ 2] {
                     if mask & (1 << b) != 0 {
                         let cb = corner(values[b], value(b ^ 1), value(b ^ 2), value(b ^ 3));
                         assert_eq!(ca, cb, "mask {mask}");
+                        let wb = weighted_corner(
+                            weighted(b).unwrap(),
+                            weighted(b ^ 1),
+                            weighted(b ^ 2),
+                            weighted(b ^ 3),
+                        );
+                        assert!((wa - wb).abs() < 1e-6, "weighted corner seam: mask {mask}");
                     }
                 }
             }

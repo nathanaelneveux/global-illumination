@@ -353,8 +353,8 @@ pub struct SurfaceProbe {
     pub order_index: usize,
     pub emission: EnergySpectrum,
     pub face_mask: u8,
-    /// Indirect diffuse radiance used by the renderer (direct visible light is
-    /// already handled by Bevy PBR).
+    /// Unfiltered indirect transport measurements. Presentation history is
+    /// separate; simulations never receive spatial or temporal display filters.
     pub radiance: [EnergySpectrum; 6],
     /// Direct incident energy, retained for gameplay queries in every band.
     pub direct: [EnergySpectrum; 6],
@@ -363,6 +363,8 @@ pub struct SurfaceProbe {
     /// Ordinary Bevy directional-light diffuse energy, excluding custom
     /// emitter additions. Retained independently for a display-only A/B mode.
     pub direct_sky: [Vec3; 6],
+    pub(crate) display: [super::history::FaceDisplay; 6],
+    pub(crate) display_updated_at: Option<Instant>,
     pub samples: [u32; 6],
     /// Sampling sequence is independent of history length and invalidation.
     pub sequence: [u32; 6],
@@ -382,8 +384,8 @@ impl SurfaceProbe {
         self.order_index = current.order_index;
     }
 
-    pub(crate) fn new(voxel: IVec3, face_mask: u8, environment: EnergySpectrum) -> Self {
-        let mut probe = Self {
+    pub(crate) fn new(voxel: IVec3, face_mask: u8) -> Self {
+        Self {
             voxel,
             material: 0,
             order_index: 0,
@@ -393,39 +395,30 @@ impl SurfaceProbe {
             direct: [EnergySpectrum::ZERO; 6],
             custom_direct: [Vec3::ZERO; 6],
             direct_sky: [Vec3::ZERO; 6],
+            display: [super::history::FaceDisplay::default(); 6],
+            display_updated_at: None,
             samples: [0; 6],
             sequence: [0; 6],
             second_moment: [EnergySpectrum::ZERO; 6],
             revision: 0,
             source_revision: 0,
             updated_at: None,
-        };
-
-        // An unoccluded environment estimate is available immediately. Rays
-        // replace it progressively, but terrain is never black while waiting
-        // for its first cache sample.
-        for (face, offset) in FACE_OFFSETS.iter().enumerate() {
-            if face_mask & (1 << face) == 0 {
-                continue;
-            }
-            let horizon = offset.y as f32 * 0.35 + 0.65;
-            probe.radiance[face] = environment * horizon.clamp(0.15, 1.0);
         }
-        probe
     }
 
-    pub(crate) fn update_face_mask(&mut self, face_mask: u8, environment: EnergySpectrum) {
+    pub(crate) fn update_face_mask(&mut self, face_mask: u8) {
         if self.face_mask != face_mask {
             self.invalidate();
         }
         let newly_exposed = face_mask & !self.face_mask;
         self.face_mask = face_mask;
-        for (face, offset) in FACE_OFFSETS.iter().enumerate() {
+        for face in 0..6 {
             if newly_exposed & (1 << face) == 0 {
                 continue;
             }
-            let horizon = offset.y as f32 * 0.35 + 0.65;
-            self.radiance[face] = environment * horizon.clamp(0.15, 1.0);
+            self.radiance[face] = EnergySpectrum::ZERO;
+            self.second_moment[face] = EnergySpectrum::ZERO;
+            self.display[face] = default();
             self.direct[face] = EnergySpectrum::ZERO;
             self.custom_direct[face] = Vec3::ZERO;
             self.direct_sky[face] = Vec3::ZERO;
@@ -436,6 +429,12 @@ impl SurfaceProbe {
     pub(crate) fn invalidate(&mut self) {
         self.revision = self.revision.wrapping_add(1);
         self.samples = [0; 6];
+        self.radiance = [EnergySpectrum::ZERO; 6];
+        self.second_moment = [EnergySpectrum::ZERO; 6];
+        for display in &mut self.display {
+            display.confidence = display.confidence.min(0.25);
+        }
+        self.display_updated_at = Some(Instant::now());
         // Keep the previous display estimate until replacement samples arrive,
         // but never advertise it as a valid measurement to a simulation.
         self.updated_at = None;
@@ -529,7 +528,7 @@ pub fn rebuild_surface_probes(
         let mut probe = previous
             .get(&voxel)
             .cloned()
-            .unwrap_or_else(|| SurfaceProbe::new(voxel, face_mask, EnergySpectrum::ZERO));
+            .unwrap_or_else(|| SurfaceProbe::new(voxel, face_mask));
         probe.face_mask = face_mask;
         // Preserve the last stable value on screen while forcing fresh samples
         // after any geometry change.

@@ -1,7 +1,7 @@
 use super::spectrum::EnergySpectrum;
 use super::world::SurfaceProbe;
 use bevy::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 /// The authoritative world-space energy field. The infrared and ionizing
@@ -12,6 +12,7 @@ pub struct VoxelEnergyField {
     pub(super) order: Vec<IVec3>,
     pub(super) pages: HashMap<IVec3, Vec<IVec3>>,
     pub(super) source_revision: u64,
+    pub(super) requested: HashSet<IVec3>,
 }
 
 /// An unfiltered surface measurement, never the spatially smoothed display
@@ -26,6 +27,18 @@ pub struct EnergyEstimate {
 }
 
 impl VoxelEnergyField {
+    /// Ask for fresher measurements for a loaded voxel (all its exposed faces).
+    /// Requests are deduplicated and serviced by the bounded urgent queue, not
+    /// synchronously. They cannot starve the all-loaded-world sweep. A caller
+    /// must still inspect `estimate` freshness; this does not promise completion.
+    pub fn request_refresh(&mut self, voxel: IVec3) -> bool {
+        if !self.probes.contains_key(&voxel) {
+            return false;
+        }
+        self.requested.insert(voxel);
+        true
+    }
+
     /// Compatibility helper. Simulation code should use `estimate` to enforce
     /// its own age, confidence and source-revision requirements.
     pub fn sample(&self, voxel: IVec3, normal: Vec3) -> Option<EnergySpectrum> {

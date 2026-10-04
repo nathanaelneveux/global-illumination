@@ -6,8 +6,9 @@ use bevy::pbr::{
     ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
 };
 use bevy::prelude::*;
+use bevy::render::erased_render_asset::prepare_erased_assets;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
-use bevy::render::render_asset::RenderAssets;
+use bevy::render::render_asset::{RenderAssets, prepare_assets};
 use bevy::render::render_resource::{
     AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
     TextureViewDescriptor, TextureViewDimension,
@@ -182,6 +183,9 @@ impl ProbePatchState {
 #[derive(Resource, Default)]
 struct TexturePrepared(bool);
 
+#[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+struct DisplayBuffersPrepared;
+
 pub fn install_render_assets(app: &mut App) {
     app.add_plugins((
         MaterialPlugin::<VoxelTransportMaterial>::default(),
@@ -214,6 +218,14 @@ pub fn install_render_assets(app: &mut App) {
         state: default(),
     });
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+        // Both new storage assets must exist before the terrain material binds
+        // its generation. Otherwise preparation order can hide it for a frame.
+        render_app.configure_sets(
+            Render,
+            DisplayBuffersPrepared
+                .after(prepare_assets::<GpuShaderBuffer>)
+                .before(prepare_erased_assets::<MeshMaterial3d<VoxelTransportMaterial>>),
+        );
         render_app.add_systems(
             Render,
             apply_probe_patches.in_set(RenderSystems::PrepareBindGroups),
@@ -553,7 +565,8 @@ pub fn set_enabled(
 fn gpu_probe(probe: &SurfaceProbe) -> GpuProbe {
     let face = |i: usize| {
         if probe.face_mask & (1 << i) != 0 {
-            (probe.radiance[i].visible + probe.custom_direct[i]).extend(1.0)
+            (probe.display[i].indirect + probe.custom_direct[i])
+                .extend(probe.display[i].confidence.max(0.03125))
         } else {
             Vec4::ZERO
         }
@@ -568,7 +581,9 @@ fn gpu_probe(probe: &SurfaceProbe) -> GpuProbe {
         emission: probe.emission.visible.extend(0.0),
         direct_sky: std::array::from_fn(|face| {
             if probe.face_mask & (1 << face) != 0 {
-                probe.direct_sky[face].extend(1.0)
+                probe.display[face]
+                    .sky
+                    .extend(probe.display[face].confidence.max(0.03125))
             } else {
                 Vec4::ZERO
             }
@@ -774,13 +789,18 @@ mod tests {
 
     #[test]
     fn direct_sky_is_separate_from_gi_and_preserves_exposed_face_mask() {
-        let mut probe = SurfaceProbe::new(IVec3::ZERO, 4, EnergySpectrum::ZERO);
+        let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
         probe.radiance[2] = EnergySpectrum::new(Vec3::X, 3.0, 4.0);
         probe.custom_direct[2] = Vec3::Y;
         probe.direct_sky = [Vec3::splat(10.0); 6];
+        probe.display[2] = super::super::history::FaceDisplay {
+            indirect: Vec3::X,
+            sky: Vec3::splat(10.0),
+            confidence: 0.5,
+        };
         let encoded = gpu_probe(&probe);
-        assert_eq!(encoded.positive_y, Vec4::new(1.0, 1.0, 0.0, 1.0));
-        assert_eq!(encoded.direct_sky[2], Vec4::new(10.0, 10.0, 10.0, 1.0));
+        assert_eq!(encoded.positive_y, Vec4::new(1.0, 1.0, 0.0, 0.5));
+        assert_eq!(encoded.direct_sky[2], Vec4::new(10.0, 10.0, 10.0, 0.5));
         assert_eq!(encoded.direct_sky[0], Vec4::ZERO);
         let material = material_template(&VoxelTransportAssets {
             texture: default(),
@@ -805,7 +825,7 @@ mod tests {
         let voxel_c = colliding[1];
         let mut probes = HashMap::new();
         for voxel in [voxel_a, voxel_b, voxel_c] {
-            probes.insert(voxel, SurfaceProbe::new(voxel, 1, EnergySpectrum::ZERO));
+            probes.insert(voxel, SurfaceProbe::new(voxel, 1));
         }
         let build = build_gpu_cache(snapshot_gpu_probes(&probes, &[voxel_a, voxel_b]));
         let patches = GpuProbePatchQueue {
@@ -870,7 +890,7 @@ mod tests {
                         radiance: [EnergySpectrum::ZERO; 6],
                         direct: [EnergySpectrum::ZERO; 6],
                         samples: [0; 6],
-                        ..SurfaceProbe::new(voxel, 4, EnergySpectrum::ZERO)
+                        ..SurfaceProbe::new(voxel, 4)
                     },
                 );
             }
@@ -907,14 +927,25 @@ mod tests {
         let transient = IVec3::Z;
         let mut probes: HashMap<_, _> = [a, b]
             .into_iter()
-            .map(|voxel| (voxel, SurfaceProbe::new(voxel, 4, EnergySpectrum::ZERO)))
+            .map(|voxel| (voxel, SurfaceProbe::new(voxel, 4)))
             .collect();
         // Simulate the immutable snapshot spending time on a worker while
         // main-world topology and radiance continue changing.
         let snapshot = snapshot_gpu_probes(&probes, &[a, b]);
+        let old_display = ShaderBuffer::from(vec![gpu_probe(&probes[&b])])
+            .data
+            .unwrap();
         probes.remove(&a);
-        probes.insert(c, SurfaceProbe::new(c, 4, EnergySpectrum::ONE));
-        probes.get_mut(&b).unwrap().radiance[2] = EnergySpectrum::ONE * 3.0;
+        probes.insert(c, SurfaceProbe::new(c, 4));
+        let updated = probes.get_mut(&b).unwrap();
+        updated.radiance[2] = EnergySpectrum::ONE * 3.0;
+        updated.display[2].indirect = Vec3::splat(2.0);
+        updated.display[2].confidence = 0.75;
+        assert_ne!(
+            old_display,
+            ShaderBuffer::from(vec![gpu_probe(updated)]).data.unwrap(),
+            "the stale snapshot must differ from the latest presentation history"
+        );
         let build = build_gpu_cache(snapshot);
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
@@ -987,7 +1018,7 @@ mod tests {
             let probes: HashMap<_, _> = (0..count)
                 .map(|x| {
                     let voxel = IVec3::new(x, generation as i32, 0);
-                    (voxel, SurfaceProbe::new(voxel, 4, EnergySpectrum::ONE))
+                    (voxel, SurfaceProbe::new(voxel, 4))
                 })
                 .collect();
             let order: Vec<_> = probes.keys().copied().collect();
@@ -1069,6 +1100,118 @@ mod tests {
         let ranges = patch_ranges(vec![0, 1, 10, 100_000, 100_001], 96);
         assert_eq!(ranges, vec![0..1056, 9_600_000..9_600_192]);
         assert_eq!(ranges.iter().map(|r| r.len()).sum::<usize>(), 1248);
+    }
+
+    #[test]
+    #[ignore = "requires a native compute adapter; run explicitly on supported hardware"]
+    fn gpu_headless_renderer_prepares_cache_and_material_generations_together() {
+        use bevy::pbr::PreparedMaterial;
+        use bevy::render::erased_render_asset::ErasedRenderAssets;
+        use bevy::render::pipelined_rendering::PipelinedRenderingPlugin;
+        use bevy::render::renderer::RenderDevice;
+        let mut app = App::new();
+        app.add_plugins(
+            DefaultPlugins
+                .build()
+                .disable::<bevy::winit::WinitPlugin>()
+                .disable::<bevy::log::LogPlugin>()
+                .disable::<bevy::audio::AudioPlugin>()
+                .disable::<bevy::gilrs::GilrsPlugin>()
+                .disable::<PipelinedRenderingPlugin>()
+                .set(WindowPlugin {
+                    primary_window: None,
+                    ..default()
+                }),
+        );
+        install_render_assets(&mut app);
+        let mut assets = app.world().resource::<VoxelTransportAssets>().clone();
+        let mut texture = Image::new_fill(
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 4,
+            },
+            wgpu::TextureDimension::D2,
+            &[255, 255, 255, 255],
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            default(),
+        );
+        prepare_texture_array(&mut texture, 4).unwrap();
+        assets.texture = app.world_mut().resource_mut::<Assets<Image>>().add(texture);
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<VoxelTransportMaterial>>()
+            .add(material_template(&assets));
+        let mut patches = app.world().resource::<GpuProbePatchQueue>().clone();
+        let mut cache = GpuTransportCache::default();
+        app.finish();
+        app.cleanup();
+        let device = app
+            .sub_app(RenderApp)
+            .world()
+            .resource::<RenderDevice>()
+            .clone();
+        let scope = device
+            .wgpu_device()
+            .push_error_scope(wgpu::ErrorFilter::Validation);
+        // Prime the standalone image/material before testing buffer generations.
+        for _ in 0..4 {
+            app.update();
+        }
+        for (generation, count) in [1, 64, 3, 3, 128, 8].into_iter().enumerate() {
+            let probes: HashMap<_, _> = (0..count)
+                .map(|x| {
+                    let voxel = IVec3::new(x, generation as i32, 0);
+                    (voxel, SurfaceProbe::new(voxel, 4))
+                })
+                .collect();
+            let order: Vec<_> = probes.keys().copied().collect();
+            app.world_mut()
+                .resource_scope(|world, mut buffers: Mut<Assets<ShaderBuffer>>| {
+                    install_gpu_cache(
+                        build_gpu_cache(snapshot_gpu_probes(&probes, &order)),
+                        &mut cache,
+                        &mut patches,
+                        &mut assets,
+                        &mut buffers,
+                        &mut world.resource_mut::<Assets<VoxelTransportMaterial>>(),
+                        &material,
+                    );
+                });
+            patch_probe_values(&cache, &patches, &probes, &order.iter().copied().collect());
+            app.insert_resource(patches.clone());
+            app.insert_resource(assets.clone());
+            {
+                let mut materials = app
+                    .world_mut()
+                    .resource_mut::<Assets<VoxelTransportMaterial>>();
+                let mut material = materials.get_mut(&material).unwrap();
+                material.extension.settings.enabled = (generation & 1) as u32;
+                material.extension.settings.reconstruction = ((generation >> 1) & 1) as u32;
+                material.extension.settings.debug_irradiance = ((generation >> 2) & 1) as u32;
+                material.extension.settings.voxel_sky = (generation & 1) as u32;
+            }
+            app.update();
+            let render_world = app.sub_app(RenderApp).world();
+            let buffers = render_world.resource::<RenderAssets<GpuShaderBuffer>>();
+            assert_eq!(
+                buffers.get(&assets.probes).unwrap().buffer.size(),
+                (cache.probe_capacity * GPU_PROBE_BYTES) as u64
+            );
+            assert_eq!(
+                buffers.get(&assets.hash_entries).unwrap().buffer.size(),
+                (cache.hash_entries.len() * 16) as u64
+            );
+            assert!(
+                render_world
+                    .resource::<ErasedRenderAssets<PreparedMaterial>>()
+                    .get(material.id())
+                    .is_some(),
+                "material disappeared for generation {generation}"
+            );
+            assert!(patches.state.lock().unwrap().pending_probes.is_empty());
+        }
+        assert!(bevy::tasks::block_on(scope.pop()).is_none());
     }
 
     #[test]

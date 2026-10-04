@@ -588,7 +588,7 @@ mod tests {
             vec![(IVec3::ZERO, page.clone())],
             &[],
         ));
-        let probe = SurfaceProbe::new(IVec3::new(12, 4, 12), 4, EnergySpectrum::ZERO);
+        let probe = SurfaceProbe::new(IVec3::new(12, 4, 12), 4);
         let dark = trace_probe_batch(
             Arc::clone(&scene),
             TransportSources::default(),
@@ -629,7 +629,7 @@ mod tests {
 
     #[test]
     fn open_sky_matches_cosine_integral() {
-        let probe = SurfaceProbe::new(IVec3::ZERO, 4, EnergySpectrum::ZERO);
+        let probe = SurfaceProbe::new(IVec3::ZERO, 4);
         let sources = TransportSources::default();
         let expected = sources.environment * (0.65 + 0.35 * 2.0 / 3.0);
         let result = trace_probe_batch(
@@ -731,7 +731,7 @@ mod tests {
             radiance: [EnergySpectrum::ZERO; 6],
             direct: [EnergySpectrum::ZERO; 6],
             samples: [0; 6],
-            ..SurfaceProbe::new(voxel, 1 << 2, EnergySpectrum::ZERO)
+            ..SurfaceProbe::new(voxel, 1 << 2)
         };
         let sources = TransportSources {
             directional: vec![DirectionalTransportLight {

@@ -624,10 +624,7 @@ mod tests {
         let materials = Arc::new(VoxelMaterialTransportTable::default());
         let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
         let probes: Vec<_> = (0..28)
-            .flat_map(|z| {
-                (10..28)
-                    .map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4, EnergySpectrum::ZERO))
-            })
+            .flat_map(|z| (10..28).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
             .collect();
         let cpu = trace_probe_batch(
             Arc::clone(&scene),
@@ -723,10 +720,7 @@ mod tests {
         let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
         let sources = TransportSources::default();
         let probes: Vec<_> = (8..16)
-            .flat_map(|z| {
-                (8..16)
-                    .map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4, EnergySpectrum::ZERO))
-            })
+            .flat_map(|z| (8..16).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
             .collect();
         let expected = trace_probe_batch(
             Arc::clone(&scene),

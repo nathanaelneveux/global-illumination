@@ -8,6 +8,8 @@ pub struct VoxelGiSettings {
     pub trace_budget_ms: f32,
     pub max_probes_per_dispatch: usize,
     pub display_upload_interval: Duration,
+    /// Presentation-only temporal response. Does not filter simulation energy.
+    pub display_response: Duration,
 }
 
 impl Default for VoxelGiSettings {
@@ -16,11 +18,15 @@ impl Default for VoxelGiSettings {
             trace_budget_ms: 4.0,
             max_probes_per_dispatch: 8192,
             display_upload_interval: Duration::from_millis(50),
+            display_response: Duration::from_millis(75),
         }
     }
 }
 
 impl VoxelGiSettings {
+    pub(super) fn display_response_seconds(&self) -> f32 {
+        self.display_response.as_secs_f32().clamp(0.01, 0.5)
+    }
     pub(super) fn budget_ms(&self) -> f32 {
         if self.trace_budget_ms.is_finite() {
             self.trace_budget_ms.clamp(0.25, 16.0)
