@@ -716,6 +716,122 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a native compute adapter"]
+    fn emitter_removal_replaces_energy_in_one_batch_and_fades_display() {
+        use super::super::{
+            naadf::{linear_index, volume_len},
+            tracer::trace_probe_batch,
+            world::{AIR, MaterialTransport, PAGE_SIZE},
+        };
+        let mut gpu = native_tracer();
+        let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+        for z in 4..=12 {
+            for y in 4..=12 {
+                for x in 4..=12 {
+                    if [x, y, z].into_iter().any(|v| v == 4 || v == 12) {
+                        page[linear_index(UVec3::new(x, y, z), PAGE_SIZE)] = 2;
+                    }
+                }
+            }
+        }
+        let source = linear_index(UVec3::new(8, 9, 8), PAGE_SIZE);
+        page[source] = 4;
+        let lit = Arc::new(TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, page.clone())],
+            &[],
+        ));
+        page[source] = AIR;
+        let dark = Arc::new(TransportScene::with_page_delta(
+            &lit,
+            vec![(IVec3::ZERO, page)],
+            &[],
+        ));
+        let mut materials = VoxelMaterialTransportTable::default();
+        materials.set(
+            4,
+            MaterialTransport {
+                emission: EnergySpectrum::new(Vec3::new(12.0, 5.0, 1.0), 4.0, 2.0),
+                ..default()
+            },
+        );
+        let materials = Arc::new(materials);
+        let sources = TransportSources::default();
+        let emitters = Arc::new(EmissionDistribution::build(&lit, &materials));
+        let mut probes = vec![SurfaceProbe::new(IVec3::new(8, 4, 8), 4)];
+        gpu.trace(lit, &sources, &materials, &mut probes, 128, &emitters)
+            .unwrap();
+        let mut history = probes.remove(0);
+        assert!(
+            history.radiance[2].visible.x > 0.01
+                && history.radiance[2].infrared > 0.0
+                && history.radiance[2].ionizing > 0.0
+        );
+        history.display[2].indirect = history.radiance[2].visible;
+        let original = history.display[2].indirect;
+        let now = Instant::now();
+        history.face_updated_at[2] = Some(now);
+        let mut next = history.clone();
+        next.restart_measurements();
+        let emitters = Arc::new(EmissionDistribution::build(&dark, &materials));
+        let expected = trace_probe_batch(
+            dark.clone(),
+            sources.clone(),
+            materials.clone(),
+            vec![next.clone()],
+            4,
+        )
+        .remove(0);
+        for batch in 1..=12 {
+            let mut probes = vec![next];
+            gpu.trace(
+                dark.clone(),
+                &sources,
+                &materials,
+                &mut probes,
+                4,
+                &emitters,
+            )
+            .unwrap();
+            next = probes.remove(0);
+            assert_eq!(
+                next.radiance[2],
+                EnergySpectrum::ZERO,
+                "no retained RGB/IR/radiation after removal"
+            );
+            if batch == 1 {
+                assert_eq!(next.radiance[2], expected.radiance[2]);
+            }
+            let at = now + std::time::Duration::from_millis(batch * 50);
+            next.resolve_display(&history, at, 0.075);
+            assert!(
+                next.display[2]
+                    .indirect
+                    .cmple(history.display[2].indirect)
+                    .all()
+            );
+            if batch == 1 {
+                assert!(
+                    next.display[2].indirect.x > original.x * 0.75,
+                    "no black snap"
+                );
+            }
+            if batch == 8 {
+                assert!(
+                    next.display[2].indirect.x < original.x * 0.1,
+                    "less than 10% ghost after 32 fresh paths"
+                );
+            }
+            next.face_updated_at[2] = Some(at);
+            history = next.clone();
+        }
+        assert!(next.display[2].indirect.x < original.x * 0.01);
+        eprintln!(
+            "Emitter removal: exact zero transport in first 4-path batch; display <10% after 8 batches, <1% after 12 (virtual 50ms cadence, not gameplay latency)."
+        );
+    }
+
+    #[test]
     #[ignore = "requires a native compute adapter; run explicitly on supported hardware"]
     fn sky_only_and_partial_face_dispatch_preserve_simulation_and_match_cpu() {
         use super::super::{sky::contact_shadow_fixture, tracer::trace_probe_batch};

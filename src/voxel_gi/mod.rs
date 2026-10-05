@@ -194,6 +194,8 @@ struct VoxelGiRuntime {
     source_revision: u64,
     batch_size: usize,
     global_source_revision: u64,
+    /// Last discrete emission change: old energy must not survive as samples.
+    reset_source_revision: u64,
     source_influences: Vec<(Vec3, f32)>,
     nearby: Vec<IVec3>,
     nearby_cursor: usize,
@@ -267,6 +269,7 @@ impl Default for VoxelGiRuntime {
             source_revision: 0,
             batch_size: 256,
             global_source_revision: 0,
+            reset_source_revision: 0,
             source_influences: Vec::new(),
             nearby: Vec::new(),
             nearby_cursor: 0,
@@ -316,6 +319,7 @@ impl Default for VoxelGiRuntime {
 struct SceneBuildResult {
     scene: Arc<TransportScene>,
     changed: bool,
+    changed_materials: [bool; 256],
     pages: VecDeque<(IVec3, Vec<SurfaceProbeDescriptor>)>,
     exact_edits: Vec<IVec3>,
     broad_edits: Vec<IVec3>,
@@ -508,9 +512,11 @@ fn start_scene_task(
                 (page.as_i64vec3() - focus_page.as_i64vec3()).length_squared(),
             )
         });
+        let changed_materials = emission::changed_voxel_materials(&previous_scene, &scene);
         SceneBuildResult {
             scene,
             changed,
+            changed_materials,
             pages: pages.into(),
             exact_edits,
             broad_edits,
@@ -550,6 +556,26 @@ fn apply_scene_task(
             stats.loaded_pages = runtime.loaded_pages.len();
             stats.last_scene_build_ms = result.build_time.as_secs_f32() * 1000.0;
             return;
+        }
+        if result
+            .changed_materials
+            .iter()
+            .enumerate()
+            .any(|(material, changed)| {
+                *changed
+                    && runtime
+                        .materials
+                        .get(material as u8)
+                        .emission
+                        .max_component()
+                        > 0.0
+            })
+        {
+            // Adding/removing an emitting voxel changes the source set, not
+            // merely visibility. Retaining lit samples after removal produces
+            // a long 16/(16+n) (or remote 64/(64+n)) ghost, before denoising.
+            invalidate_sources(&mut runtime, &mut field, &mut stats);
+            runtime.reset_source_revision = runtime.source_revision;
         }
         runtime.scene = result.scene.clone();
         runtime.generation = runtime.generation.wrapping_add(1);
@@ -890,6 +916,7 @@ fn synchronize_material_table(
     runtime.materials = Arc::new(materials.clone());
     invalidate_sources(&mut runtime, &mut field, &mut stats);
     runtime.global_source_revision = runtime.source_revision;
+    runtime.reset_source_revision = runtime.source_revision;
 }
 
 fn invalidate_sources(
@@ -1224,6 +1251,9 @@ fn select_transport(
             }
         }
         if probe.source_revision != runtime.source_revision {
+            if probe.source_revision < runtime.reset_source_revision {
+                probe.restart_measurements();
+            }
             let local = runtime.source_influences.iter().any(|(position, radius)| {
                 probe.voxel.as_vec3().distance_squared(*position) <= radius * radius
             });
@@ -1319,7 +1349,9 @@ fn apply_trace_task(
         let Some(old) = field.probes.get_mut(&voxel) else {
             continue;
         };
-        if old.revision != probe.revision {
+        if old.revision != probe.revision
+            || (probe.trace_mask != 0 && probe.source_revision < runtime.reset_source_revision)
+        {
             if probe_has_pending_samples(old) {
                 requeue.push(voxel);
             }
@@ -1753,6 +1785,7 @@ mod tests {
         let result = SceneBuildResult {
             scene: Arc::new(TransportScene::default()),
             changed: true,
+            changed_materials: [false; 256],
             pages: VecDeque::from([
                 (
                     IVec3::ZERO,
@@ -1874,6 +1907,37 @@ mod tests {
         let selected = select_probes(&mut runtime, &field);
         assert_eq!(selected[0].samples[2], 4);
         assert_eq!(selected[0].sequence[2], 100);
+    }
+
+    #[test]
+    fn emitter_change_restarts_local_and_remote_measurements_not_presentation() {
+        let mut field = VoxelEnergyField::default();
+        for voxel in [IVec3::ZERO, IVec3::new(10_000, 0, 0)] {
+            let mut probe = SurfaceProbe::new(voxel, 5);
+            probe.samples = [128; 6];
+            probe.radiance = [EnergySpectrum::ONE; 6];
+            probe.second_moment = [EnergySpectrum::ONE; 6];
+            probe.sequence = [1000; 6];
+            probe.display[0].indirect = Vec3::ONE;
+            field.probes.insert(voxel, probe);
+            field.order.push(voxel);
+        }
+        let mut runtime = VoxelGiRuntime::default();
+        invalidate_sources(&mut runtime, &mut field, &mut VoxelGiStats::default());
+        runtime.reset_source_revision = runtime.source_revision;
+        // A later moving-light revision must not hide the pending emitter reset.
+        invalidate_sources(&mut runtime, &mut field, &mut VoxelGiStats::default());
+        let selected = select_probes(&mut runtime, &field);
+        assert_eq!(selected.len(), 2);
+        for probe in selected {
+            assert_eq!(probe.samples, [0; 6]);
+            assert_eq!(probe.radiance, [EnergySpectrum::ZERO; 6]);
+            assert_eq!(probe.second_moment, [EnergySpectrum::ZERO; 6]);
+            assert_eq!(probe.display[0].indirect, Vec3::ONE);
+            assert_eq!(probe.sequence, [1000; 6]);
+            assert_eq!(probe.revision, 0, "worker result must remain mergeable");
+            assert_eq!(probe.source_revision, runtime.source_revision);
+        }
     }
 
     #[test]

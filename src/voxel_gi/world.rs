@@ -452,6 +452,14 @@ impl SurfaceProbe {
 
     pub(crate) fn invalidate(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+        self.restart_measurements();
+        self.display_updated_at = Some(Instant::now());
+    }
+
+    /// Discrete source changes discard obsolete energy, but keep the displayed
+    /// image for the evidence-weighted resolve. Called on a selected worker
+    /// copy: do not change geometry revision or the advancing sample sequence.
+    pub(crate) fn restart_measurements(&mut self) {
         self.samples = [0; 6];
         self.fresh_mask = 0;
         self.stable_batches = [0; 6];
@@ -461,7 +469,6 @@ impl SurfaceProbe {
         // Presentation weights belong to the retained display, not the reset
         // transport statistics. Changing only weights would visibly relight
         // unchanged shared corners on every edit.
-        self.display_updated_at = Some(Instant::now());
         // Keep the previous display estimate until replacement samples arrive,
         // but never advertise it as a valid measurement to a simulation.
         self.updated_at = None;

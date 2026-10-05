@@ -1,7 +1,7 @@
 //! Presentation history is deliberately separate from transport measurements.
 //! Borrowed values never affect sample counts, moments, or simulation queries.
 use bevy::prelude::*;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::spectrum::EnergySpectrum;
 use super::world::{AIR, FACE_OFFSETS, SurfaceProbe, TransportScene};
@@ -219,6 +219,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use std::time::Duration;
 
     fn scene_with(solids: &[IVec3]) -> TransportScene {
         let mut page = vec![AIR; volume_len(PAGE_SIZE)];
