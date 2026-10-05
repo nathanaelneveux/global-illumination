@@ -48,6 +48,8 @@ Chunk collision scans/construction use two bounded workers, prioritized near the
 
 `VoxelGiStats` separates first-sample `interactive_coverage`, eight-sample `bootstrap_coverage`, mean history, oldest measured-sample age, and refresh progress. None is a certified convergence/error bound. Check per-surface age and source revision when freshness matters to gameplay. The temporary display fallback for an unmeasured face is never returned as a simulation measurement.
 
+Newly exposed faces prefer measured, same-facing neighbors for their indirect display prior. If none exist, they borrow from measured surfaces bordering the same air cell or a face-adjacent known-empty cell. This lets the sides as well as the bottom of a freshly dug cavity inherit the old surface's indirect lighting. It is an approximate, low-confidence presentation prior; it cannot cross solid/unknown cells, propagate synthetic samples, or rotate direct-sun values between face orientations. Donor age reduces weight continuously instead of abruptly rejecting settled faces after two seconds.
+
 ## Change-driven scheduling and NAADF additions
 
 Direct sunlight and GI use the **same voxel ray-traversal geometry**, but have different sampling/update policies. Cached direct sun is deterministic visibility at shared corners; diffuse environment light and bounces are stochastic multi-band path transport. Bevy's per-pixel sunlight comparison mode still uses its own raster shadowing. F7 changes presentation, not the transport model.

@@ -15,10 +15,11 @@ pub(crate) struct FaceDisplay {
     pub confidence: f32,
 }
 
-/// Use only immediately adjacent, equally oriented old faces whose exterior
-/// air cells remain connected in the NEW scene. A one-axis segment between
-/// these face centers crosses only these two air cells, so this exact local
-/// visibility test cannot tunnel through a wall or an unloaded region.
+/// Prefer equally oriented neighbors. When digging exposes an entirely new
+/// orientation, fall back to measured faces bordering the same local air
+/// pocket. This is a low-confidence display prior, never transport evidence.
+/// Every connection crosses at most two face-adjacent, known-empty cells in
+/// the NEW scene; neither thin walls nor unloaded regions may be crossed.
 pub(crate) fn seed_face<'a>(
     scene: &TransportScene,
     voxel: IVec3,
@@ -39,20 +40,12 @@ pub(crate) fn seed_face<'a>(
         let Some(donor) = lookup(donor_voxel) else {
             continue;
         };
-        if donor.face_mask & (1 << face) == 0
-            || donor.samples[face] == 0
-            || donor.source_revision != source_revision
-            || donor.face_updated_at[face]
-                .or(donor.updated_at)
-                .is_none_or(|updated| {
-                    now.saturating_duration_since(updated) > Duration::from_secs(2)
-                })
-            || scene.material_at(donor_voxel + normal) != Some(AIR)
-        {
+        if scene.material_at(donor_voxel + normal) != Some(AIR) {
             continue;
         }
-        let display = donor.display[face];
-        let w = display.confidence;
+        let Some((display, w)) = measured_display(donor, face, source_revision, now) else {
+            continue;
+        };
         indirect += display.indirect * w;
         // Direct visibility may be reused only at the SAME geometric corner.
         // Face-center averaging would erase sub-voxel contact shadows.
@@ -69,6 +62,30 @@ pub(crate) fn seed_face<'a>(
         weight += w;
     }
     if weight == 0.0 {
+        let air = voxel + normal;
+        for offset in std::iter::once(IVec3::ZERO).chain(FACE_OFFSETS) {
+            let donor_air = air + offset;
+            if scene.material_at(donor_air) != Some(AIR) {
+                continue;
+            }
+            for (donor_face, donor_normal) in FACE_OFFSETS.into_iter().enumerate() {
+                let Some(donor) = lookup(donor_air - donor_normal) else {
+                    continue;
+                };
+                let Some((display, w)) = measured_display(donor, donor_face, source_revision, now)
+                else {
+                    continue;
+                };
+                // A face beside the receiver gets precedence over one across
+                // the next air cell. Never rotate/reuse direct-sun visibility:
+                // that is directional, unlike this approximate diffuse prior.
+                let w = w * if offset == IVec3::ZERO { 1.0 } else { 0.5 };
+                indirect += display.indirect * w;
+                weight += w;
+            }
+        }
+    }
+    if weight == 0.0 {
         return FaceDisplay::default();
     }
     FaceDisplay {
@@ -76,6 +93,28 @@ pub(crate) fn seed_face<'a>(
         sky,
         confidence: 0.125,
     }
+}
+
+fn measured_display(
+    donor: &SurfaceProbe,
+    face: usize,
+    source_revision: u64,
+    now: Instant,
+) -> Option<(FaceDisplay, f32)> {
+    if donor.face_mask & (1 << face) == 0
+        || donor.samples[face] == 0
+        || donor.source_revision != source_revision
+    {
+        return None;
+    }
+    let updated = donor.face_updated_at[face].or(donor.updated_at)?;
+    let age = now.saturating_duration_since(updated).as_secs_f32();
+    let display = donor.display[face];
+    // Settled faces are intentionally audited sparsely. An arbitrary two-second
+    // cutoff made an otherwise valid donor disappear between audit batches.
+    // Age reduces preference continuously instead of producing black holes.
+    let weight = display.confidence / (1.0 + age / 2.0);
+    (weight > 0.0).then_some((display, weight))
 }
 
 /// A per-band heuristic for adaptive work allocation. This is NOT a confidence
@@ -242,10 +281,9 @@ mod tests {
         assert_eq!(seed(&donor, &scene).confidence, 0.0);
         donor.source_revision = 0;
         donor.updated_at = Some(now - Duration::from_secs(3));
-        assert_eq!(
-            seed(&donor, &scene).confidence,
-            0.0,
-            "old measurements cannot seed a new face"
+        assert!(
+            seed(&donor, &scene).confidence > 0.0,
+            "a settled donor cannot disappear just because its audit is due"
         );
         assert_eq!(
             seed(&donor, &TransportScene::default()).confidence,
@@ -307,6 +345,56 @@ mod tests {
             [0, 1, 0, 1],
             "shared shadows stay black, other corners stay unknown"
         );
+    }
+
+    #[test]
+    fn digging_seeds_every_cavity_orientation_from_the_removed_surface() {
+        let now = Instant::now();
+        let removed = IVec3::splat(8);
+        // The deleted floor block had only a measured top. The new bottom and
+        // four side faces should all receive a prior, not just the new bottom.
+        let donor = measured(removed, 2.0, now);
+        let solids: Vec<_> = FACE_OFFSETS
+            .into_iter()
+            .filter(|normal| *normal != IVec3::NEG_Y)
+            .map(|normal| removed - normal)
+            .collect();
+        let scene = scene_with(&solids);
+        for (face, normal) in FACE_OFFSETS.into_iter().enumerate() {
+            if normal == IVec3::NEG_Y {
+                continue;
+            }
+            let seed = seed_face(&scene, removed - normal, face, 0, now, |v| {
+                (v == removed).then_some(&donor)
+            });
+            assert_eq!(seed.indirect, Vec3::splat(2.0), "face {face}");
+            assert_eq!(seed.confidence, 0.125);
+            assert_eq!(seed.sky, [0; 4], "no invented sky in the cavity");
+        }
+    }
+
+    #[test]
+    fn air_pocket_fallback_rejects_blocked_and_synthetic_donors() {
+        let now = Instant::now();
+        let voxel = IVec3::splat(8);
+        let donor_voxel = voxel + IVec3::Y + IVec3::X;
+        let mut donor = measured(donor_voxel, 5.0, now);
+        let scene = scene_with(&[voxel, donor_voxel]);
+        let seed = |donor: &SurfaceProbe, scene: &TransportScene| {
+            seed_face(scene, voxel, 0, 0, now, |v| {
+                (v == donor_voxel).then_some(donor)
+            })
+        };
+        // The donor's +Y air is diagonally separated, outside the bounded pocket.
+        assert_eq!(seed(&donor, &scene).confidence, 0.0);
+        donor.face_mask = 8;
+        donor.samples[3] = donor.samples[2];
+        donor.display[3] = donor.display[2];
+        assert!(seed(&donor, &scene).confidence > 0.0);
+        let blocked = scene_with(&[voxel, donor_voxel, voxel + IVec3::X]);
+        assert_eq!(seed(&donor, &blocked).confidence, 0.0);
+        donor.samples[3] = 0;
+        assert_eq!(seed(&donor, &scene).confidence, 0.0);
     }
 
     #[test]
