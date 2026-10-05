@@ -93,6 +93,8 @@ fn ensure_chunk_colliders(
         ),
     >,
 ) {
+    let started = std::time::Instant::now();
+    let mut built = 0;
     for (entity, chunk) in &chunk_meshes {
         if chunk.lod_level != 0 {
             mark_chunk_collider_ready(&mut commands, entity);
@@ -134,6 +136,7 @@ fn ensure_chunk_colliders(
             }
 
             let collider = Collider::voxels(Vec3::splat(CHUNK_COLLIDER_VOXEL_SIZE), &voxel_coords);
+            built += 1;
             chunk_collider_cache.insert(voxels_hash, collider.clone());
             collider
         };
@@ -141,6 +144,13 @@ fn ensure_chunk_colliders(
         commands
             .entity(entity)
             .insert((RigidBody::Static, collider, ChunkColliderReady));
+    }
+    if started.elapsed().as_millis() >= 4 && std::env::var_os("VOXEL_GI_VALIDATE").is_some() {
+        info!(
+            built,
+            main_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "chunk collider publication"
+        );
     }
 }
 

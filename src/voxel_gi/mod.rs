@@ -519,6 +519,7 @@ fn apply_scene_task(
         return;
     };
     runtime.scene_task = None;
+    let publish_started = Instant::now();
     if !result.changed {
         stats.loaded_pages = runtime.loaded_pages.len();
         stats.last_scene_build_ms = result.build_time.as_secs_f32() * 1000.0;
@@ -688,6 +689,7 @@ fn apply_scene_task(
             coverage_percent = format_args!("{:.1}", stats.interactive_coverage * 100.0),
             bootstrap_percent = format_args!("{:.1}", stats.bootstrap_coverage * 100.0),
             build_ms = format_args!("{:.1}", stats.last_scene_build_ms),
+            publish_ms = format_args!("{:.1}", publish_started.elapsed().as_secs_f64() * 1000.0),
             "incremental world-space voxel transport scene rebuilt"
         );
     }

@@ -72,8 +72,9 @@ pub(super) fn run_validation(
     field: Res<VoxelEnergyField>,
     mut dirty: ResMut<VoxelGiDirty>,
     mut world: VoxelWorld<PrototypeWorld>,
-    mut player: Single<&mut Transform, With<Player>>,
+    mut player_state: Single<(&mut Transform, &mut bevy_ahoy::CharacterLook), With<Player>>,
     mut lights: Query<&mut Transform, Without<Player>>,
+    cameras: Query<Entity, With<Camera3d>>,
     mut commands: Commands,
     handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
     mut materials: ResMut<Assets<VoxelTransportMaterial>>,
@@ -170,6 +171,21 @@ pub(super) fn run_validation(
     }
     let elapsed = run.started.unwrap().elapsed().as_secs_f32();
     let profile = run.profile;
+    let (ref mut player, ref mut look) = *player_state;
+    if profile == Profile::Streaming && elapsed >= 15.0 {
+        // Reproduce turning into unseen terrain, then moving at walking speed.
+        // Scripted translation isolates streaming; this is not a KCC motion test.
+        look.yaw = std::f32::consts::PI;
+        for camera in &cameras {
+            if let Ok(mut transform) = lights.get_mut(camera) {
+                transform.rotation = Quat::from_rotation_y(std::f32::consts::PI);
+            }
+        }
+        if elapsed < 30.0 {
+            player.translation.z += 4.32 * time.delta_secs();
+            run.moves += 1;
+        }
+    }
     if elapsed < 1.0 {
         run.center = player.translation;
     }
@@ -306,7 +322,7 @@ pub(super) fn run_validation(
         }
         run.edit_attempts += 1;
     }
-    if profile != Profile::Compare
+    if !matches!(profile, Profile::Compare | Profile::Streaming)
         && (45.0..65.0).contains(&elapsed)
         && ((elapsed - 45.0) / 4.0) as u32 >= run.moves
     {
