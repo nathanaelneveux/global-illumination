@@ -10,7 +10,7 @@ use crate::assets::{PrototypeConfig, TemplateAssets};
 use crate::terrain_meshing::build_chunk_mesh;
 use crate::terrain_noise::{BEDROCK_FLOOR_Y, MAX_SURFACE_Y, TerrainColumn, TerrainNoise};
 use crate::voxel_gi::{
-    VoxelGiDirty,
+    EnergySpectrum, MaterialTransport, VoxelGiDirty, VoxelMaterialTransportTable,
     render::{VoxelTransportAssets, material_template},
 };
 
@@ -23,6 +23,7 @@ pub enum TerrainMaterial {
     Brick = 1,
     SnowBrick = 2,
     Snow = 3,
+    Emissive = 4,
 }
 
 impl TerrainMaterial {
@@ -40,6 +41,7 @@ impl TerrainMaterial {
             1 => Some(Self::Brick),
             2 => Some(Self::SnowBrick),
             3 => Some(Self::Snow),
+            4 => Some(Self::Emissive),
             _ => None,
         }
     }
@@ -54,7 +56,7 @@ impl TerrainMaterial {
             Self::Grass => [GRASS_TEXTURE, GRASS_TEXTURE, GRASS_TEXTURE],
             Self::Brick => [BRICK_TEXTURE, BRICK_TEXTURE, BRICK_TEXTURE],
             Self::SnowBrick => [SNOW_TEXTURE, SNOW_BRICK_TEXTURE, BRICK_TEXTURE],
-            Self::Snow => [SNOW_TEXTURE, SNOW_TEXTURE, SNOW_TEXTURE],
+            Self::Snow | Self::Emissive => [SNOW_TEXTURE, SNOW_TEXTURE, SNOW_TEXTURE],
         }
     }
 }
@@ -68,12 +70,27 @@ pub struct TerrainPlugin;
 
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
+        // Register once, not on every placement: editing a lamp uses ordinary
+        // geometry invalidation instead of changing the global material table.
+        app.world_mut()
+            .resource_mut::<VoxelMaterialTransportTable>()
+            .set(
+                TerrainMaterial::Emissive.index(),
+                emissive_block_transport(),
+            );
         let transport_assets = app.world().resource::<VoxelTransportAssets>().clone();
         app.add_plugins(
             VoxelWorldPlugin::with_config(PrototypeWorld::default())
                 .with_material(material_template(&transport_assets)),
         )
         .add_systems(Update, apply_live_prototype_config);
+    }
+}
+
+fn emissive_block_transport() -> MaterialTransport {
+    MaterialTransport {
+        diffuse: EnergySpectrum::new(Vec3::splat(0.8), 0.35, 0.04),
+        emission: EnergySpectrum::new(Vec3::new(12.0, 5.0, 1.0), 4.0, 0.0),
     }
 }
 
@@ -323,4 +340,30 @@ fn apply_live_prototype_config(
         ambient_occlusion = config.ambient_occlusion,
         "applied prototype config"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editing_lamp_uses_existing_texture_and_a_dedicated_emitting_material() {
+        let material = TerrainMaterial::Emissive;
+        assert_eq!(
+            TerrainMaterial::from_index(material.index()),
+            Some(material)
+        );
+        assert_eq!(material.voxel(), WorldVoxel::Solid(4));
+        assert_eq!(TerrainMaterial::texture_indices(material.index()), [0; 3]);
+        let mut table = VoxelMaterialTransportTable::default();
+        table.set(material.index(), emissive_block_transport());
+        let emission = table.get(material.index()).emission;
+        assert!(emission.visible.min_element() > 0.0);
+        assert!(emission.infrared > 0.0);
+        assert_eq!(emission.ionizing, 0.0);
+        assert_eq!(
+            table.get(TerrainMaterial::Grass.index()).emission,
+            EnergySpectrum::ZERO
+        );
+    }
 }

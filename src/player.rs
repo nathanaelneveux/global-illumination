@@ -35,7 +35,12 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_input_context::<PlayerInput>()
+            .add_message::<PlaceEmissiveBlock>()
             .add_systems(Startup, spawn_player)
+            .add_systems(
+                PreUpdate,
+                sync_player_input.before(EnhancedInputSystems::Prepare),
+            )
             .add_systems(
                 FixedPostUpdate,
                 (update_player_movement_speed, filter_held_jump)
@@ -71,6 +76,14 @@ struct BreakVoxel;
 #[derive(InputAction)]
 #[action_output(bool)]
 struct PlaceVoxel;
+
+#[derive(InputAction)]
+#[action_output(bool)]
+struct PlaceEmissiveVoxel;
+
+/// The HUD queues the same placement operation as the keyboard shortcut.
+#[derive(Message)]
+pub(crate) struct PlaceEmissiveBlock;
 
 fn spawn_player(mut commands: Commands, world: Res<PrototypeWorld>) {
     let player = commands
@@ -120,6 +133,10 @@ fn spawn_player(mut commands: Commands, world: Res<PrototypeWorld>) {
                 (
                     Action::<PlaceVoxel>::new(),
                     bindings![MouseButton::Right, GamepadButton::East],
+                ),
+                (
+                    Action::<PlaceEmissiveVoxel>::new(),
+                    bindings![KeyCode::KeyE],
                 ),
                 (
                     Action::<RotateCamera>::new(),
@@ -254,15 +271,27 @@ fn reset_player_to_world_spawn(
 fn edit_voxels(
     break_events: Single<&ActionEvents, With<Action<BreakVoxel>>>,
     place_events: Single<&ActionEvents, With<Action<PlaceVoxel>>>,
+    emissive_events: Single<&ActionEvents, With<Action<PlaceEmissiveVoxel>>>,
+    mut hud_requests: MessageReader<PlaceEmissiveBlock>,
     cursor_options: Single<&CursorOptions, With<PrimaryWindow>>,
     camera: Single<&GlobalTransform, (With<PlayerCamera>, Without<Player>)>,
     mut voxel_world: VoxelWorld<PrototypeWorld>,
     mut voxel_gi_dirty: ResMut<VoxelGiDirty>,
 ) {
-    let breaking = break_events.contains(ActionEvents::START);
-    let placing = place_events.contains(ActionEvents::START);
+    let hud_requested = hud_requests.read().count() > 0;
+    #[cfg(debug_assertions)]
+    if std::env::var_os("VOXEL_GI_VALIDATE").is_some() {
+        return;
+    }
+    let breaking = !cursor_options.visible && break_events.contains(ActionEvents::START);
+    let material = placement_material(
+        cursor_options.visible,
+        place_events.contains(ActionEvents::START),
+        emissive_events.contains(ActionEvents::START),
+        hud_requested,
+    );
 
-    if cursor_options.visible || (!breaking && !placing) {
+    if !breaking && material.is_none() {
         return;
     }
 
@@ -278,7 +307,7 @@ fn edit_voxels(
         voxel_gi_dirty.mark_voxel(edited_position);
     }
 
-    if placing {
+    if let Some(material) = material {
         let Some(normal) = hit.normal else {
             return;
         };
@@ -288,8 +317,105 @@ fn edit_voxels(
             voxel_world.get_voxel(placement_position),
             WorldVoxel::Air | WorldVoxel::Unset
         ) {
-            voxel_world.set_voxel(placement_position, TerrainMaterial::Grass.voxel());
+            voxel_world.set_voxel(placement_position, material.voxel());
             voxel_gi_dirty.mark_voxel(placement_position);
         }
+    }
+}
+
+fn placement_material(
+    cursor_visible: bool,
+    ordinary: bool,
+    emissive: bool,
+    hud: bool,
+) -> Option<TerrainMaterial> {
+    if hud || (!cursor_visible && emissive) {
+        Some(TerrainMaterial::Emissive)
+    } else if !cursor_visible && ordinary {
+        Some(TerrainMaterial::Grass)
+    } else {
+        None
+    }
+}
+
+// Preserve the aimed-at face while the cursor travels to the HUD button. The
+// app/inspector context remains active so Esc can still recapture the cursor.
+fn sync_player_input(
+    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
+    contexts: Query<(Entity, &ContextActivity<PlayerInput>)>,
+    mut commands: Commands,
+) {
+    let active = !cursor.visible
+        && !(cfg!(debug_assertions) && std::env::var_os("VOXEL_GI_VALIDATE").is_some());
+    for (entity, activity) in &contexts {
+        if **activity != active {
+            commands
+                .entity(entity)
+                .insert(ContextActivity::<PlayerInput>::new(active));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emitting_shortcut_and_hud_share_placement_without_replacing_normal_blocks() {
+        assert_eq!(
+            placement_material(false, false, true, false),
+            Some(TerrainMaterial::Emissive)
+        );
+        assert_eq!(
+            placement_material(true, false, false, true),
+            Some(TerrainMaterial::Emissive)
+        );
+        assert_eq!(
+            placement_material(false, true, false, false),
+            Some(TerrainMaterial::Grass)
+        );
+        assert_eq!(placement_material(true, true, true, false), None);
+        assert_eq!(
+            placement_material(false, true, true, false),
+            Some(TerrainMaterial::Emissive)
+        );
+    }
+
+    #[test]
+    fn hud_cursor_pauses_player_input_and_esc_can_resume_it() {
+        let mut app = App::new();
+        app.add_systems(Update, sync_player_input);
+        let window = app
+            .world_mut()
+            .spawn((
+                PrimaryWindow,
+                CursorOptions {
+                    visible: true,
+                    ..default()
+                },
+            ))
+            .id();
+        let player = app
+            .world_mut()
+            .spawn(ContextActivity::<PlayerInput>::ACTIVE)
+            .id();
+        app.update();
+        assert!(
+            !**app
+                .world()
+                .get::<ContextActivity<PlayerInput>>(player)
+                .unwrap()
+        );
+        app.world_mut()
+            .get_mut::<CursorOptions>(window)
+            .unwrap()
+            .visible = false;
+        app.update();
+        assert!(
+            **app
+                .world()
+                .get::<ContextActivity<PlayerInput>>(player)
+                .unwrap()
+        );
     }
 }

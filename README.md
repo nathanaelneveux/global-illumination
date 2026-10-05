@@ -88,7 +88,9 @@ The implemented renderer is diffuse GI for opaque axis-aligned voxels, with Bevy
 
 Normal `cargo run` now starts with **shared-corner direct sunlight and corner-blended indirect GI**, terrain textures enabled, irradiance debug disabled, and mesh ambient occlusion disabled. Corners mean naive unit-voxel face corners, not greedy-mesh vertices. Indirect transport itself still samples faces; only its display is reconstructed at corners. F7 remains the per-pixel sunlight comparison. GPU/adaptive transport, the 4 ms trace target, 75 ms indirect display response, and all-loaded-world coverage are unchanged; the rejected CPU throttle is not enabled.
 
-A passive top-right HUD shows smoothed **FPS**, **Coverage** (exposed faces with at least one sample), and **Bootstrap** (progress toward eight samples per exposed face), using the existing all-loaded-world counters. Numbers refresh four times per second without extra rays or world scans. Neither percentage is convergence. Empty worlds show dashes until probes exist. Recurring terminal FPS/GI/rebuild stats are quiet during normal play; use `RUST_LOG=info VOXEL_GI_LOG_STATS=1 cargo run` to restore them. Warnings/errors remain enabled. Scripted validation retains terminal diagnostics and hides the HUD to preserve clean captures and blank-frame detection.
+A top-right HUD shows smoothed **FPS**, **Coverage** (exposed faces with at least one sample), and **Bootstrap** (progress toward eight samples per exposed face), using the existing all-loaded-world counters. Numbers refresh four times per second without extra rays or world scans. Neither percentage is convergence. Empty worlds show dashes until probes exist. Recurring terminal FPS/GI/rebuild stats are quiet during normal play; use `RUST_LOG=info VOXEL_GI_LOG_STATS=1 cargo run` to restore them. Warnings/errors remain enabled. Scripted validation retains terminal diagnostics and hides the HUD to preserve clean captures and blank-frame detection.
+
+The HUD's **Add emitting block (E)** button places a warm emissive voxel against the face at the center of the camera view. Press **E** directly while playing, or aim, press **Esc** to release the cursor, then click the button; player movement/look pauses while using the unlocked cursor. Placement uses the same empty-adjacent-cell and GI invalidation path as right-click. These are real emissive voxels (material 4, warm RGB plus infrared, no ionizing emission), not spawned point lights. Left-click removes them normally; right-click still places grass. The four-layer texture atlas is unchanged.
 
 ### Correctness checks
 
@@ -192,6 +194,7 @@ From here, commit each coherent, verified change separately and checkpoint befor
 - Mouse: look
 - Left click: remove a voxel and invalidate its transport page
 - Right click: place a voxel and invalidate its transport page
+- `E` / HUD **Add emitting block**: place an emissive voxel against the aimed-at face
 - `F4`: toggle voxel GI for A/B comparison
 - `F5`: toggle flat per-voxel faces / blended virtual voxel corners
 - `F6`: isolate cached irradiance from terrain textures and ordinary PBR lighting

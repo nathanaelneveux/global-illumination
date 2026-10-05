@@ -1,9 +1,11 @@
-//! Passive HUD: reuse the existing counters; never scan or sample the world.
+//! HUD counters reuse existing stats; editing is queued through the player path.
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::*;
+use bevy::window::{CursorOptions, PrimaryWindow};
 use bevy_inspector_egui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 use super::VoxelGiStats;
+use crate::player::PlaceEmissiveBlock;
 
 pub(super) fn install(app: &mut App) {
     if terminal_stats_enabled() {
@@ -41,6 +43,8 @@ fn draw_hud(
     stats: Res<VoxelGiStats>,
     time: Res<Time<Real>>,
     mut state: Local<HudState>,
+    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
+    mut place_emissive: MessageWriter<PlaceEmissiveBlock>,
 ) {
     if !state.visible {
         return;
@@ -57,7 +61,7 @@ fn draw_hud(
     }
     egui::Area::new("voxel_gi_hud".into())
         .anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0])
-        .interactable(false)
+        .interactable(cursor.visible)
         .show(context, |ui| {
             egui::Frame::NONE
                 .fill(egui::Color32::from_black_alpha(185))
@@ -70,6 +74,11 @@ fn draw_hud(
                             .size(16.0)
                             .color(egui::Color32::WHITE),
                     );
+                    if ui.button("Add emitting block (E)")
+                        .on_hover_text("Place a warm emitting voxel against the aimed-at face. E works while playing; Esc releases the cursor for this button.")
+                        .clicked() {
+                        place_emissive.write(PlaceEmissiveBlock);
+                    }
                 });
         });
 }
