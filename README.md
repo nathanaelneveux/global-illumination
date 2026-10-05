@@ -42,6 +42,10 @@ world-voxel GPU hash -> virtual corners -> custom BVW PBR material
 
 Coverage is defined by BVW's streamed chunk set, not a camera-following light volume. Newly loaded pages enter the same scene and despawned pages leave it. All loaded exposed surfaces receive background updates, including offscreen terrain; nearby surfaces receive more frequent updates. A bounded work budget necessarily means distant estimates can be older, particularly during streaming.
 
+Streaming publication is staged by spatial page, nearest-first, rather than merging a whole turn-around's newly visible terrain in one frame. The probe index holds stable heap allocations so index growth does not relocate the large ambient cubes. Geometry/NAADF work and GPU encoding/mirror construction run on workers; snapshot packing is incremental (at most 8,192 probes or approximately 1.5 ms per tick). GPU allocations reserve geometric headroom, and live updates use a separate catch-up ledger while a replacement builds. ECS publication and GPU allocation/upload still have nonzero costs; this is not a hard real-time guarantee. Edit builds can overtake a streaming publication without dropping unrelated pending pages. Simulation estimates return `None` for receiver pages awaiting publication instead of reporting old topology as current.
+
+Chunk collision scans/construction use two bounded workers, prioritized near the player. Results are checked against current entity, LOD and voxel hash before installation; old collision remains until its replacement is ready. Physics component publication is capped at two chunks per frame.
+
 `VoxelGiStats` separates first-sample `interactive_coverage`, eight-sample `bootstrap_coverage`, mean history, oldest measured-sample age, and refresh progress. None is a certified convergence/error bound. Check per-surface age and source revision when freshness matters to gameplay. The temporary display fallback for an unmeasured face is never returned as a simulation measurement.
 
 ## Change-driven scheduling and NAADF additions

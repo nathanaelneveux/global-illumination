@@ -277,6 +277,7 @@ pub fn material_template(assets: &VoxelTransportAssets) -> VoxelTransportMateria
 }
 
 pub(crate) struct GpuCacheBuild {
+    patch_state: ProbePatchState,
     hash_data: Vec<u8>,
     probe_data: Vec<u8>,
     slots: HashMap<IVec3, usize>,
@@ -286,21 +287,64 @@ pub(crate) struct GpuCacheBuild {
     high_water: usize,
 }
 
+/// Snapshot packing has a bounded game-thread cost. The key list is stable even
+/// if live order indices are compacted by removals; the caller records deltas
+/// from construction until installation to catch up both topology and values.
+pub(crate) struct GpuSnapshot {
+    order: Vec<IVec3>,
+    cursor: usize,
+    probes: Vec<(IVec3, GpuProbe)>,
+}
+
+impl GpuSnapshot {
+    pub fn new(order: &[IVec3]) -> Self {
+        Self {
+            order: order.to_vec(),
+            cursor: 0,
+            probes: Vec::with_capacity(order.len()),
+        }
+    }
+    pub fn advance(&mut self, probes: &impl super::field::ProbeLookup) -> bool {
+        let started = std::time::Instant::now();
+        let end = (self.cursor + 8192).min(self.order.len());
+        while self.cursor < end {
+            let voxel = self.order[self.cursor];
+            if let Some(probe) = probes.lookup(&voxel) {
+                self.probes.push((voxel, gpu_probe(probe)));
+            }
+            self.cursor += 1;
+            if self.cursor.is_multiple_of(128) && started.elapsed().as_micros() >= 1500 {
+                break;
+            }
+        }
+        self.cursor == self.order.len()
+    }
+    pub fn finish(self) -> Vec<(IVec3, GpuProbe)> {
+        self.probes
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn snapshot_gpu_probes(
-    probes: &HashMap<IVec3, SurfaceProbe>,
+    probes: &impl super::field::ProbeLookup,
     order: &[IVec3],
 ) -> Vec<(IVec3, GpuProbe)> {
     order
         .iter()
-        .map(|voxel| (*voxel, gpu_probe(&probes[voxel])))
+        .filter_map(|voxel| probes.lookup(voxel).map(|probe| (*voxel, gpu_probe(probe))))
         .collect()
 }
 
 /// CPU encoding is deliberately run in an async task. `ShaderBuffer::set_data`
 /// on 250k probes was responsible for multi-frame stalls in ordinary builds.
 pub(crate) fn build_gpu_cache(snapshot: Vec<(IVec3, GpuProbe)>) -> GpuCacheBuild {
-    let probe_capacity = snapshot.len().saturating_add(16_384).max(1);
-    let mut hash_capacity = snapshot.len().saturating_mul(2).next_power_of_two().max(1);
+    // Geometric headroom avoids rebuilding the entire cache every 16k streamed
+    // receivers. Keep hash occupancy <= 50% even after using that headroom.
+    let probe_capacity = snapshot
+        .len()
+        .saturating_add((snapshot.len() / 2).max(16_384))
+        .max(1);
+    let mut hash_capacity = probe_capacity.saturating_mul(2).next_power_of_two().max(1);
     loop {
         let mut entries = vec![GpuHashEntry::EMPTY; hash_capacity];
         let mut slots = HashMap::with_capacity(snapshot.len());
@@ -332,6 +376,11 @@ pub(crate) fn build_gpu_cache(snapshot: Vec<(IVec3, GpuProbe)>) -> GpuCacheBuild
         let hash_data = ShaderBuffer::from(entries.clone()).data.unwrap();
         let probe_data = ShaderBuffer::from(gpu_probes).data.unwrap();
         return GpuCacheBuild {
+            patch_state: ProbePatchState {
+                probe_mirror: probe_data.clone(),
+                hash_mirror: hash_data.clone(),
+                ..default()
+            },
             hash_data,
             probe_data,
             slots,
@@ -352,11 +401,6 @@ pub(crate) fn install_gpu_cache(
     materials: &mut Assets<VoxelTransportMaterial>,
     material_handle: &Handle<VoxelTransportMaterial>,
 ) {
-    let state = ProbePatchState {
-        probe_mirror: build.probe_data.clone(),
-        hash_mirror: build.hash_data.clone(),
-        ..default()
-    };
     // Fresh asset identities also handle equal-size rebuilds: a size check alone
     // cannot tell that hash indices have been reassigned. Old handles stay alive
     // for as long as the extracted frame/material needs them.
@@ -379,7 +423,7 @@ pub(crate) fn install_gpu_cache(
     *patches = GpuProbePatchQueue {
         probe_buffer: assets.probes.clone(),
         hash_buffer: assets.hash_entries.clone(),
-        state: Arc::new(Mutex::new(state)),
+        state: Arc::new(Mutex::new(build.patch_state)),
     };
     cache.slots = build.slots;
     cache.hash_slots = build.hash_slots;
@@ -401,7 +445,7 @@ pub(crate) fn install_gpu_cache(
 pub(crate) fn patch_gpu_topology(
     cache: &mut GpuTransportCache,
     patches: &GpuProbePatchQueue,
-    probes: &HashMap<IVec3, SurfaceProbe>,
+    probes: &impl super::field::ProbeLookup,
     removed: &[IVec3],
     added: &[IVec3],
     materials: &mut Assets<VoxelTransportMaterial>,
@@ -438,7 +482,7 @@ pub(crate) fn patch_gpu_topology(
         {
             continue;
         }
-        let Some(probe) = probes.get(&voxel) else {
+        let Some(probe) = probes.lookup(&voxel) else {
             continue;
         };
         let probe_slot = if let Some(&slot) = free.next() {
@@ -512,12 +556,12 @@ pub(crate) fn patch_gpu_topology(
 pub(crate) fn patch_probe_values(
     cache: &GpuTransportCache,
     patches: &GpuProbePatchQueue,
-    probes: &HashMap<IVec3, SurfaceProbe>,
+    probes: &impl super::field::ProbeLookup,
     dirty_voxels: &HashSet<IVec3>,
 ) {
     let mut state = patches.state.lock().unwrap();
     for voxel in dirty_voxels {
-        let (Some(slot), Some(probe)) = (cache.slots.get(voxel), probes.get(voxel)) else {
+        let (Some(slot), Some(probe)) = (cache.slots.get(voxel), probes.lookup(voxel)) else {
             continue;
         };
         let gpu_probe = gpu_probe(probe);
@@ -904,6 +948,30 @@ mod tests {
     }
 
     #[test]
+    fn incremental_snapshot_uses_stable_keys_across_live_order_compaction() {
+        let mut probes: HashMap<_, _> = (0..9000)
+            .map(|x| {
+                let voxel = IVec3::new(x, 0, 0);
+                (voxel, SurfaceProbe::new(voxel, 4))
+            })
+            .collect();
+        let mut order: Vec<_> = (0..9000).map(|x| IVec3::new(x, 0, 0)).collect();
+        let mut snapshot = GpuSnapshot::new(&order);
+        assert!(!snapshot.advance(&probes), "snapshot work is bounded");
+        let removed = order.swap_remove(8999);
+        probes.remove(&removed);
+        order.swap(0, 8000);
+        while !snapshot.advance(&probes) {}
+        let result = snapshot.finish();
+        assert_eq!(result.len(), 8999);
+        assert!(!result.iter().any(|(voxel, _)| *voxel == removed));
+        assert_eq!(
+            result.iter().map(|(v, _)| *v).collect::<HashSet<_>>().len(),
+            8999
+        );
+    }
+
+    #[test]
     fn topology_patch_reuses_probe_slot_and_keeps_hash_chain_searchable() {
         let voxel_a = IVec3::new(0, 0, 0);
         let bucket = hash_voxel(voxel_a) & 3;
@@ -1208,7 +1276,7 @@ mod tests {
         assert!(
             world
                 .resource::<VoxelGiRuntime>()
-                .gpu_value_dirty
+                .gpu_catchup_dirty
                 .contains(&voxel),
             "updating the old generation must retain the replacement's catch-up ledger"
         );

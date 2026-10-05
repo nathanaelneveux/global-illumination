@@ -38,9 +38,9 @@ pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 use crate::player::Player;
 use crate::terrain::PrototypeWorld;
 use render::{
-    GpuCacheBuild, GpuProbePatchQueue, GpuTransportCache, VoxelTransportAssets,
+    GpuCacheBuild, GpuProbePatchQueue, GpuSnapshot, GpuTransportCache, VoxelTransportAssets,
     VoxelTransportMaterial, build_gpu_cache, install_gpu_cache, install_render_assets,
-    patch_gpu_topology, patch_probe_values, set_enabled, snapshot_gpu_probes,
+    patch_gpu_topology, patch_probe_values, set_enabled,
 };
 use tracer::{
     BOOTSTRAP_SAMPLES, DirectionalTransportLight, PointTransportLight, TransportSources,
@@ -210,6 +210,7 @@ struct VoxelGiRuntime {
     covered_faces: u64,
     completed_samples: u64,
     scene_task: Option<Task<SceneBuildResult>>,
+    scene_publication: Option<SceneBuildResult>,
     trace_task: Option<Task<TraceBatchResult>>,
     gpu_tracer: Option<gpu::GpuTracer>,
     emission_cache: Option<emission::EmissionCache>,
@@ -227,6 +228,8 @@ struct VoxelGiRuntime {
     gpu_added: Vec<IVec3>,
     gpu_removed: Vec<IVec3>,
     gpu_task: Option<Task<GpuCacheBuild>>,
+    gpu_snapshot: Option<GpuSnapshot>,
+    gpu_catchup_dirty: HashSet<IVec3>,
     gpu_task_version: u64,
     gpu_value_dirty: HashSet<IVec3>,
     sky_upload_pending: bool,
@@ -280,6 +283,7 @@ impl Default for VoxelGiRuntime {
             covered_faces: 0,
             completed_samples: 0,
             scene_task: None,
+            scene_publication: None,
             trace_task: None,
             gpu_tracer: None,
             emission_cache: None,
@@ -297,6 +301,8 @@ impl Default for VoxelGiRuntime {
             gpu_added: Vec::new(),
             gpu_removed: Vec::new(),
             gpu_task: None,
+            gpu_snapshot: None,
+            gpu_catchup_dirty: HashSet::new(),
             gpu_task_version: 0,
             gpu_value_dirty: HashSet::new(),
             sky_upload_pending: false,
@@ -309,8 +315,7 @@ impl Default for VoxelGiRuntime {
 struct SceneBuildResult {
     scene: Arc<TransportScene>,
     changed: bool,
-    affected_pages: HashSet<IVec3>,
-    descriptors: Vec<SurfaceProbeDescriptor>,
+    pages: VecDeque<(IVec3, Vec<SurfaceProbeDescriptor>)>,
     exact_edits: Vec<IVec3>,
     broad_edits: Vec<IVec3>,
     build_time: Duration,
@@ -407,7 +412,11 @@ fn start_scene_task(
     let overdue = runtime
         .dirty_since
         .is_some_and(|start| start.elapsed() >= MAX_REBUILD_LATENCY);
-    if runtime.scene_task.is_some() || !pending || (!quiet && !overdue) {
+    if runtime.scene_task.is_some()
+        || (runtime.scene_publication.is_some() && !runtime.urgent_edit)
+        || !pending
+        || (!quiet && !overdue)
+    {
         return;
     }
 
@@ -478,11 +487,30 @@ fn start_scene_task(
         } else {
             Vec::new()
         };
+        // Publication units are spatial pages, prepared and prioritized on the
+        // worker. A turn can discover hundreds of thousands of receivers; never
+        // install that entire world-sized delta in a single game frame.
+        let mut by_page: HashMap<_, Vec<_>> = affected_pages
+            .into_iter()
+            .map(|page| (page, Vec::new()))
+            .collect();
+        for descriptor in descriptors {
+            by_page
+                .entry(page_of(descriptor.voxel))
+                .or_default()
+                .push(descriptor);
+        }
+        let mut pages: Vec<_> = by_page.into_iter().collect();
+        pages.sort_unstable_by_key(|(page, _)| {
+            (
+                !exact_edits.iter().any(|v| page_of(*v) == *page),
+                (page.as_i64vec3() - focus_page.as_i64vec3()).length_squared(),
+            )
+        });
         SceneBuildResult {
             scene,
             changed,
-            affected_pages,
-            descriptors,
+            pages: pages.into(),
             exact_edits,
             broad_edits,
             build_time: started.elapsed(),
@@ -512,29 +540,54 @@ fn apply_scene_task(
     mut field: ResMut<VoxelEnergyField>,
     mut stats: ResMut<VoxelGiStats>,
 ) {
-    let Some(task) = runtime.scene_task.as_mut() else {
-        return;
-    };
-    let Some(result) = block_on(poll_once(task)) else {
-        return;
-    };
-    runtime.scene_task = None;
     let publish_started = Instant::now();
-    if !result.changed {
-        stats.loaded_pages = runtime.loaded_pages.len();
-        stats.last_scene_build_ms = result.build_time.as_secs_f32() * 1000.0;
-        return;
+    if let Some(task) = runtime.scene_task.as_mut()
+        && let Some(mut result) = block_on(poll_once(task))
+    {
+        runtime.scene_task = None;
+        if !result.changed {
+            stats.loaded_pages = runtime.loaded_pages.len();
+            stats.last_scene_build_ms = result.build_time.as_secs_f32() * 1000.0;
+            return;
+        }
+        runtime.scene = result.scene.clone();
+        runtime.generation = runtime.generation.wrapping_add(1);
+        field.transport_revision = field.transport_revision.wrapping_add(1);
+        field
+            .publishing_pages
+            .extend(result.pages.iter().map(|(page, _)| *page));
+        // Editing may overtake a large streaming publication. Replace only the
+        // intersecting queued pages, prioritizing fresh edit geometry; unrelated
+        // loaded terrain remains queued and is never silently discarded.
+        if let Some(older) = runtime.scene_publication.take() {
+            let replaced: HashSet<_> = result.pages.iter().map(|(page, _)| *page).collect();
+            result.pages.extend(
+                older
+                    .pages
+                    .into_iter()
+                    .filter(|(page, _)| !replaced.contains(page)),
+            );
+        }
+        runtime.scene_publication = Some(result);
     }
-    runtime.scene = result.scene;
-    runtime.generation = runtime.generation.wrapping_add(1);
-    // A local-radius reset cannot certify indirect transport elsewhere. Wake
-    // every loaded face lazily, without a world scan or clearing its display.
-    field.transport_revision = field.transport_revision.wrapping_add(1);
+    let Some(mut result) = runtime.scene_publication.take() else {
+        return;
+    };
+    // Empty pages need no merge; skip them without spending a whole frame.
+    let (page, descriptors) = loop {
+        let Some((page, descriptors)) = result.pages.pop_front() else {
+            return;
+        };
+        if !descriptors.is_empty() || field.pages.contains_key(&page) || result.pages.is_empty() {
+            break (page, descriptors);
+        }
+        field.publishing_pages.remove(&page);
+    };
 
     let old_count = field.probes.len();
     let mut old_affected = HashMap::new();
-    for page in &result.affected_pages {
-        if let Some(voxels) = field.pages.remove(page) {
+    {
+        if let Some(voxels) = field.pages.remove(&page) {
             for voxel in voxels {
                 if let Some(probe) = field.probes.remove(&voxel) {
                     let (faces, samples, covered) = probe_metrics(&probe);
@@ -552,7 +605,7 @@ fn apply_scene_task(
     let now = Instant::now();
     let mut seeds = HashMap::new();
     if old_count > 0 {
-        for descriptor in &result.descriptors {
+        for descriptor in &descriptors {
             let old_mask = old_affected
                 .get(&descriptor.voxel)
                 .map_or(0, |probe| probe.face_mask);
@@ -582,7 +635,7 @@ fn apply_scene_task(
     }
     let mut invalidated = HashSet::new();
     let mut added = Vec::new();
-    for descriptor in result.descriptors {
+    for descriptor in descriptors {
         let mut probe = old_affected.remove(&descriptor.voxel).unwrap_or_else(|| {
             invalidated.insert(descriptor.voxel);
             added.push(descriptor.voxel);
@@ -643,7 +696,7 @@ fn apply_scene_task(
         urgent.extend(nearby.iter().copied());
         invalidated.extend(nearby);
     }
-    for page in result.broad_edits {
+    for page in result.broad_edits.drain(..) {
         let center = page * PAGE_EDGE as i32 + IVec3::splat(PAGE_EDGE as i32 / 2);
         invalidate_near_voxel(
             &mut runtime,
@@ -675,6 +728,8 @@ fn apply_scene_task(
     if old_count > 0 {
         request_global_refresh(&mut runtime, field.order.len());
     }
+    result.exact_edits.clear();
+    field.publishing_pages.remove(&page);
     update_stats_from_counters(&runtime, &field, &mut stats);
     stats.loaded_pages = runtime.loaded_pages.len();
     stats.naadf_regions = runtime.scene.regions.len();
@@ -692,6 +747,9 @@ fn apply_scene_task(
             publish_ms = format_args!("{:.1}", publish_started.elapsed().as_secs_f64() * 1000.0),
             "incremental world-space voxel transport scene rebuilt"
         );
+    }
+    if !result.pages.is_empty() {
+        runtime.scene_publication = Some(result);
     }
 }
 
@@ -1355,7 +1413,7 @@ fn update_stats_from_counters(
     } else {
         1.0 - runtime.refresh_remaining as f32 / runtime.refresh_total as f32
     };
-    stats.fully_bootstrapped = stats.bootstrap_coverage >= 1.0;
+    stats.fully_bootstrapped = stats.bootstrap_coverage >= 1.0 && field.publishing_pages.is_empty();
 }
 
 fn upload_transport_cache(
@@ -1378,6 +1436,8 @@ fn upload_transport_cache(
         && let Some(build) = block_on(poll_once(task))
     {
         runtime.gpu_task = None;
+        let catchup = std::mem::take(&mut runtime.gpu_catchup_dirty);
+        runtime.gpu_value_dirty.extend(catchup);
         // Install the snapshot even if streaming continued while it encoded;
         // the delta ledger below brings it current. Repeatedly discarding it
         // would prevent a fast-moving player from ever getting a cache.
@@ -1403,6 +1463,7 @@ fn upload_transport_cache(
     if runtime.gpu_topology_dirty
         && cache.ready
         && runtime.gpu_task.is_none()
+        && runtime.gpu_snapshot.is_none()
         && !runtime.gpu_rebuild_required
     {
         let added = std::mem::take(&mut runtime.gpu_added);
@@ -1426,27 +1487,20 @@ fn upload_transport_cache(
     if runtime.gpu_topology_dirty
         && (!cache.ready || runtime.gpu_rebuild_required)
         && runtime.gpu_task.is_none()
+        && runtime.gpu_snapshot.is_none()
     {
-        let snapshot = snapshot_gpu_probes(&field.probes, &field.order);
-        if cache.ready {
-            // The replacement is asynchronous; keep the published generation
-            // current while it builds, using its own still-valid slot map.
-            patch_probe_values(
-                &cache,
-                &patch_queue,
-                &field.probes,
-                &runtime.gpu_value_dirty,
-            );
-        }
-        // The snapshot already contains these values. Only changes made while
-        // the build runs need a subsequent patch.
-        runtime.gpu_value_dirty.clear();
+        runtime.gpu_snapshot = Some(GpuSnapshot::new(&field.order));
         runtime.gpu_added.clear();
         runtime.gpu_removed.clear();
         runtime.gpu_task_version = runtime.gpu_topology_version;
+    }
+
+    if let Some(snapshot) = runtime.gpu_snapshot.as_mut()
+        && snapshot.advance(&field.probes)
+    {
+        let snapshot = runtime.gpu_snapshot.take().unwrap().finish();
         runtime.gpu_task =
             Some(AsyncComputeTaskPool::get().spawn(async move { build_gpu_cache(snapshot) }));
-        return;
     }
 
     // Never expose a worker's stale snapshot for the normal upload interval.
@@ -1458,18 +1512,12 @@ fn upload_transport_cache(
     {
         return;
     }
-    if runtime.gpu_task.is_some() {
-        // These are also the catch-up ledger for the in-flight snapshot.
-        // Publishing to the OLD cache must not consume that ledger.
-        patch_probe_values(
-            &cache,
-            &patch_queue,
-            &field.probes,
-            &runtime.gpu_value_dirty,
-        );
-    } else {
-        let dirty = std::mem::take(&mut runtime.gpu_value_dirty);
-        patch_probe_values(&cache, &patch_queue, &field.probes, &dirty);
+    let dirty = std::mem::take(&mut runtime.gpu_value_dirty);
+    patch_probe_values(&cache, &patch_queue, &field.probes, &dirty);
+    if runtime.gpu_task.is_some() || runtime.gpu_snapshot.is_some() {
+        // Catch-up and live publication are separate ledgers. Re-uploading the
+        // entire growing catch-up set every 50ms was itself a streaming spike.
+        runtime.gpu_catchup_dirty.extend(dirty);
     }
     runtime.last_gpu_upload = Instant::now();
     runtime.sky_upload_pending = false;
@@ -1684,6 +1732,75 @@ fn smoke_move_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut field = VoxelEnergyField::default();
+        let old = IVec3::ZERO;
+        let retained = IVec3::new(32, 0, 0);
+        for voxel in [old, retained] {
+            field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
+            field.pages.insert(page_of(voxel), vec![voxel]);
+        }
+        field.update_indices(&[old, retained], &HashMap::new());
+        field.publishing_pages.extend([IVec3::ZERO, IVec3::X]);
+        let added = IVec3::Y;
+        let result = SceneBuildResult {
+            scene: Arc::new(TransportScene::default()),
+            changed: true,
+            pages: VecDeque::from([
+                (
+                    IVec3::ZERO,
+                    vec![SurfaceProbeDescriptor {
+                        voxel: added,
+                        material: 0,
+                        face_mask: 4,
+                    }],
+                ),
+                (
+                    IVec3::X,
+                    vec![SurfaceProbeDescriptor {
+                        voxel: retained,
+                        material: 0,
+                        face_mask: 4,
+                    }],
+                ),
+            ]),
+            exact_edits: vec![],
+            broad_edits: vec![],
+            build_time: Duration::ZERO,
+        };
+        let mut world = World::new();
+        world.insert_resource(field);
+        world.insert_resource(VoxelGiRuntime {
+            scene_publication: Some(result),
+            ..default()
+        });
+        world.insert_resource(VoxelGiStats::default());
+        world.run_system_once(apply_scene_task).unwrap();
+        let field = world.resource::<VoxelEnergyField>();
+        assert!(!field.probes.contains_key(&old));
+        assert!(field.probes.contains_key(&added));
+        assert!(field.probes.contains_key(&retained));
+        assert_eq!(field.publishing_pages, HashSet::from([IVec3::X]));
+        for (index, voxel) in field.order.iter().enumerate() {
+            assert_eq!(field.probes[voxel].order_index, index);
+        }
+        world.run_system_once(apply_scene_task).unwrap();
+        assert!(
+            world
+                .resource::<VoxelEnergyField>()
+                .publishing_pages
+                .is_empty()
+        );
+        assert!(
+            world
+                .resource::<VoxelGiRuntime>()
+                .scene_publication
+                .is_none()
+        );
+    }
 
     #[test]
     fn urgent_work_cannot_starve_loaded_world_sweep() {

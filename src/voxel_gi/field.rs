@@ -4,16 +4,76 @@ use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+/// Keep the world-sized index small. Growing a flat HashMap of large ambient
+/// cubes used to relocate hundreds of MB on the game thread during streaming.
+#[derive(Default)]
+pub(crate) struct ProbeStore(HashMap<IVec3, Box<SurfaceProbe>>);
+
+impl ProbeStore {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn get(&self, key: &IVec3) -> Option<&SurfaceProbe> {
+        self.0.get(key).map(Box::as_ref)
+    }
+    pub fn get_mut(&mut self, key: &IVec3) -> Option<&mut SurfaceProbe> {
+        self.0.get_mut(key).map(Box::as_mut)
+    }
+    pub fn contains_key(&self, key: &IVec3) -> bool {
+        self.0.contains_key(key)
+    }
+    pub fn keys(&self) -> impl Iterator<Item = &IVec3> {
+        self.0.keys()
+    }
+    pub fn values(&self) -> impl Iterator<Item = &SurfaceProbe> {
+        self.0.values().map(Box::as_ref)
+    }
+    pub fn insert(&mut self, key: IVec3, probe: SurfaceProbe) {
+        if let Some(existing) = self.0.get_mut(&key) {
+            **existing = probe;
+        } else {
+            self.0.insert(key, Box::new(probe));
+        }
+    }
+    pub fn remove(&mut self, key: &IVec3) -> Option<SurfaceProbe> {
+        self.0.remove(key).map(|p| *p)
+    }
+}
+
+impl std::ops::Index<&IVec3> for ProbeStore {
+    type Output = SurfaceProbe;
+    fn index(&self, key: &IVec3) -> &Self::Output {
+        self.get(key).expect("indexed live probe")
+    }
+}
+
+pub(crate) trait ProbeLookup {
+    fn lookup(&self, key: &IVec3) -> Option<&SurfaceProbe>;
+}
+impl ProbeLookup for ProbeStore {
+    fn lookup(&self, key: &IVec3) -> Option<&SurfaceProbe> {
+        self.get(key)
+    }
+}
+#[cfg(test)]
+impl ProbeLookup for HashMap<IVec3, SurfaceProbe> {
+    fn lookup(&self, key: &IVec3) -> Option<&SurfaceProbe> {
+        self.get(key)
+    }
+}
+
 /// The authoritative world-space energy field. The infrared and ionizing
 /// channels can be read by offscreen simulation systems.
 #[derive(Resource, Default)]
 pub struct VoxelEnergyField {
-    pub(super) probes: HashMap<IVec3, SurfaceProbe>,
+    pub(super) probes: ProbeStore,
     pub(super) order: Vec<IVec3>,
     pub(super) pages: HashMap<IVec3, Vec<IVec3>>,
     pub(super) source_revision: u64,
     pub(super) transport_revision: u64,
     pub(super) requested: HashSet<IVec3>,
+    /// Geometry is ready but these receiver pages have not been published yet.
+    pub(super) publishing_pages: HashSet<IVec3>,
 }
 
 /// An unfiltered surface measurement, never the spatially smoothed display
@@ -49,6 +109,9 @@ impl VoxelEnergyField {
     }
 
     pub fn estimate(&self, voxel: IVec3, normal: Vec3) -> Option<EnergyEstimate> {
+        if self.publishing_pages.contains(&super::page_of(voxel)) {
+            return None;
+        }
         let probe = self.probes.get(&voxel)?;
         let normal = normal.normalize_or_zero();
         if normal == Vec3::ZERO {
