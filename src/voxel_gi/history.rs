@@ -136,12 +136,14 @@ impl SurfaceProbe {
             // influence by fresh sample evidence AND variance, even after the
             // eight-sample bootstrap milestone. Genuine changes catch up as
             // evidence arrives; there is no permanent brightness clamp.
-            let evidence = (samples as f32 / 16.0).min(1.0);
+            let evidence = samples as f32 / (samples as f32 + 32.0);
             let alpha = time_alpha.min(evidence / (1.0 + uncertainty));
             let display = &mut self.display[face];
-            display.indirect = display
-                .indirect
-                .lerp(self.radiance[face].visible, alpha.clamp(0.0, 1.0));
+            display.indirect = temporal_blend(
+                display.indirect,
+                self.radiance[face].visible,
+                alpha.clamp(0.0, 1.0),
+            );
             // Unknown is not shadow. The shader falls back to ordinary direct
             // lighting for an incomplete face, never inventing a black sample.
             display.sky = sky;
@@ -151,6 +153,20 @@ impl SurfaceProbe {
         }
         self.display_updated_at = Some(now);
     }
+}
+
+/// Brightness-compressed temporal resolve (presentation only). A rare HDR path
+/// must not flash an otherwise dark surface. Normalize the two weights instead
+/// of clipping energy: persistent changes still reach their full intensity,
+/// colors remain a convex RGB blend, and there is no hard brightness ceiling.
+/// This is a robust, biased display filter, not a transport estimator.
+fn temporal_blend(history: Vec3, measured: Vec3, alpha: f32) -> Vec3 {
+    const DISPLAY_SCALE: f32 = 0.25;
+    let old_weight = (1.0 - alpha) / (DISPLAY_SCALE + history.max_element());
+    let new_weight = alpha / (DISPLAY_SCALE + measured.max_element());
+    // Compression must not amplify a transient dark estimate either: limit
+    // falling changes to the ordinary evidence/time-weighted EMA response.
+    history.lerp(measured, alpha.min(new_weight / (old_weight + new_weight)))
 }
 
 #[cfg(test)]
@@ -300,7 +316,7 @@ mod tests {
             let mut previous = measured(IVec3::ZERO, initial, start);
             previous.invalidate();
             previous.display_updated_at = Some(start);
-            for batch in 1..=8 {
+            for batch in 1..=16 {
                 let mut next = previous.clone();
                 next.samples[2] = batch * 4;
                 next.radiance[2] = EnergySpectrum::ONE * target;
@@ -315,15 +331,69 @@ mod tests {
                 if batch == 1 {
                     assert!((value - initial).abs() <= 0.25);
                 }
-                if batch == 4 {
-                    assert!((value - target).abs() < 0.11);
-                }
                 if batch == 8 {
+                    assert!((value - target).abs() < 0.25);
+                }
+                if batch == 16 {
                     assert!((value - target).abs() < 0.01);
                 }
                 previous = next;
             }
         }
+    }
+
+    #[test]
+    fn isolated_hdr_estimate_does_not_flash_retained_dark_history() {
+        let now = Instant::now();
+        let mut previous = measured(IVec3::ZERO, 0.0, now);
+        previous.invalidate();
+        let mut next = previous.clone();
+        next.samples[2] = 4;
+        next.radiance[2] = EnergySpectrum::new(Vec3::splat(1000.0), 50.0, 80.0);
+        // Even a falsely reassuring zero within-batch variance must be bounded.
+        next.second_moment[2] = next.radiance[2] * next.radiance[2];
+        let measurement = next.radiance[2];
+        next.resolve_display(&previous, now + Duration::from_secs(10), 0.075);
+        assert!(next.display[2].indirect.max_element() < 0.04);
+        assert_eq!(next.radiance[2], measurement);
+        for _ in 0..80 {
+            next.display[2].indirect =
+                temporal_blend(next.display[2].indirect, Vec3::splat(1000.0), 0.5);
+        }
+        assert!(
+            next.display[2]
+                .indirect
+                .abs_diff_eq(Vec3::splat(1000.0), 0.01),
+            "no permanent clamp on real HDR emission"
+        );
+    }
+
+    #[test]
+    fn local_edits_keep_measured_history_but_report_it_stale() {
+        let now = Instant::now();
+        let voxel = IVec3::ZERO;
+        let mut probe = measured(voxel, 1.0, now);
+        probe.samples[2] = 128;
+        probe.radiance[2] = EnergySpectrum::new(Vec3::ONE, 10.0, 20.0);
+        let revision = probe.revision;
+        probe.request_relight();
+        assert_ne!(
+            probe.revision, revision,
+            "reject in-flight pre-edit results"
+        );
+        assert_eq!(probe.samples[2], 16);
+        assert_eq!(probe.display[2].indirect, Vec3::ONE);
+        let mut field = VoxelEnergyField::default();
+        field.probes.insert(voxel, probe);
+        let estimate = field.estimate(voxel, Vec3::Y).unwrap();
+        assert!(!estimate.transport_current && !estimate.sources_current);
+        assert_eq!(estimate.incident.infrared, 10.0);
+        let probe = field.probes.get_mut(&voxel).unwrap();
+        probe.update_face_mask(5);
+        assert_eq!(probe.samples[2], 16, "unchanged face retains its history");
+        assert_eq!(probe.samples[0], 0, "new face is genuinely unmeasured");
+        assert_eq!(probe.radiance[0], EnergySpectrum::ZERO);
+        assert!(field.estimate(voxel, Vec3::X).is_none());
     }
 
     #[test]

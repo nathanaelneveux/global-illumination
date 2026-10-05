@@ -780,10 +780,13 @@ fn invalidate_near_voxel(
         }
         if let Some(probe) = field.probes.get_mut(&voxel) {
             let (_, samples, covered) = probe_metrics(probe);
-            runtime.completed_samples = runtime.completed_samples.saturating_sub(samples);
-            runtime.covered_faces = runtime.covered_faces.saturating_sub(covered);
-            probe.invalidate();
-            runtime.gpu_value_dirty.insert(voxel);
+            probe.request_relight();
+            let (_, next_samples, next_covered) = probe_metrics(probe);
+            runtime.completed_samples =
+                runtime.completed_samples.saturating_sub(samples) + next_samples;
+            runtime.covered_faces = runtime.covered_faces.saturating_sub(covered) + next_covered;
+            // Nothing visible changed yet: do not upload every receiver in the
+            // edit radius merely because its measurements now need refreshing.
             invalidated.insert(voxel);
         }
     }
@@ -1214,7 +1217,7 @@ fn select_transport(
             if mask & !probe.fresh_mask & (1 << face) != 0 {
                 // A global revision wakes all potential indirect dependencies;
                 // it does not prove their energy changed. Keep a bounded useful
-                // history. Exact/local edits already call invalidate(), while
+                // history. Exact/local edits already cap history at 16, while
                 // source influence bounds below choose the faster local response.
                 probe.samples[face] = probe.samples[face].min(64);
             }

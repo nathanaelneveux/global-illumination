@@ -420,7 +420,7 @@ impl SurfaceProbe {
 
     pub(crate) fn update_face_mask(&mut self, face_mask: u8) {
         if self.face_mask != face_mask {
-            self.invalidate();
+            self.request_relight();
         }
         let newly_exposed = face_mask & !self.face_mask;
         self.face_mask = face_mask;
@@ -435,7 +435,19 @@ impl SurfaceProbe {
             self.custom_direct[face] = Vec3::ZERO;
             self.direct_sky[face] = Vec3::ZERO;
             self.samples[face] = 0;
+            self.face_updated_at[face] = None;
         }
+    }
+
+    /// Changed geometry may affect a path, but does not make every nearby
+    /// receiver a new surface. Retain bounded measured history, explicitly
+    /// stale, while replacing it with fresh paths. No borrowed/display energy
+    /// enters these statistics. New faces/material changes still start empty.
+    pub(crate) fn request_relight(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        self.samples = self.samples.map(|count| count.min(16));
+        self.fresh_mask = 0;
+        self.stable_batches = [0; 6];
     }
 
     pub(crate) fn invalidate(&mut self) {
