@@ -88,6 +88,8 @@ The implemented renderer is diffuse GI for opaque axis-aligned voxels, with Bevy
 
 Normal `cargo run` now starts with **shared-corner direct sunlight and corner-blended indirect GI**, terrain textures enabled, irradiance debug disabled, and mesh ambient occlusion disabled. Corners mean naive unit-voxel face corners, not greedy-mesh vertices. Indirect transport itself still samples faces; only its display is reconstructed at corners. F7 remains the per-pixel sunlight comparison. GPU/adaptive transport, the 4 ms trace target, 75 ms indirect display response, and all-loaded-world coverage are unchanged; the rejected CPU throttle is not enabled.
 
+A passive top-right HUD shows smoothed **FPS**, **Coverage** (exposed faces with at least one sample), and **Bootstrap** (progress toward eight samples per exposed face), using the existing all-loaded-world counters. Numbers refresh four times per second without extra rays or world scans. Neither percentage is convergence. Empty worlds show dashes until probes exist. Recurring terminal FPS/GI/rebuild stats are quiet during normal play; use `RUST_LOG=info VOXEL_GI_LOG_STATS=1 cargo run` to restore them. Warnings/errors remain enabled. Scripted validation retains terminal diagnostics and hides the HUD to preserve clean captures and blank-frame detection.
+
 ### Correctness checks
 
 Choose checks for the code being changed. The following is a **catalog, not a checklist to rerun after every edit**. Use focused unit tests during iteration; use the native test for the affected GPU path when needed. Documentation-only work needs diff review, not a build or live run. Broader suites belong at meaningful integration checkpoints.

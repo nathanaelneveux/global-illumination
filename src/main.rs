@@ -13,7 +13,7 @@ use app_controls::AppControlsPlugin;
 use assets::AssetSupportPlugin;
 use avian3d::prelude::*;
 use bevy::asset::AssetMetaCheck;
-use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
+use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 use bevy::render::{RenderPlugin, render_resource::WgpuFeatures, settings::WgpuSettings};
 use bevy::window::WindowPlugin;
@@ -56,7 +56,6 @@ fn main() -> AppExit {
             // Uncomment the next line for physics debugging
             //PhysicsDebugPlugin,
             FrameTimeDiagnosticsPlugin::default(),
-            LogDiagnosticsPlugin::default(),
             EnhancedInputPlugin,
             AhoyPlugins::default(),
             AssetSupportPlugin,

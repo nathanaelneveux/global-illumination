@@ -1,3 +1,4 @@
+mod diagnostics;
 mod emission;
 mod field;
 mod gpu;
@@ -62,6 +63,7 @@ pub struct VoxelGiPlugin;
 impl Plugin for VoxelGiPlugin {
     fn build(&self, app: &mut App) {
         install_render_assets(app);
+        diagnostics::install(app);
         app.init_resource::<VoxelGiDirty>()
             .init_resource::<VoxelGiRuntime>()
             .init_resource::<VoxelEnergyField>()
@@ -676,17 +678,19 @@ fn apply_scene_task(
     stats.loaded_pages = runtime.loaded_pages.len();
     stats.naadf_regions = runtime.scene.regions.len();
     stats.last_scene_build_ms = result.build_time.as_secs_f32() * 1_000.0;
-    info!(
-        loaded_pages = stats.loaded_pages,
-        naadf_regions = stats.naadf_regions,
-        surface_probes = stats.surface_probes,
-        pending_probes = stats.pending_probes,
-        relit_probes,
-        coverage_percent = format_args!("{:.1}", stats.interactive_coverage * 100.0),
-        bootstrap_percent = format_args!("{:.1}", stats.bootstrap_coverage * 100.0),
-        build_ms = format_args!("{:.1}", stats.last_scene_build_ms),
-        "incremental world-space voxel transport scene rebuilt"
-    );
+    if diagnostics::terminal_stats_enabled() {
+        info!(
+            loaded_pages = stats.loaded_pages,
+            naadf_regions = stats.naadf_regions,
+            surface_probes = stats.surface_probes,
+            pending_probes = stats.pending_probes,
+            relit_probes,
+            coverage_percent = format_args!("{:.1}", stats.interactive_coverage * 100.0),
+            bootstrap_percent = format_args!("{:.1}", stats.bootstrap_coverage * 100.0),
+            build_ms = format_args!("{:.1}", stats.last_scene_build_ms),
+            "incremental world-space voxel transport scene rebuilt"
+        );
+    }
 }
 
 fn invalidate_near_voxel(
@@ -1564,6 +1568,9 @@ fn log_voxel_gi_stats(
     }
     stats.mean_history_samples = samples as f32 / faces.max(1) as f32;
     stats.oldest_sample_age_ms = oldest.as_secs_f32() * 1000.0;
+    if !diagnostics::terminal_stats_enabled() {
+        return;
+    }
     info!(
         loaded_pages = stats.loaded_pages,
         surface_probes = stats.surface_probes,
