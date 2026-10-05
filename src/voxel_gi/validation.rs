@@ -206,9 +206,10 @@ pub(super) fn run_validation(
     let elapsed = run.started.unwrap().elapsed().as_secs_f32();
     let profile = run.profile;
     let (ref mut player, ref mut look) = *player_state;
-    if profile == Profile::Response {
+    if matches!(profile, Profile::Response | Profile::Edits) {
         run.response.tick(
             elapsed,
+            profile == Profile::Edits,
             &mut world,
             &mut dirty,
             &field,
@@ -269,7 +270,7 @@ pub(super) fn run_validation(
             )
             .observe(check_capture)
             .observe(save_to_disk(output));
-        if profile == Profile::Response {
+        if matches!(profile, Profile::Response | Profile::Edits) {
             run.response
                 .captures
                 .push(json!({"name": name, "scheduled_s": at, "requested_s": elapsed}));
@@ -427,7 +428,7 @@ pub(super) fn run_validation(
         return;
     }
     let config = configs.get(&assets.prototype_config);
-    if profile == Profile::Response {
+    if matches!(profile, Profile::Response | Profile::Edits) {
         if let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("response.json"),
             json!({"samples": run.response.samples, "captures": run.response.captures,
                 "note": "Fixed-camera synthetic room. Capture names are scheduled offsets; requested_s records actual timing. Not a gameplay/FPS benchmark."}).to_string()) {

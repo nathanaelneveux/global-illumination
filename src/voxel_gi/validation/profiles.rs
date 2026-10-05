@@ -8,6 +8,7 @@ pub(super) enum Profile {
     Gameplay,
     Streaming,
     Response,
+    Edits,
     Sources,
     Compare,
     Stress,
@@ -19,11 +20,12 @@ impl Profile {
             "gameplay" => Ok(Self::Gameplay),
             "streaming" => Ok(Self::Streaming),
             "response" => Ok(Self::Response),
+            "edits" => Ok(Self::Edits),
             "sources" => Ok(Self::Sources),
             "compare" => Ok(Self::Compare),
             "stress" => Ok(Self::Stress),
             _ => Err(format!(
-                "unknown validation profile {value:?}; choose gameplay, streaming, response, sources, compare, or stress"
+                "unknown validation profile {value:?}; choose gameplay, streaming, response, edits, sources, compare, or stress"
             )),
         }
     }
@@ -33,6 +35,7 @@ impl Profile {
             Self::Gameplay => "gameplay",
             Self::Streaming => "streaming",
             Self::Response => "response",
+            Self::Edits => "edits",
             Self::Sources => "sources",
             Self::Compare => "compare",
             Self::Stress => "stress",
@@ -43,7 +46,7 @@ impl Profile {
         match self {
             Self::Compare => 29.0,
             Self::Streaming => 35.0,
-            Self::Response => 30.0,
+            Self::Response | Self::Edits => 30.0,
             _ => 72.0,
         }
     }
@@ -57,7 +60,28 @@ impl Profile {
     }
 
     pub fn captures(self) -> &'static [(f32, &'static str)] {
-        if self == Self::Response {
+        if self == Self::Edits {
+            &[
+                (14.5, "room-settled"),
+                (15.05, "dig-0050ms"),
+                (15.15, "dig-0150ms"),
+                (15.4, "dig-0400ms"),
+                (17.05, "restore-0050ms"),
+                (17.15, "restore-0150ms"),
+                (17.4, "restore-0400ms"),
+                (19.05, "place-0050ms"),
+                (19.15, "place-0150ms"),
+                (19.4, "place-0400ms"),
+                (21.05, "remove-0050ms"),
+                (21.15, "remove-0150ms"),
+                (21.4, "remove-0400ms"),
+                (24.5, "surface-settled"),
+                (25.05, "surface-dig-0050ms"),
+                (25.15, "surface-dig-0150ms"),
+                (25.4, "surface-dig-0400ms"),
+                (29.0, "surface-recovered"),
+            ]
+        } else if self == Self::Response {
             &[
                 (14.5, "room-settled"),
                 (15.1, "dig-0100ms"),
@@ -98,7 +122,13 @@ impl Profile {
     }
 
     pub fn phase(self, elapsed: f32) -> &'static str {
-        if self == Self::Response {
+        if self == Self::Edits {
+            match elapsed {
+                t if t < 15.0 => "settling",
+                t if t < 23.0 => "underground-edits",
+                _ => "surface-edit",
+            }
+        } else if self == Self::Response {
             match elapsed {
                 t if t < 15.0 => "settling",
                 t if t < 20.0 => "cavity",
@@ -165,6 +195,7 @@ mod tests {
             Profile::Gameplay,
             Profile::Streaming,
             Profile::Response,
+            Profile::Edits,
             Profile::Sources,
         ] {
             for tick in 0..720 {

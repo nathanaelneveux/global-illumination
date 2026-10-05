@@ -160,6 +160,7 @@ RUST_LOG=info VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_EXIT=1 VOXEL_GI_VALIDATE_PRO
 | --- | --- | --- |
 | `gameplay` (default, 72 s) | Frame pacing and lighting response in our preferred look | Startup 0–10 s, settled 10–25 s, edit/restore 25–45 s, five streaming moves 45–65 s, recovery 65–72 s; no mode cycling or moving source |
 | `response` (30 s) | Focused cavity/emitter temporal inspection | Fixed-camera synthetic enclosed room; delete one floor block at 15 s, add a warm emitter at 20 s, remove it at 25 s; 14 captures and sampled receiver history in `response.json`; no streaming moves or mode switches |
+| `edits` (30 s) | Initial geometry/lighting handoff | Same enclosed room: dig/restore its floor, place/remove an ordinary block, then inspect a roof excavation from above; 18 captures at 50/150/400 ms offsets and receiver history; no source or mode changes |
 | `streaming` (35 s) | Turn-around/walk streaming regression | Settle 15 s at spawn, turn 180°, translate at 4.32 blocks/s for 15 s, recover 5 s; fixed preferred look. Scripted translation, not a character-controller movement test |
 | `sources` (72 s) | Point-light and emissive-material updates, including IR/ionizing transport | Same timing and streaming path, but moving RGB/IR/ionizing point source plus emissive voxel replace repeated digging; remove sources for recovery |
 | `compare` (29 s) | Appearance inspection, **not** performance evidence | Explicit corner sun, per-pixel sun, flat voxel, corner/flat irradiance, indirect-disabled, and restored-default captures |

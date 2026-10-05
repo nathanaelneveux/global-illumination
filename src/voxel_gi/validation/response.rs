@@ -18,6 +18,7 @@ impl ResponseRun {
     pub fn tick(
         &mut self,
         elapsed: f32,
+        edits: bool,
         world: &mut VoxelWorld<PrototypeWorld>,
         dirty: &mut VoxelGiDirty,
         field: &VoxelEnergyField,
@@ -66,11 +67,21 @@ impl ResponseRun {
         }
         for camera in cameras {
             if let Ok(mut transform) = transforms.get_mut(camera) {
-                *transform = Transform::from_xyz(8.5, 41.5, -5.5)
-                    .looking_at(Vec3::new(8.5, 38.8, -9.5), Vec3::Y);
+                *transform = if edits && elapsed >= 23.0 {
+                    Transform::from_xyz(8.5, 48.5, -5.5)
+                        .looking_at(Vec3::new(8.5, 45.0, -9.5), Vec3::Y)
+                } else {
+                    Transform::from_xyz(8.5, 41.5, -5.5)
+                        .looking_at(Vec3::new(8.5, 38.8, -9.5), Vec3::Y)
+                };
             }
         }
-        let stage = if elapsed >= 25.0 {
+        let stage = if edits {
+            [15.0, 17.0, 19.0, 21.0, 25.0]
+                .into_iter()
+                .filter(|&at| elapsed >= at)
+                .count() as u8
+        } else if elapsed >= 25.0 {
             3
         } else if elapsed >= 20.0 {
             2
@@ -80,10 +91,20 @@ impl ResponseRun {
             0
         };
         if stage > self.stage {
-            let (position, material) = match stage {
-                1 => (HOLE, WorldVoxel::Air),
-                2 => (EMITTER, WorldVoxel::Solid(4)),
-                _ => (EMITTER, WorldVoxel::Air),
+            let (position, material) = if edits {
+                match stage {
+                    1 => (HOLE, WorldVoxel::Air),
+                    2 => (HOLE, WorldVoxel::Solid(2)),
+                    3 => (HOLE + IVec3::Y, WorldVoxel::Solid(2)),
+                    4 => (HOLE + IVec3::Y, WorldVoxel::Air),
+                    _ => (IVec3::new(8, 45, -9), WorldVoxel::Air),
+                }
+            } else {
+                match stage {
+                    1 => (HOLE, WorldVoxel::Air),
+                    2 => (EMITTER, WorldVoxel::Solid(4)),
+                    _ => (EMITTER, WorldVoxel::Air),
+                }
             };
             world.set_voxel(position, material);
             dirty.mark_voxel(position);
@@ -98,6 +119,7 @@ impl ResponseRun {
                 .filter(|(_, normal)| *normal != IVec3::NEG_Y)
                 .map(|(face, normal)| (HOLE - normal, face))
                 .chain([(IVec3::new(9, 38, -9), 2), (IVec3::new(10, 38, -9), 2)])
+                .chain((0..6).map(|face| (HOLE + IVec3::Y, face)))
                 .map(|(voxel, face)| {
                     let probe = field
                         .probes
@@ -107,6 +129,7 @@ impl ResponseRun {
                         "display": probe.map(|p| p.display[face].indirect.to_array()),
                         "measured": probe.map(|p| p.radiance[face].visible.to_array()),
                         "samples": probe.map(|p| p.samples[face]),
+                        "sky": probe.map(|p| p.display[face].sky),
                         "source_revision": probe.map(|p| p.source_revision),
                         "confidence": probe.map(|p| p.display[face].confidence)})
                 })
