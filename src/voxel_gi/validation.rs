@@ -2,6 +2,7 @@
 //! comparisons and toggle stress have distinct report identities.
 mod metrics;
 mod profiles;
+mod response;
 
 use super::render::VoxelTransportMaterial;
 use super::world::FACE_OFFSETS;
@@ -89,6 +90,7 @@ pub(super) struct ValidationRun {
     removed: Option<(IVec3, WorldVoxel<u8>)>,
     emissive: Option<(IVec3, WorldVoxel<u8>, MaterialTransport)>,
     emitter_started: bool,
+    response: response::ResponseRun,
     max_pages: usize,
     capture_pause_until: f32,
     done: bool,
@@ -204,6 +206,18 @@ pub(super) fn run_validation(
     let elapsed = run.started.unwrap().elapsed().as_secs_f32();
     let profile = run.profile;
     let (ref mut player, ref mut look) = *player_state;
+    if profile == Profile::Response {
+        run.response.tick(
+            elapsed,
+            &mut world,
+            &mut dirty,
+            &field,
+            &mut transport_materials,
+            &mut commands,
+            &cameras,
+            &mut lights,
+        );
+    }
     if profile == Profile::Streaming && elapsed >= 15.0 {
         // Reproduce turning into unseen terrain, then moving at walking speed.
         // Scripted translation isolates streaming; this is not a KCC motion test.
@@ -255,6 +269,11 @@ pub(super) fn run_validation(
             )
             .observe(check_capture)
             .observe(save_to_disk(output));
+        if profile == Profile::Response {
+            run.response
+                .captures
+                .push(json!({"name": name, "scheduled_s": at, "requested_s": elapsed}));
+        }
         run.captures += 1;
         run.capture_pause_until = elapsed + 0.25;
     }
@@ -408,6 +427,15 @@ pub(super) fn run_validation(
         return;
     }
     let config = configs.get(&assets.prototype_config);
+    if profile == Profile::Response {
+        if let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("response.json"),
+            json!({"samples": run.response.samples, "captures": run.response.captures,
+                "note": "Fixed-camera synthetic room. Capture names are scheduled offsets; requested_s records actual timing. Not a gameplay/FPS benchmark."}).to_string()) {
+            evidence.fail(&format!("Could not save response sequence: {error}"));
+            commands.write_message(AppExit::error());
+            return;
+        }
+    }
     let report = json!({
         "schema_version": 3, "status": "completed", "profile": profile.name(),
         "capture_mode": if evidence.render_target.is_some() { "offscreen" } else { "window" },

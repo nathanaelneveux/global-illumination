@@ -7,6 +7,7 @@ pub(super) enum Profile {
     #[default]
     Gameplay,
     Streaming,
+    Response,
     Sources,
     Compare,
     Stress,
@@ -17,11 +18,12 @@ impl Profile {
         match value {
             "gameplay" => Ok(Self::Gameplay),
             "streaming" => Ok(Self::Streaming),
+            "response" => Ok(Self::Response),
             "sources" => Ok(Self::Sources),
             "compare" => Ok(Self::Compare),
             "stress" => Ok(Self::Stress),
             _ => Err(format!(
-                "unknown validation profile {value:?}; choose gameplay, streaming, sources, compare, or stress"
+                "unknown validation profile {value:?}; choose gameplay, streaming, response, sources, compare, or stress"
             )),
         }
     }
@@ -30,6 +32,7 @@ impl Profile {
         match self {
             Self::Gameplay => "gameplay",
             Self::Streaming => "streaming",
+            Self::Response => "response",
             Self::Sources => "sources",
             Self::Compare => "compare",
             Self::Stress => "stress",
@@ -40,6 +43,7 @@ impl Profile {
         match self {
             Self::Compare => 29.0,
             Self::Streaming => 35.0,
+            Self::Response => 30.0,
             _ => 72.0,
         }
     }
@@ -53,7 +57,24 @@ impl Profile {
     }
 
     pub fn captures(self) -> &'static [(f32, &'static str)] {
-        if self == Self::Streaming {
+        if self == Self::Response {
+            &[
+                (14.5, "room-settled"),
+                (15.1, "dig-0100ms"),
+                (15.3, "dig-0300ms"),
+                (15.6, "dig-0600ms"),
+                (16.0, "dig-1000ms"),
+                (18.0, "cavity-settled"),
+                (20.2, "emitter-add-0200ms"),
+                (21.0, "emitter-add-1000ms"),
+                (24.5, "emitter-settled"),
+                (25.1, "emitter-remove-0100ms"),
+                (25.3, "emitter-remove-0300ms"),
+                (25.6, "emitter-remove-0600ms"),
+                (26.0, "emitter-remove-1000ms"),
+                (29.0, "room-recovered"),
+            ]
+        } else if self == Self::Streaming {
             &[(14.0, "settled"), (29.0, "streaming"), (34.0, "recovered")]
         } else if self == Self::Compare {
             &[
@@ -77,7 +98,14 @@ impl Profile {
     }
 
     pub fn phase(self, elapsed: f32) -> &'static str {
-        if self == Self::Streaming {
+        if self == Self::Response {
+            match elapsed {
+                t if t < 15.0 => "settling",
+                t if t < 20.0 => "cavity",
+                t if t < 25.0 => "emitter-added",
+                _ => "emitter-removed",
+            }
+        } else if self == Self::Streaming {
             match elapsed {
                 t if t < 10.0 => "startup",
                 t if t < 15.0 => "settled",
@@ -133,7 +161,12 @@ mod tests {
 
     #[test]
     fn gameplay_and_sources_never_switch_away_from_preferred_look() {
-        for profile in [Profile::Gameplay, Profile::Streaming, Profile::Sources] {
+        for profile in [
+            Profile::Gameplay,
+            Profile::Streaming,
+            Profile::Response,
+            Profile::Sources,
+        ] {
             for tick in 0..720 {
                 let mut settings = GpuTransportSettings {
                     hash_mask: 31,
