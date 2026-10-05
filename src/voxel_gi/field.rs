@@ -12,6 +12,7 @@ pub struct VoxelEnergyField {
     pub(super) order: Vec<IVec3>,
     pub(super) pages: HashMap<IVec3, Vec<IVec3>>,
     pub(super) source_revision: u64,
+    pub(super) transport_revision: u64,
     pub(super) requested: HashSet<IVec3>,
 }
 
@@ -24,6 +25,8 @@ pub struct EnergyEstimate {
     pub effective_samples: u32,
     pub age: Duration,
     pub sources_current: bool,
+    /// Includes geometry/material invalidation, even for distant receivers.
+    pub transport_current: bool,
 }
 
 impl VoxelEnergyField {
@@ -55,6 +58,8 @@ impl VoxelEnergyField {
         let mut incident = EnergySpectrum::ZERO;
         let mut variance = EnergySpectrum::ZERO;
         let mut samples = u32::MAX;
+        let mut oldest = probe.updated_at?;
+        let mut fresh = true;
         for axis in 0..3 {
             if weights[axis] < 1e-6 {
                 continue;
@@ -68,13 +73,16 @@ impl VoxelEnergyField {
                 .finite_or_zero()
                 * (weights[axis] * weights[axis]);
             samples = samples.min(probe.samples[face]);
+            oldest = oldest.min(probe.face_updated_at[face].unwrap_or(oldest));
+            fresh &= probe.fresh_mask & (1 << face) != 0;
         }
         Some(EnergyEstimate {
             incident,
             variance,
             effective_samples: samples,
-            age: probe.updated_at?.elapsed(),
-            sources_current: probe.source_revision == self.source_revision,
+            age: oldest.elapsed(),
+            sources_current: probe.source_revision == self.source_revision && fresh,
+            transport_current: fresh && probe.transport_revision == self.transport_revision,
         })
     }
 

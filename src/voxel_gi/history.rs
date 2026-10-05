@@ -9,7 +9,8 @@ use super::world::{AIR, FACE_OFFSETS, SurfaceProbe, TransportScene};
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct FaceDisplay {
     pub indirect: Vec3,
-    pub sky: Vec3,
+    /// Packed RGBE corners, with zero reserved for unknown visibility.
+    pub sky: [u32; 4],
     /// Reconstruction weight, not a statistical confidence interval.
     pub confidence: f32,
 }
@@ -31,7 +32,7 @@ pub(crate) fn seed_face<'a>(
         return FaceDisplay::default();
     }
     let mut indirect = Vec3::ZERO;
-    let mut sky = Vec3::ZERO;
+    let mut sky = [0; 4];
     let mut weight = 0.0;
     for offset in FACE_OFFSETS {
         let donor_voxel = voxel + offset;
@@ -41,9 +42,11 @@ pub(crate) fn seed_face<'a>(
         if donor.face_mask & (1 << face) == 0
             || donor.samples[face] == 0
             || donor.source_revision != source_revision
-            || donor.updated_at.is_none_or(|updated| {
-                now.saturating_duration_since(updated) > Duration::from_secs(2)
-            })
+            || donor.face_updated_at[face]
+                .or(donor.updated_at)
+                .is_none_or(|updated| {
+                    now.saturating_duration_since(updated) > Duration::from_secs(2)
+                })
             || scene.material_at(donor_voxel + normal) != Some(AIR)
         {
             continue;
@@ -51,7 +54,18 @@ pub(crate) fn seed_face<'a>(
         let display = donor.display[face];
         let w = display.confidence;
         indirect += display.indirect * w;
-        sky += display.sky * w;
+        // Direct visibility may be reused only at the SAME geometric corner.
+        // Face-center averaging would erase sub-voxel contact shadows.
+        for (corner, value) in sky.iter_mut().enumerate() {
+            for donor_corner in 0..4 {
+                if super::sky::corner_position(voxel, face, corner)
+                    == super::sky::corner_position(donor_voxel, face, donor_corner)
+                    && display.sky[donor_corner] != 0
+                {
+                    *value = display.sky[donor_corner];
+                }
+            }
+        }
         weight += w;
     }
     if weight == 0.0 {
@@ -59,7 +73,7 @@ pub(crate) fn seed_face<'a>(
     }
     FaceDisplay {
         indirect: indirect / weight,
-        sky: sky / weight,
+        sky,
         confidence: 0.125,
     }
 }
@@ -99,15 +113,19 @@ impl SurfaceProbe {
     /// history, never a potentially old worker copy. Analytic sun visibility is
     /// deterministic, so it responds immediately rather than being denoised.
     pub(crate) fn resolve_display(&mut self, previous: &Self, now: Instant, response_seconds: f32) {
+        let incoming_sky = self.display.map(|face| face.sky);
         self.display = previous.display;
-        let elapsed = previous.display_updated_at.map_or(1.0 / 60.0, |time| {
-            now.saturating_duration_since(time).as_secs_f32()
-        });
-        let time_alpha = 1.0 - (-elapsed / response_seconds.max(0.001)).exp();
-        for face in 0..6 {
-            if self.face_mask & (1 << face) == 0 || self.samples[face] == 0 {
+        for (face, sky) in incoming_sky.into_iter().enumerate() {
+            self.display[face].sky = sky;
+            if self.face_mask & self.trace_mask & (1 << face) == 0 || self.samples[face] == 0 {
                 continue;
             }
+            let elapsed = previous.face_updated_at[face]
+                .or(previous.display_updated_at)
+                .map_or(1.0 / 60.0, |time| {
+                    now.saturating_duration_since(time).as_secs_f32()
+                });
+            let time_alpha = 1.0 - (-elapsed / response_seconds.max(0.001)).exp();
             let samples = self.samples[face];
             let uncertainty = relative_error(
                 EnergySpectrum::new(self.radiance[face].visible, 0.0, 0.0),
@@ -124,9 +142,12 @@ impl SurfaceProbe {
             display.indirect = display
                 .indirect
                 .lerp(self.radiance[face].visible, alpha.clamp(0.0, 1.0));
-            display.sky = self.direct_sky[face];
-            display.confidence =
+            // Unknown is not shadow. The shader falls back to ordinary direct
+            // lighting for an incomplete face, never inventing a black sample.
+            display.sky = sky;
+            let confidence =
                 (samples as f32 / (samples as f32 + 8.0) / (1.0 + uncertainty)).clamp(0.125, 1.0);
+            display.confidence += (confidence - display.confidence) * alpha;
         }
         self.display_updated_at = Some(now);
     }
@@ -161,7 +182,7 @@ mod tests {
         probe.display_updated_at = Some(now);
         probe.display[2] = FaceDisplay {
             indirect: Vec3::splat(energy),
-            sky: Vec3::splat(energy),
+            sky: [super::super::sky::pack(Vec3::splat(energy)); 4],
             confidence: 0.9,
         };
         probe
@@ -223,7 +244,14 @@ mod tests {
         let now = Instant::now();
         let mut probe = measured(voxel, 4.0, now);
         let sequence = probe.sequence;
+        let weight = probe.display[2].confidence;
+        let sky = probe.display[2].sky;
         probe.invalidate();
+        assert_eq!(
+            probe.display[2].confidence, weight,
+            "editing cannot change retained corner reconstruction weights"
+        );
+        assert_eq!(probe.display[2].sky, sky);
         assert_eq!(probe.display[2].indirect, Vec3::splat(4.0));
         assert_eq!(probe.samples, [0; 6]);
         assert_eq!(probe.radiance, [EnergySpectrum::ZERO; 6]);
@@ -245,6 +273,24 @@ mod tests {
         assert!(field.request_refresh(voxel));
         assert_eq!(field.requested.len(), 1);
         assert!(!field.request_refresh(IVec3::splat(1000)));
+    }
+
+    #[test]
+    fn sky_seeding_reuses_only_identical_geometric_corners() {
+        let now = Instant::now();
+        let voxel = IVec3::splat(8);
+        let neighbor = voxel + IVec3::X;
+        let scene = scene_with(&[voxel, neighbor]);
+        let mut donor = measured(neighbor, 2.0, now);
+        donor.display[2].sky = [1, 0, 1, 0];
+        let seed = seed_face(&scene, voxel, 2, 0, now, |v| {
+            (v == neighbor).then_some(&donor)
+        });
+        assert_eq!(
+            seed.sky,
+            [0, 1, 0, 1],
+            "shared shadows stay black, other corners stay unknown"
+        );
     }
 
     #[test]

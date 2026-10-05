@@ -9,13 +9,18 @@ use super::sampling::pcg;
 use super::world::{AIR, NaadfRegion, TransportScene};
 use bevy::prelude::*;
 
-pub(crate) const REGION_WORDS: usize = 64 + 4096;
+const BRICK_WORDS: usize = 32; // Two 16-bit voxel cells per word.
+const TABLE_WORDS: usize = 64;
 
 #[derive(Default)]
 pub(crate) struct PackedScene {
     regions: HashMap<IVec3, RegionAllocation>,
     free_headers: Vec<usize>,
-    free_payloads: Vec<usize>,
+    free_tables: Vec<usize>,
+    free_bricks: Vec<usize>,
+    brick_lookup: HashMap<[u32; BRICK_WORDS], usize>,
+    bricks: Vec<Option<SharedBrick>>,
+    free_brick_ids: Vec<usize>,
     pub directory: Vec<IVec4>,
     pub headers: Vec<UVec4>,
     pub cells: Vec<u32>,
@@ -25,6 +30,13 @@ struct RegionAllocation {
     source: Arc<NaadfRegion>,
     header: usize,
     payload: Option<usize>,
+    bricks: Vec<usize>,
+}
+
+struct SharedBrick {
+    data: [u32; BRICK_WORDS],
+    offset: usize,
+    references: usize,
 }
 
 impl PackedScene {
@@ -38,8 +50,9 @@ impl PackedScene {
         for key in removed {
             let allocation = self.regions.remove(&key).unwrap();
             self.free_headers.push(allocation.header);
+            self.release_bricks(&allocation.bricks);
             if let Some(offset) = allocation.payload {
-                self.free_payloads.push(offset);
+                self.free_tables.push(offset);
             }
         }
         let mut dirty = Vec::new();
@@ -47,7 +60,7 @@ impl PackedScene {
         let mut ordered: Vec<_> = scene.regions.iter().collect();
         ordered.sort_unstable_by_key(|(key, _)| (key.z, key.y, key.x));
         for (&key, source) in ordered {
-            let allocation = self.regions.entry(key).or_insert_with(|| {
+            let mut allocation = self.regions.remove(&key).unwrap_or_else(|| {
                 let header = self.free_headers.pop().unwrap_or_else(|| {
                     self.headers.push(UVec4::ZERO);
                     self.headers.len() - 1
@@ -56,6 +69,7 @@ impl PackedScene {
                     source: Arc::clone(source),
                     header,
                     payload: None,
+                    bricks: Vec::new(),
                 }
             });
             let changed =
@@ -64,8 +78,10 @@ impl PackedScene {
             let negative = pack_bytes(top.negative());
             let positive = pack_bytes(top.positive());
             if let Some(material) = source.uniform_material() {
+                self.release_bricks(&allocation.bricks);
+                allocation.bricks.clear();
                 if let Some(offset) = allocation.payload.take() {
-                    self.free_payloads.push(offset);
+                    self.free_tables.push(offset);
                 }
                 self.headers[allocation.header] = UVec4::new(
                     if material == AIR { 1 } else { 2 },
@@ -76,22 +92,109 @@ impl PackedScene {
             } else {
                 let new_payload = allocation.payload.is_none();
                 let offset = *allocation.payload.get_or_insert_with(|| {
-                    self.free_payloads.pop().unwrap_or_else(|| {
+                    self.free_tables.pop().unwrap_or_else(|| {
                         let offset = self.cells.len();
-                        self.cells.resize(offset + REGION_WORDS, 0);
+                        self.cells.resize(offset + TABLE_WORDS, 0);
                         offset
                     })
                 });
                 self.headers[allocation.header] = UVec4::new(3, offset as u32, negative, positive);
                 if changed || new_payload {
-                    pack_region(source, &mut self.cells[offset..offset + REGION_WORDS]);
-                    dirty.push(offset..offset + REGION_WORDS);
+                    self.release_bricks(&allocation.bricks);
+                    allocation.bricks.clear();
+                    let mut table = [0; TABLE_WORDS];
+                    for (index, entry) in table.iter_mut().enumerate() {
+                        let brick = UVec3::new(
+                            index as u32 & 3,
+                            (index as u32 >> 2) & 3,
+                            index as u32 >> 4,
+                        );
+                        let first = source.material(brick * 4);
+                        let mut uniform = true;
+                        let mut data = [0; BRICK_WORDS];
+                        for i in 0..64 {
+                            let local = brick * 4
+                                + UVec3::new(i as u32 & 3, (i as u32 >> 2) & 3, i as u32 >> 4);
+                            let material = source.material(local);
+                            uniform &= material == first;
+                            // NAADF's tagged 16-bit cell: solid+material OR empty+extents.
+                            let cell = if material == AIR {
+                                pack_extents(source.voxel_aadf(local)) << 1
+                            } else {
+                                (u32::from(material) << 1) | 1
+                            };
+                            data[i / 2] |= cell << ((i & 1) * 16);
+                        }
+                        *entry = if uniform && first == AIR {
+                            pack_extents(source.brick_aadf(brick)) << 2
+                        } else if uniform {
+                            (u32::from(first) << 2) | 1
+                        } else {
+                            let id = self.intern_brick(data, &mut dirty);
+                            allocation.bricks.push(id);
+                            let pointer = self.bricks[id].as_ref().unwrap().offset;
+                            ((pointer as u32) << 2) | 2
+                        };
+                    }
+                    self.cells[offset..offset + TABLE_WORDS].copy_from_slice(&table);
+                    dirty.push(offset..offset + TABLE_WORDS);
                 }
             }
             allocation.source = Arc::clone(source);
+            self.regions.insert(key, allocation);
         }
         self.rebuild_directory();
-        dirty
+        dirty.sort_unstable_by_key(|range| range.start);
+        let mut merged: Vec<Range<usize>> = Vec::new();
+        for range in dirty {
+            if let Some(last) = merged.last_mut()
+                && range.start <= last.end
+            {
+                last.end = last.end.max(range.end);
+            } else {
+                merged.push(range);
+            }
+        }
+        merged
+    }
+
+    fn intern_brick(&mut self, data: [u32; BRICK_WORDS], dirty: &mut Vec<Range<usize>>) -> usize {
+        // Hash collisions are resolved by full array equality, never hash alone.
+        if let Some(&id) = self.brick_lookup.get(&data) {
+            self.bricks[id].as_mut().unwrap().references += 1;
+            return id;
+        }
+        let offset = self.free_bricks.pop().unwrap_or_else(|| {
+            let offset = self.cells.len();
+            self.cells.resize(offset + BRICK_WORDS, 0);
+            offset
+        });
+        self.cells[offset..offset + BRICK_WORDS].copy_from_slice(&data);
+        dirty.push(offset..offset + BRICK_WORDS);
+        let id = self.free_brick_ids.pop().unwrap_or_else(|| {
+            self.bricks.push(None);
+            self.bricks.len() - 1
+        });
+        self.bricks[id] = Some(SharedBrick {
+            data,
+            offset,
+            references: 1,
+        });
+        self.brick_lookup.insert(data, id);
+        id
+    }
+
+    fn release_bricks(&mut self, ids: &[usize]) {
+        for &id in ids {
+            let brick = self.bricks[id].as_mut().unwrap();
+            brick.references -= 1;
+            if brick.references == 0 {
+                self.brick_lookup.remove(&brick.data);
+                self.free_bricks.push(brick.offset);
+                self.free_brick_ids.push(id);
+                self.bricks[id] = None;
+            }
+        }
     }
 
     fn rebuild_directory(&mut self) {
@@ -131,27 +234,6 @@ fn pack_extents(field: Aadf) -> u32 {
     })
 }
 
-fn pack_region(region: &NaadfRegion, out: &mut [u32]) {
-    for z in 0..4 {
-        for y in 0..4 {
-            for x in 0..4 {
-                let brick = UVec3::new(x, y, z);
-                out[((z * 4 + y) * 4 + x) as usize] = u32::from(region.brick_occupied(brick))
-                    | (pack_extents(region.brick_aadf(brick)) << 1);
-            }
-        }
-    }
-    for z in 0..16 {
-        for y in 0..16 {
-            for x in 0..16 {
-                let local = UVec3::new(x, y, z);
-                out[64 + ((z * 16 + y) * 16 + x) as usize] = u32::from(region.material(local))
-                    | (pack_extents(region.voxel_aadf(local)) << 9);
-            }
-        }
-    }
-}
-
 pub(crate) fn hash_region(key: IVec3) -> u32 {
     pcg(pcg(pcg(key.x as u32) ^ key.y as u32) ^ key.z as u32)
 }
@@ -161,6 +243,124 @@ mod tests {
     use super::super::naadf::{linear_index, volume_len};
     use super::super::world::PAGE_SIZE;
     use super::*;
+
+    fn decoded_material(packed: &PackedScene, voxel: IVec3) -> u16 {
+        let key = voxel.div_euclid(IVec3::splat(16));
+        let allocation = &packed.regions[&key];
+        let header = packed.headers[allocation.header];
+        if header.x == 1 {
+            return AIR;
+        }
+        if header.x == 2 {
+            return header.y as u16;
+        }
+        let local = voxel.rem_euclid(IVec3::splat(16)).as_uvec3();
+        let brick = local / 4;
+        let entry = packed.cells[header.y as usize + linear_index(brick, UVec3::splat(4))];
+        match entry & 3 {
+            0 => AIR,
+            1 => (entry >> 2) as u16,
+            2 => {
+                let index = linear_index(local % 4, UVec3::splat(4));
+                let word = packed.cells[(entry >> 2) as usize + index / 2];
+                let cell = (word >> ((index & 1) * 16)) & 65535;
+                if cell & 1 == 0 {
+                    AIR
+                } else {
+                    (cell >> 1) as u16
+                }
+            }
+            _ => panic!("invalid brick state"),
+        }
+    }
+
+    #[test]
+    fn repeated_bricks_share_storage_and_edits_are_copy_on_write() {
+        let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+        for z in 0..32 {
+            for x in 0..32 {
+                page[linear_index(UVec3::new(x, 4, z), PAGE_SIZE)] = 255;
+            }
+        }
+        let scene = TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, page.clone())],
+            &[],
+        );
+        let mut packed = PackedScene::default();
+        packed.update(&scene);
+        assert_eq!(packed.brick_lookup.len(), 1);
+        assert_eq!(
+            packed.cells.len() * 4,
+            1152,
+            "four region tables and one shared mixed brick replace 66,560 bytes"
+        );
+        assert_eq!(
+            packed
+                .bricks
+                .iter()
+                .flatten()
+                .map(|b| b.references)
+                .sum::<usize>(),
+            64
+        );
+        page[linear_index(UVec3::new(4, 4, 4), PAGE_SIZE)] = AIR;
+        let edited =
+            TransportScene::with_page_delta(&scene, vec![(IVec3::ZERO, page.clone())], &[]);
+        let dirty = packed.update(&edited);
+        assert!(dirty.iter().map(|r| r.len()).sum::<usize>() <= TABLE_WORDS + BRICK_WORDS);
+        assert_eq!(decoded_material(&packed, IVec3::new(4, 4, 4)), AIR);
+        assert_eq!(
+            decoded_material(&packed, IVec3::new(20, 4, 20)),
+            255,
+            "editing one reference must not modify another"
+        );
+        for z in 0..32 {
+            for y in 0..32 {
+                for x in 0..32 {
+                    assert_eq!(
+                        decoded_material(&packed, IVec3::new(x, y, z)),
+                        page[linear_index(UVec3::new(x as u32, y as u32, z as u32), PAGE_SIZE)]
+                    );
+                }
+            }
+        }
+        let empty = TransportScene::with_page_delta(&edited, vec![], &[IVec3::ZERO]);
+        packed.update(&empty);
+        assert!(packed.brick_lookup.is_empty());
+        assert!(packed.bricks.iter().all(Option::is_none));
+        let high_water = packed.cells.len();
+        packed.update(&edited);
+        assert_eq!(
+            packed.cells.len(),
+            high_water,
+            "streaming reuses freed slots"
+        );
+    }
+
+    #[test]
+    fn mixed_region_of_uniform_bricks_has_no_voxel_payload() {
+        let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+        for z in 0..16 {
+            for y in 0..16 {
+                for x in 0..16 {
+                    page[linear_index(UVec3::new(x, y, z), PAGE_SIZE)] =
+                        if x < 8 { 0 } else { 255 };
+                }
+            }
+        }
+        let scene = TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, page)],
+            &[],
+        );
+        let mut packed = PackedScene::default();
+        packed.update(&scene);
+        assert_eq!(packed.cells.len(), TABLE_WORDS);
+        assert!(packed.brick_lookup.is_empty());
+        assert_eq!(decoded_material(&packed, IVec3::new(3, 3, 3)), 0);
+        assert_eq!(decoded_material(&packed, IVec3::new(9, 3, 3)), 255);
+    }
 
     #[test]
     fn edits_patch_only_changed_payload_and_uniform_regions_use_no_dense_memory() {
@@ -174,8 +374,8 @@ mod tests {
         let mut packed = PackedScene::default();
         let dirty = packed.update(&scene);
         assert_eq!(dirty.len(), 1);
-        assert_eq!(packed.cells.len(), REGION_WORDS);
-        assert_eq!(packed.cells[64 + (4 * 16 + 4) * 16 + 4] & 511, 255);
+        assert_eq!(packed.cells.len(), TABLE_WORDS + BRICK_WORDS);
+        assert_eq!((packed.cells[TABLE_WORDS] & 65535) >> 1, 255);
         assert!(packed.update(&scene).is_empty());
         let empty = TransportScene::with_page_delta(
             &scene,
@@ -187,7 +387,7 @@ mod tests {
         assert_eq!(packed.update(&next).len(), 1);
         assert_eq!(
             packed.cells.len(),
-            REGION_WORDS,
+            TABLE_WORDS + BRICK_WORDS,
             "freed payload must be reused"
         );
     }

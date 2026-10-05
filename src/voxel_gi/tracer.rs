@@ -14,7 +14,7 @@ use super::world::{
 
 const RAY_EPSILON: f32 = 0.001;
 const MAX_TRACE_STEPS: usize = 2_048;
-const MAX_PATH_DISTANCE: f32 = 768.0;
+pub(crate) const MAX_PATH_DISTANCE: f32 = 768.0;
 const MAX_BOUNCES: u32 = 3;
 /// Coverage milestone, not a convergence or quality guarantee. Sampling never
 /// stops here; the scheduler continually improves every loaded surface.
@@ -70,6 +70,14 @@ enum TraceResult {
     Unknown,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum UnloadedPolicy {
+    /// Unknown space cannot certify energy arriving at a simulation surface.
+    Conservative,
+    /// Match the visible scene: only loaded geometry can cast a display shadow.
+    VisibleGeometry,
+}
+
 impl TransportScene {
     #[cfg(test)]
     pub fn trace_ray(&self, origin: Vec3, direction: Vec3, max_distance: f32) -> Option<RayHit> {
@@ -80,6 +88,21 @@ impl TransportScene {
     }
 
     fn trace_ray_result(&self, origin: Vec3, direction: Vec3, max_distance: f32) -> TraceResult {
+        self.trace_ray_with_policy(
+            origin,
+            direction,
+            max_distance,
+            UnloadedPolicy::Conservative,
+        )
+    }
+
+    fn trace_ray_with_policy(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max_distance: f32,
+        policy: UnloadedPolicy,
+    ) -> TraceResult {
         let direction = direction.normalize_or_zero();
         if direction == Vec3::ZERO {
             return TraceResult::Escaped;
@@ -113,6 +136,20 @@ impl TransportScene {
                 return TraceResult::Escaped;
             }
             let Some(region) = self.regions.get(&region_coordinate) else {
+                if policy == UnloadedPolicy::VisibleGeometry {
+                    let (travel, normal) = advance_empty_box(
+                        position,
+                        direction,
+                        region_coordinate,
+                        IVec3::ZERO,
+                        IVec3::ZERO,
+                        REGION_EDGE as f32,
+                    );
+                    position += direction * travel;
+                    distance += travel;
+                    last_normal = normal;
+                    continue;
+                }
                 return if self.has_loaded_region_ahead(position, direction) {
                     TraceResult::Unknown
                 } else {
@@ -230,6 +267,7 @@ pub fn trace_probe_batch(
         probes,
         samples_per_face,
         &emitters,
+        &mut super::sky_cache::SkyCache::default(),
     )
 }
 
@@ -240,54 +278,102 @@ pub(crate) fn trace_probe_batch_with_emitters(
     mut probes: Vec<SurfaceProbe>,
     samples_per_face: u32,
     emitters: &EmissionDistribution,
+    sky_cache: &mut super::sky_cache::SkyCache,
 ) -> Vec<SurfaceProbe> {
+    trace_sky_batch(&scene, &sources, &mut probes, sky_cache);
+    if samples_per_face == 0 {
+        return probes;
+    }
+    probes
+        .par_iter_mut()
+        .filter(|probe| probe.face_mask & probe.trace_mask != 0)
+        .for_each(|probe| {
+            trace_probe_faces(
+                &scene,
+                &sources,
+                &materials,
+                probe,
+                samples_per_face,
+                emitters,
+            );
+        });
+    probes
+}
+
+pub(crate) fn trace_sky_batch(
+    scene: &Arc<TransportScene>,
+    sources: &TransportSources,
+    probes: &mut [SurfaceProbe],
+    sky_cache: &mut super::sky_cache::SkyCache,
+) {
+    let pending = sky_cache.prepare(scene, sources, probes);
+    let sky: Vec<_> = pending
+        .par_iter()
+        .map(|position| {
+            (
+                *position,
+                sample_sky_corner(scene, &sky_cache.lights, *position),
+            )
+        })
+        .collect();
+    for (position, value) in sky {
+        sky_cache.store(position, value);
+    }
+    sky_cache.apply(probes);
+}
+
+fn trace_probe_faces(
+    scene: &TransportScene,
+    sources: &TransportSources,
+    materials: &VoxelMaterialTransportTable,
+    probe: &mut SurfaceProbe,
+    samples_per_face: u32,
+    emitters: &EmissionDistribution,
+) {
     // The caller installs this work in the GI-owned, bounded Rayon pool. That
     // retains useful path-level parallelism without occupying Bevy's render and
     // gameplay workers.
-    probes.par_iter_mut().for_each(|probe| {
-        probe.emission = materials.get(probe.material).emission;
-        for (face, face_offset) in FACE_OFFSETS.iter().enumerate() {
-            if probe.face_mask & (1 << face) == 0 {
-                continue;
-            }
-
-            let normal = face_offset.as_vec3();
-            let voxel_center = probe.voxel.as_vec3() + Vec3::splat(0.5);
-            let surface_position = voxel_center + normal * 0.5;
-            (
-                probe.direct[face],
-                probe.custom_direct[face],
-                probe.direct_sky[face],
-            ) = direct_at_surface(&scene, &sources, surface_position, normal);
-            let stream = stream_id(probe.voxel, face as u32);
-            for _ in 0..samples_per_face {
-                let sequence = probe.sequence[face];
-                let direction = hemisphere(
-                    normal,
-                    sample_1d(stream, sequence, 0),
-                    sample_1d(stream, sequence, 1),
-                );
-                let origin = voxel_center + normal * 0.501;
-                let sample = trace_path(
-                    &scene, &sources, &materials, origin, direction, stream, sequence, normal,
-                    emitters,
-                ) + sample_emitter(
-                    &scene,
-                    &materials,
-                    emitters,
-                    surface_position,
-                    normal,
-                    stream,
-                    sequence,
-                    0,
-                    true,
-                );
-                accumulate_sample(probe, face, sample);
-            }
+    probe.emission = materials.get(probe.material).emission;
+    for (face, face_offset) in FACE_OFFSETS.iter().enumerate() {
+        if probe.face_mask & probe.trace_mask & (1 << face) == 0 {
+            continue;
         }
-        probe.updated_at = Some(std::time::Instant::now());
-    });
-    probes
+
+        let normal = face_offset.as_vec3();
+        let voxel_center = probe.voxel.as_vec3() + Vec3::splat(0.5);
+        let surface_position = voxel_center + normal * 0.5;
+        (
+            probe.direct[face],
+            probe.custom_direct[face],
+            probe.direct_sky[face],
+        ) = direct_at_surface(scene, sources, surface_position, normal);
+        let stream = stream_id(probe.voxel, face as u32);
+        for _ in 0..samples_per_face {
+            let sequence = probe.sequence[face];
+            let direction = hemisphere(
+                normal,
+                sample_1d(stream, sequence, 0),
+                sample_1d(stream, sequence, 1),
+            );
+            let origin = voxel_center + normal * 0.501;
+            let sample = trace_path(
+                scene, sources, materials, origin, direction, stream, sequence, normal, emitters,
+            ) + sample_emitter(
+                scene,
+                materials,
+                emitters,
+                surface_position,
+                normal,
+                stream,
+                sequence,
+                0,
+                true,
+            );
+            accumulate_sample(probe, face, sample);
+        }
+        probe.face_updated_at[face] = Some(std::time::Instant::now());
+    }
+    probe.updated_at = Some(std::time::Instant::now());
 }
 
 pub(crate) fn accumulate_sample(probe: &mut SurfaceProbe, face: usize, sample: EnergySpectrum) {
@@ -491,6 +577,51 @@ fn direct_at_surface(
     )
 }
 
+#[cfg(test)]
+fn sky_at_corner(
+    scene: &TransportScene,
+    sources: &TransportSources,
+    voxel: IVec3,
+    face: usize,
+    corner: usize,
+) -> u32 {
+    sample_sky_corner(
+        scene,
+        &super::sky_cache::sky_lights(sources),
+        super::sky::corner_position(voxel, face, corner),
+    )[face]
+}
+
+pub(crate) fn sample_sky_corner(
+    scene: &TransportScene,
+    lights: &[super::sky_cache::SkyLight],
+    position: IVec3,
+) -> [u32; 6] {
+    let mut value = [Vec3::ZERO; 6];
+    for light in lights {
+        let direction = light.direction;
+        // One canonical ray origin for every receiver sharing this vertex.
+        // Offset toward the light, not along a receiving face's normal. Exact
+        // axis ties consistently use the positive grid cell in both backends.
+        let origin = position.as_vec3() + direction * (RAY_EPSILON * 2.0);
+        match scene.trace_ray_with_policy(
+            origin,
+            direction,
+            MAX_PATH_DISTANCE,
+            UnloadedPolicy::VisibleGeometry,
+        ) {
+            TraceResult::Escaped => {
+                for (face, normal) in FACE_OFFSETS.iter().enumerate() {
+                    value[face] += light.color * normal.as_vec3().dot(direction).max(0.0);
+                }
+            }
+            TraceResult::Hit(_) => (),
+            TraceResult::Unknown => return [0; 6],
+        }
+    }
+    value.map(super::sky::pack)
+}
+
 fn advance_empty_box(
     position: Vec3,
     direction: Vec3,
@@ -570,6 +701,73 @@ mod tests {
     use super::*;
     use crate::voxel_gi::naadf::{linear_index, volume_len};
     use crate::voxel_gi::world::{PAGE_SIZE, TransportScene};
+
+    #[test]
+    fn sky_corners_preserve_wall_contact_shadow_missed_by_face_center() {
+        let (scene, sources, probes) = super::super::sky::contact_shadow_fixture();
+        let values = trace_probe_batch(
+            scene,
+            sources,
+            Arc::new(VoxelMaterialTransportTable::default()),
+            probes,
+            1,
+        );
+        for probe in &values {
+            assert!(
+                probe.direct_sky[2].x > 0.9,
+                "face center misses the small shadow"
+            );
+            let corners = probe.display[2].sky;
+            assert_eq!(corners[0], 1, "near-left corner must be measured shadow");
+            assert_eq!(corners[2], 1, "near-right corner must be measured shadow");
+            assert!(super::super::sky::unpack(corners[1]).x > 0.9);
+            assert!(super::super::sky::unpack(corners[3]).x > 0.9);
+        }
+        assert_eq!(values[0].display[2].sky[2..], values[1].display[2].sky[..2]);
+    }
+
+    #[test]
+    fn sky_display_crosses_streaming_gaps_but_simulation_stays_conservative() {
+        let empty = vec![AIR; volume_len(PAGE_SIZE)];
+        let scene = TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![
+                (IVec3::ZERO, empty.clone()),
+                (IVec3::new(2, 0, 0), empty.clone()),
+            ],
+            &[],
+        );
+        let sources = TransportSources {
+            directional: vec![DirectionalTransportLight {
+                direction: Vec3::X,
+                radiance: EnergySpectrum::ONE,
+                custom_visible: Vec3::ZERO,
+            }],
+            ..default()
+        };
+        assert_eq!(
+            scene.trace_ray_result(Vec3::new(32.002, 8.0, 8.0), Vec3::X, 768.0),
+            TraceResult::Unknown
+        );
+        let before = sky_at_corner(&scene, &sources, IVec3::new(31, 8, 8), 0, 0);
+        assert!(super::super::sky::unpack(before).x > 0.99);
+        let filled = TransportScene::with_page_delta(&scene, vec![(IVec3::X, empty)], &[]);
+        assert!(
+            super::super::sky::unpack(sky_at_corner(&filled, &sources, IVec3::new(31, 8, 8), 0, 0))
+                .x
+                > 0.99
+        );
+        let blocked = TransportScene::with_page_delta(
+            &filled,
+            vec![(IVec3::new(2, 0, 0), vec![2; volume_len(PAGE_SIZE)])],
+            &[IVec3::X],
+        );
+        assert_eq!(
+            sky_at_corner(&blocked, &sources, IVec3::new(31, 8, 8), 0, 0),
+            1,
+            "loaded occluders beyond a gap must still cast shadows"
+        );
+    }
 
     #[test]
     fn sealed_room_has_no_sky_leak_and_small_emitter_lights_it() {

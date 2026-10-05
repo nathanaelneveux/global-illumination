@@ -26,13 +26,13 @@ use terrain::TerrainPlugin;
 use voxel_gi::VoxelGiPlugin;
 use world_environment::WorldEnvironmentPlugin;
 
-fn main() {
+fn main() -> AppExit {
     App::new()
         .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        title: "Voxel GI Lab".into(),
+                        title: "Voxel GI Lab | Sun: voxel corners (F7)".into(),
                         ..default()
                     }),
                     ..default()
@@ -67,5 +67,5 @@ fn main() {
             ChunkColliderPlugin,
             PlayerPlugin,
         ))
-        .run();
+        .run()
 }

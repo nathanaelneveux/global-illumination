@@ -2,8 +2,8 @@
 // Layouts and sampling dimensions are mirrored by gpu.rs and sampling.rs.
 struct Params {
     counts: vec4<u32>, // tasks, samples per face, directory mask, light count
-    minimum: vec4<i32>,
-    maximum: vec4<i32>,
+    minimum: vec4<i32>, // xyz: scene bounds, w: shared corner task count
+    maximum: vec4<i32>, // xyz: scene bounds, w: directional light count
     environment: vec4<f32>,
     extra: vec4<f32>, // environment ionizing, path distance
 }
@@ -59,7 +59,8 @@ struct RayResult {
 @group(0) @binding(4) var<storage, read> materials: array<Material>;
 @group(0) @binding(5) var<storage, read> lights: array<Light>;
 @group(0) @binding(6) var<storage, read> tasks: array<FaceTask>;
-@group(0) @binding(7) var<storage, read_write> results: array<FaceResult>;
+// Six float4s per face, followed by two packed uint4s per shared sky corner.
+@group(0) @binding(7) var<storage, read_write> results: array<vec4<u32>>;
 @group(0) @binding(8) var<storage, read> emitters: array<EmissiveFace>;
 
 fn pcg(value: u32) -> u32 {
@@ -146,7 +147,7 @@ fn loaded_region_ahead(start: vec3<f32>, direction: vec3<f32>) -> bool {
     }
     return true;
 }
-fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayResult {
+fn trace_domain(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, visible_geometry: bool) -> RayResult {
     var result: RayResult;
     var near = -1e30;
     var far = 1e30;
@@ -180,6 +181,13 @@ fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayResul
         if any(last_region != region) {
             let index = lookup_region(region);
             if index == 0xffffffffu {
+                if visible_geometry {
+                    let advance = advance_box(position, direction, region, vec3(0), vec3(0), 16.0);
+                    distance += advance.w;
+                    position += direction * advance.w;
+                    normal = advance.xyz;
+                    continue;
+                }
                 result.status = select(0u, 2u, loaded_region_ahead(position, direction));
                 return result;
             }
@@ -195,15 +203,21 @@ fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayResul
                 let local = vec3<u32>(voxel & vec3<i32>(15));
                 let brick = local / 4u;
                 let brick_data = cells[metadata.y + (brick.z * 4u + brick.y) * 4u + brick.x];
-                if (brick_data & 1u) == 0u {
-                    let extents = brick_data >> 1u;
+                let brick_state = brick_data & 3u;
+                if brick_state == 0u {
+                    let extents = brick_data >> 2u;
                     advance = advance_box(position, direction, region * 4 + vec3<i32>(brick), negative_extents(extents), positive_extents(extents), 4.0);
                     material = 256u;
+                } else if brick_state == 1u {
+                    material = brick_data >> 2u;
                 } else {
-                    let cell = cells[metadata.y + 64u + (local.z * 16u + local.y) * 16u + local.x];
-                    material = cell & 511u;
+                    let inner = local & vec3<u32>(3u);
+                    let index = (inner.z * 4u + inner.y) * 4u + inner.x;
+                    let word = cells[(brick_data >> 2u) + index / 2u];
+                    let cell = (word >> ((index & 1u) * 16u)) & 65535u;
+                    material = select(256u, cell >> 1u, (cell & 1u) != 0u);
                     if material == 256u {
-                        let extents = cell >> 9u;
+                        let extents = cell >> 1u;
                         advance = advance_box(position, direction, voxel, negative_extents(extents), positive_extents(extents), 1.0);
                     }
                 }
@@ -223,6 +237,9 @@ fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayResul
     }
     result.status = 2u;
     return result;
+}
+fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayResult {
+    return trace_domain(origin, direction, max_distance, false);
 }
 fn direct_at(position: vec3<f32>, normal: vec3<f32>) -> Energy {
     var energy: Energy;
@@ -252,6 +269,45 @@ fn direct_at(position: vec3<f32>, normal: vec3<f32>) -> Energy {
         }
     }
     return energy;
+}
+
+fn pack_sky(value: vec3<f32>) -> u32 {
+    let maximum = max(value.x, max(value.y, value.z));
+    if maximum < 1e-30 { return 1u; } // measured black, not unknown
+    let exponent = (bitcast<u32>(maximum) >> 23u) & 255u;
+    let quantum = exp2(f32(exponent) - 134.0);
+    let mantissa = vec3<u32>(min(round(max(value, vec3(0.0)) / quantum), vec3(255.0)));
+    return mantissa.x | (mantissa.y << 8u) | (mantissa.z << 16u) | (exponent << 24u);
+}
+
+@compute @workgroup_size(64)
+fn trace_sky_corners(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= u32(params.minimum.w) { return; }
+    let position = vec3<f32>(tasks[params.counts.x + id.x].voxel);
+    var values: array<vec3<f32>, 6>;
+    var valid = true;
+    for (var i = 0u; i < u32(params.maximum.w); i += 1u) {
+        let light = lights[i];
+        let direction = normalize(light.position_range.xyz);
+        let energy = max(light.energy.rgb - light.extra.yzw, vec3(0.0));
+        if all(energy == vec3(0.0)) { continue; }
+        // A canonical light-directed origin makes visibility independent of
+        // the receiving face. Axis ties use the same positive grid cell as CPU.
+        let origin = position + direction * 0.002;
+        // Display shadows match rendered loaded geometry. Do not turn gaps in
+        // the streaming directory into opaque slabs; continue to real occluders.
+        // Path transport and simulation direct energy still use strict trace().
+        let visibility = trace_domain(origin, direction, params.extra.y, true).status;
+        if visibility == 2u { valid = false; break; }
+        if visibility == 0u {
+            for (var face = 0u; face < 6u; face += 1u) {
+                values[face] += energy * max(dot(face_normal(face), direction), 0.0);
+            }
+        }
+    }
+    let offset = params.counts.x * 6u + id.x * 2u;
+    results[offset] = select(vec4(0u), vec4(pack_sky(values[0]), pack_sky(values[1]), pack_sky(values[2]), pack_sky(values[3])), valid);
+    results[offset + 1u] = select(vec4(0u), vec4(pack_sky(values[4]), pack_sky(values[5]), 0u, 0u), valid);
 }
 fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, sequence: u32, bounce: u32, has_cosine_path: bool) -> Energy {
     var result: Energy;
@@ -370,5 +426,11 @@ fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     result.second_extra.y = direct.sky_visible.x;
     result.second_extra.z = direct.sky_visible.y;
     result.second_extra.w = direct.sky_visible.z;
-    results[id.x] = result;
+    let offset = id.x * 6u;
+    results[offset] = bitcast<vec4<u32>>(result.mean);
+    results[offset + 1u] = bitcast<vec4<u32>>(result.mean_extra);
+    results[offset + 2u] = bitcast<vec4<u32>>(result.second);
+    results[offset + 3u] = bitcast<vec4<u32>>(result.second_extra);
+    results[offset + 4u] = bitcast<vec4<u32>>(result.direct);
+    results[offset + 5u] = bitcast<vec4<u32>>(result.direct_extra);
 }

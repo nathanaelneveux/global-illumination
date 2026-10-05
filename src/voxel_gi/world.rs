@@ -366,6 +366,13 @@ pub struct SurfaceProbe {
     pub(crate) display: [super::history::FaceDisplay; 6],
     pub(crate) display_updated_at: Option<Instant>,
     pub samples: [u32; 6],
+    /// Worker selection, separate from topology. Never changes visible faces.
+    pub(crate) trace_mask: u8,
+    /// Faces refreshed in transport_revision; revision changes are lazy O(1).
+    pub(crate) fresh_mask: u8,
+    pub(crate) transport_revision: u64,
+    pub(crate) stable_batches: [u8; 6],
+    pub(crate) face_updated_at: [Option<Instant>; 6],
     /// Sampling sequence is independent of history length and invalidation.
     pub sequence: [u32; 6],
     /// Per-band second raw moment, used to expose uncertainty to simulations.
@@ -398,6 +405,11 @@ impl SurfaceProbe {
             display: [super::history::FaceDisplay::default(); 6],
             display_updated_at: None,
             samples: [0; 6],
+            trace_mask: 63,
+            fresh_mask: 63,
+            transport_revision: 0,
+            stable_batches: [0; 6],
+            face_updated_at: [None; 6],
             sequence: [0; 6],
             second_moment: [EnergySpectrum::ZERO; 6],
             revision: 0,
@@ -429,11 +441,14 @@ impl SurfaceProbe {
     pub(crate) fn invalidate(&mut self) {
         self.revision = self.revision.wrapping_add(1);
         self.samples = [0; 6];
+        self.fresh_mask = 0;
+        self.stable_batches = [0; 6];
+        self.face_updated_at = [None; 6];
         self.radiance = [EnergySpectrum::ZERO; 6];
         self.second_moment = [EnergySpectrum::ZERO; 6];
-        for display in &mut self.display {
-            display.confidence = display.confidence.min(0.25);
-        }
+        // Presentation weights belong to the retained display, not the reset
+        // transport statistics. Changing only weights would visibly relight
+        // unchanged shared corners on every edit.
         self.display_updated_at = Some(Instant::now());
         // Keep the previous display estimate until replacement samples arrive,
         // but never advertise it as a valid measurement to a simulation.

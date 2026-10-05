@@ -132,6 +132,15 @@ fn spawn_player(mut commands: Commands, world: Res<PrototypeWorld>) {
         ))
         .id();
 
+    // Automated GI comparisons own the camera path. Background mouse motion
+    // must not rotate it and change the streamed/rendered workload between runs.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("VOXEL_GI_VALIDATE").is_some() {
+        commands
+            .entity(player)
+            .insert(ContextActivity::<PlayerInput>::INACTIVE);
+    }
+
     commands.spawn((
         Name::new("PlayerCamera"),
         PlayerCamera,

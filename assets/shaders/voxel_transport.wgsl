@@ -33,7 +33,7 @@ struct GpuHashEntry {
 struct GpuProbe {
     faces: array<vec4<f32>, 6>,
     emission: vec4<f32>,
-    direct_sky: array<vec4<f32>, 6>,
+    direct_sky: array<vec4<u32>, 6>, // four packed RGBE corners per face
 }
 
 struct GpuTransportSettings {
@@ -121,14 +121,51 @@ fn lookup_probe(voxel: vec3<i32>) -> u32 {
     return probe_index;
 }
 
-fn lookup_face(voxel: vec3<i32>, face: u32, sky: bool) -> vec4<f32> {
+fn lookup_face(voxel: vec3<i32>, face: u32) -> vec4<f32> {
     let probe_index = lookup_probe(voxel);
     if probe_index >= transport_settings.probe_count {
         return vec4(0.0);
     }
 
-    if sky { return transport_probes[probe_index].direct_sky[face]; }
     return transport_probes[probe_index].faces[face];
+}
+
+fn unpack_sky(value: u32) -> vec3<f32> {
+    let exponent = value >> 24u;
+    if exponent == 0u { return vec3(0.0); }
+    return vec3<f32>(f32(value & 255u), f32((value >> 8u) & 255u), f32((value >> 16u) & 255u))
+        * exp2(f32(exponent) - 134.0);
+}
+
+// These are ray measurements AT the virtual corners, not an average of nearby
+// face-center rays. The four values naturally retain contact shadows at walls.
+// w=0 means unavailable, never measured darkness. Both PBR hooks use this same
+// readiness test so fallback diffuse and shadow visibility remain paired.
+fn sky_irradiance(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
+    let voxel = vec3<i32>(floor(position - normal * 0.01));
+    let index = lookup_probe(voxel);
+    if index >= transport_settings.probe_count { return vec4(0.0); }
+    var face = 0u;
+    var uv = position.yz - vec2<f32>(voxel.yz);
+    if abs(normal.y) > 0.5 {
+        face = 2u;
+        uv = position.xz - vec2<f32>(voxel.xz);
+    } else if abs(normal.z) > 0.5 {
+        face = 4u;
+        uv = position.xy - vec2<f32>(voxel.xy);
+    }
+    face += select(0u, 1u, normal[face / 2u] < 0.0);
+    let corners = transport_probes[index].direct_sky[face];
+    if any(corners == vec4(0u)) { return vec4(0.0); }
+    let c00 = unpack_sky(corners.x);
+    let c10 = unpack_sky(corners.y);
+    let c01 = unpack_sky(corners.z);
+    let c11 = unpack_sky(corners.w);
+    if transport_settings.reconstruction == 0u {
+        return vec4((c00 + c10 + c01 + c11) * 0.25, 1.0);
+    }
+    uv = clamp(uv, vec2(0.0), vec2(1.0));
+    return vec4(mix(mix(c00, c10, uv.x), mix(c01, c11, uv.x), uv.y), 1.0);
 }
 
 // Four coplanar faces meet at a virtual voxel corner. Only the connected
@@ -148,6 +185,7 @@ fn probe_irradiance(position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec3<f
     if (!sky && transport_settings.enabled == 0u) || transport_settings.probe_count == 0u {
         return vec3(0.0);
     }
+    if sky { return sky_irradiance(position, normal).rgb; }
     let voxel = vec3<i32>(floor(position - normal * 0.01));
     var face = 0u;
     var u = vec3<i32>(0, 1, 0);
@@ -162,19 +200,19 @@ fn probe_irradiance(position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec3<f
     }
     let axis = face / 2u;
     face += select(0u, 1u, normal[axis] < 0.0);
-    let intensity = select(transport_settings.intensity, 1.0, sky);
-    let center = lookup_face(voxel, face, sky);
+    let intensity = transport_settings.intensity;
+    let center = lookup_face(voxel, face);
     if transport_settings.reconstruction == 0u || center.w == 0.0 {
         return center.rgb * intensity;
     }
-    let left = lookup_face(voxel - u, face, sky);
-    let right = lookup_face(voxel + u, face, sky);
-    let bottom = lookup_face(voxel - v, face, sky);
-    let top = lookup_face(voxel + v, face, sky);
-    let c00 = corner_value(center, left, bottom, lookup_face(voxel - u - v, face, sky));
-    let c10 = corner_value(center, right, bottom, lookup_face(voxel + u - v, face, sky));
-    let c01 = corner_value(center, left, top, lookup_face(voxel - u + v, face, sky));
-    let c11 = corner_value(center, right, top, lookup_face(voxel + u + v, face, sky));
+    let left = lookup_face(voxel - u, face);
+    let right = lookup_face(voxel + u, face);
+    let bottom = lookup_face(voxel - v, face);
+    let top = lookup_face(voxel + v, face);
+    let c00 = corner_value(center, left, bottom, lookup_face(voxel - u - v, face));
+    let c10 = corner_value(center, right, bottom, lookup_face(voxel + u - v, face));
+    let c01 = corner_value(center, left, top, lookup_face(voxel - u + v, face));
+    let c11 = corner_value(center, right, top, lookup_face(voxel + u + v, face));
     let local = position - vec3<f32>(voxel);
     let uv = clamp(vec2(dot(local, vec3<f32>(u)), dot(local, vec3<f32>(v))), vec2(0.0), vec2(1.0));
     return mix(mix(c00, c10, uv.x), mix(c01, c11, uv.x), uv.y) * intensity;
@@ -195,12 +233,15 @@ override fn lighting::directional_light(
     if !use_voxel_sky() {
         return lighting::directional_light(light_id, input, enable_diffuse);
     }
+    let sky = sky_irradiance((*input).P, (*input).layers[lighting::LAYER_BASE].N);
+    if sky.w == 0.0 {
+        return lighting::directional_light(light_id, input, enable_diffuse);
+    }
     if light_id != 0u || !enable_diffuse { return vec3(0.0); }
-    let sky = probe_irradiance((*input).P, (*input).layers[lighting::LAYER_BASE].N, true);
     // Transport imports sun illuminance / 10,000. Restore photometric scale
     // for a Lambertian response here; Bevy applies camera exposure afterwards.
     // This comparison intentionally has no view-dependent sun specular lobe.
-    return (*input).diffuse_color * sky * (10000.0 / 3.14159265359);
+    return (*input).diffuse_color * sky.rgb * (10000.0 / 3.14159265359);
 }
 
 override fn shadows::fetch_directional_shadow(
@@ -210,7 +251,7 @@ override fn shadows::fetch_directional_shadow(
     view_z: f32,
     frag_coord_xy: vec2<f32>,
 ) -> f32 {
-    if use_voxel_sky() { return 1.0; }
+    if use_voxel_sky() && sky_irradiance(frag_position.xyz, surface_normal).w != 0.0 { return 1.0; }
     return shadows::fetch_directional_shadow(light_id, frag_position, surface_normal, view_z, frag_coord_xy);
 }
 
