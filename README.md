@@ -50,6 +50,8 @@ Chunk collision scans/construction use two bounded workers, prioritized near the
 
 Newly exposed faces prefer measured, same-facing neighbors for their indirect display prior. If none exist, they borrow from measured surfaces bordering the same air cell or a face-adjacent known-empty cell. This lets the sides as well as the bottom of a freshly dug cavity inherit the old surface's indirect lighting. It is an approximate, low-confidence presentation prior; it cannot cross solid/unknown cells, propagate synthetic samples, or rotate direct-sun values between face orientations. Donor age reduces weight continuously instead of abruptly rejecting settled faces after two seconds.
 
+Mesh publication can precede that receiver update. Only while the rendered face has no cache entry, the shader looks in its immediately exterior cell for the removed voxel's retained display lighting. It does not copy emission or cached sun, does not write anything back, and stops using this fallback as soon as the face entry arrives. Established faces take the unchanged reconstruction path; no extra rays or debounce are introduced. This bridges a single-block excavation handoff, not an assurance that arbitrary large edits always have usable history.
+
 ## Change-driven scheduling and NAADF additions
 
 Direct sunlight and GI use the **same voxel ray-traversal geometry**, but have different sampling/update policies. Cached direct sun is deterministic visibility at shared corners; diffuse environment light and bounces are stochastic multi-band path transport. Bevy's per-pixel sunlight comparison mode still uses its own raster shadowing. F7 changes presentation, not the transport model.

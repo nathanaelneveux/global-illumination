@@ -130,6 +130,22 @@ fn lookup_face(voxel: vec3<i32>, face: u32) -> vec4<f32> {
     return transport_probes[probe_index].faces[face];
 }
 
+// A rebuilt mesh may expose a cavity before its receiver upload arrives. Its
+// exterior cell is known air from the visible mesh, but the previous cache can
+// still contain the removed voxel. Borrow that voxel's display light only for
+// this absent face, without sampling across a wall or inventing sun/emission.
+// This fallback is never stored, so it cannot become a propagation donor.
+fn unpublished_face_prior(exterior: vec3<i32>) -> vec3<f32> {
+    let index = lookup_probe(exterior);
+    if index >= transport_settings.probe_count { return vec3(0.0); }
+    var sum = vec4(0.0);
+    for (var face = 0u; face < 6u; face += 1u) {
+        let value = transport_probes[index].faces[face];
+        sum += vec4(value.rgb * value.w, value.w);
+    }
+    return sum.rgb / max(sum.w, 0.000001);
+}
+
 fn unpack_sky(value: u32) -> vec3<f32> {
     let exponent = value >> 24u;
     if exponent == 0u { return vec3(0.0); }
@@ -202,7 +218,10 @@ fn probe_irradiance(position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec3<f
     face += select(0u, 1u, normal[axis] < 0.0);
     let intensity = transport_settings.intensity;
     let center = lookup_face(voxel, face);
-    if transport_settings.reconstruction == 0u || center.w == 0.0 {
+    if center.w == 0.0 {
+        return unpublished_face_prior(voxel + vec3<i32>(round(normal))) * intensity;
+    }
+    if transport_settings.reconstruction == 0u {
         return center.rgb * intensity;
     }
     let left = lookup_face(voxel - u, face);
