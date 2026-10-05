@@ -90,6 +90,8 @@ Normal `cargo run` now starts with **shared-corner direct sunlight and corner-bl
 
 ### Correctness checks
 
+Choose checks for the code being changed. The following is a **catalog, not a checklist to rerun after every edit**. Use focused unit tests during iteration; use the native test for the affected GPU path when needed. Documentation-only work needs diff review, not a build or live run. Broader suites belong at meaningful integration checkpoints.
+
 ```bash
 cargo run
 cargo test --all-targets
@@ -135,10 +137,9 @@ The normal performance workload must render the look we actually play with. It n
 ```bash
 cargo build
 RUST_LOG=info VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_EXIT=1 cargo run
-# Separate runs, not additions to the gameplay baseline:
+# Only when relevant to the change:
 RUST_LOG=info VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_EXIT=1 VOXEL_GI_VALIDATE_PROFILE=sources cargo run
 RUST_LOG=info VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_EXIT=1 VOXEL_GI_VALIDATE_PROFILE=compare cargo run
-RUST_LOG=info VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_EXIT=1 VOXEL_GI_VALIDATE_PROFILE=stress cargo run
 ```
 
 | Profile | Purpose | Workload |
@@ -146,7 +147,9 @@ RUST_LOG=info VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_EXIT=1 VOXEL_GI_VALIDATE_PRO
 | `gameplay` (default, 72 s) | Frame pacing and lighting response in our preferred look | Startup 0–10 s, settled 10–25 s, edit/restore 25–45 s, five streaming moves 45–65 s, recovery 65–72 s; no mode cycling or moving source |
 | `sources` (72 s) | Point-light and emissive-material updates, including IR/ionizing transport | Same timing and streaming path, but moving RGB/IR/ionizing point source plus emissive voxel replace repeated digging; remove sources for recovery |
 | `compare` (29 s) | Appearance inspection, **not** performance evidence | Explicit corner sun, per-pixel sun, flat voxel, corner/flat irradiance, indirect-disabled, and restored-default captures |
-| `stress` (72 s) | Buffer generations, mode switches, and mixed-workload robustness, **not** the gameplay baseline | Editing, sources, streaming, and F4–F7 combinations eight times per second, followed by recovery |
+| `stress` (72 s, targeted only) | Regression check for the fixed buffer-generation/mode-switch failure, **not** routine performance work | Editing, sources, streaming, and F4–F7 combinations eight times per second, followed by recovery |
+
+The known toggle/buffer overrun is fixed and covered by native regression tests. Keep `VOXEL_GI_VALIDATE_PROFILE=stress` available for changes to buffer lifetime, cache generations, material extraction, display-mode handling, renderer dependency upgrades, or a returning symptom. Prefer a targeted headless regression test when sufficient. Do **not** routinely spend a live stress run on sampling, scheduling, lighting tuning, or documentation changes.
 
 Each development-only run creates a **unique** `target/gi-validation/<profile>-<timestamp>-<pid>/` with screenshots, `status.json`, and (on completion) `report.json`. `running` means incomplete, `failed` means invalid setup/capture, and `completed` means the workload finished—not that lighting quality or performance passed. Old top-level reports and the legacy before/after numbers above are historical; schema-2 measurements must get a new baseline. Keep the launch log (including adapter/backend and any render errors) and record the commit/dirty diff with each candidate comparison.
 
@@ -160,15 +163,23 @@ Player input and manual F4–F7 switches are ignored only during validation. Scr
 - **Lighting responsiveness:** inspect nearby and distant face-age distributions, stale/unmeasured observations, unknown-sky observations, and first-fresh-measurement latency after edits. Superseded, untargeted, and still-pending edits are reported alongside successful latencies. Do not accept better FPS obtained by starving the field. First measurement, first-sample coverage, and retained history are **not convergence**.
 - **Stability and look:** inspect textured corner sunlight, hill/wall contact shadows, chunk seams, and irradiance-only views (F6 includes cached direct sun when enabled). Field reports include nearby indirect display-step distributions and positive jumps from dark values; these are diagnostic indicators, not pixel-space noise, an error metric, or proof that flicker is absent. Check a fixed-camera sequence while digging a dark tunnel, placing/removing its roof, and stopping edits: no bright startup flash, false sky-exposed shadows, leaking across disconnected corners, or failure to settle. Still images alone cannot pass temporal stability.
 - **Sources and simulations:** run `sources` and the CPU/GPU parity tests. Verify source removal recovers without stale glow and offscreen receivers continue updating. Display interpolation/filtering must not enter RGB/IR/ionizing simulation measurements; missing/freshness metadata must remain conservative. This does not validate physical heat/dose calibration or planet/asteroid coordinate warps.
-- **Robustness:** run `stress` and the native cache-generation/buffer-bounds tests; require no GPU validation errors, lost updates, or crashed runs. Toggle stress is a correctness test, not the normal visual/performance benchmark.
+- **Robustness:** when the affected path warrants it, use the native cache-generation/buffer-bounds test; add `stress` for relevant integration risk or reproduction. Require no GPU validation errors, lost updates, or crashed runs. This is retained regression coverage, not an ongoing toggle-stability project.
 
-Run at least three alternating baseline/candidate **gameplay** pairs on the same machine, power mode, viewport/present mode, terrain, settings, and otherwise idle system. Compare phase tails **together with** age, edit response, and temporal appearance; preserve every run, including failures. Repeat comparisons if differences are within run-to-run variation. Promote only when the intended benefit is repeatable without a meaningful stability/response regression; an intentional tradeoff needs explicit agreement. Re-run source and stress profiles for scheduling/storage changes. Compute microbenchmarks explain where time went; they do not replace this end-to-end gate.
+For performance iteration, start with a relevant isolated benchmark or one baseline/candidate **gameplay** pair on the same machine, power mode, viewport/present mode, terrain, settings, and otherwise idle system. Compare phase tails **together with** age, edit response, and temporal appearance; preserve failures as well as successes. Repeat alternating pairs when differences are within run-to-run variation or before claiming a small gain—not as a mandatory tax on every change. Promote only when the intended benefit is credible without a meaningful stability/response regression; an intentional tradeoff needs explicit agreement. Run source/visual/robustness checks only when their affected behavior warrants them. Microbenchmarks explain where time went; they do not establish a whole-game speedup.
 
 Field statistics use a bounded systematic sample of at most 1,024 voxels every 250 ms. They count **observations**, not unique faces or independent trials; empty distributions omit percentiles rather than pretending unknown is zero. Display-step statistics only compare matching nearby faces in consecutive observations. Edit response tracks newly exposed adjacent faces (or restored voxel faces), requires a new geometry revision and fresh face timestamps, and is censored when another edit supersedes the watch. It is not a whole-world service guarantee. Screenshot/extraction cooldown exclusion and these diagnostics change instrumentation overhead, another reason not to compare against legacy reports.
 
 Use `VOXEL_GI_BACKEND=cpu cargo run` for the bounded CPU reference fallback. It shares the model, not a throughput guarantee. Logs include coverage/history, sky-ray and batch counters, main-thread selection/merge time, and worker preparation/wait/decode timings. GPU execution and worker wait overlap; never add them. Those latest-batch values are not frame percentiles. The report records backend, viewport/present mode, terrain, and scheduling settings so mismatched runs can be rejected.
 
 The smaller development-only `VOXEL_GI_SMOKE_EDIT=1` check removes one block after bootstrap settles. `VOXEL_GI_SMOKE_MOVE=1` moves the player 48 voxels to exercise streaming. Do not combine these with the full validation workload when comparing performance.
+
+### Commit discipline
+
+`aca688b` checkpoints the integrated shared-corner GI, transport fixes, preferred defaults, and schema-2 harness, verified by 85 regular tests, seven native tests, and the four live profiles. It is a regression reference, not a claim that all quality/performance work is finished.
+
+Its October 5 schema-2 `gameplay` run on Apple M4/Metal, 2560×1440, FIFO, development build and default settings completed 80 edits/restores and five streaming moves. Editing frame p50/p99 were 16.79/28.92 ms; first-fresh-receiver latency p50/p95 was 154.61/183.44 ms (maximum 420.05 ms), with zero pending or superseded watches at completion. This is a single harness-verification run, not evidence of a comparative speedup or visual convergence. Full local artifacts: `target/gi-validation/gameplay-1791217759852541000-95006/`.
+
+From here, commit each coherent, verified change separately and checkpoint before a new performance/architecture experiment. Keep commits buildable, include the verification actually performed and known limitations, and record benchmark results against the exact revision plus any dirty diff. Preserve a compact measurement summary in commit history or tracked documentation; screenshots/logs can remain under `target/`. Do not accumulate multiple independent performance experiments into one uncommitted state. The repository's [agent workflow](AGENTS.md) makes this the default for future work.
 
 ## Controls
 
