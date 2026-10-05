@@ -38,7 +38,7 @@ struct GpuProbe {
 
 struct GpuTransportSettings {
     hash_mask: u32,
-    probe_count: u32,
+    probe_capacity: u32,
     enabled: u32,
     reconstruction: u32,
     intensity: f32,
@@ -123,27 +123,41 @@ fn lookup_probe(voxel: vec3<i32>) -> u32 {
 
 fn lookup_face(voxel: vec3<i32>, face: u32) -> vec4<f32> {
     let probe_index = lookup_probe(voxel);
-    if probe_index >= transport_settings.probe_count {
+    if probe_index >= transport_settings.probe_capacity {
         return vec4(0.0);
     }
 
     return transport_probes[probe_index].faces[face];
 }
 
-// A rebuilt mesh may expose a cavity before its receiver upload arrives. Its
-// exterior cell is known air from the visible mesh, but the previous cache can
-// still contain the removed voxel. Borrow that voxel's display light only for
-// this absent face, without sampling across a wall or inventing sun/emission.
-// This fallback is never stored, so it cannot become a propagation donor.
-fn unpublished_face_prior(exterior: vec3<i32>) -> vec3<f32> {
-    let index = lookup_probe(exterior);
-    if index >= transport_settings.probe_count { return vec3(0.0); }
+const FACE_NORMALS = array<vec3<i32>, 6>(
+    vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0),
+    vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1),
+);
+
+// Bridge a mesh/cache publication gap, for both digging and placement. Prefer
+// old equally oriented surfaces (including the surface just covered by a new
+// block). Otherwise borrow faces bordering the receiver's known-air cell, or
+// the removed voxel's old faces. No arbitrary-radius search through walls.
+// This display-only estimate is never stored or used as transport evidence.
+fn unpublished_face_prior(voxel: vec3<i32>, receiver_face: u32) -> vec4<f32> {
     var sum = vec4(0.0);
     for (var face = 0u; face < 6u; face += 1u) {
-        let value = transport_probes[index].faces[face];
+        let value = lookup_face(voxel + FACE_NORMALS[face], receiver_face);
         sum += vec4(value.rgb * value.w, value.w);
     }
-    return sum.rgb / max(sum.w, 0.000001);
+    if sum.w > 0.0 { return vec4(sum.rgb / sum.w, 0.125); }
+    let exterior = voxel + FACE_NORMALS[receiver_face];
+    let index = lookup_probe(exterior);
+    for (var face = 0u; face < 6u; face += 1u) {
+        let value = lookup_face(exterior - FACE_NORMALS[face], face);
+        sum += vec4(value.rgb * value.w, value.w);
+        if index < transport_settings.probe_capacity {
+            let removed = transport_probes[index].faces[face];
+            sum += vec4(removed.rgb * removed.w, removed.w);
+        }
+    }
+    return vec4(sum.rgb / max(sum.w, 0.000001), select(0.0, 0.125, sum.w > 0.0));
 }
 
 fn unpack_sky(value: u32) -> vec3<f32> {
@@ -155,12 +169,12 @@ fn unpack_sky(value: u32) -> vec3<f32> {
 
 // These are ray measurements AT the virtual corners, not an average of nearby
 // face-center rays. The four values naturally retain contact shadows at walls.
-// w=0 means unavailable, never measured darkness. Both PBR hooks use this same
-// readiness test so fallback diffuse and shadow visibility remain paired.
+// Unknown corners contribute no direct sunlight yet; available corners remain
+// usable. Readiness must NEVER switch a face to another shadow algorithm.
 fn sky_irradiance(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     let voxel = vec3<i32>(floor(position - normal * 0.01));
     let index = lookup_probe(voxel);
-    if index >= transport_settings.probe_count { return vec4(0.0); }
+    if index >= transport_settings.probe_capacity { return vec4(0.0); }
     var face = 0u;
     var uv = position.yz - vec2<f32>(voxel.yz);
     if abs(normal.y) > 0.5 {
@@ -172,16 +186,16 @@ fn sky_irradiance(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     }
     face += select(0u, 1u, normal[face / 2u] < 0.0);
     let corners = transport_probes[index].direct_sky[face];
-    if any(corners == vec4(0u)) { return vec4(0.0); }
+    let ready = select(0.0, 1.0, all(corners != vec4(0u)));
     let c00 = unpack_sky(corners.x);
     let c10 = unpack_sky(corners.y);
     let c01 = unpack_sky(corners.z);
     let c11 = unpack_sky(corners.w);
     if transport_settings.reconstruction == 0u {
-        return vec4((c00 + c10 + c01 + c11) * 0.25, 1.0);
+        return vec4((c00 + c10 + c01 + c11) * 0.25, ready);
     }
     uv = clamp(uv, vec2(0.0), vec2(1.0));
-    return vec4(mix(mix(c00, c10, uv.x), mix(c01, c11, uv.x), uv.y), 1.0);
+    return vec4(mix(mix(c00, c10, uv.x), mix(c01, c11, uv.x), uv.y), ready);
 }
 
 // Four coplanar faces meet at a virtual voxel corner. Only the connected
@@ -198,7 +212,7 @@ fn corner_value(center: vec4<f32>, edge_u: vec4<f32>, edge_v: vec4<f32>, diagona
 }
 
 fn probe_irradiance(position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec3<f32> {
-    if (!sky && transport_settings.enabled == 0u) || transport_settings.probe_count == 0u {
+    if (!sky && transport_settings.enabled == 0u) || transport_settings.probe_capacity == 0u {
         return vec3(0.0);
     }
     if sky { return sky_irradiance(position, normal).rgb; }
@@ -217,9 +231,9 @@ fn probe_irradiance(position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec3<f
     let axis = face / 2u;
     face += select(0u, 1u, normal[axis] < 0.0);
     let intensity = transport_settings.intensity;
-    let center = lookup_face(voxel, face);
+    var center = lookup_face(voxel, face);
     if center.w == 0.0 {
-        return unpublished_face_prior(voxel + vec3<i32>(round(normal))) * intensity;
+        center = unpublished_face_prior(voxel, face);
     }
     if transport_settings.reconstruction == 0u {
         return center.rgb * intensity;
@@ -238,7 +252,7 @@ fn probe_irradiance(position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec3<f
 }
 
 fn use_voxel_sky() -> bool {
-    return transport_settings.voxel_sky != 0u && transport_settings.probe_count != 0u;
+    return transport_settings.voxel_sky != 0u;
 }
 
 // Naga-oil overrides are scoped to this material's shader. Other materials,
@@ -253,9 +267,6 @@ override fn lighting::directional_light(
         return lighting::directional_light(light_id, input, enable_diffuse);
     }
     let sky = sky_irradiance((*input).P, (*input).layers[lighting::LAYER_BASE].N);
-    if sky.w == 0.0 {
-        return lighting::directional_light(light_id, input, enable_diffuse);
-    }
     if light_id != 0u || !enable_diffuse { return vec3(0.0); }
     // Transport imports sun illuminance / 10,000. Restore photometric scale
     // for a Lambertian response here; Bevy applies camera exposure afterwards.
@@ -270,7 +281,7 @@ override fn shadows::fetch_directional_shadow(
     view_z: f32,
     frag_coord_xy: vec2<f32>,
 ) -> f32 {
-    if use_voxel_sky() && sky_irradiance(frag_position.xyz, surface_normal).w != 0.0 { return 1.0; }
+    if use_voxel_sky() { return 1.0; }
     return shadows::fetch_directional_shadow(light_id, frag_position, surface_normal, view_z, frag_coord_xy);
 }
 
@@ -326,7 +337,7 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
     let voxel = vec3<i32>(floor(in.world_position.xyz - in.world_normal * 0.01));
     let index = lookup_probe(voxel);
     var emission = vec3(0.0);
-    if index < transport_settings.probe_count { emission = transport_probes[index].emission.rgb; }
+    if index < transport_settings.probe_capacity { emission = transport_probes[index].emission.rgb; }
     out.color = vec4<f32>(
         out.color.rgb + pbr_input.material.base_color.rgb * (1.0 - pbr_input.material.metallic) * indirect + emission,
         out.color.a,

@@ -18,8 +18,9 @@ pub(crate) struct FaceDisplay {
 /// Prefer equally oriented neighbors. When digging exposes an entirely new
 /// orientation, fall back to measured faces bordering the same local air
 /// pocket. This is a low-confidence display prior, never transport evidence.
-/// Every connection crosses at most two face-adjacent, known-empty cells in
-/// the NEW scene; neither thin walls nor unloaded regions may be crossed.
+/// Air-pocket connections cross at most two known-empty cells in the NEW scene.
+/// Placement may also inherit the equally oriented face it just covered: that
+/// pre-edit exposed face proves the receiver was air, not an intervening wall.
 pub(crate) fn seed_face<'a>(
     scene: &TransportScene,
     voxel: IVec3,
@@ -40,7 +41,8 @@ pub(crate) fn seed_face<'a>(
         let Some(donor) = lookup(donor_voxel) else {
             continue;
         };
-        if scene.material_at(donor_voxel + normal) != Some(AIR) {
+        let covered_by_receiver = offset == -normal;
+        if !covered_by_receiver && scene.material_at(donor_voxel + normal) != Some(AIR) {
             continue;
         }
         let Some((display, w)) = measured_display(donor, face, source_revision, now) else {
@@ -183,8 +185,8 @@ impl SurfaceProbe {
                 self.radiance[face].visible,
                 alpha.clamp(0.0, 1.0),
             );
-            // Unknown is not shadow. The shader falls back to ordinary direct
-            // lighting for an incomplete face, never inventing a black sample.
+            // Unknown remains unknown in storage. The corner renderer uses
+            // available values conservatively without switching shadow modes.
             display.sky = sky;
             let confidence =
                 (samples as f32 / (samples as f32 + 8.0) / (1.0 + uncertainty)).clamp(0.125, 1.0);
@@ -345,6 +347,38 @@ mod tests {
             seed.sky,
             [0, 1, 0, 1],
             "shared shadows stay black, other corners stay unknown"
+        );
+    }
+
+    #[test]
+    fn placement_inherits_covered_face_without_copying_its_sun_or_measurements() {
+        let now = Instant::now();
+        let floor = IVec3::splat(8);
+        let placed = floor + IVec3::Y;
+        let mut donor = measured(floor, 2.0, now);
+        donor.display[2].sky = [super::super::sky::pack(Vec3::ONE); 4];
+        let scene = scene_with(&[floor, placed]);
+        let prior = seed_face(&scene, placed, 2, 0, now, |v| {
+            (v == floor).then_some(&donor)
+        });
+        assert_eq!(prior.indirect, Vec3::splat(2.0));
+        assert_eq!(prior.confidence, 0.125);
+        assert_eq!(
+            prior.sky, [0; 4],
+            "translated corners are not the same sun ray"
+        );
+        let mut receiver = SurfaceProbe::new(placed, 4);
+        receiver.display[2] = prior;
+        assert_eq!(receiver.samples[2], 0);
+        assert_eq!(receiver.radiance[2], EnergySpectrum::ZERO);
+        // Without an old exposed face, this would be borrowing through a wall.
+        donor.face_mask = 0;
+        assert_eq!(
+            seed_face(&scene, placed, 2, 0, now, |v| {
+                (v == floor).then_some(&donor)
+            })
+            .confidence,
+            0.0
         );
     }
 

@@ -64,7 +64,8 @@ impl MaterialExtension for VoxelTransportExtension {
 #[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
 pub struct GpuTransportSettings {
     pub hash_mask: u32,
-    pub probe_count: u32,
+    /// Allocated bound, fixed for this buffer generation (not live occupancy).
+    pub probe_capacity: u32,
     pub enabled: u32,
     pub reconstruction: u32,
     pub intensity: f32,
@@ -77,7 +78,7 @@ impl Default for GpuTransportSettings {
     fn default() -> Self {
         Self {
             hash_mask: 0,
-            probe_count: 0,
+            probe_capacity: 0,
             enabled: 1,
             reconstruction: 1,
             intensity: 1.0,
@@ -93,7 +94,7 @@ impl GpuTransportSettings {
     pub(crate) fn reset_display(&mut self) {
         *self = Self {
             hash_mask: self.hash_mask,
-            probe_count: self.probe_count,
+            probe_capacity: self.probe_capacity,
             ..default()
         };
     }
@@ -436,7 +437,7 @@ pub(crate) fn install_gpu_cache(
         material.extension.hash_entries = assets.hash_entries.clone();
         material.extension.probes = assets.probes.clone();
         material.extension.settings.hash_mask = cache.hash_entries.len() as u32 - 1;
-        material.extension.settings.probe_count = cache.high_water as u32;
+        material.extension.settings.probe_capacity = cache.probe_capacity as u32;
     }
 }
 
@@ -448,8 +449,7 @@ pub(crate) fn patch_gpu_topology(
     probes: &impl super::field::ProbeLookup,
     removed: &[IVec3],
     added: &[IVec3],
-    materials: &mut Assets<VoxelTransportMaterial>,
-    material_handle: &Handle<VoxelTransportMaterial>,
+    changed: &HashSet<IVec3>,
 ) -> bool {
     // Preflight only the delta. A failed allocation/hash insertion must leave
     // the published cache completely intact until its replacement is ready.
@@ -547,9 +547,11 @@ pub(crate) fn patch_gpu_topology(
         state.pending_probes.insert(probe_slot, gpu_probe);
         write_probe(&mut state.probe_mirror, probe_slot, gpu_probe);
     }
-    if let Some(mut material) = materials.get_mut(material_handle) {
-        material.extension.settings.probe_count = cache.high_water as u32;
-    }
+    // Retire old donors and publish newly exposed faces on EXISTING probes in
+    // one transaction. The ordinary value-upload timer must not split these.
+    patch_values_locked(&mut state, cache, probes, changed);
+    // Addressing is generation-stable: an extracted material must already
+    // accept a freshly allocated slot before its new hash entry becomes live.
     true
 }
 
@@ -560,6 +562,15 @@ pub(crate) fn patch_probe_values(
     dirty_voxels: &HashSet<IVec3>,
 ) {
     let mut state = patches.state.lock().unwrap();
+    patch_values_locked(&mut state, cache, probes, dirty_voxels);
+}
+
+fn patch_values_locked(
+    state: &mut ProbePatchState,
+    cache: &GpuTransportCache,
+    probes: &impl super::field::ProbeLookup,
+    dirty_voxels: &HashSet<IVec3>,
+) {
     for voxel in dirty_voxels {
         let (Some(slot), Some(probe)) = (cache.slots.get(voxel), probes.lookup(voxel)) else {
             continue;
@@ -926,7 +937,7 @@ mod tests {
     fn resetting_presentation_preserves_live_cache_addresses() {
         let mut settings = GpuTransportSettings {
             hash_mask: 1023,
-            probe_count: 700,
+            probe_capacity: 700,
             enabled: 0,
             reconstruction: 0,
             debug_irradiance: 1,
@@ -934,7 +945,7 @@ mod tests {
             intensity: 0.5,
         };
         settings.reset_display();
-        assert_eq!((settings.hash_mask, settings.probe_count), (1023, 700));
+        assert_eq!((settings.hash_mask, settings.probe_capacity), (1023, 700));
         assert_eq!(
             (
                 settings.enabled,
@@ -1013,8 +1024,7 @@ mod tests {
             &probes,
             &[voxel_a],
             &[voxel_c],
-            &mut Assets::default(),
-            &Handle::default(),
+            &HashSet::new(),
         ));
         assert_eq!(cache.slots[&voxel_c], old_slot);
         assert!(!cache.slots.contains_key(&voxel_a));
@@ -1079,8 +1089,7 @@ mod tests {
                 &probes,
                 &[a],
                 &[b, c],
-                &mut Assets::default(),
-                &Handle::default()
+                &HashSet::new()
             ));
             assert_eq!(cache.slots, before_slots);
             assert_eq!(
@@ -1196,10 +1205,8 @@ mod tests {
             &probes,
             &[a, transient],
             &[c, transient],
-            &mut materials,
-            &Handle::default(),
+            &HashSet::from([b, c]),
         ));
-        patch_probe_values(&cache, &patches, &probes, &HashSet::from([b, c]));
         assert_eq!(cache.slots.len(), probes.len());
         assert!(!cache.slots.contains_key(&a));
         assert!(!cache.slots.contains_key(&transient));
@@ -1334,6 +1341,80 @@ mod tests {
         let state = world.resource::<GpuProbePatchQueue>().state.lock().unwrap();
         assert_eq!(&state.probe_mirror[..GPU_PROBE_BYTES], &expected_sky);
         assert!(!world.resource::<VoxelGiRuntime>().sky_upload_pending);
+        drop(state);
+
+        // Face-mask-only changes need the same publication guarantee, even
+        // without a hash insertion and with the value timer still held closed.
+        {
+            let mut field = world.resource_mut::<VoxelEnergyField>();
+            let probe = field.probes.get_mut(&voxel).unwrap();
+            probe.update_face_mask(5);
+            probe.display[0].indirect = Vec3::splat(3.0);
+            probe.display[0].confidence = 0.125;
+        }
+        {
+            let mut runtime = world.resource_mut::<VoxelGiRuntime>();
+            runtime.gpu_topology_dirty = true;
+            runtime.gpu_value_dirty.insert(voxel);
+        }
+        world.run_system_once(upload_transport_cache).unwrap();
+        let expected_faces = ShaderBuffer::from(vec![gpu_probe(
+            &world.resource::<VoxelEnergyField>().probes[&voxel],
+        )])
+        .data
+        .unwrap();
+        assert_eq!(
+            &world
+                .resource::<GpuProbePatchQueue>()
+                .state
+                .lock()
+                .unwrap()
+                .probe_mirror[..GPU_PROBE_BYTES],
+            &expected_faces,
+            "newly exposed face cannot wait for the indirect upload timer"
+        );
+        assert!(
+            world
+                .resource::<VoxelGiRuntime>()
+                .gpu_value_dirty
+                .is_empty(),
+            "atomic publication must not enqueue a redundant value upload"
+        );
+
+        // A previously extracted material must accept sparse growth. Requiring
+        // a new high-water uniform creates a black frame even with atomic data.
+        let handle = world
+            .resource::<VoxelWorldMaterialHandle<VoxelTransportMaterial>>()
+            .handle
+            .clone();
+        let extracted_settings = world
+            .resource::<Assets<VoxelTransportMaterial>>()
+            .get(&handle)
+            .unwrap()
+            .extension
+            .settings;
+        let added = IVec3::X;
+        world
+            .resource_mut::<VoxelEnergyField>()
+            .probes
+            .insert(added, SurfaceProbe::new(added, 4));
+        {
+            let mut runtime = world.resource_mut::<VoxelGiRuntime>();
+            runtime.gpu_topology_dirty = true;
+            runtime.gpu_added.push(added);
+        }
+        world.run_system_once(upload_transport_cache).unwrap();
+        let slot = world.resource::<GpuTransportCache>().slots[&added];
+        assert!(slot < extracted_settings.probe_capacity as usize);
+        assert_eq!(
+            world
+                .resource::<Assets<VoxelTransportMaterial>>()
+                .get(&handle)
+                .unwrap()
+                .extension
+                .settings,
+            extracted_settings
+        );
     }
 
     #[test]
@@ -1383,7 +1464,10 @@ mod tests {
             let settings = &materials.get(&material).unwrap().extension;
             assert_eq!(settings.probes.id(), patches.probe_buffer.id());
             assert_eq!(settings.hash_entries.id(), patches.hash_buffer.id());
-            assert_eq!(settings.settings.probe_count, count as u32);
+            assert_eq!(
+                settings.settings.probe_capacity,
+                cache.probe_capacity as u32
+            );
             // A delayed old-frame drain cannot consume new-frame updates.
             extracted
                 .state

@@ -662,6 +662,7 @@ fn apply_scene_task(
     }
     let mut invalidated = HashSet::new();
     let mut added = Vec::new();
+    let mut face_topology_changed = false;
     for descriptor in descriptors {
         let mut probe = old_affected.remove(&descriptor.voxel).unwrap_or_else(|| {
             invalidated.insert(descriptor.voxel);
@@ -686,6 +687,7 @@ fn apply_scene_task(
             }
         }
         if old_mask != descriptor.face_mask {
+            face_topology_changed = true;
             invalidated.insert(descriptor.voxel);
         }
         let (faces, samples, covered) = probe_metrics(&probe);
@@ -706,6 +708,8 @@ fn apply_scene_task(
         runtime.gpu_removed.extend(old_affected.keys().copied());
         runtime.gpu_added.extend(added.iter().copied());
         field.update_indices(&added, &old_affected);
+    }
+    if topology_changed || face_topology_changed {
         runtime.gpu_topology_dirty = true;
         runtime.gpu_topology_version = runtime.gpu_topology_version.wrapping_add(1);
     }
@@ -1510,10 +1514,12 @@ fn upload_transport_cache(
             &field.probes,
             &removed,
             &added,
-            &mut materials,
-            &material_handle.handle,
+            &runtime.gpu_value_dirty,
         ) {
             runtime.gpu_topology_dirty = false;
+            // The transaction included these values. No rebuild is in flight
+            // on this path, so there is no replacement catch-up ledger to keep.
+            runtime.gpu_value_dirty.clear();
         } else {
             // Keep rendering the old cache while the larger allocation builds.
             runtime.gpu_rebuild_required = true;

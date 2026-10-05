@@ -201,7 +201,7 @@ mod tests {
             for tick in 0..720 {
                 let mut settings = GpuTransportSettings {
                     hash_mask: 31,
-                    probe_count: 20,
+                    probe_capacity: 20,
                     ..Default::default()
                 };
                 profile.configure(tick as f32 / 10.0, &mut settings);
@@ -214,7 +214,7 @@ mod tests {
                     ),
                     (1, 1, 1, 0)
                 );
-                assert_eq!((settings.hash_mask, settings.probe_count), (31, 20));
+                assert_eq!((settings.hash_mask, settings.probe_capacity), (31, 20));
             }
         }
         assert!(!Profile::Gameplay.sources());
