@@ -94,6 +94,7 @@ impl Plugin for VoxelGiPlugin {
         }
         #[cfg(debug_assertions)]
         app.init_resource::<validation::CaptureEvidence>()
+            .add_systems(PostStartup, validation::setup_capture_target)
             .add_systems(
                 Update,
                 (

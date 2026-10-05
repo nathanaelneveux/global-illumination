@@ -11,7 +11,9 @@ use super::{
 };
 use crate::assets::{PrototypeConfig, TemplateAssets};
 use crate::{player::Player, terrain::PrototypeWorld};
+use bevy::camera::RenderTarget;
 use bevy::prelude::*;
+use bevy::render::render_resource::{TextureFormat, TextureUsages};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 use bevy_voxel_world::prelude::*;
 use bevy_voxel_world::rendering::VoxelWorldMaterialHandle;
@@ -24,10 +26,39 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 #[derive(Resource, Default)]
 pub(super) struct CaptureEvidence {
     output: Option<PathBuf>,
+    render_target: Option<Handle<Image>>,
     completed: usize,
     failed: bool,
     windows: Vec<serde_json::Value>,
     last_capture: Option<Instant>,
+}
+
+const OFFSCREEN_WIDTH: u32 = 2560;
+const OFFSCREEN_HEIGHT: u32 = 1440;
+
+pub(super) fn setup_capture_target(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut evidence: ResMut<CaptureEvidence>,
+    cameras: Query<Entity, With<Camera3d>>,
+) {
+    if !crate::headless_validation() {
+        return;
+    }
+    let mut image = Image::new_target_texture(
+        OFFSCREEN_WIDTH,
+        OFFSCREEN_HEIGHT,
+        TextureFormat::Rgba8UnormSrgb,
+        None,
+    );
+    image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+    let target = images.add(image);
+    for camera in &cameras {
+        commands
+            .entity(camera)
+            .insert(RenderTarget::Image(target.clone().into()));
+    }
+    evidence.render_target = Some(target);
 }
 
 impl CaptureEvidence {
@@ -128,7 +159,8 @@ pub(super) fn run_validation(
             .and_then(|_| {
                 std::fs::write(
                     output.join("status.json"),
-                    json!({"status": "running", "profile": profile.name(), "schema_version": 2})
+                    json!({"status": "running", "profile": profile.name(), "schema_version": 3,
+                        "capture_mode": if evidence.render_target.is_some() { "offscreen" } else { "window" }})
                         .to_string(),
                 )
             });
@@ -213,7 +245,14 @@ pub(super) fn run_validation(
             .unwrap()
             .join(format!("{name}.png"));
         commands
-            .spawn(Screenshot::primary_window())
+            .spawn(
+                evidence
+                    .render_target
+                    .as_ref()
+                    .map_or_else(Screenshot::primary_window, |image| {
+                        Screenshot::image(image.clone())
+                    }),
+            )
             .observe(check_capture)
             .observe(save_to_disk(output));
         run.captures += 1;
@@ -370,8 +409,10 @@ pub(super) fn run_validation(
     }
     let config = configs.get(&assets.prototype_config);
     let report = json!({
-        "schema_version": 2, "status": "completed", "profile": profile.name(),
-        "performance_baseline": profile == Profile::Gameplay,
+        "schema_version": 3, "status": "completed", "profile": profile.name(),
+        "capture_mode": if evidence.render_target.is_some() { "offscreen" } else { "window" },
+        "timing_domain": if evidence.render_target.is_some() { "offscreen app cadence; 60Hz ScheduleRunner; no swapchain/vsync" } else { "windowed frame pacing" },
+        "performance_baseline": profile == Profile::Gameplay && evidence.render_target.is_none(),
         "build": "development", "backend": stats.backend,
         "presentation": "shared-corner sun + corner-reconstructed indirect; preferred modes except compare/stress",
         "settings": {"trace_budget_ms": settings.trace_budget_ms, "max_probes_per_dispatch": settings.max_probes_per_dispatch,
@@ -388,7 +429,7 @@ pub(super) fn run_validation(
         "traced_paths": stats.traced_paths, "packed_geometry_bytes": stats.packed_geometry_bytes,
         "last_selection_ms": stats.last_selection_ms, "last_merge_ms": stats.last_merge_ms,
         "measurements": run.metrics.report(),
-        "measurement_notes": "Field observations sample at most 1024 voxels every 250 ms; repeated observations are not independent. Display steps are not image-space noise or error. Edit latency is first fresh measurement of selected adjacent receivers, not visual convergence. Capture/readback plus 250 ms cooldown frames are excluded. Completed is workload integrity, not a quality/performance pass."
+        "measurement_notes": "Field observations sample at most 1024 voxels every 250 ms; repeated observations are not independent. Display steps are not image-space noise or error. Edit latency is first fresh measurement of selected adjacent receivers, not visual convergence. Capture/readback plus 250 ms cooldown frames are excluded. Offscreen timings are not windowed gameplay FPS and must not be compared against a windowed baseline. Completed is workload integrity, not a quality/performance pass."
     });
     let output = evidence.output.as_ref().unwrap();
     let saved = std::fs::write(
@@ -398,7 +439,8 @@ pub(super) fn run_validation(
     .and_then(|_| {
         std::fs::write(
             output.join("status.json"),
-            json!({"status": "completed", "profile": profile.name(), "schema_version": 2})
+            json!({"status": "completed", "profile": profile.name(), "schema_version": 3,
+                "capture_mode": if evidence.render_target.is_some() { "offscreen" } else { "window" }})
                 .to_string(),
         )
     });
@@ -439,19 +481,32 @@ fn check_capture(
     mut evidence: ResMut<CaptureEvidence>,
     mut commands: Commands,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    cameras: Query<(&Camera, &GlobalTransform)>,
+    cameras: Query<(&Camera, &GlobalTransform, &RenderTarget)>,
 ) {
     let varied = capture
         .image
         .clone()
         .try_into_dynamic()
         .is_ok_and(|image| has_rgb_variation(image.to_rgb8().as_raw()));
-    let mut visible = false;
+    let offscreen = evidence.render_target.is_some();
+    let mut target_valid = false;
+    if let Some(target) = &evidence.render_target {
+        target_valid = capture.image.texture_descriptor.size.width == OFFSCREEN_WIDTH
+            && capture.image.texture_descriptor.size.height == OFFSCREEN_HEIGHT
+            && cameras.iter().any(|(camera, _, render_target)| {
+                camera.is_active && render_target.as_image() == Some(target)
+            });
+        evidence.windows.push(json!({"capture_mode": "offscreen", "width": OFFSCREEN_WIDTH, "height": OFFSCREEN_HEIGHT,
+            "present_mode": null, "focused": null, "visible": null, "target_valid": target_valid, "varied": varied}));
+        info!(target_valid, varied, "GI offscreen validation capture");
+    }
     for window in &windows {
-        visible |= window.visible
-            && window.focused
-            && window.physical_width() > 0
-            && window.physical_height() > 0;
+        if !offscreen {
+            target_valid |= window.visible
+                && window.focused
+                && window.physical_width() > 0
+                && window.physical_height() > 0;
+        }
         evidence.windows.push(json!({"focused": window.focused, "visible": window.visible,
             "width": window.physical_width(), "height": window.physical_height(), "present_mode": format!("{:?}", window.present_mode), "varied": varied}));
         info!(
@@ -461,13 +516,17 @@ fn check_capture(
             "GI validation capture"
         );
     }
-    for (camera, transform) in &cameras {
+    for (camera, transform, _) in &cameras {
         info!(active = camera.is_active, position = ?transform.translation(), forward = ?transform.forward(), "GI validation camera");
     }
     evidence.completed += 1;
     evidence.last_capture = Some(Instant::now());
-    if !varied || !visible {
-        let reason = "Capture is uniform/black or game is not foreground/visible; keep the game active and prevent screensaver activation for validation.";
+    if !varied || !target_valid {
+        let reason = if offscreen {
+            "Offscreen capture is uniform/black, has unexpected dimensions, or has no active camera targeting its image."
+        } else {
+            "Capture is uniform/black or game is not foreground/visible; use VOXEL_GI_VALIDATE_HEADLESS=1 for screen-independent captures."
+        };
         error!(reason);
         evidence.fail(reason);
         commands.write_message(AppExit::error());

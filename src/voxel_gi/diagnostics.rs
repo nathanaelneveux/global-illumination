@@ -11,7 +11,9 @@ pub(super) fn install(app: &mut App) {
     if terminal_stats_enabled() {
         app.add_plugins(LogDiagnosticsPlugin::default());
     }
-    app.add_systems(EguiPrimaryContextPass, draw_hud);
+    if !crate::headless_validation() {
+        app.add_systems(EguiPrimaryContextPass, draw_hud);
+    }
 }
 
 pub(super) fn terminal_stats_enabled() -> bool {

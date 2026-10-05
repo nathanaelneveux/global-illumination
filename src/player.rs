@@ -38,16 +38,19 @@ impl Plugin for PlayerPlugin {
             .add_message::<PlaceEmissiveBlock>()
             .add_systems(Startup, spawn_player)
             .add_systems(
-                PreUpdate,
-                sync_player_input.before(EnhancedInputSystems::Prepare),
-            )
-            .add_systems(
                 FixedPostUpdate,
                 (update_player_movement_speed, filter_held_jump)
                     .chain()
                     .before(AhoySystems::MoveCharacters),
             )
-            .add_systems(Update, (edit_voxels, reset_player_to_world_spawn));
+            .add_systems(Update, reset_player_to_world_spawn);
+        if !crate::headless_validation() {
+            app.add_systems(
+                PreUpdate,
+                sync_player_input.before(EnhancedInputSystems::Prepare),
+            )
+            .add_systems(Update, edit_voxels);
+        }
     }
 }
 

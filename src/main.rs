@@ -12,11 +12,13 @@ mod world_environment;
 use app_controls::AppControlsPlugin;
 use assets::AssetSupportPlugin;
 use avian3d::prelude::*;
+use bevy::app::ScheduleRunnerPlugin;
 use bevy::asset::AssetMetaCheck;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 use bevy::render::{RenderPlugin, render_resource::WgpuFeatures, settings::WgpuSettings};
-use bevy::window::WindowPlugin;
+use bevy::window::{ExitCondition, WindowPlugin};
+use bevy::winit::WinitPlugin;
 use bevy_ahoy::prelude::AhoyPlugins;
 use bevy_enhanced_input::prelude::EnhancedInputPlugin;
 
@@ -27,44 +29,74 @@ use voxel_gi::VoxelGiPlugin;
 use world_environment::WorldEnvironmentPlugin;
 
 fn main() -> AppExit {
-    App::new()
-        .add_plugins(
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        title: "Voxel GI Lab | Sun: voxel corners (F7)".into(),
-                        ..default()
-                    }),
-                    ..default()
-                })
-                .set(AssetPlugin {
-                    meta_check: AssetMetaCheck::Never,
-                    watch_for_changes_override: Some(true),
-                    ..default()
-                })
-                .set(RenderPlugin {
-                    render_creation: WgpuSettings {
-                        features: WgpuFeatures::POLYGON_MODE_LINE,
-                        ..default()
-                    }
-                    .into(),
-                    ..default()
-                }),
-        )
-        .add_plugins((
-            PhysicsPlugins::default(),
-            // Uncomment the next line for physics debugging
-            //PhysicsDebugPlugin,
-            FrameTimeDiagnosticsPlugin::default(),
-            EnhancedInputPlugin,
-            AhoyPlugins::default(),
-            AssetSupportPlugin,
-            WorldEnvironmentPlugin,
-            AppControlsPlugin,
-            VoxelGiPlugin,
-            TerrainPlugin,
-            ChunkColliderPlugin,
-            PlayerPlugin,
-        ))
-        .run()
+    let headless = headless_validation();
+    if headless && (!cfg!(debug_assertions) || std::env::var_os("VOXEL_GI_VALIDATE").is_none()) {
+        eprintln!(
+            "VOXEL_GI_VALIDATE_HEADLESS=1 requires a development build and VOXEL_GI_VALIDATE=1."
+        );
+        return AppExit::error();
+    }
+    let mut plugins = DefaultPlugins
+        .set(WindowPlugin {
+            primary_window: (!headless).then(|| Window {
+                title: "Voxel GI Lab | Sun: voxel corners (F7)".into(),
+                ..default()
+            }),
+            exit_condition: if headless {
+                ExitCondition::DontExit
+            } else {
+                ExitCondition::OnAllClosed
+            },
+            ..default()
+        })
+        .set(AssetPlugin {
+            meta_check: AssetMetaCheck::Never,
+            watch_for_changes_override: Some(true),
+            ..default()
+        })
+        .set(RenderPlugin {
+            render_creation: WgpuSettings {
+                features: WgpuFeatures::POLYGON_MODE_LINE,
+                ..default()
+            }
+            .into(),
+            ..default()
+        });
+    if headless {
+        plugins = plugins.disable::<WinitPlugin>();
+    }
+    let mut app = App::new();
+    app.add_plugins(plugins);
+    if headless {
+        // No OS window, swapchain, focus events, cursor capture or display-server
+        // runner. Keep the regular real-time workload cadence, not a fast-forward
+        // offline simulation; report these timings separately from desktop FPS.
+        app.add_plugins(ScheduleRunnerPlugin::run_loop(
+            std::time::Duration::from_secs_f64(1.0 / 60.0),
+        ));
+    }
+    app.add_plugins((
+        PhysicsPlugins::default(),
+        // Uncomment the next line for physics debugging
+        //PhysicsDebugPlugin,
+        FrameTimeDiagnosticsPlugin::default(),
+        EnhancedInputPlugin,
+        AhoyPlugins::default(),
+        AssetSupportPlugin,
+        WorldEnvironmentPlugin,
+    ));
+    if !headless {
+        app.add_plugins(AppControlsPlugin);
+    }
+    app.add_plugins((
+        VoxelGiPlugin,
+        TerrainPlugin,
+        ChunkColliderPlugin,
+        PlayerPlugin,
+    ));
+    app.run()
+}
+
+pub(crate) fn headless_validation() -> bool {
+    std::env::var("VOXEL_GI_VALIDATE_HEADLESS").is_ok_and(|value| value == "1")
 }

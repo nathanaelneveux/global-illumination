@@ -19,6 +19,7 @@
 - Use visual comparisons for presentation changes, source tests for emitter/multi-band transport changes, and native parity/upload tests for their affected paths. Run broader checks at meaningful integration checkpoints or when risk justifies them.
 - The known toggle/buffer-generation failure is fixed and regression-covered. Keep the optional `stress` profile, but do not routinely run it for sampling, scheduling, quality tuning, documentation, or ordinary performance work. Use it for relevant buffer lifetime/cache-generation/material extraction/display-mode changes, a renderer dependency upgrade, or a returning symptom. Prefer the targeted headless regression test when sufficient.
 - Never accept missing-asset, black, unfocused, or incomplete captures as gameplay evidence. Do not change the user's screensaver/security settings. Completion of a workload is not a quality/performance pass.
+- Prefer `VOXEL_GI_VALIDATE_HEADLESS=1` for unattended image/lighting checks. This uses Bevy's offscreen image capture with no OS window; focus is inapplicable, not a waived window-capture check. Require valid camera/target dimensions, assets, nonblank captures and clean render logs. Keep offscreen app-cadence timings separate from windowed FPS; never compare them against a windowed baseline or claim they establish interactive frame pacing. System sleep can still suspend the run.
 
 ## Preferred behavior
 
