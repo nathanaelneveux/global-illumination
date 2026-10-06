@@ -521,6 +521,106 @@ passed 39 focused scheduler/renderer/orchestration tests and both native
 upload-retry/renderer-generation checks. Strict all-target Clippy, formatting,
 diff checks and development builds passed. No broad toggle stress rerun.
 
+### Fixed-scene refinement diagnosis (October 6)
+
+Coverage/bootstrap did not explain the observed brightness/color swings. The
+opt-in `fixed_scene_refinement_diagnostic` (`637811b`) removes streaming, edits,
+adaptive scheduling and display uploads from the experiment. It traces 100 floor
+receivers, four paths per batch, through 2,048 paths each, recording unfiltered
+five-band measurements and the existing display filter separately. It includes:
+
+- An open floor with an analytic sky integral.
+- A sealed, nonreflecting room with two colored ceiling emitters. Independent
+  128×128 midpoint area quadrature supplies the reference, without MIS or our
+  path sampler.
+- A diffuse room with a colored wall and narrow skylight. A disjoint 16,384-path
+  estimate supplies this reference; unlike the first two, it is **not** an
+  independent proof of the integrator's correctness.
+
+The baseline reproduced late brightness swings even with a completely fixed
+scene. High-sample analytic/quadrature checks passed; native CPU/GPU comparison
+also agreed. These checks rule out several simple estimator/backend failures,
+not every possible transport bug. Two retained changes address measured causes:
+
+- `cff4c39`: unchanged surfaces retain up to **65,536** samples of evidence,
+  instead of permanently forgetting old evidence after 256. No extra path
+  storage is allocated: existing means, moments and counts suffice. This lowers
+  the static refinement noise floor. Local/remote edits still cap retained
+  weight at 16/64, moving lights at 4/64, and discrete source/material changes
+  still reset measurements. The 75 ms presentation response is unchanged.
+- `e1a5ac0`: digit permutations break up long same-color prefixes in the high-base
+  emitter dimensions of the Halton sampler. Nonzero prime-base multipliers are
+  bijective and keep zero fixed; the existing uniform rotations remain. CPU and
+  GPU use identical arithmetic. This is limited digit scrambling, not full Owen
+  scrambling or a Sobol implementation. The motivation is the high-dimensional
+  structure described in [PBRT's Halton discussion](https://pbr-book.org/4ed/Sampling_and_Reconstruction/Halton_Sampler).
+
+A broader permutation experiment also changed the lower path dimensions. It
+worsened skylight error at 64 paths (0.579 → 0.825) and was **rejected**. The final
+sampler preserves all lower-dimensional samples exactly; non-emissive fixtures
+therefore match the history-only change numerically.
+
+M4/Metal, shared-cache development/test profile; same scenes, receivers and
+paths, with virtual 50 ms display updates, not gameplay or wall-clock settling:
+
+| Fixed-work metric | Baseline | History only | Final |
+| --- | ---: | ---: | ---: |
+| Colored emitter raw error p95, 64 paths | 0.1572 | 0.1572 | 0.06118 |
+| Colored emitter raw error p95, 2,048 paths | 0.02926 | 0.004277 | 0.002327 |
+| Skylight raw error p95, 2,048 paths | 0.2690 | 0.1476 | 0.1476 |
+| Colored emitter late display-step p95 | 0.01705 | 0.006452 | 0.002448 |
+| Skylight late display-step p95 | 0.04085 | 0.01152 | 0.01152 |
+| Skylight late display-step maximum | 0.2065 | 0.1141 | 0.1141 |
+
+Error is absolute per-band error divided by `0.02 + reference_band`, over five
+bands and 100 receivers. Display step is the largest RGB channel change divided
+by `0.02 + max_reference_RGB`, observed between four-path batches after 256 paths.
+These are dimensionless fixture metrics, **not literal percentages of image
+brightness**, image-space flicker measurements, or universal error guarantees.
+The difficult skylight still has appreciable early variance; neither change
+makes eight-sample bootstrap equivalent to convergence. History-only results up
+through 256 paths are unchanged. No additional debounce, clamping, disabled
+bands, fewer paths per batch, or slower display filtering was introduced.
+
+The emitter kernel's median batch cost was approximately 0.052 ms versus
+0.048 ms in the earlier sampler, so its benefit is fewer paths to comparable
+accuracy, not cheaper individual rays. Skylight batches remained approximately
+0.089–0.090 ms. These tiny fixed-work measurements are not whole-game speedups.
+Artifacts: `target/refinement-{baseline,history,permutation,emitter-sampling,final}.{json,log}`.
+Baseline is `484da2a` plus the harness; history is `637811b` plus the cap change;
+final is `cff4c39` plus the emitter sampler and diagnostic regression bounds,
+committed as `e1a5ac0`. No other application/shader changes were present.
+
+Reproduce the opt-in diagnostic (large timelines remain ignored under `target/`):
+
+```sh
+VOXEL_GI_REFINEMENT_REPORT=target/refinement.json \
+  cargo test --locked --offline fixed_scene_refinement_diagnostic -- --ignored --nocapture
+```
+
+Focused tests cover long-history accumulation, invalidation caps, unchanged
+lower-dimensional sample streams, emitter distribution, shader validation and
+scheduler behavior. Native checks cover analytic references, CPU/GPU parity,
+geometry edits, partial-face/sky-only work, and emitter removal; strict Clippy and
+development build passed. The final `response` profile at clean `e1a5ac0` saved
+14 valid 2560×1440 offscreen captures with clean logs; inspected digging and
+warm-emitter removal retain the preferred look. Artifacts:
+`target/gi-validation/response-1791304348504440000-86802/` and
+`target/refinement-response.log`. This is an integration/response check, not a
+paired visual or FPS benchmark.
+
+One final offscreen gameplay sanity run at the same code revision and preferred
+settings completed 80 edits, five moves, five valid captures and zero pending or
+superseded edit watches. First-fresh edit latency p50/p95 was 149.20/167.93 ms;
+editing frame p50/p99 was 20.87/35.38 ms, streaming 22.11/38.93 ms. It traced
+75.41 million paths across up to 408 pages. Startup/streaming maxima remained
+831/121 ms: this refinement change does not fix those hitches. The earlier
+`1132d43` final-repeat edit latency p95 was 167.11 ms; this is a sanity comparison,
+not a fresh paired performance experiment or a measured speedup. No code or
+asset edits/builds ran during measurement (only these documentation edits).
+Artifacts: `target/gi-validation/gameplay-1791304485423591000-89508/` and
+`target/refinement-gameplay.log`.
+
 ### Next performance work
 
 The remaining cost is not just ray traversal. Compact selected-face worker jobs
