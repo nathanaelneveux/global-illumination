@@ -28,6 +28,7 @@ impl ProbeStore {
     pub fn values(&self) -> impl Iterator<Item = &SurfaceProbe> {
         self.0.values().map(Box::as_ref)
     }
+    #[cfg(test)]
     pub fn insert(&mut self, key: IVec3, probe: SurfaceProbe) {
         if let Some(existing) = self.0.get_mut(&key) {
             **existing = probe;
