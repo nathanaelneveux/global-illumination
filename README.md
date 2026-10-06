@@ -208,6 +208,130 @@ Its October 5 schema-2 `gameplay` run on Apple M4/Metal, 2560×1440, FIFO, devel
 
 From here, commit each coherent, verified change separately and checkpoint before a new performance/architecture experiment. Keep commits buildable, include the verification actually performed and known limitations, and record benchmark results against the exact revision plus any dirty diff. Preserve a compact measurement summary in commit history or tracked documentation; screenshots/logs can remain under `target/`. Do not accumulate multiple independent performance experiments into one uncommitted state. The repository's [agent workflow](AGENTS.md) makes this the default for future work.
 
+## Architecture and cost audit (October 5, 2026)
+
+The separation between **transport measurements**, **scheduling/publication**, and
+**display history** is sound. Keep it: simulations need unsmoothed measurements
+and explicit freshness, while rendering needs stable priors during edits. This
+is still a prototype integration, not a published storage-independent library.
+
+| Boundary | Responsibility / constraint |
+| --- | --- |
+| `voxel_gi/bvw.rs` | BVW events and generator snapshots become immutable 32³ pages. This is the host-specific storage adapter. |
+| `world`, `naadf`, `gpu_scene`, `emission` | Immutable acceleration, persistent GPU geometry, and exact emissive-source discovery. No player or screen-space dependencies. |
+| `tracer`, `gpu`, `sampling`, `sky_cache` | Multi-band face transport and shared-corner direct sun; bounded asynchronous work, with an independent CPU reference. |
+| `mod`, `field`, `scheduling` | Revision-checked publication, fair all-loaded-world scheduling, and simulation queries. Readers can order themselves after `VoxelGiSystems`. |
+| `history`, `reconstruction`, `render` | Display-only priors/filtering, corner reconstruction, and generation-owned GPU presentation. Never write borrowed values into simulation statistics. |
+| `diagnostics`, `validation` | Explicit demo plugin: HUD, keyboard comparisons, logging, and scripted workloads. Not installed by the transport plugin itself. |
+
+Implemented cleanup, in independently verified local commits:
+
+- Removed the unused face-center display-sun RGB arrays (72 bytes per probe,
+  approximately 22.7 MiB at the baseline's 330,838 probes). **Direct simulation
+  energy and its rays remain.** Sparse display encoding no longer allocates a
+  temporary vector for every patched probe.
+- Retained probe allocations through page publication and stopped uploading
+  identical display records. Geometry invalidation still wakes receivers; it
+  does not need to upload their unchanged retained display values.
+- Added material-presence masks to immutable regions. A registered but absent
+  emitting material no longer causes dense scans of every mixed region. Source
+  ordering, live material changes, and cross-region occlusion remain exact.
+- Cached static material/light uploads and compute bind groups by buffer identity.
+  Growth invalidates bindings, including idle passes, so old allocations are not
+  retained indefinitely. Removed redundant NAADF sweep copies and per-brick
+  occupancy scratch allocations.
+- The **demo sun** skips cascaded shadow rendering in corner mode when there are
+  no non-voxel mesh consumers. F7, missing material state, or other meshes restore
+  raster shadows before light culling. Other lights are not modified.
+- Normal play no longer scans every probe for terminal-only statistics or runs
+  dormant validation systems. Removed the superseded smoke-edit/move systems;
+  use the named profiles instead. CPU fallback threads are created only if used.
+  Prototype albedos now live in terrain setup rather than generic table defaults.
+
+Retained deliberately: all five transport bands, the CPU reference/fallback,
+F7 comparison, simulation freshness metadata, and the bounded global audit.
+These have consumers or correctness roles; deleting them would change scope or
+quality. All direct dependencies have code or feature consumers (`naga_oil`'s
+override feature is required). Bevy's broad default feature set remains; trimming
+compiled features is not evidence of a runtime frame-rate improvement.
+
+### Measured checkpoint
+
+One preliminary **offscreen** gameplay pair on Apple M4/Metal, development build,
+2560×1440: clean `5acbe3a` baseline versus clean `f5bdd00` candidate. Both used
+textured corner sun/indirect reconstruction, baked AO off, adaptive 4 ms trace
+target, 8,192-probe cap, four paths per selected face, 75 ms display response,
+and the same validation instrumentation. No concurrent compilation/benchmark was
+run during either workload. These are app-cadence timings, **not windowed FPS**.
+
+| Metric | Baseline | Candidate |
+| --- | ---: | ---: |
+| Settled frame p50 / p99 | 20.57 / 35.44 ms | 21.46 / 30.01 ms |
+| Editing frame p50 / p99 | 18.53 / 39.67 ms | 18.88 / 38.23 ms |
+| Streaming frame p50 / p99 | 19.98 / 39.10 ms | 19.95 / 36.31 ms |
+| Recovery frame p50 / p99 | 21.40 / 30.33 ms | 20.92 / 32.94 ms |
+| First fresh edit measurement p50 / p95 | 162.41 / 189.33 ms | 151.60 / 189.66 ms |
+| Editing nearby measurement age p95 | 139.46 ms | 131.20 ms |
+| Logged page publication median / p95 | 1.0 / 5.1 ms | 0.7 / 4.6 ms |
+
+Both completed 80 edits/restores and five moves, with five valid nonblank captures,
+clean render logs, 100% first-sample coverage and no pending/superseded edit watches.
+Loaded pages differed (410 / 403); probe counts were 330,838 / 330,682. Editing
+indirect display-step p95 was 0.01996 / 0.01960 in normalized units; neither this
+nor still captures proves temporal convergence. The settled images retain the
+preferred look. **Results are mixed, not a demonstrated across-the-board speedup.**
+Repeat paired measurements before quoting small percentage gains. Diagnostics
+remain enabled in validation, so this pair does not measure their removal from
+ordinary gameplay.
+
+The large hitches are **not solved**: maximum streaming frames were 188 / 196 ms,
+and startup maxima were 857 / 705 ms. Whole-app profiling must distinguish GI
+publication from mesh/collider installation, renderer preparation and pipeline
+startup; a faster tracer alone cannot establish a stable gameplay frame budget.
+
+Local artifacts: `target/gi-validation/gameplay-1791245232756073000-7623/` and
+`target/gi-validation/gameplay-1791246484602972000-26663/`; corresponding logs are
+`target/audit-baseline-gameplay.log` and `target/audit-candidate-gameplay.log`.
+The later idle-binding-retirement and redundant-NAADF-copy commits were verified
+separately and are **not included** in those timings. The isolated static-dispatch
+pair and its limitations are recorded in commit `8b639a1`.
+
+Strict all-target Clippy, 103 regular tests, native CPU/GPU source/geometry parity,
+static-upload/binding mutation/growth, and the targeted headless renderer-generation
+regression passed at the integration checkpoint. The optional broad toggle-stress
+profile was not rerun. These checks do not certify all hardware or arbitrarily
+large worlds.
+
+Final `b1b7c07` code also completed the focused offscreen `edits` profile with
+18 valid captures and clean render logs (only this documentation was dirty).
+Artifacts: `target/gi-validation/edits-1791246801335940000-32069/` and
+`target/audit-final-edits.log`. Inspected early underground digging/placement and
+surface-edit frames; no new black-face or raster-shadow-mode flash was apparent
+in those captures. The first scheduled 50 ms dig capture still preceded mesh
+publication; the 150 ms capture contained the lit cavity. This is a sampled
+regression check, not proof of flicker-free intervening frames or a latency bound.
+
+### Next performance work
+
+The remaining cost is not just ray traversal. Prioritize **page-local indexing and
+compact selected-face jobs**: the main thread still selects, clones, merges and
+hashes large six-face probe records, while display reconstruction performs repeated
+spatial lookups per fragment. Profile those CPU stages and the full rendered GPU
+frame separately before changing the estimator. Preserve offscreen fairness and
+edit-response measurements in every comparison.
+
+More selective distant-edit invalidation, GPU-resident scheduling/display resolve,
+and allocator compaction need architectural experiments, not unmeasured cleanup.
+Do not reduce coverage, disable bands, extend update intervals, or add debounce to
+make a timing graph look better. Before extraction into Starwrought, make the
+world adapter and texture/shader setup injectable, define coordinate/transform
+contracts, and separate simulation readback demand from rendering demand. The
+current BVW vertex layout, single axis-aligned world, and prototype texture path
+are still explicit portability limits. The display hash/probe buffers also remain
+monolithic and retain spare/high-water capacity. A library supporting much larger
+loaded worlds needs device-limit-aware paging or explicit capacity handling;
+the existing patch-bounds regression is not a proof of unlimited cache capacity.
+
 ## Controls
 
 - `WASD`: move
