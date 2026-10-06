@@ -44,7 +44,8 @@ pub fn build_aadf(size: UVec3, blocked: &[bool]) -> Vec<Aadf> {
 
     for _ in 0..rounds {
         for axis in 0..3 {
-            destination.copy_from_slice(&source);
+            // Every destination cell is assigned below, including blocked cells.
+            // Copying the previous sweep first adds a redundant full-field pass.
             for z in 0..size.z {
                 for y in 0..size.y {
                     for x in 0..size.x {
