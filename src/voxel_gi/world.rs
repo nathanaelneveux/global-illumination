@@ -360,9 +360,6 @@ pub struct SurfaceProbe {
     pub direct: [EnergySpectrum; 6],
     /// Visible analytic contributions not already rendered by Bevy PBR.
     pub custom_direct: [Vec3; 6],
-    /// Ordinary Bevy directional-light diffuse energy, excluding custom
-    /// emitter additions. Retained independently for a display-only A/B mode.
-    pub direct_sky: [Vec3; 6],
     pub(crate) display: [super::history::FaceDisplay; 6],
     pub(crate) display_updated_at: Option<Instant>,
     pub samples: [u32; 6],
@@ -401,7 +398,6 @@ impl SurfaceProbe {
             radiance: [EnergySpectrum::ZERO; 6],
             direct: [EnergySpectrum::ZERO; 6],
             custom_direct: [Vec3::ZERO; 6],
-            direct_sky: [Vec3::ZERO; 6],
             display: [super::history::FaceDisplay::default(); 6],
             display_updated_at: None,
             samples: [0; 6],
@@ -433,7 +429,6 @@ impl SurfaceProbe {
             self.display[face] = default();
             self.direct[face] = EnergySpectrum::ZERO;
             self.custom_direct[face] = Vec3::ZERO;
-            self.direct_sky[face] = Vec3::ZERO;
             self.samples[face] = 0;
             self.face_updated_at[face] = None;
         }

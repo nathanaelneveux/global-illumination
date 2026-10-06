@@ -30,7 +30,7 @@ struct FaceResult {
     mean: vec4<f32>,
     mean_extra: vec4<f32>,
     second: vec4<f32>,
-    second_extra: vec4<f32>, // ionizing second moment, ordinary direct sky RGB
+    second_extra: vec4<f32>, // ionizing second moment, padding
     direct: vec4<f32>,
     direct_extra: vec4<f32>,
 }
@@ -43,7 +43,6 @@ struct Energy {
     value: vec4<f32>,
     radiation: f32,
     custom_visible: vec3<f32>,
-    sky_visible: vec3<f32>,
 }
 struct RayResult {
     voxel: vec3<i32>,
@@ -263,9 +262,6 @@ fn direct_at(position: vec3<f32>, normal: vec3<f32>) -> Energy {
             energy.value += light.energy * (cosine * attenuation);
             energy.radiation += light.extra.x * (cosine * attenuation);
             energy.custom_visible += light.extra.yzw * (cosine * attenuation);
-            if light.position_range.w < 0.0 {
-                energy.sky_visible += max(light.energy.rgb - light.extra.yzw, vec3(0.0)) * cosine;
-            }
         }
     }
     return energy;
@@ -349,7 +345,7 @@ fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, se
 }
 fn trace_path(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3<f32>, stream: u32, sequence: u32) -> Energy {
     var result: Energy;
-    var throughput = Energy(vec4(1.0), 1.0, vec3(0.0), vec3(0.0));
+    var throughput = Energy(vec4(1.0), 1.0, vec3(0.0));
     var origin = start;
     var direction = first_direction;
     var previous_normal = initial_normal;
@@ -421,11 +417,6 @@ fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     result.mean_extra *= inverse;
     result.second *= inverse;
     result.second_extra *= inverse;
-    // Use spare readback lanes; direct sky is deterministic, not accumulated
-    // with the path moments and not multiplied by the samples-per-face count.
-    result.second_extra.y = direct.sky_visible.x;
-    result.second_extra.z = direct.sky_visible.y;
-    result.second_extra.w = direct.sky_visible.z;
     let offset = id.x * 6u;
     results[offset] = bitcast<vec4<u32>>(result.mean);
     results[offset + 1u] = bitcast<vec4<u32>>(result.mean_extra);

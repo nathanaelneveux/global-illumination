@@ -342,11 +342,8 @@ fn trace_probe_faces(
         let normal = face_offset.as_vec3();
         let voxel_center = probe.voxel.as_vec3() + Vec3::splat(0.5);
         let surface_position = voxel_center + normal * 0.5;
-        (
-            probe.direct[face],
-            probe.custom_direct[face],
-            probe.direct_sky[face],
-        ) = direct_at_surface(scene, sources, surface_position, normal);
+        (probe.direct[face], probe.custom_direct[face]) =
+            direct_at_surface(scene, sources, surface_position, normal);
         let stream = stream_id(probe.voxel, face as u32);
         for _ in 0..samples_per_face {
             let sequence = probe.sequence[face];
@@ -518,10 +515,9 @@ fn direct_radiance(
     scene: &TransportScene,
     sources: &TransportSources,
     hit: RayHit,
-) -> (EnergySpectrum, Vec3, Vec3) {
+) -> (EnergySpectrum, Vec3) {
     let mut radiance = EnergySpectrum::ZERO;
     let mut custom = Vec3::ZERO;
-    let mut sky = Vec3::ZERO;
     let shadow_origin = hit.position + hit.normal * (RAY_EPSILON * 2.0);
 
     for light in &sources.directional {
@@ -533,7 +529,6 @@ fn direct_radiance(
         {
             radiance += light.radiance * cosine;
             custom += light.custom_visible * cosine;
-            sky += (light.radiance.visible - light.custom_visible).max(Vec3::ZERO) * cosine;
         }
     }
 
@@ -555,7 +550,7 @@ fn direct_radiance(
         }
     }
 
-    (radiance, custom, sky)
+    (radiance, custom)
 }
 
 fn direct_at_surface(
@@ -563,7 +558,7 @@ fn direct_at_surface(
     sources: &TransportSources,
     position: Vec3,
     normal: Vec3,
-) -> (EnergySpectrum, Vec3, Vec3) {
+) -> (EnergySpectrum, Vec3) {
     direct_radiance(
         scene,
         sources,
@@ -714,7 +709,7 @@ mod tests {
         );
         for probe in &values {
             assert!(
-                probe.direct_sky[2].x > 0.9,
+                probe.direct[2].visible.x > 0.9,
                 "face center misses the small shadow"
             );
             let corners = probe.display[2].sky;
@@ -952,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn sky_display_channel_excludes_points_and_custom_emission_and_respects_occlusion() {
+    fn direct_measurement_includes_sun_points_and_custom_emission_with_occlusion() {
         let voxel = IVec3::new(8, 8, 8);
         let mut page = vec![AIR; volume_len(PAGE_SIZE)];
         page[linear_index(voxel.as_uvec3(), PAGE_SIZE)] = 1;
@@ -976,8 +971,7 @@ mod tests {
             }],
         };
         let position = Vec3::new(8.5, 9.0, 8.5);
-        let (total, custom, sky) = direct_at_surface(&scene, &sources, position, Vec3::Y);
-        assert_eq!(sky, Vec3::new(2.0, 3.0, 4.0));
+        let (total, custom) = direct_at_surface(&scene, &sources, position, Vec3::Y);
         assert_eq!(custom, Vec3::splat(3.0));
         assert_eq!(total.visible, Vec3::new(13.0, 14.0, 15.0));
         assert_eq!(total.infrared, 6.0);
@@ -985,8 +979,7 @@ mod tests {
         // The roof blocks the sun, but the point source below it remains lit.
         page[linear_index(UVec3::new(8, 12, 8), PAGE_SIZE)] = 1;
         scene = TransportScene::with_page_delta(&scene, vec![(IVec3::ZERO, page)], &[]);
-        let (total, custom, sky) = direct_at_surface(&scene, &sources, position, Vec3::Y);
-        assert_eq!(sky, Vec3::ZERO);
+        let (total, custom) = direct_at_surface(&scene, &sources, position, Vec3::Y);
         assert_eq!(custom, Vec3::splat(2.0));
         assert_eq!(total.visible, Vec3::splat(10.0));
     }

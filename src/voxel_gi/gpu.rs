@@ -610,7 +610,6 @@ impl GpuTracer {
             probe.second_moment[face] += (second - probe.second_moment[face]) * alpha;
             probe.direct[face] = decode_spectrum(&values[16..20], values[20]);
             probe.custom_direct[face] = Vec3::new(values[21], values[22], values[23]);
-            probe.direct_sky[face] = Vec3::new(values[13], values[14], values[15]);
             probe.samples[face] = count;
             probe.sequence[face] = probe.sequence[face].wrapping_add(samples);
             probe.updated_at = Some(now);
@@ -1335,7 +1334,7 @@ mod tests {
             squared += (expected.radiance[2].visible - actual.radiance[2].visible).length_squared();
             assert!((expected.direct[2].infrared - actual.direct[2].infrared).abs() < 0.002);
             assert!((expected.direct[2].ionizing - actual.direct[2].ionizing).abs() < 0.002);
-            assert!((expected.direct_sky[2] - actual.direct_sky[2]).length() < 0.002);
+            assert!((expected.direct[2].visible - actual.direct[2].visible).length() < 0.002);
             assert!((expected.custom_direct[2] - actual.custom_direct[2]).length() < 0.002);
             assert_eq!(
                 expected.display[2].sky, actual.display[2].sky,

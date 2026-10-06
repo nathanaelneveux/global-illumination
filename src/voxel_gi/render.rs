@@ -636,7 +636,9 @@ fn patch_ranges(mut slots: Vec<usize>, stride: usize) -> Vec<std::ops::Range<usi
     ranges
 }
 
-fn encode_gpu_probe(probe: GpuProbe, bytes: &mut Vec<u8>) {
+fn encode_gpu_probe(probe: GpuProbe, bytes: &mut [u8]) {
+    assert_eq!(bytes.len(), GPU_PROBE_BYTES);
+    let mut words = bytes.chunks_exact_mut(4);
     for value in [
         probe.positive_x,
         probe.negative_x,
@@ -647,20 +649,24 @@ fn encode_gpu_probe(probe: GpuProbe, bytes: &mut Vec<u8>) {
         probe.emission,
     ] {
         for component in value.to_array() {
-            bytes.extend_from_slice(&component.to_le_bytes());
+            words
+                .next()
+                .unwrap()
+                .copy_from_slice(&component.to_le_bytes());
         }
     }
     for corners in probe.direct_sky {
         for value in corners.to_array() {
-            bytes.extend_from_slice(&value.to_le_bytes());
+            words.next().unwrap().copy_from_slice(&value.to_le_bytes());
         }
     }
 }
 
 fn write_probe(mirror: &mut [u8], slot: usize, probe: GpuProbe) {
-    let mut bytes = Vec::with_capacity(GPU_PROBE_BYTES);
-    encode_gpu_probe(probe, &mut bytes);
-    mirror[slot * GPU_PROBE_BYTES..(slot + 1) * GPU_PROBE_BYTES].copy_from_slice(&bytes);
+    encode_gpu_probe(
+        probe,
+        &mut mirror[slot * GPU_PROBE_BYTES..(slot + 1) * GPU_PROBE_BYTES],
+    );
 }
 
 fn write_hash_entry(mirror: &mut [u8], slot: usize, entry: GpuHashEntry) {
@@ -890,7 +896,7 @@ mod tests {
             emission: Vec4::new(25.0, 26.0, 27.0, 28.0),
             direct_sky: std::array::from_fn(|face| UVec4::splat(29 + face as u32)),
         };
-        let mut encoded = Vec::new();
+        let mut encoded = vec![0; GPU_PROBE_BYTES];
         encode_gpu_probe(probe, &mut encoded);
         assert_eq!(encoded.len(), GPU_PROBE_BYTES);
         assert_eq!(encoded, ShaderBuffer::from(vec![probe]).data.unwrap());
@@ -909,7 +915,6 @@ mod tests {
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
         probe.radiance[2] = EnergySpectrum::new(Vec3::X, 3.0, 4.0);
         probe.custom_direct[2] = Vec3::Y;
-        probe.direct_sky = [Vec3::splat(10.0); 6];
         probe.display[2] = super::super::history::FaceDisplay {
             indirect: Vec3::X,
             sky: [super::super::sky::pack(Vec3::splat(10.0)); 4],
