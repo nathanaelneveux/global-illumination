@@ -426,7 +426,7 @@ fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     results[offset + 5u] = bitcast<vec4<u32>>(result.direct_extra);
 }
 
-// Experimental cooperative layout: four lanes share a receiver, each tracing
+// Cooperative layout: four lanes share a receiver, each tracing
 // an independent subsequence. Identical paths and moments, not sample reuse.
 // The serial entry point remains the paired throughput/correctness reference.
 struct PathMoments {

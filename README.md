@@ -198,7 +198,9 @@ Field statistics use a bounded systematic sample of at most 1,024 voxels every 2
 
 Use `VOXEL_GI_BACKEND=cpu cargo run` for the bounded CPU reference fallback. It shares the model, not a throughput guarantee. Logs include coverage/history, sky-ray and batch counters, main-thread selection/merge time, and worker preparation/wait/decode timings. GPU execution and worker wait overlap; never add them. Those latest-batch values are not frame percentiles. The report records backend, viewport/present mode, terrain, and scheduling settings so mismatched runs can be rejected.
 
-The smaller development-only `VOXEL_GI_SMOKE_EDIT=1` check removes one block after bootstrap settles. `VOXEL_GI_SMOKE_MOVE=1` moves the player 48 voxels to exercise streaming. Do not combine these with the full validation workload when comparing performance.
+The old `VOXEL_GI_SMOKE_EDIT` and `VOXEL_GI_SMOKE_MOVE` flags have been removed.
+Use `edits` for focused edit presentation and `streaming` for the turn/walk
+workload; keep `gameplay` for coupled performance comparisons.
 
 ### Commit discipline
 
@@ -311,6 +313,110 @@ in those captures. The first scheduled 50 ms dig capture still preceded mesh
 publication; the 150 ms capture contained the lit cavity. This is a sampled
 regression check, not proof of flicker-free intervening frames or a latency bound.
 
+### Waste and throughput follow-up (October 5, 2026)
+
+The next checkpoints preserve four paths per selected face, all five transport
+bands, path depth, eight-sample bootstrap, resting thresholds, preferred corner
+presentation, and the existing temporal filter. No new debounce was added.
+
+- `d4b9cca`: opt-in 250 ms coverage/bootstrap timeline, including published probe
+  counts and pending scene/page work, plus selection/merge/worker distributions.
+  Empty or partially published worlds must not count as completed initial terrain.
+- `2c91093` / `63275d0`: reuse dispatch/candidate/dirty-set allocations; avoid
+  duplicate sky receiver copies and the second lookup when merging results;
+  use the engine's fast integer-coordinate probe index. Full probe snapshots
+  still cross the worker boundary; compact selected-face jobs remain worthwhile.
+- `ec93575`: publish cheap receiver pages within a **2 ms budget**, rather than
+  unconditionally stopping after one page. At most four pages per update bound
+  downstream display patching. Each page is atomic and can exceed the budget;
+  `scene_publish_budget = Duration::ZERO` retains the old one-page comparison.
+- `85bc560` / `83dae62`: benchmark and enable four cooperative GPU lanes per face.
+  They trace the same independent paths, not reused or borrowed samples. The
+  serial entry point remains a benchmark reference; normal play creates only
+  the chosen transport pipeline and the separate direct-sky pipeline.
+- `8473f80`: display dirty ledgers hold only slot IDs. Removed a redundant
+  208-byte lighting value per dirty probe (and redundant hash-entry values);
+  generation-owned byte mirrors already contain everything uploaded. Latest
+  writes, atomic publication and failed-upload retry semantics are unchanged.
+
+#### Evidence and limits
+
+All following gameplay runs are development builds on Apple M4/Metal,
+2560×1440 **offscreen**, preferred defaults, with validation diagnostics and
+`RUST_LOG=warn`. No builds or other GPU workloads ran during measurement.
+These are app-cadence observations, not interactive/windowed FPS. Each revision
+had one gameplay run; they are preliminary comparisons, not repeated statistical
+estimates. The trace budget stayed at 4 ms and the dispatch limit at 8,192.
+
+The first quiescent initial terrain cohort with 100% coverage **and** bootstrap,
+no dirty/publishing pages, and no scene task was observed at **6.14 s** on
+`d4b9cca` (219,632 probes), **5.13 s** after allocation cleanup on `2c91093`
+(227,675), **3.92 s** after bounded publication on `ec93575` (219,538), and
+**4.02 s** with cooperative paths on `83dae62` (225,555), and **3.69 s** with compact
+display ledgers on `8473f80` (219,758). Sampling is every 250 ms; late-arriving
+terrain can create another cohort. The final comparison is about a **1.7× initial
+completion improvement**, not a demonstrated 2–3× gain or visual convergence.
+
+In the first allocation comparison, streaming selection p50/p99 fell from
+3.52/8.92 to 1.64/2.50 ms; merge p50/p99 from 2.61/7.58 to 1.48/3.09 ms.
+Whole-frame medians did not improve: streaming p50/p99 changed from 17.71/66.74
+to 20.98/38.02 ms. Do not turn the stage-level win into an overall FPS claim.
+
+The cooperative kernel was compared at fixed work on one native device/queue,
+alternating 30 warm pairs and repeating the experiment. Open-floor GPU medians
+were 0.116–0.117 ms serial versus 0.061–0.062 ms cooperative (1,024 faces × four
+paths). Nine enclosed emissive rooms were 2.034–2.046 versus 1.838–1.879 ms
+(8,100 faces × four paths). Worker medians were essentially unchanged/mixed:
+submission/readback and CPU overhead limit this small-kernel win. This is an
+execution-layout experiment motivated by [vxray's occupancy/wavefront
+discussion](https://nelari.us/post/voxel-ray-tracing/), **not a wavefront renderer**,
+ReSTIR, or a new NAADF algorithm. It uses a workgroup reduction, not extra samples.
+
+At `83dae62`, editing first-fresh measurement p50/p95 was 145.86/169.53 ms;
+editing nearby-age p95 was 140.05 ms and far-age p95 2,049.10 ms. The startup
+maximum was still **636 ms**, and recovery frame p99 was 41.55 ms. Faster kernels
+do not establish hitch-free gameplay. The sampled settled/streaming images
+retain the preferred look; still captures do not prove flicker-free motion.
+
+Final `8473f80` versus the instrumented `d4b9cca` baseline:
+
+| Offscreen metric | Baseline | Final |
+| --- | ---: | ---: |
+| Streaming selection p50 / p99 | 3.52 / 8.92 ms | 1.65 / 2.73 ms |
+| Streaming merge p50 / p99 | 2.61 / 7.58 ms | 1.53 / 3.38 ms |
+| Settled frame p50 / p99 | 17.62 / 37.64 ms | 21.35 / 34.48 ms |
+| Editing frame p50 / p99 | 17.24 / 43.83 ms | 18.93 / 36.42 ms |
+| Streaming frame p50 / p99 | 17.71 / 66.74 ms | 20.87 / 38.65 ms |
+| First-fresh edit measurement p50 / p95 | 155.78 / 181.93 ms | 148.64 / 168.74 ms |
+
+The final run completed 80 edits and five moves, with five valid nonblank captures,
+clean render logs, and no pending/superseded edit watches. Editing nearby-age p95
+was 138.39 ms, far-age p95 1,989.24 ms, and indirect display-step p95 0.02358.
+Streaming maximum was still **146 ms**; startup maximum **635 ms**. Frame tails
+improved in this pair but medians worsened: no across-the-board FPS claim. The
+smaller dirty ledger is a structural memory win, not evidence that it alone
+caused the final run's timing differences.
+The baseline recorded 79 edit latencies and one superseded watch, versus all 80
+latencies in the final run; neither set measures visual settling time.
+
+Local runs under `target/gi-validation/`, in revision order:
+
+- `d4b9cca`: `gameplay-1791248100607155000-53907/`
+- `2c91093`: `gameplay-1791248294774532000-57609/`
+- `ec93575`: `gameplay-1791248442489438000-59890/`
+- `83dae62`: `gameplay-1791248981380354000-68305/`
+- `8473f80`: `gameplay-1791249153187694000-70880/`
+
+These binaries were built from their clean code checkpoints; later source edits
+during the runs did not affect the executing binary or rendering assets. Logs:
+`target/perf-progress-{baseline,reuse,publication,cooperative,final}.log`.
+Native fixed-work results: `target/perf-cooperative-{shared-device,repeat}.log`.
+Kernel parity also covers 1/7/64 samples, incomplete workgroups, CPU reference,
+geometry edits, partial faces, sky-only work and removal of emitting sources.
+The integrated ledger change passed 107 regular tests, strict all-target Clippy,
+and targeted native upload-retry/renderer-generation checks. Broad toggle stress
+was not rerun.
+
 ### Next performance work
 
 The remaining cost is not just ray traversal. Prioritize **page-local indexing and
@@ -361,7 +467,7 @@ All faces sharing a corner use the same ray origin, displaced toward the sun rat
 
 The material uses scoped naga-oil function overrides for Bevy's directional-light and shadow evaluation; no Bevy shader source is copied or modified. Ordinary materials are unaffected. Directional lights should represent global sky sources here; per-camera light-layer filtering and directional light textures are not represented in the shared world-space cache.
 
-`VoxelGiSettings` can be inserted before `VoxelGiPlugin` or adjusted as a resource at runtime. Defaults target a 4 ms trace dispatch, up to 8,192 probes per dispatch, and a 50 ms display-upload interval. These are scheduling controls, not world-coverage limits or hard real-time deadlines. Smaller budgets reduce throughput; measure estimate age as well as FPS.
+`VoxelGiSettings` can be inserted before `VoxelGiPlugin` or adjusted as a resource at runtime. Defaults target a 4 ms trace dispatch, up to 8,192 probes per dispatch, a 2 ms receiver-publication budget (at most four atomic pages per update), and a 50 ms display-upload interval. These are scheduling controls, not world-coverage limits or hard real-time deadlines. Smaller budgets reduce throughput; measure estimate age as well as FPS. `scene_publish_budget` is capped at 8 ms; zero retains one page per update, not zero progress.
 
 Resting behavior is controlled by `stable_min_samples` (default 64), `stable_relative_error` (default 0.12), and `stable_audit_interval` (default 2 seconds). Relative error is a scheduling heuristic, not a statistical confidence bound. Noisy faces continue refining. Deterministic sky repairs bypass the normal upload interval; they do not use the indirect display filter or an added debounce.
 
