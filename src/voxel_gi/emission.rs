@@ -94,15 +94,24 @@ impl EmissionCache {
 
 impl EmissionDistribution {
     pub fn build(scene: &TransportScene, materials: &VoxelMaterialTransportTable) -> Self {
-        let weights: Vec<_> = (0..=255)
-            .map(|material| materials.get(material).emission.max_component())
-            .collect();
-        if !weights.iter().any(|weight| *weight > 0.0) {
+        let weights: [f32; 256] =
+            std::array::from_fn(|material| materials.get(material as u8).emission.max_component());
+        let mut emitting = [0_u64; 4];
+        for (material, &weight) in weights.iter().enumerate() {
+            if weight > 0.0 {
+                emitting[material / 64] |= 1 << (material % 64);
+            }
+        }
+        if emitting == [0; 4] {
             return Self::default();
         }
         let mut faces = Vec::new();
         let mut total = 0.0_f64;
-        let mut regions: Vec<_> = scene.regions.values().collect();
+        let mut regions: Vec<_> = scene
+            .regions
+            .values()
+            .filter(|region| region.contains_any_material(&emitting))
+            .collect();
         regions.sort_unstable_by_key(|region| {
             (
                 region.coordinate.z,
@@ -111,20 +120,15 @@ impl EmissionDistribution {
             )
         });
         for region in regions {
-            if let Some(material) = region.uniform_material()
-                && (material == AIR || weights[material as usize] == 0.0)
-            {
-                continue;
-            }
-            for z in 0..16 {
-                for y in 0..16 {
-                    for x in 0..16 {
+            for z in 0..REGION_EDGE {
+                for y in 0..REGION_EDGE {
+                    for x in 0..REGION_EDGE {
                         let local = UVec3::new(x, y, z);
                         let material = region.material(local);
                         if material == AIR || weights[material as usize] <= 0.0 {
                             continue;
                         }
-                        let voxel = region.coordinate * 16 + local.as_ivec3();
+                        let voxel = region.coordinate * REGION_EDGE as i32 + local.as_ivec3();
                         for (face, normal) in FACE_OFFSETS.iter().enumerate() {
                             if scene.material_at(voxel + *normal).is_some_and(|m| m != AIR) {
                                 continue;
@@ -188,6 +192,62 @@ mod tests {
     use crate::voxel_gi::naadf::{linear_index, volume_len};
     use crate::voxel_gi::world::PAGE_SIZE;
     use crate::voxel_gi::{EnergySpectrum, MaterialTransport};
+
+    #[test]
+    fn region_filter_tracks_material_table_changes_and_neighbor_occlusion() {
+        let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+        let emitter = UVec3::new(15, 8, 8);
+        page[linear_index(emitter, PAGE_SIZE)] = 255;
+        page[linear_index(emitter + UVec3::X, PAGE_SIZE)] = 0;
+        let scene = Arc::new(TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, page.clone())],
+            &[],
+        ));
+        let mut materials = VoxelMaterialTransportTable::default();
+        // A registered but absent emitter must not scan any mixed region.
+        materials.set(
+            4,
+            MaterialTransport {
+                emission: EnergySpectrum::ONE,
+                ..default()
+            },
+        );
+        let mut mask = [0; 4];
+        mask[0] = 1 << 4;
+        assert!(
+            scene
+                .regions
+                .values()
+                .all(|region| !region.contains_any_material(&mask))
+        );
+        let cache = EmissionCache::prepare(None, scene.clone(), Arc::new(materials.clone()));
+        assert!(cache.distribution.faces.is_empty());
+
+        // Changing optical properties does not rebuild geometry or its mask.
+        materials.set(
+            255,
+            MaterialTransport {
+                emission: EnergySpectrum::ONE,
+                ..default()
+            },
+        );
+        let cache = EmissionCache::prepare(Some(cache), scene.clone(), Arc::new(materials));
+        assert_eq!(cache.distribution.faces.len(), 5);
+        assert!(!cache.distribution.faces.iter().any(|face| face.face == 0));
+
+        // A changed non-emitter in a different region can expose the emitter.
+        page[linear_index(emitter + UVec3::X, PAGE_SIZE)] = AIR;
+        let edited = Arc::new(TransportScene::with_page_delta(
+            &scene,
+            vec![(IVec3::ZERO, page)],
+            &[],
+        ));
+        let materials = cache.materials.clone();
+        let cache = EmissionCache::prepare(Some(cache), edited, materials);
+        assert_eq!(cache.distribution.faces.len(), 6);
+        assert!((cache.distribution.total_weight - 6.0).abs() < 1e-6);
+    }
 
     #[test]
     fn material_delta_tracks_add_remove_unload_but_not_unchanged_emitters() {

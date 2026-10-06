@@ -85,6 +85,9 @@ pub struct NaadfRegion {
     pub coordinate: IVec3,
     storage: RegionStorage,
     pub any_solid: bool,
+    /// Geometry-owned material presence, independent of the live optical table.
+    /// Source discovery can skip regions with no emitting material in O(4).
+    material_mask: [u64; 4],
 }
 
 #[derive(Clone)]
@@ -115,6 +118,10 @@ impl NaadfRegion {
         }
     }
 
+    pub(crate) fn contains_any_material(&self, mask: &[u64; 4]) -> bool {
+        self.material_mask.iter().zip(mask).any(|(a, b)| a & b != 0)
+    }
+
     pub fn build(coordinate: IVec3, materials: Vec<u16>) -> Self {
         assert_eq!(materials.len(), volume_len(REGION_SIZE));
 
@@ -123,24 +130,29 @@ impl NaadfRegion {
                 coordinate,
                 storage: RegionStorage::Empty,
                 any_solid: false,
+                material_mask: [0; 4],
             };
         }
         if materials.iter().all(|material| *material == materials[0]) {
+            let mut material_mask = [0; 4];
+            material_mask[materials[0] as usize / 64] |= 1 << (materials[0] % 64);
             return Self {
                 coordinate,
                 storage: RegionStorage::Uniform(materials[0]),
                 any_solid: true,
+                material_mask,
             };
         }
 
         let mut voxel_aadf = vec![Aadf::default(); materials.len()];
         let mut brick_occupied = vec![false; volume_len(BRICK_GRID_SIZE)];
+        let mut material_mask = [0; 4];
 
         for brick_z in 0..BRICKS_PER_AXIS {
             for brick_y in 0..BRICKS_PER_AXIS {
                 for brick_x in 0..BRICKS_PER_AXIS {
                     let brick = UVec3::new(brick_x, brick_y, brick_z);
-                    let mut blocked = vec![false; (BRICK_EDGE * BRICK_EDGE * BRICK_EDGE) as usize];
+                    let mut blocked = [false; (BRICK_EDGE * BRICK_EDGE * BRICK_EDGE) as usize];
                     let brick_size = UVec3::splat(BRICK_EDGE);
 
                     for z in 0..BRICK_EDGE {
@@ -148,8 +160,11 @@ impl NaadfRegion {
                             for x in 0..BRICK_EDGE {
                                 let local = UVec3::new(x, y, z);
                                 let region_local = brick * BRICK_EDGE + local;
-                                blocked[linear_index(local, brick_size)] =
-                                    materials[linear_index(region_local, REGION_SIZE)] != AIR;
+                                let material = materials[linear_index(region_local, REGION_SIZE)];
+                                blocked[linear_index(local, brick_size)] = material != AIR;
+                                if material != AIR {
+                                    material_mask[material as usize / 64] |= 1 << (material % 64);
+                                }
                             }
                         }
                     }
@@ -182,6 +197,7 @@ impl NaadfRegion {
                 brick_aadf: brick_aadf.into_boxed_slice(),
             },
             any_solid,
+            material_mask,
         }
     }
 
