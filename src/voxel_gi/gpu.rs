@@ -749,6 +749,10 @@ fn encode_words(words: &[u32]) -> Vec<u8> {
 }
 
 #[cfg(test)]
+#[path = "refinement.rs"]
+mod refinement;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -789,7 +793,7 @@ mod tests {
         );
     }
 
-    fn native_tracer() -> GpuTracer {
+    pub(super) fn native_tracer() -> GpuTracer {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = bevy::tasks::block_on(
             instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
