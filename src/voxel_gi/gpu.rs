@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 use bevy::render::render_resource::{
-    BindGroupEntry, Buffer, BufferDescriptor, BufferUsages, ComputePipeline,
-    ShaderModuleDescriptor, ShaderSource, ShaderType,
+    BindGroup, BindGroupEntry, BindGroupLayout, Buffer, BufferDescriptor, BufferId, BufferUsages,
+    ComputePipeline, ShaderModuleDescriptor, ShaderSource, ShaderType,
 };
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::storage::ShaderBuffer;
@@ -72,6 +72,35 @@ struct UploadBuffer {
     capacity: u64,
     label: &'static str,
     usage: BufferUsages,
+    #[cfg(test)]
+    uploads: usize,
+}
+
+/// Bindings are valid until an allocation changes, not merely until its contents
+/// change. Cache by buffer identity so growth can never retain a stale binding.
+struct CachedBindings<const N: usize> {
+    buffers: [BufferId; N],
+    group: BindGroup,
+}
+
+fn cached_bindings<'a, const N: usize>(
+    cache: &'a mut Option<CachedBindings<N>>,
+    device: &RenderDevice,
+    layout: impl FnOnce() -> BindGroupLayout,
+    buffers: [(u32, &UploadBuffer); N],
+) -> &'a BindGroup {
+    let ids = buffers.map(|(_, buffer)| buffer.buffer.id());
+    if cache.as_ref().is_none_or(|cached| cached.buffers != ids) {
+        let entries = buffers.map(|(binding, buffer)| BindGroupEntry {
+            binding,
+            resource: buffer.buffer.as_entire_binding(),
+        });
+        *cache = Some(CachedBindings {
+            buffers: ids,
+            group: device.create_bind_group("GI persistent dispatch bindings", &layout(), &entries),
+        });
+    }
+    &cache.as_ref().unwrap().group
 }
 
 impl UploadBuffer {
@@ -88,6 +117,8 @@ impl UploadBuffer {
             capacity,
             label,
             usage,
+            #[cfg(test)]
+            uploads: 0,
         }
     }
 
@@ -124,6 +155,10 @@ impl UploadBuffer {
         self.ensure(device, bytes.len())?;
         if !bytes.is_empty() {
             queue.write_buffer(&self.buffer, 0, bytes);
+            #[cfg(test)]
+            {
+                self.uploads += 1;
+            }
         }
         Ok(())
     }
@@ -143,11 +178,15 @@ pub(crate) struct GpuTracer {
     regions: UploadBuffer,
     cells: UploadBuffer,
     materials: UploadBuffer,
+    material_table: Option<VoxelMaterialTransportTable>,
     lights: UploadBuffer,
+    sources: Option<TransportSources>,
     emitters: UploadBuffer,
     emission: Option<Arc<EmissionDistribution>>,
     tasks: UploadBuffer,
     output: UploadBuffer,
+    bindings: Option<CachedBindings<9>>,
+    sky_bindings: Option<CachedBindings<7>>,
     readback: UploadBuffer,
     timestamps: Option<wgpu::QuerySet>,
     timestamp_resolve: UploadBuffer,
@@ -220,7 +259,9 @@ impl GpuTracer {
             regions: UploadBuffer::new(device, "GI region headers", storage),
             cells: UploadBuffer::new(device, "GI packed NAADF cells", storage),
             materials: UploadBuffer::new(device, "GI material transport", storage),
+            material_table: None,
             lights: UploadBuffer::new(device, "GI analytic sources", storage),
+            sources: None,
             emitters: UploadBuffer::new(device, "GI emissive face distribution", storage),
             emission: None,
             tasks: UploadBuffer::new(device, "GI face work queue", storage),
@@ -229,6 +270,8 @@ impl GpuTracer {
                 "GI face estimates",
                 BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             ),
+            bindings: None,
+            sky_bindings: None,
             readback: UploadBuffer::new(
                 device,
                 "GI asynchronous simulation snapshot",
@@ -383,7 +426,7 @@ impl GpuTracer {
             }
             self.scene = Some(Arc::clone(&scene));
         }
-        if !sky_only {
+        if !sky_only && self.material_table.as_ref() != Some(materials) {
             let gpu_materials: Vec<_> = (0..=255)
                 .map(|i| {
                     let material = materials.get(i);
@@ -400,37 +443,43 @@ impl GpuTracer {
                 queue,
                 &ShaderBuffer::from(gpu_materials).data.unwrap(),
             )?;
+            self.material_table = Some(materials.clone());
         }
-        let mut gpu_lights: Vec<_> = sources
-            .directional
-            .iter()
-            .map(|light| GpuLight {
-                position_range: light.direction.normalize_or_zero().extend(-1.0),
-                energy: spectrum_vec(light.radiance),
-                extra: Vec4::new(
-                    light.radiance.ionizing,
-                    light.custom_visible.x,
-                    light.custom_visible.y,
-                    light.custom_visible.z,
-                ),
-            })
-            .chain(sources.points.iter().map(|light| GpuLight {
-                position_range: light.position.extend(light.range),
-                energy: spectrum_vec(light.intensity),
-                extra: Vec4::new(
-                    light.intensity.ionizing,
-                    light.custom_visible.x,
-                    light.custom_visible.y,
-                    light.custom_visible.z,
-                ),
-            }))
-            .collect();
-        let light_count = gpu_lights.len() as u32;
-        if gpu_lights.is_empty() {
-            gpu_lights.push(GpuLight::default());
+        let light_count = (sources.directional.len() + sources.points.len()) as u32;
+        if self.sources.as_ref().is_none_or(|previous| {
+            previous.directional != sources.directional || previous.points != sources.points
+        }) {
+            let mut gpu_lights: Vec<_> = sources
+                .directional
+                .iter()
+                .map(|light| GpuLight {
+                    position_range: light.direction.normalize_or_zero().extend(-1.0),
+                    energy: spectrum_vec(light.radiance),
+                    extra: Vec4::new(
+                        light.radiance.ionizing,
+                        light.custom_visible.x,
+                        light.custom_visible.y,
+                        light.custom_visible.z,
+                    ),
+                })
+                .chain(sources.points.iter().map(|light| GpuLight {
+                    position_range: light.position.extend(light.range),
+                    energy: spectrum_vec(light.intensity),
+                    extra: Vec4::new(
+                        light.intensity.ionizing,
+                        light.custom_visible.x,
+                        light.custom_visible.y,
+                        light.custom_visible.z,
+                    ),
+                }))
+                .collect();
+            if gpu_lights.is_empty() {
+                gpu_lights.push(GpuLight::default());
+            }
+            self.lights
+                .upload(device, queue, &ShaderBuffer::from(gpu_lights).data.unwrap())?;
+            self.sources = Some(sources.clone());
         }
-        self.lights
-            .upload(device, queue, &ShaderBuffer::from(gpu_lights).data.unwrap())?;
         let face_count = tasks.len();
         tasks.extend(sky_pending.iter().map(|&position| GpuFaceTask {
             voxel: position,
@@ -467,7 +516,6 @@ impl GpuTracer {
         let readback_bytes = face_bytes + sky_pending.len() * SKY_RESULT_BYTES;
         self.output.ensure(device, readback_bytes)?;
         self.readback.ensure(device, readback_bytes + 16)?;
-        let layout = self.pipeline.get_bind_group_layout(0).into();
         let buffers = [
             &self.params,
             &self.directory,
@@ -479,28 +527,23 @@ impl GpuTracer {
             &self.output,
             &self.emitters,
         ];
-        let entries: Vec<_> = buffers
-            .iter()
-            .enumerate()
-            .map(|(binding, buffer)| BindGroupEntry {
-                binding: binding as u32,
-                resource: buffer.buffer.as_entire_binding(),
-            })
-            .collect();
-        let bindings =
-            (!sky_only).then(|| device.create_bind_group("GI face dispatch", &layout, &entries));
+        let bindings = (!sky_only).then(|| {
+            cached_bindings(
+                &mut self.bindings,
+                device,
+                || self.pipeline.get_bind_group_layout(0).into(),
+                std::array::from_fn(|index| (index as u32, buffers[index])),
+            )
+        });
         let sky_bindings = if sky_pending.is_empty() {
             None
         } else {
-            let layout = self.sky_pipeline.get_bind_group_layout(0).into();
-            let entries: Vec<_> = [0, 1, 2, 3, 5, 6, 7]
-                .into_iter()
-                .map(|binding| BindGroupEntry {
-                    binding: binding as u32,
-                    resource: buffers[binding].buffer.as_entire_binding(),
-                })
-                .collect();
-            Some(device.create_bind_group("GI shared corner dispatch", &layout, &entries))
+            Some(cached_bindings(
+                &mut self.sky_bindings,
+                device,
+                || self.sky_pipeline.get_bind_group_layout(0).into(),
+                [0, 1, 2, 3, 5, 6, 7].map(|index| (index as u32, buffers[index])),
+            ))
         };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("GI bounded transport batch"),
@@ -516,12 +559,12 @@ impl GpuTracer {
                     }
                 }),
             });
-            if let Some(bindings) = &bindings {
+            if let Some(bindings) = bindings {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &**bindings, &[]);
                 pass.dispatch_workgroups((face_count as u32).div_ceil(64), 1, 1);
             }
-            if let Some(bindings) = &sky_bindings {
+            if let Some(bindings) = sky_bindings {
                 pass.set_pipeline(&self.sky_pipeline);
                 pass.set_bind_group(0, &**bindings, &[]);
                 pass.dispatch_workgroups((sky_pending.len() as u32).div_ceil(64), 1, 1);
@@ -712,6 +755,96 @@ mod tests {
             queue: RenderQueue(Arc::new(bevy::render::renderer::WgpuWrapper::new(queue))),
         })
         .unwrap()
+    }
+
+    #[test]
+    #[ignore = "requires a native compute adapter"]
+    fn static_dispatch_resources_reuse_and_rebind_after_growth() {
+        let mut gpu = native_tracer();
+        let (scene, mut sources, mut probes) = super::super::sky::contact_shadow_fixture();
+        let mut materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        gpu.trace_work(
+            scene.clone(),
+            &sources,
+            &materials,
+            &mut probes,
+            4,
+            &emitters,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            gpu.materials.uploads, 0,
+            "sky-only work does not need optical materials"
+        );
+        let initial_sky = gpu.sky_bindings.as_ref().unwrap().group.id();
+        gpu.trace(
+            scene.clone(),
+            &sources,
+            &materials,
+            &mut probes,
+            4,
+            &emitters,
+        )
+        .unwrap();
+        let initial_faces = gpu.bindings.as_ref().unwrap().group.id();
+        gpu.trace(
+            scene.clone(),
+            &sources,
+            &materials,
+            &mut probes,
+            4,
+            &emitters,
+        )
+        .unwrap();
+        assert_eq!(gpu.materials.uploads, 1);
+        assert_eq!(gpu.lights.uploads, 1);
+        assert_eq!(gpu.bindings.as_ref().unwrap().group.id(), initial_faces);
+        assert_eq!(gpu.sky_bindings.as_ref().unwrap().group.id(), initial_sky);
+
+        let mut many = vec![probes[0].clone(); 1024];
+        gpu.trace(scene.clone(), &sources, &materials, &mut many, 4, &emitters)
+            .unwrap();
+        let grown_faces = gpu.bindings.as_ref().unwrap().group.id();
+        assert_ne!(grown_faces, initial_faces, "work/output growth must rebind");
+        gpu.trace(
+            scene.clone(),
+            &sources,
+            &materials,
+            &mut probes,
+            4,
+            &emitters,
+        )
+        .unwrap();
+        assert_eq!(gpu.bindings.as_ref().unwrap().group.id(), grown_faces);
+
+        sources.directional[0].radiance *= 2.0;
+        let mut optical = materials.get(2);
+        optical.diffuse = EnergySpectrum::ONE * 0.2;
+        materials.set(2, optical);
+        let mut fresh = super::super::sky::contact_shadow_fixture().2;
+        let expected = super::super::tracer::trace_probe_batch(
+            scene.clone(),
+            sources.clone(),
+            Arc::new(materials.clone()),
+            fresh.clone(),
+            4,
+        );
+        gpu.trace(scene, &sources, &materials, &mut fresh, 4, &emitters)
+            .unwrap();
+        assert_eq!(gpu.materials.uploads, 2);
+        assert_eq!(gpu.lights.uploads, 2);
+        assert_ne!(
+            gpu.sky_bindings.as_ref().unwrap().group.id(),
+            initial_sky,
+            "cold sky must bind the grown work/output buffers"
+        );
+        for (actual, expected) in fresh.iter().zip(expected) {
+            assert_eq!(actual.display[2].sky, expected.display[2].sky);
+            assert!((actual.direct[2].visible - expected.direct[2].visible).length() < 0.002);
+            assert!((actual.radiance[2].visible - expected.radiance[2].visible).length() < 0.002);
+        }
     }
 
     #[test]
