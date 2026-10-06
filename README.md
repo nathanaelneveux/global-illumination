@@ -94,6 +94,25 @@ The implemented renderer is diffuse GI for opaque axis-aligned voxels, with Bevy
 
 ## Run and verify
 
+### Local shared build cache
+
+This checkout's machine-local `.cargo/config.toml` uses
+`/Users/nathanaelneveux/Developer/.cargo-build/bevy-0.19` as Cargo's **build directory**,
+matching the other voxel prototypes. Compatible intermediate dependency builds
+are shared; final executables and GI validation captures remain under this
+project's own `target/`. The local configuration also matches the sibling
+development profiles: application optimization 1, dependency optimization 3,
+line-table debug information, incremental builds, and disabled `wgpu-types`
+debug assertions. It overrides the manifest's debug-info settings; record this
+configuration when comparing future builds with older performance evidence.
+
+The absolute machine-specific configuration is excluded via `.git/info/exclude`,
+not committed or applied globally. A fresh clone needs its own local setup.
+`cargo metadata --format-version 1 --no-deps --offline` reports the effective
+`build_directory` and `target_directory`. **Do not run an unrestricted `cargo clean`**
+to tidy this project: it also removes the shared intermediate cache used by the
+other projects. Keep cleanup scoped and preserve validation evidence.
+
 ### Preferred defaults
 
 Normal `cargo run` now starts with **shared-corner direct sunlight and corner-blended indirect GI**, terrain textures enabled, irradiance debug disabled, and mesh ambient occlusion disabled. Corners mean naive unit-voxel face corners, not greedy-mesh vertices. Indirect transport itself still samples faces; only its display is reconstructed at corners. F7 remains the per-pixel sunlight comparison. GPU/adaptive transport, the 4 ms trace target, 75 ms indirect display response, and all-loaded-world coverage are unchanged; the rejected CPU throttle is not enabled.
