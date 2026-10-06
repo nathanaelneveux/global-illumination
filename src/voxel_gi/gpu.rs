@@ -527,6 +527,24 @@ impl GpuTracer {
             &self.output,
             &self.emitters,
         ];
+        // Retire stale groups even when their pass is idle. Otherwise a warm
+        // sky cache could retain an obsolete, large output buffer indefinitely.
+        let ids = buffers.map(|buffer| buffer.buffer.id());
+        if self
+            .bindings
+            .as_ref()
+            .is_some_and(|cached| cached.buffers != ids)
+        {
+            self.bindings = None;
+        }
+        let sky_ids = [0, 1, 2, 3, 5, 6, 7].map(|index| ids[index]);
+        if self
+            .sky_bindings
+            .as_ref()
+            .is_some_and(|cached| cached.buffers != sky_ids)
+        {
+            self.sky_bindings = None;
+        }
         let bindings = (!sky_only).then(|| {
             cached_bindings(
                 &mut self.bindings,
@@ -807,6 +825,10 @@ mod tests {
         gpu.trace(scene.clone(), &sources, &materials, &mut many, 4, &emitters)
             .unwrap();
         let grown_faces = gpu.bindings.as_ref().unwrap().group.id();
+        assert!(
+            gpu.sky_bindings.is_none(),
+            "idle sky pass must release superseded buffers"
+        );
         assert_ne!(grown_faces, initial_faces, "work/output growth must rebind");
         gpu.trace(
             scene.clone(),
