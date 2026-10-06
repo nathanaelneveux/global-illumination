@@ -104,6 +104,10 @@ fn draw_hud(
                             .monospace()
                             .size(16.0)
                             .color(egui::Color32::WHITE),
+                    ).on_hover_text(
+                        "Coverage = faces with samples; bootstrap = progress toward 8 samples.\n\
+                         Settled = faces passing the current scene's adaptive stability checks (all energy bands), not convergence or idle. Edits can reset this without clearing history; settled faces still receive audits.\n\
+                         GI main/GPU = average milliseconds per app frame over 250 ms; they overlap, so do not add them. Main covers GI main-world systems, not background workers or render-world uploads/drawing. GPU covers completed transport/sky compute passes, not transfers or queue waits. — means no measurement or unavailable timestamps."
                     );
                     if ui.button("Add emitting block (E)")
                         .on_hover_text("Place a warm emitting voxel against the aimed-at face. E works while playing; Esc releases the cursor for this button.")
@@ -119,12 +123,30 @@ fn hud_text(stats: &VoxelGiStats, fps: Option<f64>) -> String {
         .filter(|fps| fps.is_finite() && *fps >= 0.0)
         .map_or_else(|| "—".into(), |fps| format!("{fps:.0}"));
     if stats.surface_probes == 0 {
-        return format!("FPS:       {fps}\nCoverage:  —\nBootstrap: —");
+        return format!(
+            "FPS:       {fps}\nCoverage:  —\nBootstrap: —\nSettled:   —{}",
+            hud_cost_text(stats)
+        );
     }
     format!(
-        "FPS:       {fps}\nCoverage:  {:.1}%\nBootstrap: {:.1}%",
+        "FPS:       {fps}\nCoverage:  {:.1}%\nBootstrap: {:.1}%\nSettled:   {:.1}%{}",
         stats.interactive_coverage.clamp(0.0, 1.0) * 100.0,
-        stats.bootstrap_coverage.clamp(0.0, 1.0) * 100.0
+        stats.bootstrap_coverage.clamp(0.0, 1.0) * 100.0,
+        stats.settled_coverage.clamp(0.0, 1.0) * 100.0,
+        hud_cost_text(stats)
+    )
+}
+
+fn hud_cost_text(stats: &VoxelGiStats) -> String {
+    let cost = |value: Option<f32>| {
+        value
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .map_or_else(|| "—".into(), |value| format!("{value:.2} ms/frame"))
+    };
+    format!(
+        "\nGI main:   {}\nGI GPU:    {}",
+        cost(stats.main_thread_ms_per_frame),
+        cost(stats.gpu_ms_per_frame)
     )
 }
 
@@ -228,6 +250,9 @@ pub(super) fn log_voxel_gi_stats(
         surface_probes = stats.surface_probes,
         coverage_percent = format_args!("{:.1}", stats.interactive_coverage * 100.0),
         bootstrap_percent = format_args!("{:.1}", stats.bootstrap_coverage * 100.0),
+        settled_percent = format_args!("{:.1}", stats.settled_coverage * 100.0),
+        main_ms_per_frame = stats.main_thread_ms_per_frame,
+        gpu_ms_per_frame = stats.gpu_ms_per_frame,
         pending_probes = stats.pending_probes,
         traced_paths = stats.traced_paths,
         refresh_percent = format_args!("{:.1}", stats.global_refresh * 100.0),
@@ -267,11 +292,14 @@ mod tests {
             interactive_coverage: 0.75,
             bootstrap_coverage: 0.325,
             mean_history_samples: 200.0,
+            settled_coverage: 0.125,
+            main_thread_ms_per_frame: Some(1.25),
+            gpu_ms_per_frame: Some(0.375),
             ..default()
         };
         assert_eq!(
             hud_text(&stats, Some(59.7)),
-            "FPS:       60\nCoverage:  75.0%\nBootstrap: 32.5%"
+            "FPS:       60\nCoverage:  75.0%\nBootstrap: 32.5%\nSettled:   12.5%\nGI main:   1.25 ms/frame\nGI GPU:    0.38 ms/frame"
         );
     }
 
@@ -284,8 +312,21 @@ mod tests {
         };
         assert_eq!(
             hud_text(&stats, None),
-            "FPS:       —\nCoverage:  —\nBootstrap: —"
+            "FPS:       —\nCoverage:  —\nBootstrap: —\nSettled:   —\nGI main:   —\nGI GPU:    —"
         );
         assert_eq!(hud_text(&stats, Some(f64::NAN)), hud_text(&stats, None));
+    }
+
+    #[test]
+    fn unavailable_and_zero_work_have_distinct_labels() {
+        let stats = VoxelGiStats {
+            main_thread_ms_per_frame: Some(0.0),
+            gpu_ms_per_frame: Some(f32::NAN),
+            ..default()
+        };
+        assert_eq!(
+            hud_cost_text(&stats),
+            "\nGI main:   0.00 ms/frame\nGI GPU:    —"
+        );
     }
 }

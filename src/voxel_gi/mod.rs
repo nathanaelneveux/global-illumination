@@ -21,6 +21,7 @@ mod settings;
 mod sky;
 mod sky_cache;
 mod spectrum;
+mod telemetry;
 mod tracer;
 #[cfg(debug_assertions)]
 mod validation;
@@ -50,6 +51,7 @@ use render::{
     VoxelTransportMaterial, build_gpu_cache, install_gpu_cache, install_render_assets,
     patch_gpu_topology, patch_probe_values,
 };
+use telemetry::GiWorkTimings;
 use tracer::{
     BOOTSTRAP_SAMPLES, DirectionalTransportLight, PointTransportLight, TransportSources,
     trace_probe_batch_with_emitters,
@@ -76,6 +78,7 @@ impl Plugin for VoxelGiPlugin {
             .init_resource::<VoxelGiRuntime>()
             .init_resource::<VoxelEnergyField>()
             .init_resource::<VoxelGiStats>()
+            .init_resource::<GiWorkTimings>()
             .init_resource::<VoxelGiSettings>()
             .init_resource::<VoxelMaterialTransportTable>()
             .init_resource::<GpuTransportCache>()
@@ -90,6 +93,7 @@ impl Plugin for VoxelGiPlugin {
                     apply_trace_task,
                     start_trace_task,
                     upload_transport_cache,
+                    telemetry::finish_frame,
                 )
                     .chain()
                     .in_set(VoxelGiSystems),
@@ -146,6 +150,16 @@ pub struct VoxelGiStats {
     pub surface_probes: usize,
     pub bootstrap_coverage: f32,
     pub interactive_coverage: f32,
+    /// Fraction passing the adaptive stability heuristic for the current
+    /// transport revision. Periodic audits remain eligible; not convergence.
+    pub settled_coverage: f32,
+    /// Mean GI main-world system-body time per app frame over a 250 ms window.
+    /// Excludes background workers and render-world upload/draw work.
+    pub main_thread_ms_per_frame: Option<f32>,
+    /// Completed transport/sky compute-pass timestamps per app frame over the
+    /// same window. None until available, or on CPU/unsupported GPU backends.
+    /// Excludes queue waits, transfers and graphics; do not add to main time.
+    pub gpu_ms_per_frame: Option<f32>,
     pub pending_probes: usize,
     pub global_refresh: f32,
     pub traced_paths: u64,
@@ -211,6 +225,7 @@ struct VoxelGiRuntime {
     active_faces: u64,
     covered_faces: u64,
     completed_samples: u64,
+    settled_faces: u64,
     scene_task: Option<Task<SceneBuildResult>>,
     scene_publication: Option<SceneBuildResult>,
     trace_task: Option<Task<TraceBatchResult>>,
@@ -280,6 +295,7 @@ impl Default for VoxelGiRuntime {
             active_faces: 0,
             covered_faces: 0,
             completed_samples: 0,
+            settled_faces: 0,
             scene_task: None,
             scene_publication: None,
             trace_task: None,
@@ -346,7 +362,9 @@ fn apply_scene_task(
     mut field: ResMut<VoxelEnergyField>,
     mut stats: ResMut<VoxelGiStats>,
     settings: Res<VoxelGiSettings>,
+    mut timings: ResMut<GiWorkTimings>,
 ) {
+    let _timing = timings.main_scope();
     let publish_started = Instant::now();
     if let Some(task) = runtime.scene_task.as_mut()
         && let Some(mut result) = block_on(poll_once(task))
@@ -379,7 +397,7 @@ fn apply_scene_task(
         }
         runtime.scene = result.scene.clone();
         runtime.generation = runtime.generation.wrapping_add(1);
-        field.transport_revision = field.transport_revision.wrapping_add(1);
+        advance_transport_revision(&mut runtime, &mut field);
         field
             .publishing_pages
             .extend(result.pages.iter().map(|(page, _)| *page));
@@ -448,10 +466,12 @@ fn publish_scene_page(
         if let Some(voxels) = field.pages.remove(&page) {
             for voxel in voxels {
                 if let Some(probe) = field.probes.remove(&voxel) {
-                    let (faces, samples, covered) = probe_metrics(&probe);
+                    let (faces, samples, covered, settled) =
+                        probe_metrics(&probe, field.transport_revision);
                     runtime.active_faces = runtime.active_faces.saturating_sub(faces);
                     runtime.completed_samples = runtime.completed_samples.saturating_sub(samples);
                     runtime.covered_faces = runtime.covered_faces.saturating_sub(covered);
+                    runtime.settled_faces = runtime.settled_faces.saturating_sub(settled);
                     old_affected.insert(voxel, probe);
                 }
             }
@@ -526,10 +546,11 @@ fn publish_scene_page(
             face_topology_changed = true;
             invalidated.insert(descriptor.voxel);
         }
-        let (faces, samples, covered) = probe_metrics(&probe);
+        let (faces, samples, covered, settled) = probe_metrics(&probe, field.transport_revision);
         runtime.active_faces += faces;
         runtime.completed_samples += samples;
         runtime.covered_faces += covered;
+        runtime.settled_faces += settled;
         field
             .pages
             .entry(page_of(descriptor.voxel))
@@ -639,12 +660,14 @@ fn invalidate_near_voxel(
             continue;
         }
         if let Some(probe) = field.probes.get_mut(&voxel) {
-            let (_, samples, covered) = probe_metrics(probe);
+            let (_, samples, covered, settled) = probe_metrics(probe, field.transport_revision);
             probe.request_relight();
-            let (_, next_samples, next_covered) = probe_metrics(probe);
+            let (_, next_samples, next_covered, next_settled) =
+                probe_metrics(probe, field.transport_revision);
             runtime.completed_samples =
                 runtime.completed_samples.saturating_sub(samples) + next_samples;
             runtime.covered_faces = runtime.covered_faces.saturating_sub(covered) + next_covered;
+            runtime.settled_faces = runtime.settled_faces.saturating_sub(settled) + next_settled;
             // Nothing visible changed yet: do not upload every receiver in the
             // edit radius merely because its measurements now need refreshing.
             invalidated.insert(voxel);
@@ -662,7 +685,9 @@ fn synchronize_transport_sources(
         (&EnergyEmitter, &GlobalTransform),
         (Without<PointLight>, Without<DirectionalLight>),
     >,
+    mut timings: ResMut<GiWorkTimings>,
 ) {
+    let _timing = timings.main_scope();
     let mut next = TransportSources::default();
     for (light, transform, extra) in &directional_lights {
         let linear = light.color.to_linear();
@@ -742,7 +767,9 @@ fn synchronize_material_table(
     materials: Res<VoxelMaterialTransportTable>,
     mut field: ResMut<VoxelEnergyField>,
     mut stats: ResMut<VoxelGiStats>,
+    mut timings: ResMut<GiWorkTimings>,
 ) {
+    let _timing = timings.main_scope();
     if !materials.is_changed() || materials.as_ref() == runtime.materials.as_ref() {
         return;
     }
@@ -761,9 +788,16 @@ fn invalidate_sources(
     // Keep a versioned snapshot; shorten history lazily when each probe runs.
     runtime.source_revision = runtime.source_revision.wrapping_add(1);
     field.source_revision = runtime.source_revision;
-    field.transport_revision = field.transport_revision.wrapping_add(1);
+    advance_transport_revision(runtime, field);
     request_global_refresh(runtime, field.order.len());
     update_stats_from_counters(runtime, field, stats);
+}
+
+fn advance_transport_revision(runtime: &mut VoxelGiRuntime, field: &mut VoxelEnergyField) {
+    field.transport_revision = field.transport_revision.wrapping_add(1);
+    // Old histories remain useful, but have not passed stability checks in the
+    // new scene. Revision-aware deltas cannot subtract them from this new count.
+    runtime.settled_faces = 0;
 }
 
 fn request_global_refresh(runtime: &mut VoxelGiRuntime, probes: usize) {
@@ -839,7 +873,9 @@ fn start_trace_task(
     cameras: Query<&GlobalTransform, With<Camera3d>>,
     gpu_device: Option<Res<gpu::GpuTransportDevice>>,
     settings: Res<VoxelGiSettings>,
+    mut timings: ResMut<GiWorkTimings>,
 ) {
+    let _timing = timings.main_scope();
     if runtime.trace_task.is_some() || field.order.is_empty() {
         return;
     }
@@ -1124,7 +1160,9 @@ fn apply_trace_task(
     mut field: ResMut<VoxelEnergyField>,
     mut stats: ResMut<VoxelGiStats>,
     settings: Res<VoxelGiSettings>,
+    mut timings: ResMut<GiWorkTimings>,
 ) {
+    let mut timing = timings.main_scope();
     let Some(task) = runtime.trace_task.as_mut() else {
         return;
     };
@@ -1133,6 +1171,12 @@ fn apply_trace_task(
     };
     let merge_started = Instant::now();
     runtime.trace_task = None;
+    timing.record_gpu_batch(
+        result
+            .gpu_tracer
+            .as_ref()
+            .and_then(|tracer| tracer.last_gpu_ms),
+    );
     if let Some(error) = result.gpu_error {
         warn!(%error, "GPU transport unavailable; continuing with bounded CPU transport");
         runtime.gpu_failed = true;
@@ -1185,6 +1229,7 @@ fn apply_trace_task(
     let sky_current = result.scene_generation == runtime.generation
         && result.sky_revision == runtime.sky_revision;
     let mut requeue = Vec::new();
+    let transport_revision = field.transport_revision;
     for mut probe in result.probes.drain(..) {
         let voxel = probe.voxel;
         let Some(old) = field.probes.get_mut(&voxel) else {
@@ -1223,11 +1268,12 @@ fn apply_trace_task(
         }
         probe.resolve_display(old, merge_started, settings.display_response_seconds());
         scheduling::record_batch(&mut probe, old, merge_started, &settings);
-        let (_, old_samples, old_covered) = probe_metrics(old);
-        let (_, new_samples, new_covered) = probe_metrics(&probe);
+        let (_, old_samples, old_covered, old_settled) = probe_metrics(old, transport_revision);
+        let (_, new_samples, new_covered, new_settled) = probe_metrics(&probe, transport_revision);
         runtime.completed_samples =
             runtime.completed_samples.saturating_sub(old_samples) + new_samples;
         runtime.covered_faces = runtime.covered_faces.saturating_sub(old_covered) + new_covered;
+        runtime.settled_faces = runtime.settled_faces.saturating_sub(old_settled) + new_settled;
         let pending = probe_has_pending_samples(&probe);
         *old = probe;
         runtime.gpu_value_dirty.insert(voxel);
@@ -1254,7 +1300,7 @@ fn apply_trace_task(
     update_stats_from_counters(&runtime, &field, &mut stats);
 }
 
-fn probe_metrics(probe: &SurfaceProbe) -> (u64, u64, u64) {
+fn probe_metrics(probe: &SurfaceProbe, transport_revision: u64) -> (u64, u64, u64, u64) {
     let mut faces = 0;
     let mut samples = 0;
     let mut covered = 0;
@@ -1265,7 +1311,8 @@ fn probe_metrics(probe: &SurfaceProbe) -> (u64, u64, u64) {
             covered += u64::from(probe.samples[face] > 0);
         }
     }
-    (faces, samples, covered)
+    let settled = u64::from(scheduling::settled_face_mask(probe, transport_revision).count_ones());
+    (faces, samples, covered, settled)
 }
 
 fn update_stats_from_counters(
@@ -1286,6 +1333,11 @@ fn update_stats_from_counters(
     } else {
         runtime.covered_faces as f32 / faces as f32
     };
+    stats.settled_coverage = if faces == 0 {
+        0.0
+    } else {
+        runtime.settled_faces as f32 / faces as f32
+    };
     stats.global_refresh = if runtime.refresh_total == 0 {
         1.0
     } else {
@@ -1304,7 +1356,9 @@ fn upload_transport_cache(
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut materials: ResMut<Assets<VoxelTransportMaterial>>,
     settings: Res<VoxelGiSettings>,
+    mut timings: ResMut<GiWorkTimings>,
 ) {
+    let _timing = timings.main_scope();
     let Some(material_handle) = material_handle else {
         return;
     };
@@ -1412,6 +1466,166 @@ mod tests {
     use super::*;
 
     #[test]
+    fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches() {
+        use bevy::ecs::system::RunSystemOnce;
+        let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(1).build();
+        let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
+        probe.samples = [128; 6];
+        probe.stable_batches = [3; 6];
+        let mut field = VoxelEnergyField::default();
+        field.probes.insert(IVec3::ZERO, probe);
+        field.update_indices(&[IVec3::ZERO], &HashMap::new());
+        let mut world = World::new();
+        world.insert_resource(field);
+        world.insert_resource(VoxelGiRuntime {
+            active_faces: 1,
+            covered_faces: 1,
+            completed_samples: 8,
+            ..default()
+        });
+        world.init_resource::<VoxelGiStats>();
+        world.init_resource::<VoxelGiSettings>();
+        world.init_resource::<GiWorkTimings>();
+        for (case, expected) in [(0, 1.0), (1, 1.0), (2, 1.0), (3, 0.0)] {
+            let mut probe = world.resource::<VoxelEnergyField>().probes[&IVec3::ZERO].clone();
+            probe.trace_mask = 4;
+            if case == 1 {
+                probe.trace_mask = 0;
+                probe.stable_batches = [0; 6];
+            } else if case == 2 {
+                probe.revision += 1;
+                probe.stable_batches = [0; 6];
+            } else if case == 3 {
+                probe.radiance[2] = EnergySpectrum::ONE;
+                probe.second_moment[2] = EnergySpectrum::ONE;
+            }
+            let task = pool.spawn(async move {
+                TraceBatchResult {
+                    probes: vec![probe],
+                    paths: 4,
+                    trace_time: Duration::from_millis(1),
+                    gpu_tracer: None,
+                    emission_cache: None,
+                    cpu_sky_cache: default(),
+                    gpu_error: None,
+                    sky_only: case == 1,
+                    transport_count: usize::from(case != 1),
+                    sky_count: usize::from(case == 1),
+                    scene_generation: 0,
+                    sky_revision: 0,
+                }
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !task.is_finished() {
+                assert!(Instant::now() < deadline, "test batch did not finish");
+                std::thread::yield_now();
+            }
+            world.resource_mut::<VoxelGiRuntime>().trace_task = Some(task);
+            world.run_system_once(apply_trace_task).unwrap();
+            assert_eq!(
+                world.resource::<VoxelGiStats>().settled_coverage,
+                expected,
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn settled_counter_tracks_local_edits_global_revisions_and_page_removal() {
+        let mut field = VoxelEnergyField::default();
+        let mut runtime = VoxelGiRuntime::default();
+        let mut stats = VoxelGiStats::default();
+        let far = IVec3::new(128, 0, 0);
+        for voxel in [IVec3::ZERO, far] {
+            let mut probe = SurfaceProbe::new(voxel, 5);
+            probe.samples = [128; 6];
+            probe.stable_batches = [4; 6];
+            let (faces, samples, covered, settled) = probe_metrics(&probe, 0);
+            runtime.active_faces += faces;
+            runtime.completed_samples += samples;
+            runtime.covered_faces += covered;
+            runtime.settled_faces += settled;
+            field.probes.insert(voxel, probe);
+            field.pages.insert(page_of(voxel), vec![voxel]);
+        }
+        field.update_indices(&[IVec3::ZERO, far], &HashMap::new());
+        update_stats_from_counters(&runtime, &field, &mut stats);
+        assert_eq!(stats.settled_coverage, 1.0);
+        invalidate_near_voxel(
+            &mut runtime,
+            &mut field,
+            IVec3::ZERO,
+            48,
+            &mut HashSet::new(),
+        );
+        update_stats_from_counters(&runtime, &field, &mut stats);
+        assert_eq!(stats.settled_coverage, 0.5);
+        assert_eq!(stats.interactive_coverage, 1.0);
+        assert_eq!(stats.bootstrap_coverage, 1.0);
+        assert_eq!(field.probes[&IVec3::ZERO].samples[0], 16);
+
+        // O(1) invalidation must not scan/clear histories. Old contributions no
+        // longer count, including late worker results from that old revision.
+        invalidate_sources(&mut runtime, &mut field, &mut stats);
+        assert_eq!(stats.settled_coverage, 0.0);
+        assert_eq!(field.probes[&far].samples[0], 128);
+        assert_eq!(
+            probe_metrics(&field.probes[&far], field.transport_revision).3,
+            0
+        );
+        let current = field.probes.get_mut(&IVec3::ZERO).unwrap();
+        current.transport_revision = field.transport_revision;
+        current.samples = [128; 6];
+        current.fresh_mask = current.face_mask;
+        current.stable_batches = [4; 6];
+        runtime.settled_faces = probe_metrics(current, field.transport_revision).3;
+        let mut result = SceneBuildResult {
+            scene: runtime.scene.clone(),
+            changed: true,
+            changed_materials: [false; 256],
+            pages: VecDeque::new(),
+            exact_edits: vec![],
+            broad_edits: vec![],
+            build_time: Duration::ZERO,
+        };
+        // Removing old-revision terrain must not subtract freshly settled faces
+        // elsewhere. Republishing an unchanged current page must count it once.
+        publish_scene_page(
+            &mut runtime,
+            &mut field,
+            &mut stats,
+            &mut result,
+            page_of(far),
+            vec![],
+        );
+        assert_eq!(runtime.settled_faces, 2);
+        assert_eq!(stats.settled_coverage, 1.0);
+        publish_scene_page(
+            &mut runtime,
+            &mut field,
+            &mut stats,
+            &mut result,
+            IVec3::ZERO,
+            vec![SurfaceProbeDescriptor {
+                voxel: IVec3::ZERO,
+                material: 0,
+                face_mask: 5,
+            }],
+        );
+        assert_eq!(runtime.settled_faces, 2);
+        publish_scene_page(
+            &mut runtime,
+            &mut field,
+            &mut stats,
+            &mut result,
+            IVec3::ZERO,
+            vec![],
+        );
+        assert_eq!(runtime.settled_faces, 0);
+        assert_eq!(stats.settled_coverage, 0.0);
+    }
+
+    #[test]
     fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
         use bevy::ecs::system::RunSystemOnce;
         let mut field = VoxelEnergyField::default();
@@ -1458,6 +1672,7 @@ mod tests {
             ..default()
         });
         world.insert_resource(VoxelGiStats::default());
+        world.init_resource::<GiWorkTimings>();
         world.insert_resource(VoxelGiSettings {
             scene_publish_budget: Duration::ZERO,
             ..default()
@@ -1537,6 +1752,7 @@ mod tests {
             ..default()
         });
         world.insert_resource(VoxelGiStats::default());
+        world.init_resource::<GiWorkTimings>();
         world.insert_resource(VoxelGiSettings {
             scene_publish_budget: Duration::MAX,
             ..default()

@@ -192,6 +192,9 @@ pub(crate) struct GpuTracer {
     timestamps: Option<wgpu::QuerySet>,
     timestamp_resolve: UploadBuffer,
     pub last_dispatch_ms: f32,
+    /// GPU compute-pass time only. Unlike the scheduling estimate above, this
+    /// never falls back to submission/readback wall time when timestamps fail.
+    pub last_gpu_ms: Option<f32>,
     pub uploaded_geometry_bytes: u64,
     pub last_prepare_ms: f32,
     pub last_wait_ms: f32,
@@ -295,6 +298,7 @@ impl GpuTracer {
                 BufferUsages::QUERY_RESOLVE | BufferUsages::COPY_SRC,
             ),
             last_dispatch_ms: 0.0,
+            last_gpu_ms: None,
             context,
             uploaded_geometry_bytes: 0,
             last_prepare_ms: 0.0,
@@ -374,6 +378,7 @@ impl GpuTracer {
         // GPU submission. Leave geometry synchronization until rays need it.
         if tasks.is_empty() && sky_pending.is_empty() {
             self.last_dispatch_ms = 0.0;
+            self.last_gpu_ms = Some(0.0);
             self.last_prepare_ms = work_started.elapsed().as_secs_f32() * 1000.0;
             self.last_wait_ms = 0.0;
             self.last_decode_ms = 0.0;
@@ -662,11 +667,11 @@ impl GpuTracer {
         };
         // Some drivers expose timestamp queries but return identical/zero
         // endpoints. Never interpret that as free work and ramp without bound.
-        self.last_dispatch_ms = if timestamp_ms > 0.001 {
-            timestamp_ms
-        } else {
-            submitted.elapsed().as_secs_f32() * 1000.0
-        };
+        self.last_gpu_ms =
+            (timestamp_ms > 0.001 && timestamp_ms.is_finite()).then_some(timestamp_ms);
+        self.last_dispatch_ms = self
+            .last_gpu_ms
+            .unwrap_or_else(|| submitted.elapsed().as_secs_f32() * 1000.0);
         let now = Instant::now();
         for ((index, face), bytes) in mapping
             .into_iter()

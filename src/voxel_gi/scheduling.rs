@@ -11,6 +11,24 @@ use super::{
 
 const STABLE_BATCHES: u8 = 4;
 
+/// Faces whose latest measurements passed the adaptive stability checks in
+/// this scene revision. An audit becoming due does not itself revoke stability.
+/// This is not an idle-work mask or a certified convergence estimate.
+pub(crate) fn settled_face_mask(probe: &SurfaceProbe, revision: u64) -> u8 {
+    if probe.transport_revision != revision {
+        return 0;
+    }
+    let mut mask = 0;
+    for face in 0..6 {
+        if probe.face_mask & probe.fresh_mask & (1 << face) != 0
+            && probe.stable_batches[face] >= STABLE_BATCHES
+        {
+            mask |= 1 << face;
+        }
+    }
+    mask
+}
+
 /// Candidate-search capacity is not the number of rays emitted. A partially
 /// settled window must not collapse the all-world sweep to a handful of sites.
 pub(crate) fn next_budget(
@@ -233,6 +251,32 @@ mod tests {
             due_faces(&probe, 0, now, &settings, false),
             4,
             "do not retrace a settled face just because another face is noisy"
+        );
+    }
+
+    #[test]
+    fn settled_mask_counts_only_exposed_fresh_current_faces_and_survives_audit_age() {
+        let now = Instant::now();
+        let mut probe = stable_probe(now);
+        assert_eq!(settled_face_mask(&probe, 0), 5);
+        assert_eq!(settled_face_mask(&probe, 1), 0);
+        probe.face_updated_at = [Some(now - std::time::Duration::from_secs(10)); 6];
+        assert_eq!(
+            settled_face_mask(&probe, 0),
+            5,
+            "audit eligibility is not instability"
+        );
+        probe.fresh_mask = 1;
+        assert_eq!(settled_face_mask(&probe, 0), 1);
+        probe.stable_batches[0] = STABLE_BATCHES - 1;
+        assert_eq!(settled_face_mask(&probe, 0), 0);
+        probe.fresh_mask = 63;
+        probe.samples = [256; 6];
+        probe.stable_batches = [0; 6];
+        assert_eq!(
+            settled_face_mask(&probe, 0),
+            0,
+            "history count alone is not stability"
         );
     }
 

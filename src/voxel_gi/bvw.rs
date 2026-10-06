@@ -2,6 +2,7 @@
 //! Transport workers consume immutable dense pages, not BVW chunks or meshes.
 //! Replace this boundary for a different storage engine; do not teach traversal,
 //! source sampling or display history about gameplay material IDs or generators.
+use super::telemetry::GiWorkTimings;
 use super::world::{
     AIR, PAGE_EDGE, PAGE_SIZE, TransportScene, affected_probe_pages, scan_surface_probe_pages,
 };
@@ -25,7 +26,9 @@ pub(super) fn collect_chunk_changes(
     mut spawned: MessageReader<ChunkWillSpawn<PrototypeWorld>>,
     mut updated: MessageReader<ChunkWillUpdate<PrototypeWorld>>,
     mut despawned: MessageReader<ChunkWillDespawn<PrototypeWorld>>,
+    mut timings: ResMut<GiWorkTimings>,
 ) {
+    let _timing = timings.main_scope();
     let mut changed = false;
     for event in spawned.read() {
         runtime.loaded_pages.insert(event.chunk_key);
@@ -80,7 +83,9 @@ pub(super) fn start_scene_task(
     generator: Res<PrototypeWorld>,
     voxel_world: VoxelWorld<PrototypeWorld>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
+    mut timings: ResMut<GiWorkTimings>,
 ) {
+    let _timing = timings.main_scope();
     let pending = !runtime.dirty_pages.is_empty() || !runtime.removed_pages.is_empty();
     let debounce = if runtime.urgent_edit {
         EDIT_DEBOUNCE
