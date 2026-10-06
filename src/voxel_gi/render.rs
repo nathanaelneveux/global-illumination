@@ -5,6 +5,7 @@ use bevy::image::{ImageAddressMode, TextureReinterpretationError};
 use bevy::pbr::{
     ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
 };
+use bevy::platform::collections::HashSet as SlotSet;
 use bevy::prelude::*;
 use bevy::render::erased_render_asset::prepare_erased_assets;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
@@ -161,8 +162,11 @@ pub(crate) struct GpuProbePatchQueue {
 
 #[derive(Default)]
 struct ProbePatchState {
-    pending_probes: HashMap<usize, GpuProbe>,
-    pending_hash: HashMap<usize, GpuHashEntry>,
+    // Mirrors own the authoritative bytes. Dirty ledgers need only slot IDs;
+    // retaining another 208-byte GpuProbe per slot duplicates a large payload
+    // and forces expensive hash-table moves during bursty publication.
+    pending_probes: SlotSet<usize>,
+    pending_hash: SlotSet<usize>,
     probe_mirror: Vec<u8>,
     hash_mirror: Vec<u8>,
 }
@@ -183,22 +187,22 @@ impl ProbePatchState {
         }
         if self
             .pending_probes
-            .keys()
+            .iter()
             .any(|slot| *slot >= self.probe_mirror.len() / GPU_PROBE_BYTES)
             || self
                 .pending_hash
-                .keys()
+                .iter()
                 .any(|slot| *slot >= self.hash_mirror.len() / 16)
         {
             return Err("dirty slot is outside its cache generation");
         }
         for range in patch_ranges(
-            self.pending_probes.keys().copied().collect(),
+            self.pending_probes.iter().copied().collect(),
             GPU_PROBE_BYTES,
         ) {
             write(true, range.start, &self.probe_mirror[range]);
         }
-        for range in patch_ranges(self.pending_hash.keys().copied().collect(), 16) {
+        for range in patch_ranges(self.pending_hash.iter().copied().collect(), 16) {
             write(false, range.start, &self.hash_mirror[range]);
         }
         self.pending_probes.clear();
@@ -525,9 +529,7 @@ pub(crate) fn patch_gpu_topology(
         }
         if let Some(hash_slot) = cache.hash_slots.remove(voxel) {
             cache.hash_entries[hash_slot] = GpuHashEntry::TOMBSTONE;
-            state
-                .pending_hash
-                .insert(hash_slot, GpuHashEntry::TOMBSTONE);
+            state.pending_hash.insert(hash_slot);
             write_hash_entry(&mut state.hash_mirror, hash_slot, GpuHashEntry::TOMBSTONE);
         }
     }
@@ -542,9 +544,9 @@ pub(crate) fn patch_gpu_topology(
         cache.hash_entries[hash_slot] = entry;
         cache.slots.insert(entry.voxel, probe_slot);
         cache.hash_slots.insert(entry.voxel, hash_slot);
-        state.pending_hash.insert(hash_slot, entry);
+        state.pending_hash.insert(hash_slot);
         write_hash_entry(&mut state.hash_mirror, hash_slot, entry);
-        state.pending_probes.insert(probe_slot, gpu_probe);
+        state.pending_probes.insert(probe_slot);
         write_probe(&mut state.probe_mirror, probe_slot, gpu_probe);
     }
     // Retire old donors and publish newly exposed faces on EXISTING probes in
@@ -576,7 +578,7 @@ fn patch_values_locked(
             continue;
         };
         let gpu_probe = gpu_probe(probe);
-        state.pending_probes.insert(*slot, gpu_probe);
+        state.pending_probes.insert(*slot);
         write_probe(&mut state.probe_mirror, *slot, gpu_probe);
     }
 }
@@ -1488,12 +1490,45 @@ mod tests {
     }
 
     #[test]
+    fn dirty_slots_publish_the_latest_mirror_once_after_retry() {
+        let mut state = ProbePatchState {
+            probe_mirror: vec![0; GPU_PROBE_BYTES * 2],
+            hash_mirror: vec![0; 16],
+            ..default()
+        };
+        let mut latest = GpuProbe::default();
+        for energy in [1.0, 2.0, 3.0] {
+            latest.positive_y = Vec4::splat(energy);
+            state.pending_probes.insert(1);
+            write_probe(&mut state.probe_mirror, 1, latest);
+        }
+        assert_eq!(state.pending_probes.len(), 1);
+        assert!(
+            state
+                .upload(GPU_PROBE_BYTES as u64, 16, |_, _, _| panic!("early write"))
+                .is_err()
+        );
+        let expected = ShaderBuffer::from(vec![latest]).data.unwrap();
+        let mut writes = 0;
+        state
+            .upload((GPU_PROBE_BYTES * 2) as u64, 16, |probe, offset, bytes| {
+                assert!(probe);
+                assert_eq!(offset, GPU_PROBE_BYTES);
+                assert_eq!(bytes, expected);
+                writes += 1;
+            })
+            .unwrap();
+        assert_eq!(writes, 1);
+        assert!(state.pending_probes.is_empty());
+    }
+
+    #[test]
     fn upload_validates_both_buffers_before_writing_and_preserves_retry() {
         let mut state = ProbePatchState {
             probe_mirror: vec![7; GPU_PROBE_BYTES * 2],
             hash_mirror: vec![3; 64],
-            pending_probes: HashMap::from([(1, GpuProbe::default())]),
-            pending_hash: HashMap::from([(3, GpuHashEntry::EMPTY)]),
+            pending_probes: SlotSet::from([1]),
+            pending_hash: SlotSet::from([3]),
         };
         // Smaller old hash allocation, even though the probe buffer fits.
         assert!(
@@ -1516,7 +1551,7 @@ mod tests {
             [(true, GPU_PROBE_BYTES, GPU_PROBE_BYTES), (false, 48, 16)]
         );
         assert!(state.pending_probes.is_empty() && state.pending_hash.is_empty());
-        state.pending_hash.insert(usize::MAX, GpuHashEntry::EMPTY);
+        state.pending_hash.insert(usize::MAX);
         assert!(
             state
                 .upload((GPU_PROBE_BYTES * 2) as u64, 64, |_, _, _| panic!(
@@ -1676,7 +1711,7 @@ mod tests {
         let mut state = ProbePatchState {
             probe_mirror: vec![0; GPU_PROBE_BYTES],
             hash_mirror: vec![0; new_hash.size() as usize],
-            pending_hash: HashMap::from([(OFFSET / 16, expected)]),
+            pending_hash: SlotSet::from([OFFSET / 16]),
             ..default()
         };
         write_hash_entry(&mut state.hash_mirror, OFFSET / 16, expected);
