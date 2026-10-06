@@ -100,7 +100,7 @@ pub(super) fn run_validation(
     mut run: Local<ValidationRun>,
     mut evidence: ResMut<CaptureEvidence>,
     time: Res<Time<Real>>,
-    stats: Res<VoxelGiStats>,
+    gi: (Res<VoxelGiStats>, Res<super::VoxelGiRuntime>),
     settings: Res<VoxelGiSettings>,
     field: Res<VoxelEnergyField>,
     mut dirty: ResMut<VoxelGiDirty>,
@@ -121,6 +121,7 @@ pub(super) fn run_validation(
     if std::env::var_os("VOXEL_GI_VALIDATE").is_none() || run.done || evidence.failed {
         return;
     }
+    let (stats, runtime) = gi;
     let (assets, asset_server, configs) = asset_context;
     if run.startup.is_none() {
         let profile =
@@ -290,6 +291,8 @@ pub(super) fn run_validation(
         phase_stats.frames_ms.push(time.delta_secs() * 1000.0);
     }
     run.metrics.poll_edit(&field);
+    run.metrics
+        .record_work(elapsed, phase, &stats, &runtime, &field);
     run.metrics
         .sample(&field, player.translation, elapsed, phase);
     run.max_pages = run.max_pages.max(stats.loaded_pages);

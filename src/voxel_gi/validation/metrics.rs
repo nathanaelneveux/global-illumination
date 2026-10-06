@@ -1,5 +1,5 @@
 //! Bounded field diagnostics, deliberately separate from visual ground truth.
-use super::super::VoxelEnergyField;
+use super::super::{VoxelEnergyField, VoxelGiRuntime, VoxelGiStats};
 use bevy::prelude::*;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
@@ -27,6 +27,10 @@ pub(super) struct Phase {
     unknown_sky_faces: usize,
     display_steps: Vec<f32>,
     max_dark_positive_step: f32,
+    selection_ms: Vec<f32>,
+    merge_ms: Vec<f32>,
+    worker_ms: Vec<f32>,
+    gpu_ms: Vec<f32>,
 }
 
 #[derive(Default)]
@@ -38,6 +42,10 @@ pub(super) struct Metrics {
     edit_latency_ms: Vec<f32>,
     superseded_edits: usize,
     untargeted_edits: usize,
+    work_samples: Vec<Value>,
+    last_work_sample: f32,
+    last_batch: u64,
+    last_transport_batch: u64,
 }
 
 struct EditWatch {
@@ -47,6 +55,45 @@ struct EditWatch {
 }
 
 impl Metrics {
+    /// O(1) observations of publication and lighting progress. A small early
+    /// page set can be fully covered while most terrain is still unpublished;
+    /// keep its denominator and ingestion backlog, not a misleading first-100% time.
+    pub fn record_work(
+        &mut self,
+        elapsed: f32,
+        phase: &'static str,
+        stats: &VoxelGiStats,
+        runtime: &VoxelGiRuntime,
+        field: &VoxelEnergyField,
+    ) {
+        let batches = stats.transport_batches + stats.sky_only_batches;
+        if batches != self.last_batch {
+            self.last_batch = batches;
+            let phase = self.phases.entry(phase).or_default();
+            phase.selection_ms.push(stats.last_selection_ms);
+            phase.merge_ms.push(stats.last_merge_ms);
+            phase.worker_ms.push(stats.last_worker_ms);
+            // Last transport timestamp is not updated by a sky-only batch.
+            if stats.transport_batches != self.last_transport_batch {
+                self.last_transport_batch = stats.transport_batches;
+                phase.gpu_ms.push(stats.last_trace_batch_ms);
+            }
+        }
+        if elapsed - self.last_work_sample < 0.25 {
+            return;
+        }
+        self.last_work_sample = elapsed;
+        self.work_samples.push(json!({
+            "elapsed_s": elapsed, "phase": phase,
+            "loaded_pages": runtime.loaded_pages.len(), "published_probes": field.probes.len(),
+            "publishing_pages": field.publishing_pages.len(),
+            "dirty_pages": runtime.dirty_pages.len(), "scene_build_pending": runtime.scene_task.is_some(),
+            "coverage": stats.interactive_coverage, "bootstrap": stats.bootstrap_coverage,
+            "traced_paths": stats.traced_paths, "transport_batches": stats.transport_batches,
+            "pending_probes": stats.pending_probes,
+        }));
+    }
+
     pub fn edit(&mut self, field: &VoxelEnergyField, targets: Vec<(IVec3, usize)>) {
         if self.watch.take().is_some() {
             self.superseded_edits += 1;
@@ -167,12 +214,15 @@ impl Metrics {
                 "unknown_sky_face_observations": phase.unknown_sky_faces,
                 "near_indirect_display_step": distribution(&phase.display_steps),
                 "max_dark_positive_indirect_step": phase.max_dark_positive_step,
+                "selection_ms": distribution(&phase.selection_ms), "merge_ms": distribution(&phase.merge_ms),
+                "worker_ms": distribution(&phase.worker_ms), "transport_execution_ms": distribution(&phase.gpu_ms),
             })
         }).collect();
         json!({"phases": phases, "edit_first_fresh_measurement_ms": distribution(&self.edit_latency_ms),
             "edits_superseded_before_refresh": self.superseded_edits,
             "edits_without_receivers": self.untargeted_edits,
-            "edits_still_pending": usize::from(self.watch.is_some())})
+            "edits_still_pending": usize::from(self.watch.is_some()),
+            "work_timeline": self.work_samples})
     }
 }
 
@@ -180,6 +230,34 @@ impl Metrics {
 mod tests {
     use super::super::super::world::SurfaceProbe;
     use super::*;
+
+    #[test]
+    fn work_timeline_keeps_denominators_and_does_not_resample_idle_batches() {
+        let mut metrics = Metrics::default();
+        let mut runtime = VoxelGiRuntime::default();
+        let mut field = VoxelEnergyField::default();
+        runtime.dirty_pages.insert(IVec3::ZERO);
+        field.publishing_pages.insert(IVec3::X);
+        let mut stats = VoxelGiStats {
+            transport_batches: 1,
+            interactive_coverage: 1.0,
+            bootstrap_coverage: 0.5,
+            last_trace_batch_ms: 2.0,
+            ..default()
+        };
+        for elapsed in [0.3, 0.6] {
+            metrics.record_work(elapsed, "startup", &stats, &runtime, &field);
+        }
+        stats.sky_only_batches = 1;
+        metrics.record_work(0.9, "startup", &stats, &runtime, &field);
+        let report = metrics.report();
+        assert_eq!(report["work_timeline"].as_array().unwrap().len(), 3);
+        assert_eq!(report["work_timeline"][0]["dirty_pages"], 1);
+        assert_eq!(report["work_timeline"][0]["publishing_pages"], 1);
+        assert_eq!(report["work_timeline"][0]["bootstrap"], 0.5);
+        assert_eq!(report["phases"][0]["worker_ms"]["count"], 2);
+        assert_eq!(report["phases"][0]["transport_execution_ms"]["count"], 1);
+    }
 
     #[test]
     fn no_measurements_are_not_zero_latency_and_tails_survive() {
