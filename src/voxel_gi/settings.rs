@@ -9,6 +9,10 @@ pub struct VoxelGiSettings {
     pub adaptive_updates: bool,
     pub trace_budget_ms: f32,
     pub max_probes_per_dispatch: usize,
+    /// Main-thread receiver publication budget (capped at 8 ms). A page is
+    /// atomic, so one expensive page may exceed it; at most four pages publish
+    /// per update. Zero retains the one-page-per-update comparison.
+    pub scene_publish_budget: Duration,
     pub display_upload_interval: Duration,
     /// Presentation-only temporal response. Does not filter simulation energy.
     pub display_response: Duration,
@@ -26,6 +30,7 @@ impl Default for VoxelGiSettings {
             adaptive_updates: true,
             trace_budget_ms: 4.0,
             max_probes_per_dispatch: 8192,
+            scene_publish_budget: Duration::from_millis(2),
             display_upload_interval: Duration::from_millis(50),
             display_response: Duration::from_millis(75),
             stable_audit_interval: Duration::from_secs(2),

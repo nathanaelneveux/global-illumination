@@ -345,6 +345,7 @@ fn apply_scene_task(
     mut runtime: ResMut<VoxelGiRuntime>,
     mut field: ResMut<VoxelEnergyField>,
     mut stats: ResMut<VoxelGiStats>,
+    settings: Res<VoxelGiSettings>,
 ) {
     let publish_started = Instant::now();
     if let Some(task) = runtime.scene_task.as_mut()
@@ -399,16 +400,47 @@ fn apply_scene_task(
     let Some(mut result) = runtime.scene_publication.take() else {
         return;
     };
-    // Empty pages need no merge; skip them without spending a whole frame.
-    let (page, descriptors) = loop {
-        let Some((page, descriptors)) = result.pages.pop_front() else {
-            return;
-        };
-        if !descriptors.is_empty() || field.pages.contains_key(&page) || result.pages.is_empty() {
-            break (page, descriptors);
+    let budget = settings.scene_publish_budget.min(Duration::from_millis(8));
+    let mut published = 0;
+    while let Some((page, descriptors)) = result.pages.pop_front() {
+        // Empty pages need no merge; skip them without spending a whole frame.
+        if descriptors.is_empty() && !field.pages.contains_key(&page) {
+            field.publishing_pages.remove(&page);
+            continue;
         }
-        field.publishing_pages.remove(&page);
-    };
+        publish_scene_page(
+            &mut runtime,
+            &mut field,
+            &mut stats,
+            &mut result,
+            page,
+            descriptors,
+        );
+        published += 1;
+        // Preserve progress even with a zero budget. The count cap also bounds
+        // downstream display-cache patching, which happens after this system.
+        if published >= 4 || publish_started.elapsed() >= budget {
+            break;
+        }
+    }
+    update_stats_from_counters(&runtime, &field, &mut stats);
+    stats.loaded_pages = runtime.loaded_pages.len();
+    stats.naadf_regions = runtime.scene.regions.len();
+    stats.last_scene_build_ms = result.build_time.as_secs_f32() * 1_000.0;
+    if !result.pages.is_empty() {
+        runtime.scene_publication = Some(result);
+    }
+}
+
+fn publish_scene_page(
+    runtime: &mut VoxelGiRuntime,
+    field: &mut VoxelEnergyField,
+    stats: &mut VoxelGiStats,
+    result: &mut SceneBuildResult,
+    page: IVec3,
+    descriptors: Vec<SurfaceProbeDescriptor>,
+) {
+    let publish_started = Instant::now();
 
     let old_count = field.probes.len();
     let mut old_affected = HashMap::new();
@@ -523,21 +555,15 @@ fn apply_scene_task(
     let mut urgent = HashSet::new();
     for &voxel in &result.exact_edits {
         let mut nearby = HashSet::new();
-        invalidate_near_voxel(
-            &mut runtime,
-            &mut field,
-            voxel,
-            EDIT_RELIGHT_RADIUS,
-            &mut nearby,
-        );
+        invalidate_near_voxel(runtime, field, voxel, EDIT_RELIGHT_RADIUS, &mut nearby);
         urgent.extend(nearby.iter().copied());
         invalidated.extend(nearby);
     }
     for page in result.broad_edits.drain(..) {
         let center = page * PAGE_EDGE as i32 + IVec3::splat(PAGE_EDGE as i32 / 2);
         invalidate_near_voxel(
-            &mut runtime,
-            &mut field,
+            runtime,
+            field,
             center,
             EDIT_RELIGHT_RADIUS,
             &mut invalidated,
@@ -553,21 +579,21 @@ fn apply_scene_task(
             .min()
             .unwrap_or(0)
     });
-    enqueue_sky(&mut runtime, urgent.iter().copied());
-    enqueue_sky(&mut runtime, added.iter().copied());
-    enqueue_urgent(&mut runtime, urgent);
+    enqueue_sky(runtime, urgent.iter().copied());
+    enqueue_sky(runtime, added.iter().copied());
+    enqueue_urgent(runtime, urgent);
     runtime.sky_remaining = field.order.len();
     if old_count == 0 {
-        enqueue_many(&mut runtime, field.order.iter().copied());
+        enqueue_many(runtime, field.order.iter().copied());
     } else {
-        enqueue_many(&mut runtime, invalidated);
+        enqueue_many(runtime, invalidated);
     }
     if old_count > 0 {
-        request_global_refresh(&mut runtime, field.order.len());
+        request_global_refresh(runtime, field.order.len());
     }
     result.exact_edits.clear();
     field.publishing_pages.remove(&page);
-    update_stats_from_counters(&runtime, &field, &mut stats);
+    update_stats_from_counters(runtime, field, stats);
     stats.loaded_pages = runtime.loaded_pages.len();
     stats.naadf_regions = runtime.scene.regions.len();
     stats.last_scene_build_ms = result.build_time.as_secs_f32() * 1_000.0;
@@ -584,9 +610,6 @@ fn apply_scene_task(
             publish_ms = format_args!("{:.1}", publish_started.elapsed().as_secs_f64() * 1000.0),
             "incremental world-space voxel transport scene rebuilt"
         );
-    }
-    if !result.pages.is_empty() {
-        runtime.scene_publication = Some(result);
     }
 }
 
@@ -1435,6 +1458,10 @@ mod tests {
             ..default()
         });
         world.insert_resource(VoxelGiStats::default());
+        world.insert_resource(VoxelGiSettings {
+            scene_publish_budget: Duration::ZERO,
+            ..default()
+        });
         world.run_system_once(apply_scene_task).unwrap();
         let field = world.resource::<VoxelEnergyField>();
         assert!(!field.probes.contains_key(&old));
@@ -1467,6 +1494,68 @@ mod tests {
                 .publishing_pages
                 .is_empty()
         );
+        assert!(
+            world
+                .resource::<VoxelGiRuntime>()
+                .scene_publication
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn publication_batches_cheap_pages_without_unbounded_display_work() {
+        use bevy::ecs::system::RunSystemOnce;
+        let pages: VecDeque<_> = (0..6)
+            .map(|x| {
+                let page = IVec3::new(x, 0, 0);
+                (
+                    page,
+                    vec![SurfaceProbeDescriptor {
+                        voxel: page * PAGE_EDGE as i32,
+                        material: 0,
+                        face_mask: 4,
+                    }],
+                )
+            })
+            .collect();
+        let mut field = VoxelEnergyField::default();
+        field
+            .publishing_pages
+            .extend(pages.iter().map(|(page, _)| *page));
+        let mut world = World::new();
+        world.insert_resource(field);
+        world.insert_resource(VoxelGiRuntime {
+            scene_publication: Some(SceneBuildResult {
+                scene: Arc::new(TransportScene::default()),
+                changed: true,
+                changed_materials: [false; 256],
+                pages,
+                exact_edits: vec![],
+                broad_edits: vec![],
+                build_time: Duration::ZERO,
+            }),
+            ..default()
+        });
+        world.insert_resource(VoxelGiStats::default());
+        world.insert_resource(VoxelGiSettings {
+            scene_publish_budget: Duration::MAX,
+            ..default()
+        });
+        world.run_system_once(apply_scene_task).unwrap();
+        let published = world.resource::<VoxelEnergyField>().probe_count();
+        assert!(
+            published <= 4,
+            "downstream topology patches have a page-count cap"
+        );
+        // A delayed test runner may exhaust the wall-clock budget sooner; every
+        // invocation still advances, and the queue must preserve all six pages.
+        assert!(published > 0);
+        for _ in 0..6 {
+            world.run_system_once(apply_scene_task).unwrap();
+        }
+        let field = world.resource::<VoxelEnergyField>();
+        assert_eq!(field.probe_count(), 6);
+        assert!(field.publishing_pages.is_empty());
         assert!(
             world
                 .resource::<VoxelGiRuntime>()
