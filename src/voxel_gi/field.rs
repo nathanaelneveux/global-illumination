@@ -35,8 +35,13 @@ impl ProbeStore {
             self.0.insert(key, Box::new(probe));
         }
     }
-    pub fn remove(&mut self, key: &IVec3) -> Option<SurfaceProbe> {
-        self.0.remove(key).map(|p| *p)
+    /// Transfer ownership during page publication without freeing/reallocating
+    /// every retained ambient cube. Worker results still use `insert` in place.
+    pub fn remove(&mut self, key: &IVec3) -> Option<Box<SurfaceProbe>> {
+        self.0.remove(key)
+    }
+    pub fn insert_box(&mut self, key: IVec3, probe: Box<SurfaceProbe>) {
+        self.0.insert(key, probe);
     }
 }
 
@@ -156,7 +161,7 @@ impl VoxelEnergyField {
     pub(super) fn update_indices(
         &mut self,
         added: &[IVec3],
-        removed: &HashMap<IVec3, SurfaceProbe>,
+        removed: &HashMap<IVec3, Box<SurfaceProbe>>,
     ) {
         let mut indices: Vec<_> = removed.values().map(|probe| probe.order_index).collect();
         indices.sort_unstable_by(|a, b| b.cmp(a));

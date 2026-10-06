@@ -652,6 +652,7 @@ fn apply_scene_task(
                         |voxel| {
                             old_affected
                                 .get(&voxel)
+                                .map(Box::as_ref)
                                 .or_else(|| field.probes.get(&voxel))
                         },
                     );
@@ -669,9 +670,13 @@ fn apply_scene_task(
             added.push(descriptor.voxel);
             let mut probe = SurfaceProbe::new(descriptor.voxel, descriptor.face_mask);
             probe.revision = runtime.generation << 32;
-            probe
+            Box::new(probe)
         });
         let old_mask = probe.face_mask;
+        let display_changed = invalidated.contains(&descriptor.voxel)
+            || old_mask != descriptor.face_mask
+            || probe.material != descriptor.material
+            || probe.emission != runtime.materials.get(descriptor.material).emission;
         if probe.material != descriptor.material {
             probe.invalidate();
             invalidated.insert(descriptor.voxel);
@@ -699,8 +704,10 @@ fn apply_scene_task(
             .entry(page_of(descriptor.voxel))
             .or_default()
             .push(descriptor.voxel);
-        runtime.gpu_value_dirty.insert(descriptor.voxel);
-        field.probes.insert(descriptor.voxel, probe);
+        if display_changed {
+            runtime.gpu_value_dirty.insert(descriptor.voxel);
+        }
+        field.probes.insert_box(descriptor.voxel, probe);
     }
     let topology_changed =
         old_count != field.probes.len() || !old_affected.is_empty() || !added.is_empty();
@@ -1785,6 +1792,7 @@ mod tests {
             field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
             field.pages.insert(page_of(voxel), vec![voxel]);
         }
+        let retained_address = field.probes.get(&retained).unwrap() as *const SurfaceProbe;
         field.update_indices(&[old, retained], &HashMap::new());
         field.publishing_pages.extend([IVec3::ZERO, IVec3::X]);
         let added = IVec3::Y;
@@ -1831,6 +1839,22 @@ mod tests {
             assert_eq!(field.probes[voxel].order_index, index);
         }
         world.run_system_once(apply_scene_task).unwrap();
+        assert_eq!(
+            world
+                .resource::<VoxelEnergyField>()
+                .probes
+                .get(&retained)
+                .unwrap() as *const SurfaceProbe,
+            retained_address,
+            "unchanged probes must keep their allocations across page publication",
+        );
+        assert!(
+            !world
+                .resource::<VoxelGiRuntime>()
+                .gpu_value_dirty
+                .contains(&retained),
+            "unchanged page receivers do not need display uploads"
+        );
         assert!(
             world
                 .resource::<VoxelEnergyField>()
