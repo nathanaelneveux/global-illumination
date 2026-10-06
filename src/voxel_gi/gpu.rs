@@ -167,6 +167,7 @@ impl UploadBuffer {
 pub(crate) struct GpuTracer {
     context: GpuTransportDevice,
     pipeline: ComputePipeline,
+    faces_per_workgroup: u32,
     sky_pipeline: ComputePipeline,
     pub sky_cache: super::sky_cache::SkyCache,
     #[cfg(test)]
@@ -199,6 +200,14 @@ pub(crate) struct GpuTracer {
 
 impl GpuTracer {
     pub fn new(context: GpuTransportDevice) -> Result<Self, String> {
+        Self::with_kernel(context, "trace_faces", 64)
+    }
+
+    fn with_kernel(
+        context: GpuTransportDevice,
+        entry: &str,
+        faces_per_workgroup: u32,
+    ) -> Result<Self, String> {
         let device = &context.device;
         if device.limits().max_storage_buffers_per_shader_stage < 8 {
             return Err("GPU transport needs eight storage-buffer bindings".into());
@@ -214,7 +223,7 @@ impl GpuTracer {
             label: Some("World-space voxel face tracing"),
             layout: None,
             module: &module,
-            entry_point: Some("trace_faces"),
+            entry_point: Some(entry),
             compilation_options: default(),
             cache: None,
         });
@@ -244,6 +253,7 @@ impl GpuTracer {
             });
         Ok(Self {
             pipeline,
+            faces_per_workgroup,
             sky_pipeline,
             sky_cache: default(),
             #[cfg(test)]
@@ -580,7 +590,11 @@ impl GpuTracer {
             if let Some(bindings) = bindings {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &**bindings, &[]);
-                pass.dispatch_workgroups((face_count as u32).div_ceil(64), 1, 1);
+                pass.dispatch_workgroups(
+                    (face_count as u32).div_ceil(self.faces_per_workgroup),
+                    1,
+                    1,
+                );
             }
             if let Some(bindings) = sky_bindings {
                 pass.set_pipeline(&self.sky_pipeline);
@@ -768,11 +782,11 @@ mod tests {
                 ..default()
             }))
             .unwrap();
-        GpuTracer::new(GpuTransportDevice {
+        let context = GpuTransportDevice {
             device: device.into(),
             queue: RenderQueue(Arc::new(bevy::render::renderer::WgpuWrapper::new(queue))),
-        })
-        .unwrap()
+        };
+        GpuTracer::new(context).unwrap()
     }
 
     #[test]
@@ -1253,6 +1267,131 @@ mod tests {
             .flat_map(|z| (0..32).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
             .collect();
         (scene, sources, initial)
+    }
+
+    #[test]
+    #[ignore = "requires a native compute adapter; run explicitly on supported hardware"]
+    fn cooperative_path_layout_benchmark() {
+        use super::super::{
+            naadf::{linear_index, volume_len},
+            world::{AIR, MaterialTransport, PAGE_SIZE},
+        };
+        let mut serial = native_tracer();
+        let mut parallel =
+            GpuTracer::with_kernel(serial.context.clone(), "trace_faces_parallel", 16).unwrap();
+        let mut materials = VoxelMaterialTransportTable::default();
+        materials.set(
+            4,
+            MaterialTransport {
+                emission: EnergySpectrum::new(Vec3::new(12.0, 3.0, 1.0), 4.0, 2.0),
+                ..default()
+            },
+        );
+        let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+        for z in 0..32 {
+            for y in 4..=20 {
+                for x in 0..32 {
+                    if y == 4 || y == 20 || x == 0 || x == 31 || z == 0 || z == 31 {
+                        page[linear_index(UVec3::new(x, y, z), PAGE_SIZE)] = 2;
+                    }
+                }
+            }
+        }
+        page[linear_index(UVec3::new(16, 19, 16), PAGE_SIZE)] = 4;
+        let pages: Vec<_> = (0..3)
+            .flat_map(|z| (0..3).map(move |x| IVec3::new(x, 0, z)))
+            .collect();
+        let closed = Arc::new(TransportScene::with_page_delta(
+            &TransportScene::default(),
+            pages.iter().map(|p| (*p, page.clone())).collect(),
+            &[],
+        ));
+        let closed_probes: Vec<_> = pages
+            .iter()
+            .flat_map(|page| {
+                (1..31).flat_map(move |z| {
+                    (1..31).map(move |x| SurfaceProbe::new(*page * 32 + IVec3::new(x, 4, z), 4))
+                })
+            })
+            .collect();
+        let (open, sources, open_probes) = open_floor_fixture();
+        for (name, scene, initial) in [
+            ("open floor", open, open_probes),
+            ("nine emissive rooms", closed, closed_probes),
+        ] {
+            let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
+            let mut worker_ms: [Vec<f32>; 2] = default();
+            let mut gpu_ms: [Vec<f32>; 2] = default();
+            for round in 0..33 {
+                let mut outputs: [Vec<SurfaceProbe>; 2] = default();
+                // Alternate order, warm both caches, and use matching advancing
+                // sequences. Keep ray count and all transport bands fixed.
+                for mode in (0..2).map(|offset| (offset + round) % 2) {
+                    let tracer = if mode == 0 {
+                        &mut serial
+                    } else {
+                        &mut parallel
+                    };
+                    let mut actual = initial.clone();
+                    for probe in &mut actual {
+                        probe.sequence = [(round * 4) as u32; 6];
+                    }
+                    let started = Instant::now();
+                    tracer
+                        .trace(
+                            scene.clone(),
+                            &sources,
+                            &materials,
+                            &mut actual,
+                            4,
+                            &emitters,
+                        )
+                        .unwrap();
+                    if round >= 3 {
+                        worker_ms[mode].push(started.elapsed().as_secs_f32() * 1000.0);
+                        gpu_ms[mode].push(tracer.last_dispatch_ms);
+                    }
+                    outputs[mode] = actual;
+                }
+                for (a, b) in outputs[0].iter().zip(&outputs[1]) {
+                    assert_eq!(a.samples, b.samples);
+                    assert_eq!(a.sequence, b.sequence);
+                    assert_eq!(a.direct, b.direct);
+                    assert_eq!(a.custom_direct, b.custom_direct);
+                    assert_eq!(a.display[2].sky, b.display[2].sky);
+                    for (a, b) in a
+                        .radiance
+                        .iter()
+                        .chain(&a.second_moment)
+                        .zip(b.radiance.iter().chain(&b.second_moment))
+                    {
+                        let delta = *a - *b;
+                        let error = delta
+                            .visible
+                            .abs()
+                            .max_element()
+                            .max(delta.infrared.abs())
+                            .max(delta.ionizing.abs());
+                        assert!(
+                            error <= 0.00001 * (1.0 + a.max_component()),
+                            "parallel path moments differ: {a:?} vs {b:?}"
+                        );
+                    }
+                }
+            }
+            for (mode, label) in ["serial", "cooperative"].into_iter().enumerate() {
+                worker_ms[mode].sort_by(f32::total_cmp);
+                gpu_ms[mode].sort_by(f32::total_cmp);
+                eprintln!(
+                    "{name}, {label}, {} faces x 4 paths: GPU p50/p95 {:.3}/{:.3} ms; worker p50/p95 {:.3}/{:.3} ms (30 alternating pairs)",
+                    initial.len(),
+                    gpu_ms[mode][15],
+                    gpu_ms[mode][28],
+                    worker_ms[mode][15],
+                    worker_ms[mode][28]
+                );
+            }
+        }
     }
 
     #[test]
