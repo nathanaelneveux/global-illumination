@@ -7,7 +7,7 @@ use std::time::Duration;
 /// Keep the world-sized index small. Growing a flat HashMap of large ambient
 /// cubes used to relocate hundreds of MB on the game thread during streaming.
 #[derive(Default)]
-pub(crate) struct ProbeStore(HashMap<IVec3, Box<SurfaceProbe>>);
+pub(crate) struct ProbeStore(bevy::platform::collections::HashMap<IVec3, Box<SurfaceProbe>>);
 
 impl ProbeStore {
     pub fn len(&self) -> usize {
@@ -36,7 +36,8 @@ impl ProbeStore {
         }
     }
     /// Transfer ownership during page publication without freeing/reallocating
-    /// every retained ambient cube. Worker results still use `insert` in place.
+    /// every retained ambient cube. Integer keys are trusted world coordinates;
+    /// this index uses the engine's fast hasher, as does the corner cache.
     pub fn remove(&mut self, key: &IVec3) -> Option<Box<SurfaceProbe>> {
         self.0.remove(key)
     }

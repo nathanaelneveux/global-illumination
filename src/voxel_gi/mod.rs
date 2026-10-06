@@ -214,6 +214,9 @@ struct VoxelGiRuntime {
     scene_task: Option<Task<SceneBuildResult>>,
     scene_publication: Option<SceneBuildResult>,
     trace_task: Option<Task<TraceBatchResult>>,
+    /// The one in-flight worker returns its allocation for the next dispatch.
+    trace_scratch: Vec<SurfaceProbe>,
+    selection_seen: bevy::platform::collections::HashSet<IVec3>,
     gpu_tracer: Option<gpu::GpuTracer>,
     emission_cache: Option<emission::EmissionCache>,
     cpu_sky_cache: Option<sky_cache::SkyCache>,
@@ -280,6 +283,8 @@ impl Default for VoxelGiRuntime {
             scene_task: None,
             scene_publication: None,
             trace_task: None,
+            trace_scratch: Vec::new(),
+            selection_seen: default(),
             gpu_tracer: None,
             emission_cache: None,
             cpu_sky_cache: None,
@@ -769,9 +774,17 @@ fn enqueue_sky(runtime: &mut VoxelGiRuntime, voxels: impl IntoIterator<Item = IV
     }
 }
 
-fn select_sky(runtime: &mut VoxelGiRuntime, field: &VoxelEnergyField) -> Vec<SurfaceProbe> {
-    let mut selected = Vec::new();
-    let mut seen = HashSet::new();
+fn append_sky_work(
+    runtime: &mut VoxelGiRuntime,
+    field: &VoxelEnergyField,
+    selected: &mut Vec<SurfaceProbe>,
+) -> usize {
+    // Deduplicate before copying a receiver, including overlaps with transport.
+    // Do not inherit candidates rejected by transport's due-face filter.
+    let seen = &mut runtime.selection_seen;
+    seen.clear();
+    seen.extend(selected.iter().map(|probe| probe.voxel));
+    let mut count = 0;
     for _ in 0..runtime.sky_batch_size {
         let voxel = if let Some(voxel) = runtime.sky_pending.pop_front() {
             runtime.sky_queued.remove(&voxel);
@@ -787,10 +800,13 @@ fn select_sky(runtime: &mut VoxelGiRuntime, field: &VoxelEnergyField) -> Vec<Sur
         if seen.insert(voxel)
             && let Some(probe) = field.probes.get(&voxel)
         {
-            selected.push(probe.clone());
+            count += 1;
+            let mut probe = probe.clone();
+            probe.trace_mask = 0;
+            selected.push(probe);
         }
     }
-    selected
+    count
 }
 
 fn start_trace_task(
@@ -822,11 +838,10 @@ fn start_trace_task(
     // never consume the frames in which indirect transport could make progress.
     let mut selected = select_transport(&mut runtime, &field, &settings);
     let transport_count = selected.len();
-    let sky_probes = select_sky(&mut runtime, &field);
-    let sky_count = sky_probes.len();
-    merge_sky_work(&mut selected, sky_probes);
+    let sky_count = append_sky_work(&mut runtime, &field, &mut selected);
     let sky_only = transport_count == 0;
     if selected.is_empty() {
+        runtime.trace_scratch = selected;
         stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
         stats.idle_scheduler_frames += 1;
         update_stats_from_counters(&runtime, &field, &mut stats);
@@ -934,18 +949,6 @@ fn start_trace_task(
     }));
 }
 
-fn merge_sky_work(selected: &mut Vec<SurfaceProbe>, sky: Vec<SurfaceProbe>) {
-    let mut seen: HashSet<_> = selected.iter().map(|probe| probe.voxel).collect();
-    for mut probe in sky {
-        if seen.insert(probe.voxel) {
-            // Topology remains intact for corner lookup; no indirect rays and
-            // no changes to the simulation history for a sky-only receiver.
-            probe.trace_mask = 0;
-            selected.push(probe);
-        }
-    }
-}
-
 fn update_focus(runtime: &mut VoxelGiRuntime, field: &VoxelEnergyField, focus: IVec3) {
     if runtime.focus_page == Some(focus) && runtime.focus_topology == runtime.gpu_topology_version {
         return;
@@ -978,15 +981,20 @@ fn select_transport(
     field: &VoxelEnergyField,
     settings: &VoxelGiSettings,
 ) -> Vec<SurfaceProbe> {
-    let mut selected = Vec::with_capacity(runtime.batch_size);
-    let mut seen = HashSet::with_capacity(runtime.batch_size);
+    let now = Instant::now();
+    let mut selected = std::mem::take(&mut runtime.trace_scratch);
+    selected.clear();
+    selected.reserve(runtime.batch_size);
+    let mut seen = std::mem::take(&mut runtime.selection_seen);
+    seen.clear();
+    seen.reserve(runtime.batch_size);
     let mut adaptive = if runtime.urgent_pending.len() + runtime.pending.len() < runtime.batch_size
     {
         scheduling::ranked_candidates(
             field,
             &runtime.nearby,
             &mut runtime.adaptive_cursor,
-            Instant::now(),
+            now,
             runtime.batch_size,
         )
     } else {
@@ -1027,7 +1035,7 @@ fn select_transport(
             runtime.refresh_remaining = runtime.refresh_remaining.saturating_sub(1);
             next
         });
-        if seen.contains(&voxel) {
+        if !seen.insert(voxel) {
             continue;
         }
         // A reserved sweep slot can encounter an explicitly requested voxel
@@ -1037,17 +1045,10 @@ fn select_transport(
         let Some(probe) = field.probes.get(&voxel) else {
             continue;
         };
-        let mask = scheduling::due_faces(
-            probe,
-            field.transport_revision,
-            Instant::now(),
-            settings,
-            force,
-        );
+        let mask = scheduling::due_faces(probe, field.transport_revision, now, settings, force);
         if mask == 0 {
             continue;
         }
-        seen.insert(voxel);
         let mut probe = probe.clone();
         probe.trace_mask = mask;
         if probe.transport_revision != field.transport_revision {
@@ -1087,6 +1088,7 @@ fn select_transport(
         }
         selected.push(probe);
     }
+    runtime.selection_seen = seen;
     selected
 }
 
@@ -1103,7 +1105,7 @@ fn apply_trace_task(
     let Some(task) = runtime.trace_task.as_mut() else {
         return;
     };
-    let Some(result) = block_on(poll_once(task)) else {
+    let Some(mut result) = block_on(poll_once(task)) else {
         return;
     };
     let merge_started = Instant::now();
@@ -1160,7 +1162,7 @@ fn apply_trace_task(
     let sky_current = result.scene_generation == runtime.generation
         && result.sky_revision == runtime.sky_revision;
     let mut requeue = Vec::new();
-    for mut probe in result.probes {
+    for mut probe in result.probes.drain(..) {
         let voxel = probe.voxel;
         let Some(old) = field.probes.get_mut(&voxel) else {
             continue;
@@ -1196,20 +1198,21 @@ fn apply_trace_task(
         if sky_current && (0..6).any(|face| old.display[face].sky != probe.display[face].sky) {
             runtime.sky_upload_pending = true;
         }
-        probe.resolve_display(old, Instant::now(), settings.display_response_seconds());
-        scheduling::record_batch(&mut probe, old, Instant::now(), &settings);
+        probe.resolve_display(old, merge_started, settings.display_response_seconds());
+        scheduling::record_batch(&mut probe, old, merge_started, &settings);
         let (_, old_samples, old_covered) = probe_metrics(old);
         let (_, new_samples, new_covered) = probe_metrics(&probe);
         runtime.completed_samples =
             runtime.completed_samples.saturating_sub(old_samples) + new_samples;
         runtime.covered_faces = runtime.covered_faces.saturating_sub(old_covered) + new_covered;
         let pending = probe_has_pending_samples(&probe);
-        field.probes.insert(voxel, probe);
+        *old = probe;
         runtime.gpu_value_dirty.insert(voxel);
         if pending {
             requeue.push(voxel);
         }
     }
+    runtime.trace_scratch = result.probes;
     enqueue_many(&mut runtime, requeue);
     stats.traced_paths = stats.traced_paths.saturating_add(result.paths);
     stats.last_merge_ms = merge_started.elapsed().as_secs_f32() * 1000.0;
@@ -1371,8 +1374,12 @@ fn upload_transport_cache(
     if runtime.gpu_task.is_some() || runtime.gpu_snapshot.is_some() {
         // Catch-up and live publication are separate ledgers. Re-uploading the
         // entire growing catch-up set every 50ms was itself a streaming spike.
-        runtime.gpu_catchup_dirty.extend(dirty);
+        runtime.gpu_catchup_dirty.extend(dirty.iter().copied());
     }
+    // Reuse the high-water allocation instead of rebuilding a growing hash set
+    // every display upload. Catch-up owns only keys, never this scratch storage.
+    runtime.gpu_value_dirty = dirty;
+    runtime.gpu_value_dirty.clear();
     runtime.last_gpu_upload = Instant::now();
     runtime.sky_upload_pending = false;
 }
@@ -1599,13 +1606,45 @@ mod tests {
         sky_only.samples = [128; 6];
         sky_only.sequence = [1000; 6];
         let duplicate = transport[0].clone();
-        merge_sky_work(&mut transport, vec![duplicate, sky_only]);
+        let mut field = VoxelEnergyField::default();
+        for probe in [duplicate, sky_only] {
+            field.probes.insert(probe.voxel, probe);
+        }
+        let mut runtime = VoxelGiRuntime::default();
+        // Includes an already-selected transport receiver and a repeated sky
+        // candidate. Neither should allocate or overwrite another probe clone.
+        runtime
+            .sky_pending
+            .extend([IVec3::ZERO, IVec3::X, IVec3::X]);
+        assert_eq!(append_sky_work(&mut runtime, &field, &mut transport), 1);
         assert_eq!(transport.len(), 2);
         assert_eq!(transport[0].trace_mask, 63);
         assert_eq!(transport[1].face_mask, 5);
         assert_eq!(transport[1].trace_mask, 0);
         assert_eq!(transport[1].samples, [128; 6]);
         assert_eq!(transport[1].sequence, [1000; 6]);
+    }
+
+    #[test]
+    fn dispatch_reuses_returned_storage_without_retaining_candidates() {
+        let mut field = VoxelEnergyField::default();
+        field.order.push(IVec3::ZERO);
+        field
+            .probes
+            .insert(IVec3::ZERO, SurfaceProbe::new(IVec3::ZERO, 4));
+        let mut runtime = VoxelGiRuntime {
+            trace_scratch: Vec::with_capacity(1024),
+            batch_size: 64,
+            ..default()
+        };
+        let allocation = runtime.trace_scratch.as_ptr();
+        for _ in 0..2 {
+            let mut selected = select_probes(&mut runtime, &field);
+            assert_eq!(selected.as_ptr(), allocation);
+            assert_eq!(selected.len(), 1);
+            selected.clear();
+            runtime.trace_scratch = selected;
+        }
     }
 
     #[test]
@@ -1789,7 +1828,8 @@ mod tests {
             "scheduling must not mutate published histories"
         );
         enqueue_sky(&mut runtime, field.order.iter().copied());
-        let sky = select_sky(&mut runtime, &field);
+        let mut sky = Vec::new();
+        append_sky_work(&mut runtime, &field, &mut sky);
         assert_eq!(sky.len(), 64);
         assert!(sky.iter().all(|probe| probe.samples[2] == 128));
     }
