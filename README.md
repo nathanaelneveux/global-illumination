@@ -19,6 +19,7 @@ The implementation draws on [vxray](https://github.com/Nelarius/vxray), its [dev
 - Edits invalidate local histories, retain existing display values, and reject incompatible in-flight geometry results. A lazy global transport revision also wakes distant indirect receivers without clearing their display or scanning the world during invalidation. Nearby work is prioritized; at least one quarter of transport candidate slots are reserved for an uninterrupted all-loaded-world sweep. Moving sources shorten histories instead of repeatedly clearing the world.
 - Adaptive scheduling ranks bounded rotating windows by age, source revision, and per-band relative uncertainty. RGB cannot mask uncertain infrared/ionizing transport. Edit/bootstrap/simulation requests take priority, while the reserved world sweep still prevents starvation. Selection has a per-face work mask distinct from the voxel's exposed-face topology, so an uncertain face does not force its settled neighbors to retrace.
 - Scene building, cache construction, dispatch, and readback run asynchronously. The GPU tracer adapts its batch size toward a configurable time budget. A CPU mirror provides gameplay estimates; this is not a wholly GPU-resident authoritative field.
+- Workers receive compact receiver headers and only selected faces' measurement state. Display history, topology indices, and adaptive state remain authoritative on the main world; validated results update selected faces in place. Returned job vectors and scheduler ranking buffers are reused across batches.
 - Sparse display uploads preserve stable slots during edits. Topology patches preflight all allocations and hash insertions before publishing anything. Growing the cache keeps updating the previous display, and the replacement merges newer measurements in its installation frame rather than briefly showing the old worker snapshot. Invalidation preserves display blending weights as well as values; replacement weights change with the filtered estimate. No additional edit debounce is used.
 - Display-cache rebuilds publish fresh buffer identities and generation-owned patch queues. In-flight render frames retain their old generation; paired hash/probe uploads are bounds-checked and deferred updates are retained. Sparse geometry edits publish removed/added addresses and changed face values atomically, bypassing the ordinary value-upload timer. Shader bounds use the generation's allocated capacity so old extracted materials already accept new slots.
 
@@ -442,13 +443,92 @@ The integrated ledger change passed 107 regular tests, strict all-target Clippy,
 and targeted native upload-retry/renderer-generation checks. Broad toggle stress
 was not rerun.
 
+### Compact worker handoff and coordinate indices (October 6)
+
+`12b8417` replaces full six-face worker snapshots with reusable receiver/face
+vectors shared by the GPU path and CPU fallback. On this arm64 build, a one-face
+job carries **264 bytes instead of 880** (70% less); sky-only work carries
+144 bytes and no transport history (84% less). All six selected faces cost
+864 bytes. GPU decoding no longer needs a separate probe/face mapping vector.
+Publication validates revisions and updates measurements, display filtering and
+adaptive state in place, preserving live topology indices and unsampled faces.
+This reduces transient copying and scratch storage, **not persistent world-cache
+memory**. The estimator, sample/history limits, simulation bands, direct-sky
+cache and presentation filter are unchanged.
+
+`1132d43` retains bounded ranking/deduplication buffers and uses Bevy's fast
+integer-key collections for hot coordinate ledgers and display indices.
+Ordered ranking, tie-breaking, sweep reservations and GPU hash/buffer formats
+are unchanged. Its renderer transaction test also now supplies the timing
+resource introduced in `71680e0`; the missing fixture resource was exposed by
+the focused renderer tests, not a runtime failure.
+
+All measurements below use Apple M4/Metal, 2560×1440 **offscreen**, the 72-second
+gameplay profile, preferred defaults, `RUST_LOG=warn`, and the machine-local
+shared-cache development profile documented above. Every executable was built
+from the indicated clean revision; no builds ran during measurement. Ordinary
+desktop background apps remained running. These are app-cadence observations,
+not interactive/windowed FPS or fixed-work microbenchmarks. Asynchronous terrain
+loading and scheduling produce different receiver counts between runs.
+
+| Offscreen metric | Starting `71680e0` | Compact `12b8417`, first / repeat | Final `1132d43`, first / repeat |
+| --- | ---: | ---: | ---: |
+| Editing selection p50 | 1.70 ms | 1.36 / 1.41 ms | 1.21 / 1.28 ms |
+| Editing merge p50 | 2.57 ms | 1.74 / 1.83 ms | 1.59 / 1.75 ms |
+| Streaming merge p50 | 1.68 ms | 1.09 / 1.15 ms | 1.12 / 1.14 ms |
+| Editing frame p50 / p99 | 19.85 / 38.00 ms | 17.84 / 36.09; 20.44 / 37.81 ms | 21.23 / 34.37; 20.52 / 36.21 ms |
+| Settled frame p50 / p99 | 21.81 / 31.80 ms | 19.69 / 32.32; 22.26 / 32.86 ms | 22.32 / 32.47; 21.77 / 35.55 ms |
+| Streaming frame p50 / p99 | 21.11 / 44.67 ms | 19.09 / 39.38; 21.75 / 41.83 ms | 21.73 / 38.57; 21.87 / 37.65 ms |
+| First-fresh edit measurement p95 | 173.20 ms | 159.19 / 170.30 ms | 168.47 / 167.11 ms |
+| Total traced paths | 76.30 M | 81.09 / 74.50 M | 74.54 / 76.15 M |
+
+The initial compact run's whole-frame median improvement did not repeat.
+Retain these changes for the smaller worker protocol and reduced CPU stage
+cost, **not an across-the-board FPS claim**. The index/ranking change's edit
+selection/merge improvement repeated; other phases' stage costs were mixed.
+Final-repeat streaming far-age p95 was 2,751 ms versus 2,633 ms for the paired
+compact repeat; edit far-age p95 was 2,057 versus 2,069 ms. Nearby indirect
+display-step p95 during edits was 0.02261 versus 0.02034. These are sparse field
+observations, not image-space error or proof of identical temporal noise.
+Streaming maximum was still 130 ms and startup maximum 617 ms in the final
+repeat; the compact repeat's streaming maximum was 50 ms. Tail improvements
+are not universal and these changes do not establish hitch-free play.
+
+The first quiescent initial cohort at 100% coverage **and** bootstrap was
+observed at 3.84 s / 217,773 probes in the starting run; compact runs at
+3.47 s / 213,741 and 3.69 s / 225,618; final runs at 3.59 s / 227,736 and
+3.33 s / 221,711. These 250 ms observations with varying denominators are not
+a demonstrated 2–3× completion gain or visual convergence measurement.
+All five runs completed 80 edits, five moves and five valid nonblank captures,
+with clean render logs and no pending/superseded edit watches. Inspected settled
+and streaming captures preserve the preferred corner look.
+
+Local artifacts under `target/gi-validation/`, in execution order:
+
+- `71680e0`: `gameplay-1791294885663371000-31711/`
+- `12b8417`: `gameplay-1791295676121845000-44977/`
+- `1132d43`: `gameplay-1791296303114088000-54180/`
+- `12b8417` repeat: `gameplay-1791296482052773000-56557/`
+- `1132d43` repeat: `gameplay-1791296580887441000-58021/`
+
+Logs: `target/perf-compact-{baseline,candidate}.log`,
+`target/perf-index-candidate.log`, and
+`target/perf-index-{baseline,candidate}-repeat.log`.
+Compact publication passed all 63 nonempty face masks across three history/reset
+modes, focused CPU orchestration/history tests, and native GPU CPU-parity,
+geometry-edit, sky-only/partial-face and emitter-removal checks. The index change
+passed 39 focused scheduler/renderer/orchestration tests and both native
+upload-retry/renderer-generation checks. Strict all-target Clippy, formatting,
+diff checks and development builds passed. No broad toggle stress rerun.
+
 ### Next performance work
 
-The remaining cost is not just ray traversal. Prioritize **page-local indexing and
-compact selected-face jobs**: the main thread still selects, clones, merges and
-hashes large six-face probe records, while display reconstruction performs repeated
-spatial lookups per fragment. Profile those CPU stages and the full rendered GPU
-frame separately before changing the estimator. Preserve offscreen fairness and
+The remaining cost is not just ray traversal. Compact selected-face worker jobs
+are implemented; **persistent face storage and page-local indexing** remain
+worthwhile experiments. Authoritative probes still reserve six faces and require
+world-coordinate lookups. Display reconstruction also performs repeated spatial
+lookups per fragment. Profile those CPU stages and the full rendered GPU frame
+separately before changing the estimator. Preserve offscreen fairness and
 edit-response measurements in every comparison.
 
 More selective distant-edit invalidation, GPU-resident scheduling/display resolve,
