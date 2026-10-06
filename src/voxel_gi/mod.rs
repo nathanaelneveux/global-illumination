@@ -1,3 +1,11 @@
+//! Persistent diffuse transport for opaque axis-aligned voxel surfaces.
+//!
+//! Immutable scene snapshots and tracing run on workers; revision-checked
+//! publication and bounded scheduling own the authoritative energy field.
+//! `history`/`reconstruction`/`render` are display-only: their priors never become
+//! simulation measurements. `bvw` is the current host adapter, `diagnostics` the
+//! optional demo tooling. This module is not yet a storage-independent crate.
+mod bvw;
 mod diagnostics;
 mod emission;
 mod field;
@@ -19,13 +27,12 @@ mod validation;
 mod world;
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 use bevy::render::storage::ShaderBuffer;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
-use bevy_voxel_world::prelude::*;
 use bevy_voxel_world::rendering::VoxelWorldMaterialHandle;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
@@ -34,36 +41,37 @@ pub use settings::VoxelGiSettings;
 pub use spectrum::{EnergyEmitter, EnergySpectrum};
 pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 
-#[cfg(debug_assertions)]
-use crate::player::Player;
-use crate::terrain::PrototypeWorld;
+use bvw::{collect_chunk_changes, start_scene_task};
+pub(crate) use diagnostics::VoxelGiDiagnosticsPlugin;
+#[cfg(test)]
+use diagnostics::toggle_voxel_gi;
 use render::{
     GpuCacheBuild, GpuProbePatchQueue, GpuSnapshot, GpuTransportCache, VoxelTransportAssets,
     VoxelTransportMaterial, build_gpu_cache, install_gpu_cache, install_render_assets,
-    patch_gpu_topology, patch_probe_values, set_enabled,
+    patch_gpu_topology, patch_probe_values,
 };
 use tracer::{
     BOOTSTRAP_SAMPLES, DirectionalTransportLight, PointTransportLight, TransportSources,
     trace_probe_batch_with_emitters,
 };
-use world::{
-    AIR, PAGE_EDGE, PAGE_SIZE, SurfaceProbe, SurfaceProbeDescriptor, TransportScene,
-    affected_probe_pages, scan_surface_probe_pages,
-};
+use world::{PAGE_EDGE, SurfaceProbe, SurfaceProbeDescriptor, TransportScene};
 
-const STREAM_DEBOUNCE: Duration = Duration::from_millis(350);
-const EDIT_DEBOUNCE: Duration = Duration::from_millis(40);
-const MAX_REBUILD_LATENCY: Duration = Duration::from_secs(1);
 const GPU_UPLOAD_INTERVAL: Duration = Duration::from_millis(50);
 const SAMPLES_PER_DISPATCH: u32 = 4;
 const EDIT_RELIGHT_RADIUS: i32 = 48;
 
+/// Transport and display-cache integration for the prototype BVW world.
+/// Debug controls, HUD and validation are opt-in via the demo diagnostics plugin.
 pub struct VoxelGiPlugin;
+
+/// Schedule simulation readers after this set to observe this frame's published
+/// measurements. Workers remain asynchronous; inspect estimate freshness.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VoxelGiSystems;
 
 impl Plugin for VoxelGiPlugin {
     fn build(&self, app: &mut App) {
         install_render_assets(app);
-        diagnostics::install(app);
         app.init_resource::<VoxelGiDirty>()
             .init_resource::<VoxelGiRuntime>()
             .init_resource::<VoxelEnergyField>()
@@ -82,27 +90,15 @@ impl Plugin for VoxelGiPlugin {
                     apply_trace_task,
                     start_trace_task,
                     upload_transport_cache,
-                    toggle_voxel_gi,
-                    log_voxel_gi_stats,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(VoxelGiSystems),
             );
         if std::env::var("VOXEL_GI_CONTINUOUS").is_ok_and(|value| value == "1") {
             app.world_mut()
                 .resource_mut::<VoxelGiSettings>()
                 .adaptive_updates = false;
         }
-        #[cfg(debug_assertions)]
-        app.init_resource::<validation::CaptureEvidence>()
-            .add_systems(PostStartup, validation::setup_capture_target)
-            .add_systems(
-                Update,
-                (
-                    smoke_edit_once.after(log_voxel_gi_stats),
-                    smoke_move_once.after(log_voxel_gi_stats),
-                    validation::run_validation.after(log_voxel_gi_stats),
-                ),
-            );
     }
 
     fn finish(&self, app: &mut App) {
@@ -170,7 +166,10 @@ pub struct VoxelGiStats {
     pub last_decode_ms: f32,
     pub packed_geometry_bytes: usize,
     pub fully_bootstrapped: bool,
+    /// Full-field summaries are populated only by opt-in terminal/validation
+    /// diagnostics, every five seconds. They are not convergence measures.
     pub mean_history_samples: f32,
+    /// See `mean_history_samples`; zero while full-field diagnostics are off.
     pub oldest_sample_age_ms: f32,
     pub backend: &'static str,
 }
@@ -180,7 +179,7 @@ struct VoxelGiRuntime {
     scene: Arc<TransportScene>,
     sources: TransportSources,
     materials: Arc<VoxelMaterialTransportTable>,
-    trace_pool: Arc<ThreadPool>,
+    trace_pool: Arc<OnceLock<ThreadPool>>,
     loaded_pages: HashSet<IVec3>,
     dirty_pages: HashSet<IVec3>,
     full_resample_pages: HashSet<IVec3>,
@@ -243,19 +242,11 @@ struct VoxelGiRuntime {
 impl Default for VoxelGiRuntime {
     fn default() -> Self {
         let now = Instant::now();
-        let available = std::thread::available_parallelism().map_or(2, usize::from);
-        let worker_count = available.saturating_sub(2).clamp(1, 2);
-        let trace_pool = ThreadPoolBuilder::new()
-            .num_threads(worker_count)
-            .thread_name(|index| format!("voxel-gi-{index}"))
-            .build()
-            .expect("voxel GI worker pool");
-        info!(worker_count, "voxel GI worker pool ready");
         Self {
             scene: Arc::new(TransportScene::default()),
             sources: TransportSources::default(),
             materials: Arc::new(VoxelMaterialTransportTable::default()),
-            trace_pool: Arc::new(trace_pool),
+            trace_pool: Arc::new(OnceLock::new()),
             loaded_pages: HashSet::new(),
             dirty_pages: HashSet::new(),
             full_resample_pages: HashSet::new(),
@@ -343,203 +334,6 @@ struct TraceBatchResult {
 
 fn page_of(voxel: IVec3) -> IVec3 {
     voxel.div_euclid(IVec3::splat(PAGE_EDGE as i32))
-}
-
-fn collect_chunk_changes(
-    mut runtime: ResMut<VoxelGiRuntime>,
-    mut explicit_dirty: ResMut<VoxelGiDirty>,
-    mut spawned: MessageReader<ChunkWillSpawn<PrototypeWorld>>,
-    mut updated: MessageReader<ChunkWillUpdate<PrototypeWorld>>,
-    mut despawned: MessageReader<ChunkWillDespawn<PrototypeWorld>>,
-) {
-    let mut changed = false;
-    for event in spawned.read() {
-        runtime.loaded_pages.insert(event.chunk_key);
-        runtime.removed_pages.remove(&event.chunk_key);
-        runtime.dirty_pages.insert(event.chunk_key);
-        changed = true;
-    }
-    for event in updated.read() {
-        runtime.loaded_pages.insert(event.chunk_key);
-        runtime.removed_pages.remove(&event.chunk_key);
-        runtime.dirty_pages.insert(event.chunk_key);
-        runtime.full_resample_pages.insert(event.chunk_key);
-        runtime.broad_dirty_pages.insert(event.chunk_key);
-        changed = true;
-    }
-    for event in despawned.read() {
-        runtime.loaded_pages.remove(&event.chunk_key);
-        runtime.dirty_pages.remove(&event.chunk_key);
-        runtime.full_resample_pages.remove(&event.chunk_key);
-        runtime.broad_dirty_pages.remove(&event.chunk_key);
-        runtime.removed_pages.insert(event.chunk_key);
-        changed = true;
-    }
-    if explicit_dirty.all_loaded {
-        let pages: Vec<_> = runtime.loaded_pages.iter().copied().collect();
-        runtime.dirty_pages.extend(pages.iter().copied());
-        runtime.full_resample_pages.extend(pages.iter().copied());
-        runtime.broad_dirty_pages.extend(pages);
-        explicit_dirty.all_loaded = false;
-        changed = true;
-    }
-    for voxel in explicit_dirty.voxels.drain() {
-        let page = page_of(voxel);
-        if runtime.loaded_pages.contains(&page) {
-            runtime.dirty_pages.insert(page);
-            runtime.full_resample_pages.insert(page);
-            runtime.broad_dirty_pages.remove(&page);
-            runtime.dirty_voxels.insert(voxel);
-            runtime.urgent_edit = true;
-            changed = true;
-        }
-    }
-    if changed {
-        let now = Instant::now();
-        runtime.last_world_change = now;
-        runtime.dirty_since.get_or_insert(now);
-    }
-}
-
-fn start_scene_task(
-    mut runtime: ResMut<VoxelGiRuntime>,
-    generator: Res<PrototypeWorld>,
-    voxel_world: VoxelWorld<PrototypeWorld>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
-) {
-    let pending = !runtime.dirty_pages.is_empty() || !runtime.removed_pages.is_empty();
-    let debounce = if runtime.urgent_edit {
-        EDIT_DEBOUNCE
-    } else {
-        STREAM_DEBOUNCE
-    };
-    let quiet = runtime.last_world_change.elapsed() >= debounce;
-    let overdue = runtime
-        .dirty_since
-        .is_some_and(|start| start.elapsed() >= MAX_REBUILD_LATENCY);
-    if runtime.scene_task.is_some()
-        || (runtime.scene_publication.is_some() && !runtime.urgent_edit)
-        || !pending
-        || (!quiet && !overdue)
-    {
-        return;
-    }
-
-    let mut dirty_pages: Vec<_> = runtime.dirty_pages.drain().collect();
-    dirty_pages.sort_unstable_by_key(|p| (p.z, p.y, p.x));
-    let full_resample = std::mem::take(&mut runtime.full_resample_pages);
-    let broad_edits: Vec<_> = runtime.broad_dirty_pages.drain().collect();
-    let exact_edits: Vec<_> = runtime.dirty_voxels.drain().collect();
-    let mut removed_pages: Vec<_> = runtime.removed_pages.drain().collect();
-    removed_pages.sort_unstable_by_key(|p| (p.z, p.y, p.x));
-    runtime.dirty_since = None;
-    runtime.urgent_edit = false;
-
-    let affected_pages = affected_probe_pages(&dirty_pages, &removed_pages);
-    let previous_scene = Arc::clone(&runtime.scene);
-    let voxel_lookup = voxel_world.get_voxel_fn();
-    let chunk_lookup = voxel_world.get_chunk_data_fn();
-    let generator = generator.clone();
-    let focus_page = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
-        page_of(camera.translation().floor().as_ivec3())
-    });
-    runtime.scene_task = Some(AsyncComputeTaskPool::get().spawn(async move {
-        let started = Instant::now();
-        let changed_pages: Vec<_> = dirty_pages
-            .into_iter()
-            .map(|page| {
-                let origin = page * PAGE_EDGE as i32;
-                let materials = if !full_resample.contains(&page) {
-                    if let Some(chunk) = chunk_lookup(page) {
-                        if chunk.is_empty() {
-                            vec![AIR; PAGE_SIZE.element_product() as usize]
-                        } else {
-                            sample_dense_page(origin, |position| {
-                                chunk
-                                    .get_voxel_at_world_position(position)
-                                    .unwrap_or_else(|| generator.generated_voxel(position))
-                            })
-                        }
-                    } else {
-                        sample_dense_page(origin, |position| match voxel_lookup(position) {
-                            WorldVoxel::Unset => generator.generated_voxel(position),
-                            voxel => voxel,
-                        })
-                    }
-                } else {
-                    sample_dense_page(origin, |position| match voxel_lookup(position) {
-                        WorldVoxel::Unset => generator.generated_voxel(position),
-                        voxel => voxel,
-                    })
-                };
-                (page, materials)
-            })
-            .collect();
-        let scene = Arc::new(TransportScene::with_page_delta(
-            &previous_scene,
-            changed_pages,
-            &removed_pages,
-        ));
-        let changed = scene.regions.len() != previous_scene.regions.len()
-            || scene.regions.iter().any(|(key, region)| {
-                previous_scene
-                    .regions
-                    .get(key)
-                    .is_none_or(|old| !Arc::ptr_eq(old, region))
-            });
-        let descriptors = if changed {
-            scan_surface_probe_pages(&scene, &affected_pages, focus_page)
-        } else {
-            Vec::new()
-        };
-        // Publication units are spatial pages, prepared and prioritized on the
-        // worker. A turn can discover hundreds of thousands of receivers; never
-        // install that entire world-sized delta in a single game frame.
-        let mut by_page: HashMap<_, Vec<_>> = affected_pages
-            .into_iter()
-            .map(|page| (page, Vec::new()))
-            .collect();
-        for descriptor in descriptors {
-            by_page
-                .entry(page_of(descriptor.voxel))
-                .or_default()
-                .push(descriptor);
-        }
-        let mut pages: Vec<_> = by_page.into_iter().collect();
-        pages.sort_unstable_by_key(|(page, _)| {
-            (
-                !exact_edits.iter().any(|v| page_of(*v) == *page),
-                (page.as_i64vec3() - focus_page.as_i64vec3()).length_squared(),
-            )
-        });
-        let changed_materials = emission::changed_voxel_materials(&previous_scene, &scene);
-        SceneBuildResult {
-            scene,
-            changed,
-            changed_materials,
-            pages: pages.into(),
-            exact_edits,
-            broad_edits,
-            build_time: started.elapsed(),
-        }
-    }));
-}
-
-fn sample_dense_page(origin: IVec3, sample: impl Fn(IVec3) -> WorldVoxel<u8>) -> Vec<u16> {
-    let mut materials = vec![AIR; PAGE_SIZE.element_product() as usize];
-    for z in 0..PAGE_EDGE {
-        for y in 0..PAGE_EDGE {
-            for x in 0..PAGE_EDGE {
-                let local = UVec3::new(x, y, z);
-                let position = origin + local.as_ivec3();
-                materials[naadf::linear_index(local, PAGE_SIZE)] = match sample(position) {
-                    WorldVoxel::Solid(material) => material as u16,
-                    WorldVoxel::Air | WorldVoxel::Unset => AIR,
-                };
-            }
-        }
-    }
-    materials
 }
 
 fn apply_scene_task(
@@ -1100,6 +894,17 @@ fn start_trace_task(
             gpu_tracer = None;
         }
         if gpu_tracer.is_none() {
+            // A GPU-only session needs no extra CPU tracing threads. Create the
+            // bounded fallback pool on its worker only if it is actually used.
+            let pool = pool.get_or_init(|| {
+                let available = std::thread::available_parallelism().map_or(2, usize::from);
+                let worker_count = available.saturating_sub(2).clamp(1, 2);
+                ThreadPoolBuilder::new()
+                    .num_threads(worker_count)
+                    .thread_name(|index| format!("voxel-gi-{index}"))
+                    .build()
+                    .expect("voxel GI worker pool")
+            });
             probes = pool.install(|| {
                 trace_probe_batch_with_emitters(
                     scene,
@@ -1570,212 +1375,6 @@ fn upload_transport_cache(
     }
     runtime.last_gpu_upload = Instant::now();
     runtime.sky_upload_pending = false;
-}
-
-fn toggle_voxel_gi(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut runtime: ResMut<VoxelGiRuntime>,
-    material_handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
-    mut materials: ResMut<Assets<VoxelTransportMaterial>>,
-    mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>,
-) {
-    // Scripted validation owns presentation as well as the player path.
-    #[cfg(debug_assertions)]
-    if std::env::var_os("VOXEL_GI_VALIDATE").is_some() {
-        return;
-    }
-    if keyboard.just_pressed(KeyCode::F7)
-        && let Some(handle) = material_handle.as_ref()
-        && let Some(mut material) = materials.get_mut(&handle.handle)
-    {
-        material.extension.settings.voxel_sky ^= 1;
-        info!(
-            voxel_sky = material.extension.settings.voxel_sky != 0,
-            "direct sky lighting changed (F5 controls cached face/corner blending)"
-        );
-    }
-    if keyboard.just_pressed(KeyCode::F6)
-        && let Some(handle) = material_handle.as_ref()
-        && let Some(mut material) = materials.get_mut(&handle.handle)
-    {
-        material.extension.settings.debug_irradiance ^= 1;
-        info!(
-            irradiance_only = material.extension.settings.debug_irradiance != 0,
-            "voxel GI diagnostic view changed"
-        );
-    }
-    if keyboard.just_pressed(KeyCode::F5)
-        && let Some(handle) = material_handle.as_ref()
-        && let Some(mut material) = materials.get_mut(&handle.handle)
-    {
-        material.extension.settings.reconstruction ^= 1;
-        info!(
-            smooth_corners = material.extension.settings.reconstruction != 0,
-            "voxel GI reconstruction changed"
-        );
-    }
-    if (keyboard.just_pressed(KeyCode::F5) || keyboard.just_pressed(KeyCode::F7))
-        && let Some(handle) = material_handle.as_ref()
-        && let Some(material) = materials.get(&handle.handle)
-    {
-        let settings = material.extension.settings;
-        let sky_mode = if settings.voxel_sky == 0 {
-            "per-pixel"
-        } else if settings.reconstruction != 0 {
-            "voxel corners"
-        } else {
-            "voxel faces"
-        };
-        for mut window in &mut windows {
-            window.title = format!("Voxel GI Lab | Sun: {sky_mode} (F7)");
-        }
-    }
-    if !keyboard.just_pressed(KeyCode::F4) {
-        return;
-    }
-    runtime.enabled = !runtime.enabled;
-    if let Some(material_handle) = material_handle {
-        set_enabled(runtime.enabled, &mut materials, &material_handle.handle);
-    }
-    info!(enabled = runtime.enabled, "world-space voxel GI toggled");
-}
-
-fn log_voxel_gi_stats(
-    mut stats: ResMut<VoxelGiStats>,
-    field: Res<VoxelEnergyField>,
-    runtime: Res<VoxelGiRuntime>,
-    mut last_log: Local<Option<Instant>>,
-) {
-    let now = Instant::now();
-    if last_log.is_some_and(|last| now.duration_since(last) < Duration::from_secs(5)) {
-        return;
-    }
-    *last_log = Some(now);
-    let mut samples = 0_u64;
-    let mut faces = 0_u64;
-    let mut oldest = Duration::ZERO;
-    for probe in field.probes.values() {
-        for face in 0..6 {
-            if probe.face_mask & (1 << face) != 0 {
-                samples += u64::from(probe.samples[face]);
-                faces += 1;
-                if let Some(updated) = probe.face_updated_at[face].or(probe.updated_at) {
-                    oldest = oldest.max(now.saturating_duration_since(updated));
-                }
-            }
-        }
-    }
-    stats.mean_history_samples = samples as f32 / faces.max(1) as f32;
-    stats.oldest_sample_age_ms = oldest.as_secs_f32() * 1000.0;
-    if !diagnostics::terminal_stats_enabled() {
-        return;
-    }
-    info!(
-        loaded_pages = stats.loaded_pages,
-        surface_probes = stats.surface_probes,
-        coverage_percent = format_args!("{:.1}", stats.interactive_coverage * 100.0),
-        bootstrap_percent = format_args!("{:.1}", stats.bootstrap_coverage * 100.0),
-        pending_probes = stats.pending_probes,
-        traced_paths = stats.traced_paths,
-        refresh_percent = format_args!("{:.1}", stats.global_refresh * 100.0),
-        last_trace_ms = format_args!("{:.1}", stats.last_trace_batch_ms),
-        sky_requests = stats.sky_corner_requests,
-        sky_traced = stats.sky_corners_traced,
-        sky_rays_scheduled = stats.sky_rays_scheduled,
-        sky_cached = stats.sky_cached_corners,
-        sky_batches = stats.sky_only_batches,
-        transport_batches = stats.transport_batches,
-        idle_scheduler_frames = stats.idle_scheduler_frames,
-        dispatch_budget = runtime.batch_size,
-        sky_budget = runtime.sky_batch_size,
-        worker_ms = stats.last_worker_ms,
-        selection_ms = stats.last_selection_ms,
-        merge_ms = stats.last_merge_ms,
-        prepare_ms = stats.last_prepare_ms,
-        wait_ms = stats.last_wait_ms,
-        decode_ms = stats.last_decode_ms,
-        packed_geometry_bytes = stats.packed_geometry_bytes,
-        fully_bootstrapped = stats.fully_bootstrapped,
-        mean_history = stats.mean_history_samples,
-        oldest_sample_ms = stats.oldest_sample_age_ms,
-        backend = stats.backend,
-        "voxel GI status"
-    );
-}
-
-/// Opt-in, one-shot integration check for the real BVW edit path. The normal
-/// application never mutates terrain automatically.
-#[cfg(debug_assertions)]
-fn smoke_edit_once(
-    mut finished: Local<bool>,
-    mut ready_since: Local<Option<Instant>>,
-    stats: Res<VoxelGiStats>,
-    field: Res<VoxelEnergyField>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
-    mut voxel_world: VoxelWorld<PrototypeWorld>,
-    mut dirty: ResMut<VoxelGiDirty>,
-) {
-    if *finished || std::env::var_os("VOXEL_GI_SMOKE_EDIT").is_none() {
-        return;
-    }
-    if !stats.fully_bootstrapped || stats.loaded_pages < 200 {
-        *ready_since = None;
-        return;
-    }
-    let ready = ready_since.get_or_insert_with(Instant::now);
-    if ready.elapsed() < Duration::from_secs(10) {
-        return;
-    }
-    let Some(camera) = cameras.iter().next() else {
-        return;
-    };
-    let eye = camera.translation();
-    let forward = camera.forward().as_vec3();
-    let target = field
-        .order
-        .iter()
-        .copied()
-        .filter(|voxel| {
-            let delta = voxel.as_vec3() + Vec3::splat(0.5) - eye;
-            (16.0..=256.0).contains(&delta.length_squared()) && delta.normalize().dot(forward) > 0.2
-        })
-        .min_by(|a, b| {
-            a.as_vec3()
-                .distance_squared(eye)
-                .total_cmp(&b.as_vec3().distance_squared(eye))
-        });
-    let Some(voxel) = target else {
-        return;
-    };
-    voxel_world.set_voxel(voxel, WorldVoxel::Air);
-    dirty.mark_voxel(voxel);
-    *finished = true;
-    info!(?voxel, "voxel GI smoke edit applied");
-}
-
-/// Opt-in streaming stress check: move far enough to cross a chunk boundary
-/// after the initial transport field has settled.
-#[cfg(debug_assertions)]
-fn smoke_move_once(
-    mut finished: Local<bool>,
-    mut ready_since: Local<Option<Instant>>,
-    stats: Res<VoxelGiStats>,
-    mut player: Single<&mut Transform, With<Player>>,
-) {
-    if *finished || std::env::var_os("VOXEL_GI_SMOKE_MOVE").is_none() {
-        return;
-    }
-    if !stats.fully_bootstrapped || stats.loaded_pages < 200 {
-        *ready_since = None;
-        return;
-    }
-    let ready = ready_since.get_or_insert_with(Instant::now);
-    if ready.elapsed() < Duration::from_secs(5) {
-        return;
-    }
-    player.translation += Vec3::new(48.0, 4.0, 0.0);
-    *finished = true;
-    info!(position = ?player.translation, "voxel GI smoke move applied");
 }
 
 #[cfg(test)]

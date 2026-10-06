@@ -26,9 +26,13 @@ pub const FACE_OFFSETS: [IVec3; 6] = [
     IVec3::NEG_Z,
 ];
 
+/// Opaque diffuse response per band. No transmission, heat capacity or dose
+/// conversion is implied; those belong to the host simulation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MaterialTransport {
+    /// Fraction of incident energy reflected, clamped to [0, 1] by `set`.
     pub diffuse: EnergySpectrum,
+    /// Emitted energy in normalized solver units, not watts or temperature.
     pub emission: EnergySpectrum,
 }
 
@@ -42,8 +46,8 @@ impl Default for MaterialTransport {
 }
 
 /// Band-aware optical properties for every voxel material index. This is a
-/// resource so games can define emissive, heat-reflective, or radiation-
-/// shielding blocks without changing the tracer.
+/// resource so games can define emissive and reflective blocks without changing
+/// the tracer. Defaults are neutral; the host assigns its own material IDs.
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct VoxelMaterialTransportTable {
     entries: [MaterialTransport; 256],
@@ -51,17 +55,9 @@ pub struct VoxelMaterialTransportTable {
 
 impl Default for VoxelMaterialTransportTable {
     fn default() -> Self {
-        let mut entries = [MaterialTransport::default(); 256];
-        let visible = [
-            Vec3::new(0.17, 0.42, 0.08),
-            Vec3::new(0.55, 0.20, 0.09),
-            Vec3::new(0.46, 0.29, 0.20),
-            Vec3::new(0.82, 0.88, 0.94),
-        ];
-        for (entry, visible) in entries.iter_mut().zip(visible) {
-            entry.diffuse.visible = visible;
+        Self {
+            entries: [MaterialTransport::default(); 256],
         }
-        Self { entries }
     }
 }
 

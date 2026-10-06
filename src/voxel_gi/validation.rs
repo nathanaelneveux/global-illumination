@@ -428,14 +428,13 @@ pub(super) fn run_validation(
         return;
     }
     let config = configs.get(&assets.prototype_config);
-    if matches!(profile, Profile::Response | Profile::Edits) {
-        if let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("response.json"),
+    if matches!(profile, Profile::Response | Profile::Edits)
+        && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("response.json"),
             json!({"samples": run.response.samples, "captures": run.response.captures,
                 "note": "Fixed-camera synthetic room. Capture names are scheduled offsets; requested_s records actual timing. Not a gameplay/FPS benchmark."}).to_string()) {
             evidence.fail(&format!("Could not save response sequence: {error}"));
             commands.write_message(AppExit::error());
             return;
-        }
     }
     let report = json!({
         "schema_version": 3, "status": "completed", "profile": profile.name(),

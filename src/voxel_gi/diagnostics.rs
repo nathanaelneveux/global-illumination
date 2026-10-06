@@ -1,24 +1,53 @@
-//! HUD counters reuse existing stats; editing is queued through the player path.
+//! Optional demo instrumentation, separate from transport scheduling. The HUD
+//! reuses O(1) counters; expensive field summaries and scripted edits are opt-in.
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::window::{CursorOptions, PrimaryWindow};
 use bevy_inspector_egui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use bevy_voxel_world::rendering::VoxelWorldMaterialHandle;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
-use super::VoxelGiStats;
+use super::render::{VoxelTransportMaterial, set_enabled};
+use super::{VoxelEnergyField, VoxelGiRuntime, VoxelGiStats, VoxelGiSystems};
 use crate::player::PlaceEmissiveBlock;
 
-pub(super) fn install(app: &mut App) {
-    if terminal_stats_enabled() {
-        app.add_plugins(LogDiagnosticsPlugin::default());
-    }
-    if !crate::headless_validation() {
-        app.add_systems(EguiPrimaryContextPass, draw_hud);
+/// Demo-only UI, keyboard comparisons and opt-in validation. Install after GI
+/// and the player plugins; the reusable transport does not own player input.
+pub(crate) struct VoxelGiDiagnosticsPlugin;
+
+impl Plugin for VoxelGiDiagnosticsPlugin {
+    fn build(&self, app: &mut App) {
+        if terminal_stats_enabled() {
+            app.add_plugins(LogDiagnosticsPlugin::default())
+                .add_systems(Update, log_voxel_gi_stats.after(VoxelGiSystems));
+        }
+        let scripted = cfg!(debug_assertions) && std::env::var_os("VOXEL_GI_VALIDATE").is_some();
+        if !scripted {
+            app.add_systems(Update, toggle_voxel_gi.after(VoxelGiSystems));
+        }
+        if !crate::headless_validation() {
+            app.add_systems(EguiPrimaryContextPass, draw_hud);
+        }
+        #[cfg(debug_assertions)]
+        if scripted {
+            app.init_resource::<super::validation::CaptureEvidence>()
+                .add_systems(PostStartup, super::validation::setup_capture_target)
+                .add_systems(
+                    Update,
+                    super::validation::run_validation.after(log_voxel_gi_stats),
+                );
+        }
     }
 }
 
 pub(super) fn terminal_stats_enabled() -> bool {
-    std::env::var("VOXEL_GI_LOG_STATS").is_ok_and(|value| value == "1")
-        || std::env::var_os("VOXEL_GI_VALIDATE").is_some()
+    // Launch configuration, not a hot-path environment lookup on every page.
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("VOXEL_GI_LOG_STATS").is_ok_and(|value| value == "1")
+            || std::env::var_os("VOXEL_GI_VALIDATE").is_some()
+    })
 }
 
 struct HudState {
@@ -97,6 +126,134 @@ fn hud_text(stats: &VoxelGiStats, fps: Option<f64>) -> String {
         stats.interactive_coverage.clamp(0.0, 1.0) * 100.0,
         stats.bootstrap_coverage.clamp(0.0, 1.0) * 100.0
     )
+}
+
+pub(super) fn toggle_voxel_gi(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut runtime: ResMut<VoxelGiRuntime>,
+    material_handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
+    mut materials: ResMut<Assets<VoxelTransportMaterial>>,
+    mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>,
+) {
+    // Scripted validation owns presentation as well as the player path.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("VOXEL_GI_VALIDATE").is_some() {
+        return;
+    }
+    if keyboard.just_pressed(KeyCode::F7)
+        && let Some(handle) = material_handle.as_ref()
+        && let Some(mut material) = materials.get_mut(&handle.handle)
+    {
+        material.extension.settings.voxel_sky ^= 1;
+        info!(
+            voxel_sky = material.extension.settings.voxel_sky != 0,
+            "direct sky lighting changed (F5 controls cached face/corner blending)"
+        );
+    }
+    if keyboard.just_pressed(KeyCode::F6)
+        && let Some(handle) = material_handle.as_ref()
+        && let Some(mut material) = materials.get_mut(&handle.handle)
+    {
+        material.extension.settings.debug_irradiance ^= 1;
+        info!(
+            irradiance_only = material.extension.settings.debug_irradiance != 0,
+            "voxel GI diagnostic view changed"
+        );
+    }
+    if keyboard.just_pressed(KeyCode::F5)
+        && let Some(handle) = material_handle.as_ref()
+        && let Some(mut material) = materials.get_mut(&handle.handle)
+    {
+        material.extension.settings.reconstruction ^= 1;
+        info!(
+            smooth_corners = material.extension.settings.reconstruction != 0,
+            "voxel GI reconstruction changed"
+        );
+    }
+    if (keyboard.just_pressed(KeyCode::F5) || keyboard.just_pressed(KeyCode::F7))
+        && let Some(handle) = material_handle.as_ref()
+        && let Some(material) = materials.get(&handle.handle)
+    {
+        let settings = material.extension.settings;
+        let sky_mode = if settings.voxel_sky == 0 {
+            "per-pixel"
+        } else if settings.reconstruction != 0 {
+            "voxel corners"
+        } else {
+            "voxel faces"
+        };
+        for mut window in &mut windows {
+            window.title = format!("Voxel GI Lab | Sun: {sky_mode} (F7)");
+        }
+    }
+    if !keyboard.just_pressed(KeyCode::F4) {
+        return;
+    }
+    runtime.enabled = !runtime.enabled;
+    if let Some(material_handle) = material_handle {
+        set_enabled(runtime.enabled, &mut materials, &material_handle.handle);
+    }
+    info!(enabled = runtime.enabled, "world-space voxel GI toggled");
+}
+
+pub(super) fn log_voxel_gi_stats(
+    mut stats: ResMut<VoxelGiStats>,
+    field: Res<VoxelEnergyField>,
+    runtime: Res<VoxelGiRuntime>,
+    mut last_log: Local<Option<Instant>>,
+) {
+    let now = Instant::now();
+    if last_log.is_some_and(|last| now.duration_since(last) < Duration::from_secs(5)) {
+        return;
+    }
+    *last_log = Some(now);
+    let mut samples = 0_u64;
+    let mut faces = 0_u64;
+    let mut oldest = Duration::ZERO;
+    for probe in field.probes.values() {
+        for face in 0..6 {
+            if probe.face_mask & (1 << face) != 0 {
+                samples += u64::from(probe.samples[face]);
+                faces += 1;
+                if let Some(updated) = probe.face_updated_at[face].or(probe.updated_at) {
+                    oldest = oldest.max(now.saturating_duration_since(updated));
+                }
+            }
+        }
+    }
+    stats.mean_history_samples = samples as f32 / faces.max(1) as f32;
+    stats.oldest_sample_age_ms = oldest.as_secs_f32() * 1000.0;
+    info!(
+        loaded_pages = stats.loaded_pages,
+        surface_probes = stats.surface_probes,
+        coverage_percent = format_args!("{:.1}", stats.interactive_coverage * 100.0),
+        bootstrap_percent = format_args!("{:.1}", stats.bootstrap_coverage * 100.0),
+        pending_probes = stats.pending_probes,
+        traced_paths = stats.traced_paths,
+        refresh_percent = format_args!("{:.1}", stats.global_refresh * 100.0),
+        last_trace_ms = format_args!("{:.1}", stats.last_trace_batch_ms),
+        sky_requests = stats.sky_corner_requests,
+        sky_traced = stats.sky_corners_traced,
+        sky_rays_scheduled = stats.sky_rays_scheduled,
+        sky_cached = stats.sky_cached_corners,
+        sky_batches = stats.sky_only_batches,
+        transport_batches = stats.transport_batches,
+        idle_scheduler_frames = stats.idle_scheduler_frames,
+        dispatch_budget = runtime.batch_size,
+        sky_budget = runtime.sky_batch_size,
+        worker_ms = stats.last_worker_ms,
+        selection_ms = stats.last_selection_ms,
+        merge_ms = stats.last_merge_ms,
+        prepare_ms = stats.last_prepare_ms,
+        wait_ms = stats.last_wait_ms,
+        decode_ms = stats.last_decode_ms,
+        packed_geometry_bytes = stats.packed_geometry_bytes,
+        fully_bootstrapped = stats.fully_bootstrapped,
+        mean_history = stats.mean_history_samples,
+        oldest_sample_ms = stats.oldest_sample_age_ms,
+        backend = stats.backend,
+        "voxel GI status"
+    );
 }
 
 #[cfg(test)]

@@ -348,8 +348,8 @@ fn sync_player_input(
     contexts: Query<(Entity, &ContextActivity<PlayerInput>)>,
     mut commands: Commands,
 ) {
-    let active = !cursor.visible
-        && !(cfg!(debug_assertions) && std::env::var_os("VOXEL_GI_VALIDATE").is_some());
+    let active = !(cursor.visible
+        || cfg!(debug_assertions) && std::env::var_os("VOXEL_GI_VALIDATE").is_some());
     for (entity, activity) in &contexts {
         if **activity != active {
             commands

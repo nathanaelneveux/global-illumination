@@ -70,6 +70,21 @@ pub struct TerrainPlugin;
 
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
+        // Prototype palette policy belongs to the host, not the transport core.
+        // Keep these responses independent of display texture/atlas indices.
+        for (material, visible) in [
+            (TerrainMaterial::Grass, Vec3::new(0.17, 0.42, 0.08)),
+            (TerrainMaterial::Brick, Vec3::new(0.55, 0.20, 0.09)),
+            (TerrainMaterial::SnowBrick, Vec3::new(0.46, 0.29, 0.20)),
+            (TerrainMaterial::Snow, Vec3::new(0.82, 0.88, 0.94)),
+        ] {
+            let mut table = app
+                .world_mut()
+                .resource_mut::<VoxelMaterialTransportTable>();
+            let mut optical = table.get(material.index());
+            optical.diffuse.visible = visible;
+            table.set(material.index(), optical);
+        }
         // Register once, not on every placement: editing a lamp uses ordinary
         // geometry invalidation instead of changing the global material table.
         app.world_mut()

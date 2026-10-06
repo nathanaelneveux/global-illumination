@@ -25,7 +25,7 @@ use bevy_enhanced_input::prelude::EnhancedInputPlugin;
 use chunk_colliders::ChunkColliderPlugin;
 use player::PlayerPlugin;
 use terrain::TerrainPlugin;
-use voxel_gi::VoxelGiPlugin;
+use voxel_gi::{VoxelGiDiagnosticsPlugin, VoxelGiPlugin};
 use world_environment::WorldEnvironmentPlugin;
 
 fn main() -> AppExit {
@@ -77,8 +77,6 @@ fn main() -> AppExit {
     }
     app.add_plugins((
         PhysicsPlugins::default(),
-        // Uncomment the next line for physics debugging
-        //PhysicsDebugPlugin,
         FrameTimeDiagnosticsPlugin::default(),
         EnhancedInputPlugin,
         AhoyPlugins::default(),
@@ -93,6 +91,7 @@ fn main() -> AppExit {
         TerrainPlugin,
         ChunkColliderPlugin,
         PlayerPlugin,
+        VoxelGiDiagnosticsPlugin,
     ));
     app.run()
 }
