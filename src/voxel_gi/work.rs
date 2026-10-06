@@ -1,0 +1,340 @@
+//! Compact worker ownership: receiver identity and only the selected face
+//! measurements cross threads. Display history, topology indices, and adaptive
+//! scheduling state stay in the authoritative field until validated publication.
+use bevy::prelude::*;
+use std::ops::Range;
+use std::time::Instant;
+
+use super::{EnergySpectrum, world::SurfaceProbe};
+
+#[derive(Default)]
+pub(crate) struct TraceWork {
+    pub probes: Vec<ProbeWork>,
+    pub faces: Vec<FaceWork>,
+}
+
+pub(crate) struct ProbeWork {
+    pub voxel: IVec3,
+    pub face_mask: u8,
+    pub trace_mask: u8,
+    pub revision: u64,
+    pub source_revision: u64,
+    pub transport_revision: u64,
+    pub restart: bool,
+    pub sky: [[u32; 4]; 6],
+    start: usize,
+}
+
+impl ProbeWork {
+    pub fn faces(&self) -> Range<usize> {
+        self.start..self.start + self.trace_mask.count_ones() as usize
+    }
+
+    /// Publish only after geometry/source validation. Untouched faces and live
+    /// order indices remain authoritative; display history never comes back
+    /// from a worker. The numerical resolve and stability rules are unchanged.
+    pub fn publish(
+        &self,
+        faces: &[FaceWork],
+        probe: &mut SurfaceProbe,
+        now: Instant,
+        settings: &super::VoxelGiSettings,
+    ) {
+        let same_revision = probe.transport_revision == self.transport_revision;
+        let previous_stable = probe.stable_batches;
+        let previous_display_time = probe.display_updated_at;
+        if !same_revision || self.restart {
+            probe.fresh_mask = 0;
+            probe.stable_batches = [0; 6];
+        }
+        if self.restart {
+            for face in 0..6 {
+                if self.trace_mask & (1 << face) == 0 {
+                    probe.samples[face] = 0;
+                    probe.radiance[face] = EnergySpectrum::ZERO;
+                    probe.second_moment[face] = EnergySpectrum::ZERO;
+                    probe.face_updated_at[face] = None;
+                }
+            }
+        }
+        probe.trace_mask = self.trace_mask;
+        probe.source_revision = self.source_revision;
+        probe.transport_revision = self.transport_revision;
+        for measurement in faces {
+            let face = measurement.face;
+            let previous_time = probe.face_updated_at[face].or(previous_display_time);
+            let before = probe.radiance[face];
+            measurement.write(probe);
+            probe.resolve_face(
+                face,
+                previous_time,
+                now,
+                settings.display_response_seconds(),
+            );
+            super::scheduling::record_face_batch(
+                probe,
+                face,
+                before,
+                previous_stable[face],
+                same_revision,
+                now,
+                settings,
+            );
+        }
+        probe.display_updated_at = Some(now);
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct FaceWork {
+    pub voxel: IVec3,
+    pub face: usize,
+    pub radiance: EnergySpectrum,
+    pub second_moment: EnergySpectrum,
+    pub direct: EnergySpectrum,
+    pub custom_direct: Vec3,
+    pub samples: u32,
+    pub sequence: u32,
+    pub updated_at: Option<Instant>,
+}
+
+impl TraceWork {
+    pub fn clear(&mut self) {
+        self.probes.clear();
+        self.faces.clear();
+    }
+
+    /// Preserve the scheduler's history policy without cloning six-face state.
+    /// A source reset is also recorded on the header so publication can clear
+    /// unselected measurements without touching their presentation history.
+    pub fn push(
+        &mut self,
+        probe: &SurfaceProbe,
+        mask: u8,
+        transport_revision: u64,
+        source_revision: u64,
+        restart: bool,
+        source_history_limit: u32,
+    ) {
+        let mask = mask & probe.face_mask;
+        let start = self.faces.len();
+        for face in 0..6 {
+            if mask & (1 << face) == 0 {
+                continue;
+            }
+            let stale = probe.transport_revision != transport_revision
+                || probe.fresh_mask & (1 << face) == 0;
+            self.faces.push(FaceWork {
+                voxel: probe.voxel,
+                face,
+                radiance: if restart {
+                    EnergySpectrum::ZERO
+                } else {
+                    probe.radiance[face]
+                },
+                second_moment: if restart {
+                    EnergySpectrum::ZERO
+                } else {
+                    probe.second_moment[face]
+                },
+                direct: probe.direct[face],
+                custom_direct: probe.custom_direct[face],
+                samples: if restart {
+                    0
+                } else {
+                    probe.samples[face]
+                        .min(if stale { 64 } else { u32::MAX })
+                        .min(source_history_limit)
+                },
+                sequence: probe.sequence[face],
+                updated_at: if restart {
+                    None
+                } else {
+                    probe.face_updated_at[face]
+                },
+            });
+        }
+        self.probes.push(ProbeWork {
+            voxel: probe.voxel,
+            face_mask: probe.face_mask,
+            trace_mask: mask,
+            revision: probe.revision,
+            source_revision,
+            transport_revision,
+            restart,
+            // Filled by SkyCache before return; old presentation never crosses
+            // the worker boundary, and stale sky is rejected by the publisher.
+            sky: [[0; 4]; 6],
+            start,
+        });
+    }
+
+    #[cfg(test)]
+    pub fn from_probes(probes: &[SurfaceProbe], sky_only: bool) -> Self {
+        let mut work = Self::default();
+        for probe in probes {
+            work.push(
+                probe,
+                if sky_only { 0 } else { probe.trace_mask },
+                probe.transport_revision,
+                probe.source_revision,
+                false,
+                u32::MAX,
+            );
+            // Reference/benchmark inputs already own their history policy.
+            let header = work.probes.last_mut().unwrap();
+            header.sky = probe.display.map(|face| face.sky);
+            for face in &mut work.faces[header.faces()] {
+                face.samples = probe.samples[face.face];
+            }
+        }
+        work
+    }
+
+    #[cfg(test)]
+    pub fn copy_measurements(&self, probes: &mut [SurfaceProbe]) {
+        for (job, probe) in self.probes.iter().zip(probes) {
+            debug_assert_eq!(job.voxel, probe.voxel);
+            for face in 0..6 {
+                probe.display[face].sky = job.sky[face];
+            }
+            for face in &self.faces[job.faces()] {
+                face.write(probe);
+            }
+        }
+    }
+}
+
+impl FaceWork {
+    pub fn write(&self, probe: &mut SurfaceProbe) {
+        let face = self.face;
+        probe.radiance[face] = self.radiance;
+        probe.second_moment[face] = self.second_moment;
+        probe.direct[face] = self.direct;
+        probe.custom_direct[face] = self.custom_direct;
+        probe.samples[face] = self.samples;
+        probe.sequence[face] = self.sequence;
+        probe.face_updated_at[face] = self.updated_at;
+        probe.updated_at = self.updated_at;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_publication_matches_full_probe_reference_for_partial_faces_and_resets() {
+        let now = Instant::now();
+        let settings = super::super::VoxelGiSettings::default();
+        for mask in 1..64 {
+            for mode in 0..3 {
+                let mut previous = SurfaceProbe::new(IVec3::new(8, 2, 6), 63);
+                previous.samples = [128; 6];
+                previous.sequence = [1050; 6];
+                previous.radiance = [EnergySpectrum::ONE; 6];
+                previous.second_moment = [EnergySpectrum::ONE; 6];
+                previous.stable_batches = [4; 6];
+                previous.face_updated_at = [Some(now - std::time::Duration::from_millis(40)); 6];
+                previous.updated_at = previous.face_updated_at[0];
+                previous.order_index = 123;
+                for display in &mut previous.display {
+                    display.indirect = Vec3::splat(0.7);
+                    display.confidence = 0.75;
+                    display.sky = [27; 4];
+                }
+                let revision = u64::from(mode != 0);
+                let restart = mode == 2;
+                let mut work = TraceWork::default();
+                work.push(&previous, mask, revision, revision, restart, u32::MAX);
+                let mut reference = previous.clone();
+                reference.trace_mask = mask;
+                if revision != 0 {
+                    reference.transport_revision = revision;
+                    reference.fresh_mask = 0;
+                    reference.stable_batches = [0; 6];
+                    for face in 0..6 {
+                        if mask & (1 << face) != 0 {
+                            reference.samples[face] = 64;
+                        }
+                    }
+                }
+                if restart {
+                    reference.restart_measurements();
+                }
+                reference.source_revision = revision;
+                for face in &mut work.faces {
+                    let index = face.face;
+                    assert_eq!(face.samples, reference.samples[index]);
+                    assert_eq!(face.radiance, reference.radiance[index]);
+                    for sample in 0..4 {
+                        super::super::tracer::accumulate_sample(
+                            &mut reference,
+                            index,
+                            EnergySpectrum::new(Vec3::splat(sample as f32 * 0.2), 0.3, 0.6),
+                        );
+                    }
+                    face.radiance = reference.radiance[index];
+                    face.second_moment = reference.second_moment[index];
+                    face.samples = reference.samples[index];
+                    face.sequence = reference.sequence[index];
+                    face.updated_at = Some(now);
+                    reference.face_updated_at[index] = Some(now);
+                }
+                reference.updated_at = Some(now);
+                reference.resolve_display(&previous, now, settings.display_response_seconds());
+                super::super::scheduling::record_batch(&mut reference, &previous, now, &settings);
+                // A moved topology index and changed live display are not part
+                // of worker ownership. Publication must retain the live index.
+                let mut actual = previous;
+                actual.order_index = 999;
+                work.probes[0].publish(&work.faces, &mut actual, now, &settings);
+                assert_eq!(actual.order_index, 999);
+                assert_eq!(actual.samples, reference.samples);
+                assert_eq!(actual.sequence, reference.sequence);
+                assert_eq!(actual.radiance, reference.radiance);
+                assert_eq!(actual.second_moment, reference.second_moment);
+                assert_eq!(actual.direct, reference.direct);
+                assert_eq!(actual.custom_direct, reference.custom_direct);
+                assert_eq!(actual.stable_batches, reference.stable_batches);
+                assert_eq!(actual.fresh_mask, reference.fresh_mask);
+                assert_eq!(actual.face_updated_at, reference.face_updated_at);
+                assert_eq!(actual.updated_at, reference.updated_at);
+                for face in 0..6 {
+                    assert_eq!(
+                        actual.display[face].indirect,
+                        reference.display[face].indirect
+                    );
+                    assert_eq!(
+                        actual.display[face].confidence,
+                        reference.display[face].confidence
+                    );
+                    assert_eq!(actual.display[face].sky, reference.display[face].sky);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn single_face_work_is_less_than_half_a_full_probe_and_sky_copies_no_history() {
+        let bytes = size_of::<ProbeWork>() + size_of::<FaceWork>();
+        assert!(bytes < size_of::<SurfaceProbe>() / 2);
+        let mut probe = SurfaceProbe::new(IVec3::ZERO, 63);
+        probe.samples = [128; 6];
+        probe.sequence = [901; 6];
+        let mut work = TraceWork::default();
+        work.push(&probe, 4, 1, 0, false, u32::MAX);
+        work.push(&probe, 0, 0, 0, false, u32::MAX);
+        assert_eq!(work.faces.len(), 1);
+        assert_eq!(work.faces[0].face, 2);
+        assert_eq!(work.faces[0].samples, 64);
+        assert_eq!(work.faces[0].sequence, 901);
+        assert_eq!(work.probes[1].faces().len(), 0);
+        eprintln!(
+            "worker bytes: receiver={}, selected_face={}, full_probe={}",
+            size_of::<ProbeWork>(),
+            size_of::<FaceWork>(),
+            size_of::<SurfaceProbe>()
+        );
+    }
+}

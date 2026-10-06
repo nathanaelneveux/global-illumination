@@ -17,7 +17,10 @@ use super::emission::EmissionDistribution;
 use super::gpu_scene::PackedScene;
 use super::spectrum::EnergySpectrum;
 use super::tracer::{HISTORY_LIMIT, TransportSources};
-use super::world::{SurfaceProbe, TransportScene, VoxelMaterialTransportTable};
+use super::work::TraceWork;
+#[cfg(test)]
+use super::world::SurfaceProbe;
+use super::world::{TransportScene, VoxelMaterialTransportTable};
 
 const SHADER: &str = include_str!("../../assets/shaders/voxel_trace.wgsl");
 const RESULT_BYTES: usize = 96;
@@ -320,7 +323,7 @@ impl GpuTracer {
         self.trace_work(scene, sources, materials, probes, samples, emitters, false)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn trace_work(
         &mut self,
         scene: Arc<TransportScene>,
@@ -331,41 +334,57 @@ impl GpuTracer {
         emitters: &Arc<EmissionDistribution>,
         sky_only: bool,
     ) -> Result<(), String> {
-        let work_started = Instant::now();
-        let mut mapping = Vec::new();
-        let mut tasks = Vec::new();
-        for (index, probe) in probes.iter_mut().enumerate() {
-            if !sky_only {
+        let mut work = TraceWork::from_probes(probes, sky_only);
+        self.trace_compact(
+            scene, sources, materials, &mut work, samples, emitters, sky_only,
+        )?;
+        work.copy_measurements(probes);
+        if !sky_only {
+            for probe in probes {
                 probe.emission = materials.get(probe.material).emission;
             }
-            for face in 0..6 {
-                if sky_only || probe.face_mask & probe.trace_mask & (1 << face) == 0 {
-                    continue;
-                }
-                mapping.push((index, face));
-                tasks.push(GpuFaceTask {
-                    voxel: probe.voxel,
-                    face: face as u32,
-                    sequence: UVec4::new(probe.sequence[face], 0, 0, 0),
-                });
-            }
         }
-        let sky_pending = self.sky_cache.prepare(&scene, sources, probes);
+        Ok(())
+    }
+
+    pub fn trace_compact(
+        &mut self,
+        scene: Arc<TransportScene>,
+        sources: &TransportSources,
+        materials: &VoxelMaterialTransportTable,
+        work: &mut TraceWork,
+        samples: u32,
+        emitters: &Arc<EmissionDistribution>,
+        sky_only: bool,
+    ) -> Result<(), String> {
+        let work_started = Instant::now();
+        let mut tasks: Vec<_> = work
+            .faces
+            .iter()
+            .map(|face| GpuFaceTask {
+                voxel: face.voxel,
+                face: face.face as u32,
+                sequence: UVec4::new(face.sequence, 0, 0, 0),
+            })
+            .collect();
+        let sky_pending = self.sky_cache.prepare(&scene, sources, &work.probes);
         #[cfg(test)]
         let sky_pending = if self.duplicate_sky_for_benchmark {
-            let duplicate: Vec<_> = mapping
+            let duplicate: Vec<_> = work
+                .faces
                 .iter()
-                .filter(|(_, face)| {
+                .filter(|face| {
                     self.sky_cache.lights.iter().any(|light| {
-                        super::world::FACE_OFFSETS[*face]
+                        super::world::FACE_OFFSETS[face.face]
                             .as_vec3()
                             .dot(light.direction)
                             > 0.0
                     })
                 })
-                .flat_map(|(probe, face)| {
-                    let voxel = probes[*probe].voxel;
-                    (0..4).map(move |corner| super::sky::corner_position(voxel, *face, corner))
+                .flat_map(|face| {
+                    (0..4).map(move |corner| {
+                        super::sky::corner_position(face.voxel, face.face, corner)
+                    })
                 })
                 .collect();
             self.sky_cache.stats.traced = duplicate.len();
@@ -382,7 +401,7 @@ impl GpuTracer {
             self.last_prepare_ms = work_started.elapsed().as_secs_f32() * 1000.0;
             self.last_wait_ms = 0.0;
             self.last_decode_ms = 0.0;
-            self.sky_cache.apply(probes);
+            self.sky_cache.apply(&mut work.probes);
             return Ok(());
         }
         let device = &self.context.device;
@@ -673,28 +692,25 @@ impl GpuTracer {
             .last_gpu_ms
             .unwrap_or_else(|| submitted.elapsed().as_secs_f32() * 1000.0);
         let now = Instant::now();
-        for ((index, face), bytes) in mapping
-            .into_iter()
+        for (face, bytes) in work
+            .faces
+            .iter_mut()
             .zip(view[..face_bytes].chunks_exact(RESULT_BYTES))
         {
             let values: [f32; 24] = std::array::from_fn(|i| {
                 f32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
             });
-            let probe = &mut probes[index];
             let mean = decode_spectrum(&values[0..4], values[4]);
             let second = decode_spectrum(&values[8..12], values[12]);
-            let count = probe.samples[face]
-                .saturating_add(samples)
-                .min(HISTORY_LIMIT);
+            let count = face.samples.saturating_add(samples).min(HISTORY_LIMIT);
             let alpha = (samples as f32 / count as f32).min(1.0);
-            probe.radiance[face] += (mean - probe.radiance[face]) * alpha;
-            probe.second_moment[face] += (second - probe.second_moment[face]) * alpha;
-            probe.direct[face] = decode_spectrum(&values[16..20], values[20]);
-            probe.custom_direct[face] = Vec3::new(values[21], values[22], values[23]);
-            probe.samples[face] = count;
-            probe.sequence[face] = probe.sequence[face].wrapping_add(samples);
-            probe.updated_at = Some(now);
-            probe.face_updated_at[face] = Some(now);
+            face.radiance += (mean - face.radiance) * alpha;
+            face.second_moment += (second - face.second_moment) * alpha;
+            face.direct = decode_spectrum(&values[16..20], values[20]);
+            face.custom_direct = Vec3::new(values[21], values[22], values[23]);
+            face.samples = count;
+            face.sequence = face.sequence.wrapping_add(samples);
+            face.updated_at = Some(now);
         }
         for (position, bytes) in sky_pending
             .into_iter()
@@ -709,7 +725,7 @@ impl GpuTracer {
         }
         drop(view);
         self.readback.buffer.unmap();
-        self.sky_cache.apply(probes);
+        self.sky_cache.apply(&mut work.probes);
         self.last_decode_ms = now.elapsed().as_secs_f32() * 1000.0;
         Ok(())
     }

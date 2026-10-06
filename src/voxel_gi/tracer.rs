@@ -7,8 +7,11 @@ use super::emission::{EmissionDistribution, face_point};
 use super::sampling::pcg;
 use super::sampling::{hemisphere, sample_1d, stream_id};
 use super::spectrum::EnergySpectrum;
+use super::work::{FaceWork, TraceWork};
+#[cfg(test)]
+use super::world::SurfaceProbe;
 use super::world::{
-    AIR, BRICK_EDGE, BRICKS_PER_AXIS, FACE_OFFSETS, REGION_EDGE, SurfaceProbe, TransportScene,
+    AIR, BRICK_EDGE, BRICKS_PER_AXIS, FACE_OFFSETS, REGION_EDGE, TransportScene,
     VoxelMaterialTransportTable,
 };
 
@@ -271,6 +274,7 @@ pub fn trace_probe_batch(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn trace_probe_batch_with_emitters(
     scene: Arc<TransportScene>,
     sources: TransportSources,
@@ -280,30 +284,46 @@ pub(crate) fn trace_probe_batch_with_emitters(
     emitters: &EmissionDistribution,
     sky_cache: &mut super::sky_cache::SkyCache,
 ) -> Vec<SurfaceProbe> {
-    trace_sky_batch(&scene, &sources, &mut probes, sky_cache);
-    if samples_per_face == 0 {
-        return probes;
+    let mut work = TraceWork::from_probes(&probes, samples_per_face == 0);
+    trace_work_batch(
+        &scene,
+        &sources,
+        &materials,
+        &mut work,
+        samples_per_face,
+        emitters,
+        sky_cache,
+    );
+    work.copy_measurements(&mut probes);
+    if samples_per_face != 0 {
+        for probe in &mut probes {
+            probe.emission = materials.get(probe.material).emission;
+        }
     }
-    probes
-        .par_iter_mut()
-        .filter(|probe| probe.face_mask & probe.trace_mask != 0)
-        .for_each(|probe| {
-            trace_probe_faces(
-                &scene,
-                &sources,
-                &materials,
-                probe,
-                samples_per_face,
-                emitters,
-            );
-        });
     probes
 }
 
-pub(crate) fn trace_sky_batch(
+pub(crate) fn trace_work_batch(
     scene: &Arc<TransportScene>,
     sources: &TransportSources,
-    probes: &mut [SurfaceProbe],
+    materials: &VoxelMaterialTransportTable,
+    work: &mut TraceWork,
+    samples_per_face: u32,
+    emitters: &EmissionDistribution,
+    sky_cache: &mut super::sky_cache::SkyCache,
+) {
+    trace_sky_batch(scene, sources, &mut work.probes, sky_cache);
+    if samples_per_face != 0 {
+        work.faces.par_iter_mut().for_each(|face| {
+            trace_face(scene, sources, materials, face, samples_per_face, emitters);
+        });
+    }
+}
+
+pub(crate) fn trace_sky_batch<P: super::sky_cache::SkyReceiver>(
+    scene: &Arc<TransportScene>,
+    sources: &TransportSources,
+    probes: &mut [P],
     sky_cache: &mut super::sky_cache::SkyCache,
 ) {
     let pending = sky_cache.prepare(scene, sources, probes);
@@ -322,57 +342,56 @@ pub(crate) fn trace_sky_batch(
     sky_cache.apply(probes);
 }
 
-fn trace_probe_faces(
+fn trace_face(
     scene: &TransportScene,
     sources: &TransportSources,
     materials: &VoxelMaterialTransportTable,
-    probe: &mut SurfaceProbe,
+    work: &mut FaceWork,
     samples_per_face: u32,
     emitters: &EmissionDistribution,
 ) {
     // The caller installs this work in the GI-owned, bounded Rayon pool. That
     // retains useful path-level parallelism without occupying Bevy's render and
     // gameplay workers.
-    probe.emission = materials.get(probe.material).emission;
-    for (face, face_offset) in FACE_OFFSETS.iter().enumerate() {
-        if probe.face_mask & probe.trace_mask & (1 << face) == 0 {
-            continue;
-        }
-
-        let normal = face_offset.as_vec3();
-        let voxel_center = probe.voxel.as_vec3() + Vec3::splat(0.5);
-        let surface_position = voxel_center + normal * 0.5;
-        (probe.direct[face], probe.custom_direct[face]) =
-            direct_at_surface(scene, sources, surface_position, normal);
-        let stream = stream_id(probe.voxel, face as u32);
-        for _ in 0..samples_per_face {
-            let sequence = probe.sequence[face];
-            let direction = hemisphere(
-                normal,
-                sample_1d(stream, sequence, 0),
-                sample_1d(stream, sequence, 1),
-            );
-            let origin = voxel_center + normal * 0.501;
-            let sample = trace_path(
-                scene, sources, materials, origin, direction, stream, sequence, normal, emitters,
-            ) + sample_emitter(
-                scene,
-                materials,
-                emitters,
-                surface_position,
-                normal,
-                stream,
-                sequence,
-                0,
-                true,
-            );
-            accumulate_sample(probe, face, sample);
-        }
-        probe.face_updated_at[face] = Some(std::time::Instant::now());
+    let face = work.face;
+    let normal = FACE_OFFSETS[face].as_vec3();
+    let voxel_center = work.voxel.as_vec3() + Vec3::splat(0.5);
+    let surface_position = voxel_center + normal * 0.5;
+    (work.direct, work.custom_direct) = direct_at_surface(scene, sources, surface_position, normal);
+    let stream = stream_id(work.voxel, face as u32);
+    for _ in 0..samples_per_face {
+        let sequence = work.sequence;
+        let direction = hemisphere(
+            normal,
+            sample_1d(stream, sequence, 0),
+            sample_1d(stream, sequence, 1),
+        );
+        let origin = voxel_center + normal * 0.501;
+        let sample = trace_path(
+            scene, sources, materials, origin, direction, stream, sequence, normal, emitters,
+        ) + sample_emitter(
+            scene,
+            materials,
+            emitters,
+            surface_position,
+            normal,
+            stream,
+            sequence,
+            0,
+            true,
+        );
+        let sample = sample.finite_or_zero();
+        let count = (work.samples + 1).min(HISTORY_LIMIT);
+        let alpha = 1.0 / count as f32;
+        work.radiance += (sample - work.radiance) * alpha;
+        work.second_moment += (sample * sample - work.second_moment) * alpha;
+        work.samples = count;
+        work.sequence = work.sequence.wrapping_add(1);
     }
-    probe.updated_at = Some(std::time::Instant::now());
+    work.updated_at = Some(std::time::Instant::now());
 }
 
+#[cfg(test)]
 pub(crate) fn accumulate_sample(probe: &mut SurfaceProbe, face: usize, sample: EnergySpectrum) {
     let sample = sample.finite_or_zero();
     let count = (probe.samples[face] + 1).min(HISTORY_LIMIT);

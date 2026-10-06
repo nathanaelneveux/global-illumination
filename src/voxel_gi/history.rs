@@ -153,6 +153,7 @@ impl SurfaceProbe {
     /// Run only when a validated worker result is merged. Use current display
     /// history, never a potentially old worker copy. Analytic sun visibility is
     /// deterministic, so it responds immediately rather than being denoised.
+    #[cfg(test)]
     pub(crate) fn resolve_display(&mut self, previous: &Self, now: Instant, response_seconds: f32) {
         let incoming_sky = self.display.map(|face| face.sky);
         self.display = previous.display;
@@ -161,38 +162,52 @@ impl SurfaceProbe {
             if self.face_mask & self.trace_mask & (1 << face) == 0 || self.samples[face] == 0 {
                 continue;
             }
-            let elapsed = previous.face_updated_at[face]
-                .or(previous.display_updated_at)
-                .map_or(1.0 / 60.0, |time| {
-                    now.saturating_duration_since(time).as_secs_f32()
-                });
-            let time_alpha = 1.0 - (-elapsed / response_seconds.max(0.001)).exp();
-            let samples = self.samples[face];
-            let uncertainty = relative_error(
-                EnergySpectrum::new(self.radiance[face].visible, 0.0, 0.0),
-                EnergySpectrum::new(self.second_moment[face].visible, 0.0, 0.0),
-                samples,
+            self.resolve_face(
+                face,
+                previous.face_updated_at[face].or(previous.display_updated_at),
+                now,
+                response_seconds,
             );
-            // A long scheduling gap is not evidence of convergence. Bound
-            // influence by fresh sample evidence AND variance, even after the
-            // eight-sample bootstrap milestone. Genuine changes catch up as
-            // evidence arrives; there is no permanent brightness clamp.
-            let evidence = samples as f32 / (samples as f32 + 32.0);
-            let alpha = time_alpha.min(evidence / (1.0 + uncertainty));
-            let display = &mut self.display[face];
-            display.indirect = temporal_blend(
-                display.indirect,
-                self.radiance[face].visible,
-                alpha.clamp(0.0, 1.0),
-            );
-            // Unknown remains unknown in storage. The corner renderer uses
-            // available values conservatively without switching shadow modes.
-            display.sky = sky;
-            let confidence =
-                (samples as f32 / (samples as f32 + 8.0) / (1.0 + uncertainty)).clamp(0.125, 1.0);
-            display.confidence += (confidence - display.confidence) * alpha;
         }
         self.display_updated_at = Some(now);
+    }
+
+    /// Resolve one accepted face in place; its display value is still the
+    /// authoritative pre-batch history. No six-face worker snapshot is needed.
+    pub(crate) fn resolve_face(
+        &mut self,
+        face: usize,
+        previous_time: Option<Instant>,
+        now: Instant,
+        response_seconds: f32,
+    ) {
+        let elapsed = previous_time.map_or(1.0 / 60.0, |time| {
+            now.saturating_duration_since(time).as_secs_f32()
+        });
+        let time_alpha = 1.0 - (-elapsed / response_seconds.max(0.001)).exp();
+        let samples = self.samples[face];
+        let uncertainty = relative_error(
+            EnergySpectrum::new(self.radiance[face].visible, 0.0, 0.0),
+            EnergySpectrum::new(self.second_moment[face].visible, 0.0, 0.0),
+            samples,
+        );
+        // A long scheduling gap is not evidence of convergence. Bound
+        // influence by fresh sample evidence AND variance, even after the
+        // eight-sample bootstrap milestone. Genuine changes catch up as
+        // evidence arrives; there is no permanent brightness clamp.
+        let evidence = samples as f32 / (samples as f32 + 32.0);
+        let alpha = time_alpha.min(evidence / (1.0 + uncertainty));
+        let display = &mut self.display[face];
+        display.indirect = temporal_blend(
+            display.indirect,
+            self.radiance[face].visible,
+            alpha.clamp(0.0, 1.0),
+        );
+        // Unknown remains unknown in storage. The corner renderer uses
+        // available values conservatively without switching shadow modes.
+        let confidence =
+            (samples as f32 / (samples as f32 + 8.0) / (1.0 + uncertainty)).clamp(0.125, 1.0);
+        display.confidence += (confidence - display.confidence) * alpha;
     }
 }
 

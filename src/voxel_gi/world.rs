@@ -396,6 +396,7 @@ impl SurfaceProbe {
     /// Worker results contain a snapshot of topology bookkeeping. Streaming
     /// may compact the order array while a trace is in flight; only the main
     /// world's current index is authoritative when a result is merged.
+    #[cfg(test)]
     pub(crate) fn preserve_topology_from(&mut self, current: &Self) {
         self.order_index = current.order_index;
     }

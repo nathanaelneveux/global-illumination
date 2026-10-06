@@ -25,6 +25,7 @@ mod telemetry;
 mod tracer;
 #[cfg(debug_assertions)]
 mod validation;
+mod work;
 mod world;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -54,8 +55,9 @@ use render::{
 use telemetry::GiWorkTimings;
 use tracer::{
     BOOTSTRAP_SAMPLES, DirectionalTransportLight, PointTransportLight, TransportSources,
-    trace_probe_batch_with_emitters,
+    trace_work_batch,
 };
+use work::TraceWork;
 use world::{PAGE_EDGE, SurfaceProbe, SurfaceProbeDescriptor, TransportScene};
 
 const GPU_UPLOAD_INTERVAL: Duration = Duration::from_millis(50);
@@ -230,7 +232,7 @@ struct VoxelGiRuntime {
     scene_publication: Option<SceneBuildResult>,
     trace_task: Option<Task<TraceBatchResult>>,
     /// The one in-flight worker returns its allocation for the next dispatch.
-    trace_scratch: Vec<SurfaceProbe>,
+    trace_scratch: TraceWork,
     selection_seen: bevy::platform::collections::HashSet<IVec3>,
     gpu_tracer: Option<gpu::GpuTracer>,
     emission_cache: Option<emission::EmissionCache>,
@@ -299,7 +301,7 @@ impl Default for VoxelGiRuntime {
             scene_task: None,
             scene_publication: None,
             trace_task: None,
-            trace_scratch: Vec::new(),
+            trace_scratch: TraceWork::default(),
             selection_seen: default(),
             gpu_tracer: None,
             emission_cache: None,
@@ -339,7 +341,7 @@ struct SceneBuildResult {
 }
 
 struct TraceBatchResult {
-    probes: Vec<SurfaceProbe>,
+    work: TraceWork,
     paths: u64,
     trace_time: Duration,
     gpu_tracer: Option<gpu::GpuTracer>,
@@ -834,13 +836,13 @@ fn enqueue_sky(runtime: &mut VoxelGiRuntime, voxels: impl IntoIterator<Item = IV
 fn append_sky_work(
     runtime: &mut VoxelGiRuntime,
     field: &VoxelEnergyField,
-    selected: &mut Vec<SurfaceProbe>,
+    selected: &mut TraceWork,
 ) -> usize {
     // Deduplicate before copying a receiver, including overlaps with transport.
     // Do not inherit candidates rejected by transport's due-face filter.
     let seen = &mut runtime.selection_seen;
     seen.clear();
-    seen.extend(selected.iter().map(|probe| probe.voxel));
+    seen.extend(selected.probes.iter().map(|probe| probe.voxel));
     let mut count = 0;
     for _ in 0..runtime.sky_batch_size {
         let voxel = if let Some(voxel) = runtime.sky_pending.pop_front() {
@@ -858,9 +860,14 @@ fn append_sky_work(
             && let Some(probe) = field.probes.get(&voxel)
         {
             count += 1;
-            let mut probe = probe.clone();
-            probe.trace_mask = 0;
-            selected.push(probe);
+            selected.push(
+                probe,
+                0,
+                probe.transport_revision,
+                probe.source_revision,
+                false,
+                u32::MAX,
+            );
         }
     }
     count
@@ -896,25 +903,17 @@ fn start_trace_task(
     // Independent work queues, one worker/submission. Cached sun lookups must
     // never consume the frames in which indirect transport could make progress.
     let mut selected = select_transport(&mut runtime, &field, &settings);
-    let transport_count = selected.len();
+    let transport_count = selected.probes.len();
     let sky_count = append_sky_work(&mut runtime, &field, &mut selected);
     let sky_only = transport_count == 0;
-    if selected.is_empty() {
+    if selected.probes.is_empty() {
         runtime.trace_scratch = selected;
         stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
         stats.idle_scheduler_frames += 1;
         update_stats_from_counters(&runtime, &field, &mut stats);
         return;
     }
-    let paths = selected
-        .iter()
-        .map(|probe| {
-            (0..6)
-                .filter(|face| !sky_only && probe.face_mask & probe.trace_mask & (1 << face) != 0)
-                .count() as u64
-                * u64::from(SAMPLES_PER_DISPATCH)
-        })
-        .sum();
+    let paths = selected.faces.len() as u64 * u64::from(SAMPLES_PER_DISPATCH);
     stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
     let scene = Arc::clone(&runtime.scene);
     let scene_generation = runtime.generation;
@@ -952,13 +951,13 @@ fn start_trace_task(
                 Err(error) => gpu_error = Some(error),
             }
         }
-        let mut probes = selected;
+        let mut work = selected;
         if let Some(tracer) = gpu_tracer.as_mut()
-            && let Err(error) = tracer.trace_work(
+            && let Err(error) = tracer.trace_compact(
                 Arc::clone(&scene),
                 &sources,
                 &materials,
-                &mut probes,
+                &mut work,
                 SAMPLES_PER_DISPATCH,
                 &emitters,
                 sky_only,
@@ -979,12 +978,12 @@ fn start_trace_task(
                     .build()
                     .expect("voxel GI worker pool")
             });
-            probes = pool.install(|| {
-                trace_probe_batch_with_emitters(
-                    scene,
-                    sources,
-                    materials,
-                    probes,
+            pool.install(|| {
+                trace_work_batch(
+                    &scene,
+                    &sources,
+                    &materials,
+                    &mut work,
                     if sky_only { 0 } else { SAMPLES_PER_DISPATCH },
                     &emitters,
                     &mut cpu_sky_cache,
@@ -992,7 +991,7 @@ fn start_trace_task(
             });
         }
         TraceBatchResult {
-            probes,
+            work,
             paths,
             trace_time: started.elapsed(),
             gpu_tracer,
@@ -1032,18 +1031,41 @@ fn update_focus(runtime: &mut VoxelGiRuntime, field: &VoxelEnergyField, focus: I
 /// sweep. Edits, initial coverage and the camera cannot starve distant pages.
 #[cfg(test)]
 fn select_probes(runtime: &mut VoxelGiRuntime, field: &VoxelEnergyField) -> Vec<SurfaceProbe> {
-    select_transport(runtime, field, &VoxelGiSettings::default())
+    // Reference view for existing policy tests. Production never materializes
+    // these full receiver copies; it transfers only TraceWork.
+    let work = select_transport(runtime, field, &VoxelGiSettings::default());
+    work.probes
+        .iter()
+        .map(|job| {
+            let mut probe = field.probes[&job.voxel].clone();
+            if probe.transport_revision != job.transport_revision {
+                probe.transport_revision = job.transport_revision;
+                probe.fresh_mask = 0;
+                probe.stable_batches = [0; 6];
+            }
+            if job.restart {
+                probe.restart_measurements();
+            }
+            probe.source_revision = job.source_revision;
+            probe.trace_mask = job.trace_mask;
+            for face in &work.faces[job.faces()] {
+                face.write(&mut probe);
+            }
+            probe
+        })
+        .collect()
 }
 
 fn select_transport(
     runtime: &mut VoxelGiRuntime,
     field: &VoxelEnergyField,
     settings: &VoxelGiSettings,
-) -> Vec<SurfaceProbe> {
+) -> TraceWork {
     let now = Instant::now();
     let mut selected = std::mem::take(&mut runtime.trace_scratch);
     selected.clear();
-    selected.reserve(runtime.batch_size);
+    selected.probes.reserve(runtime.batch_size);
+    selected.faces.reserve(runtime.batch_size);
     let mut seen = std::mem::take(&mut runtime.selection_seen);
     seen.clear();
     seen.reserve(runtime.batch_size);
@@ -1062,7 +1084,7 @@ fn select_transport(
     // Search capacity is bounded independently of emitted work. In particular,
     // resting neighbors are holes to skip, not GPU work that used the budget.
     for index in 0..settings.batch_limit().min(field.order.len()) {
-        if selected.len() >= runtime.batch_size {
+        if selected.probes.len() >= runtime.batch_size {
             break;
         }
         let mut voxel = None;
@@ -1108,44 +1130,27 @@ fn select_transport(
         if mask == 0 {
             continue;
         }
-        let mut probe = probe.clone();
-        probe.trace_mask = mask;
-        if probe.transport_revision != field.transport_revision {
-            probe.transport_revision = field.transport_revision;
-            probe.fresh_mask = 0;
-            probe.stable_batches = [0; 6];
-        }
-        // Refresh previously invalidated faces, including remote indirect
-        // dependencies. Do not reset unrelated faces of a partially selected voxel.
-        for face in 0..6 {
-            if mask & !probe.fresh_mask & (1 << face) != 0 {
-                // A global revision wakes all potential indirect dependencies;
-                // it does not prove their energy changed. Keep a bounded useful
-                // history. Exact/local edits already cap history at 16, while
-                // source influence bounds below choose the faster local response.
-                probe.samples[face] = probe.samples[face].min(64);
-            }
-        }
+        let mut restart = false;
+        let mut history_limit = u32::MAX;
         if probe.source_revision != runtime.source_revision {
-            if probe.source_revision < runtime.reset_source_revision {
-                probe.restart_measurements();
-            }
+            restart = probe.source_revision < runtime.reset_source_revision;
             let local = runtime.source_influences.iter().any(|(position, radius)| {
                 probe.voxel.as_vec3().distance_squared(*position) <= radius * radius
             });
-            let history = if local || probe.source_revision < runtime.global_source_revision {
+            history_limit = if local || probe.source_revision < runtime.global_source_revision {
                 4
             } else {
                 64
             };
-            for (face, samples) in probe.samples.iter_mut().enumerate() {
-                if mask & (1 << face) != 0 {
-                    *samples = (*samples).min(history);
-                }
-            }
-            probe.source_revision = runtime.source_revision;
         }
-        selected.push(probe);
+        selected.push(
+            probe,
+            mask,
+            field.transport_revision,
+            runtime.source_revision,
+            restart,
+            history_limit,
+        );
     }
     runtime.selection_seen = seen;
     selected
@@ -1230,58 +1235,59 @@ fn apply_trace_task(
         && result.sky_revision == runtime.sky_revision;
     let mut requeue = Vec::new();
     let transport_revision = field.transport_revision;
-    for mut probe in result.probes.drain(..) {
-        let voxel = probe.voxel;
+    for job in &result.work.probes {
+        let voxel = job.voxel;
         let Some(old) = field.probes.get_mut(&voxel) else {
             continue;
         };
-        if old.revision != probe.revision
-            || (probe.trace_mask != 0 && probe.source_revision < runtime.reset_source_revision)
+        if old.revision != job.revision
+            || (job.trace_mask != 0 && job.source_revision < runtime.reset_source_revision)
         {
             if probe_has_pending_samples(old) {
                 requeue.push(voxel);
             }
             continue;
         }
-        if probe.trace_mask == 0 {
-            if sky_current {
-                let changed = (0..6).any(|face| old.display[face].sky != probe.display[face].sky);
-                for face in 0..6 {
-                    old.display[face].sky = probe.display[face].sky;
-                }
-                if changed {
-                    runtime.gpu_value_dirty.insert(voxel);
-                    runtime.sky_upload_pending = true;
+        if sky_current {
+            let changed = (0..6).any(|face| {
+                old.face_mask & (1 << face) != 0 && old.display[face].sky != job.sky[face]
+            });
+            for face in 0..6 {
+                if old.face_mask & (1 << face) != 0 {
+                    old.display[face].sky = job.sky[face];
                 }
             }
+            if changed {
+                runtime.gpu_value_dirty.insert(voxel);
+                runtime.sky_upload_pending = true;
+            }
+        }
+        if job.trace_mask == 0 {
             continue;
         }
-        probe.preserve_topology_from(old);
-        // A changed sun must never be republished by an older transport batch.
-        if !sky_current {
-            for face in 0..6 {
-                probe.display[face].sky = old.display[face].sky;
-            }
-        }
-        if sky_current && (0..6).any(|face| old.display[face].sky != probe.display[face].sky) {
-            runtime.sky_upload_pending = true;
-        }
-        probe.resolve_display(old, merge_started, settings.display_response_seconds());
-        scheduling::record_batch(&mut probe, old, merge_started, &settings);
         let (_, old_samples, old_covered, old_settled) = probe_metrics(old, transport_revision);
-        let (_, new_samples, new_covered, new_settled) = probe_metrics(&probe, transport_revision);
+        // A material-table revision can change emission without rebuilding
+        // geometry. Older source results were rejected above.
+        old.emission = runtime.materials.get(old.material).emission;
+        job.publish(
+            &result.work.faces[job.faces()],
+            old,
+            merge_started,
+            &settings,
+        );
+        let (_, new_samples, new_covered, new_settled) = probe_metrics(old, transport_revision);
         runtime.completed_samples =
             runtime.completed_samples.saturating_sub(old_samples) + new_samples;
         runtime.covered_faces = runtime.covered_faces.saturating_sub(old_covered) + new_covered;
         runtime.settled_faces = runtime.settled_faces.saturating_sub(old_settled) + new_settled;
-        let pending = probe_has_pending_samples(&probe);
-        *old = probe;
+        let pending = probe_has_pending_samples(old);
         runtime.gpu_value_dirty.insert(voxel);
         if pending {
             requeue.push(voxel);
         }
     }
-    runtime.trace_scratch = result.probes;
+    result.work.clear();
+    runtime.trace_scratch = result.work;
     enqueue_many(&mut runtime, requeue);
     stats.traced_paths = stats.traced_paths.saturating_add(result.paths);
     stats.last_merge_ms = merge_started.elapsed().as_secs_f32() * 1000.0;
@@ -1501,7 +1507,7 @@ mod tests {
             }
             let task = pool.spawn(async move {
                 TraceBatchResult {
-                    probes: vec![probe],
+                    work: TraceWork::from_probes(&[probe], case == 1),
                     paths: 4,
                     trace_time: Duration::from_millis(1),
                     gpu_tracer: None,
@@ -1906,11 +1912,12 @@ mod tests {
 
     #[test]
     fn sky_queue_piggybacks_without_duplicating_rays_or_changing_history() {
-        let mut transport = vec![SurfaceProbe::new(IVec3::ZERO, 4)];
+        let initial = SurfaceProbe::new(IVec3::ZERO, 4);
+        let mut transport = TraceWork::from_probes(std::slice::from_ref(&initial), false);
         let mut sky_only = SurfaceProbe::new(IVec3::X, 5);
         sky_only.samples = [128; 6];
         sky_only.sequence = [1000; 6];
-        let duplicate = transport[0].clone();
+        let duplicate = initial;
         let mut field = VoxelEnergyField::default();
         for probe in [duplicate, sky_only] {
             field.probes.insert(probe.voxel, probe);
@@ -1922,12 +1929,17 @@ mod tests {
             .sky_pending
             .extend([IVec3::ZERO, IVec3::X, IVec3::X]);
         assert_eq!(append_sky_work(&mut runtime, &field, &mut transport), 1);
-        assert_eq!(transport.len(), 2);
-        assert_eq!(transport[0].trace_mask, 63);
-        assert_eq!(transport[1].face_mask, 5);
-        assert_eq!(transport[1].trace_mask, 0);
-        assert_eq!(transport[1].samples, [128; 6]);
-        assert_eq!(transport[1].sequence, [1000; 6]);
+        assert_eq!(transport.probes.len(), 2);
+        assert_eq!(transport.probes[0].trace_mask, 4);
+        assert_eq!(transport.probes[1].face_mask, 5);
+        assert_eq!(transport.probes[1].trace_mask, 0);
+        assert_eq!(
+            transport.faces.len(),
+            1,
+            "sky-only work carries no transport history"
+        );
+        assert_eq!(field.probes[&IVec3::X].samples, [128; 6]);
+        assert_eq!(field.probes[&IVec3::X].sequence, [1000; 6]);
     }
 
     #[test]
@@ -1938,15 +1950,20 @@ mod tests {
             .probes
             .insert(IVec3::ZERO, SurfaceProbe::new(IVec3::ZERO, 4));
         let mut runtime = VoxelGiRuntime {
-            trace_scratch: Vec::with_capacity(1024),
+            trace_scratch: TraceWork {
+                probes: Vec::with_capacity(1024),
+                faces: Vec::with_capacity(1024),
+            },
             batch_size: 64,
             ..default()
         };
-        let allocation = runtime.trace_scratch.as_ptr();
+        let allocation = runtime.trace_scratch.probes.as_ptr();
+        let face_allocation = runtime.trace_scratch.faces.as_ptr();
         for _ in 0..2 {
-            let mut selected = select_probes(&mut runtime, &field);
-            assert_eq!(selected.as_ptr(), allocation);
-            assert_eq!(selected.len(), 1);
+            let mut selected = select_transport(&mut runtime, &field, &VoxelGiSettings::default());
+            assert_eq!(selected.probes.as_ptr(), allocation);
+            assert_eq!(selected.faces.as_ptr(), face_allocation);
+            assert_eq!(selected.probes.len(), 1);
             selected.clear();
             runtime.trace_scratch = selected;
         }
@@ -2133,10 +2150,11 @@ mod tests {
             "scheduling must not mutate published histories"
         );
         enqueue_sky(&mut runtime, field.order.iter().copied());
-        let mut sky = Vec::new();
+        let mut sky = TraceWork::default();
         append_sky_work(&mut runtime, &field, &mut sky);
-        assert_eq!(sky.len(), 64);
-        assert!(sky.iter().all(|probe| probe.samples[2] == 128));
+        assert_eq!(sky.probes.len(), 64);
+        assert!(sky.faces.is_empty());
+        assert!(field.probes.values().all(|probe| probe.samples[2] == 128));
     }
 
     #[test]

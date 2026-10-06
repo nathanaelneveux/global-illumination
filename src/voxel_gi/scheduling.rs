@@ -77,6 +77,7 @@ pub(crate) fn due_faces(
     mask
 }
 
+#[cfg(test)]
 pub(crate) fn record_batch(
     probe: &mut SurfaceProbe,
     old: &SurfaceProbe,
@@ -87,52 +88,70 @@ pub(crate) fn record_batch(
         if probe.face_mask & probe.trace_mask & (1 << face) == 0 {
             continue;
         }
-        let error = relative_error(
-            probe.radiance[face],
-            probe.second_moment[face],
-            probe.samples[face],
+        record_face_batch(
+            probe,
+            face,
+            old.radiance[face],
+            old.stable_batches[face],
+            probe.transport_revision == old.transport_revision,
+            now,
+            settings,
         );
-        let before = old.radiance[face];
-        let after = probe.radiance[face];
-        let a = [
-            before.visible.x,
-            before.visible.y,
-            before.visible.z,
-            before.infrared,
-            before.ionizing,
-        ];
-        let b = [
-            after.visible.x,
-            after.visible.y,
-            after.visible.z,
-            after.infrared,
-            after.ionizing,
-        ];
-        let drift = a
-            .into_iter()
-            .zip(b)
-            .map(|(a, b)| (a - b).abs() / (0.02 + a.abs().max(b.abs())))
-            .fold(0.0, f32::max);
-        let same_revision = probe.transport_revision == old.transport_revision;
-        let display_settled = (probe.display[face].indirect - after.visible)
-            .abs()
-            .max_element()
-            <= 0.01 + after.visible.max_element() * settings.stable_error() * 0.5;
-        probe.stable_batches[face] = if same_revision
-            && display_settled
-            && probe.samples[face] >= settings.stable_samples()
-            && error <= settings.stable_error()
-            && drift <= settings.stable_error() * 0.5
-        {
-            old.stable_batches[face]
-                .saturating_add(1)
-                .min(STABLE_BATCHES)
-        } else {
-            0
-        };
-        probe.face_updated_at[face] = Some(now);
-        probe.fresh_mask |= 1 << face;
     }
+}
+
+pub(crate) fn record_face_batch(
+    probe: &mut SurfaceProbe,
+    face: usize,
+    before: super::EnergySpectrum,
+    previous_stable_batches: u8,
+    same_revision: bool,
+    now: Instant,
+    settings: &VoxelGiSettings,
+) {
+    let error = relative_error(
+        probe.radiance[face],
+        probe.second_moment[face],
+        probe.samples[face],
+    );
+    let after = probe.radiance[face];
+    let a = [
+        before.visible.x,
+        before.visible.y,
+        before.visible.z,
+        before.infrared,
+        before.ionizing,
+    ];
+    let b = [
+        after.visible.x,
+        after.visible.y,
+        after.visible.z,
+        after.infrared,
+        after.ionizing,
+    ];
+    let drift = a
+        .into_iter()
+        .zip(b)
+        .map(|(a, b)| (a - b).abs() / (0.02 + a.abs().max(b.abs())))
+        .fold(0.0, f32::max);
+    let display_settled = (probe.display[face].indirect - after.visible)
+        .abs()
+        .max_element()
+        <= 0.01 + after.visible.max_element() * settings.stable_error() * 0.5;
+    probe.stable_batches[face] = if same_revision
+        && display_settled
+        && probe.samples[face] >= settings.stable_samples()
+        && error <= settings.stable_error()
+        && drift <= settings.stable_error() * 0.5
+    {
+        previous_stable_batches
+            .saturating_add(1)
+            .min(STABLE_BATCHES)
+    } else {
+        0
+    };
+    probe.face_updated_at[face] = Some(now);
+    probe.fresh_mask |= 1 << face;
 }
 
 fn priority(probe: &SurfaceProbe, source_revision: u64, now: Instant) -> f32 {

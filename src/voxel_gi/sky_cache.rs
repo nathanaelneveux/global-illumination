@@ -9,9 +9,44 @@ use bevy::prelude::*;
 
 use super::sky::corner_position;
 use super::tracer::{MAX_PATH_DISTANCE, TransportSources};
-use super::world::{AIR, FACE_OFFSETS, REGION_EDGE, SurfaceProbe, TransportScene};
+use super::work::ProbeWork;
+#[cfg(test)]
+use super::world::SurfaceProbe;
+use super::world::{AIR, FACE_OFFSETS, REGION_EDGE, TransportScene};
 
 const BUCKET_EDGE: i32 = REGION_EDGE as i32;
+
+/// Sky needs topology and output slots, never transport/display history.
+pub(crate) trait SkyReceiver {
+    fn voxel(&self) -> IVec3;
+    fn face_mask(&self) -> u8;
+    fn set_sky(&mut self, face: usize, value: [u32; 4]);
+}
+
+impl SkyReceiver for ProbeWork {
+    fn voxel(&self) -> IVec3 {
+        self.voxel
+    }
+    fn face_mask(&self) -> u8 {
+        self.face_mask
+    }
+    fn set_sky(&mut self, face: usize, value: [u32; 4]) {
+        self.sky[face] = value;
+    }
+}
+
+#[cfg(test)]
+impl SkyReceiver for SurfaceProbe {
+    fn voxel(&self) -> IVec3 {
+        self.voxel
+    }
+    fn face_mask(&self) -> u8 {
+        self.face_mask
+    }
+    fn set_sky(&mut self, face: usize, value: [u32; 4]) {
+        self.display[face].sky = value;
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SkyLight {
@@ -61,11 +96,11 @@ pub(crate) struct SkyCache {
 }
 
 impl SkyCache {
-    pub fn prepare(
+    pub fn prepare<P: SkyReceiver>(
         &mut self,
         scene: &Arc<TransportScene>,
         sources: &TransportSources,
-        probes: &[SurfaceProbe],
+        probes: &[P],
     ) -> Vec<IVec3> {
         self.synchronize(scene, sources);
         self.batch = self.batch.wrapping_add(1);
@@ -73,12 +108,12 @@ impl SkyCache {
         let mut requested = 0;
         for probe in probes {
             for face in 0..6 {
-                if probe.face_mask & self.lit_faces & (1 << face) == 0 {
+                if probe.face_mask() & self.lit_faces & (1 << face) == 0 {
                     continue;
                 }
                 for corner in 0..4 {
                     requested += 1;
-                    let position = corner_position(probe.voxel, face, corner);
+                    let position = corner_position(probe.voxel(), face, corner);
                     let entry = match self.corners.entry(position) {
                         Entry::Occupied(entry) => entry.into_mut(),
                         Entry::Vacant(entry) => {
@@ -116,19 +151,20 @@ impl SkyCache {
         };
     }
 
-    pub fn apply(&self, probes: &mut [SurfaceProbe]) {
+    pub fn apply<P: SkyReceiver>(&self, probes: &mut [P]) {
         for probe in probes {
             for face in 0..6 {
-                if probe.face_mask & (1 << face) == 0 {
+                if probe.face_mask() & (1 << face) == 0 {
                     continue;
                 }
-                probe.display[face].sky = if self.lit_faces & (1 << face) == 0 {
+                let value = if self.lit_faces & (1 << face) == 0 {
                     [1; 4]
                 } else {
                     std::array::from_fn(|corner| {
-                        self.corners[&corner_position(probe.voxel, face, corner)].value[face]
+                        self.corners[&corner_position(probe.voxel(), face, corner)].value[face]
                     })
                 };
+                probe.set_sky(face, value);
             }
         }
     }
@@ -492,7 +528,11 @@ mod tests {
             );
         }
         scene = Arc::new(TransportScene::default());
-        assert!(cache.prepare(&scene, &sources, &[]).is_empty());
+        assert!(
+            cache
+                .prepare::<SurfaceProbe>(&scene, &sources, &[])
+                .is_empty()
+        );
         assert!(cache.corners.is_empty());
         assert!(cache.buckets.is_empty());
     }
