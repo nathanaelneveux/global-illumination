@@ -28,7 +28,9 @@ mod validation;
 mod work;
 mod world;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
+// Bounded, engine-owned integer coordinates; no untrusted string keys.
+use bevy::platform::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -234,6 +236,7 @@ struct VoxelGiRuntime {
     /// The one in-flight worker returns its allocation for the next dispatch.
     trace_scratch: TraceWork,
     selection_seen: bevy::platform::collections::HashSet<IVec3>,
+    ranked_candidates: scheduling::RankedCandidates,
     gpu_tracer: Option<gpu::GpuTracer>,
     emission_cache: Option<emission::EmissionCache>,
     cpu_sky_cache: Option<sky_cache::SkyCache>,
@@ -303,6 +306,7 @@ impl Default for VoxelGiRuntime {
             trace_task: None,
             trace_scratch: TraceWork::default(),
             selection_seen: default(),
+            ranked_candidates: default(),
             gpu_tracer: None,
             emission_cache: None,
             cpu_sky_cache: None,
@@ -1069,18 +1073,17 @@ fn select_transport(
     let mut seen = std::mem::take(&mut runtime.selection_seen);
     seen.clear();
     seen.reserve(runtime.batch_size);
-    let mut adaptive = if runtime.urgent_pending.len() + runtime.pending.len() < runtime.batch_size
-    {
-        scheduling::ranked_candidates(
+    let mut adaptive = std::mem::take(&mut runtime.ranked_candidates);
+    adaptive.clear();
+    if runtime.urgent_pending.len() + runtime.pending.len() < runtime.batch_size {
+        adaptive.refresh(
             field,
             &runtime.nearby,
             &mut runtime.adaptive_cursor,
             now,
             runtime.batch_size,
-        )
-    } else {
-        Vec::new()
-    };
+        );
+    }
     // Search capacity is bounded independently of emitted work. In particular,
     // resting neighbors are holes to skip, not GPU work that used the budget.
     for index in 0..settings.batch_limit().min(field.order.len()) {
@@ -1153,6 +1156,7 @@ fn select_transport(
         );
     }
     runtime.selection_seen = seen;
+    runtime.ranked_candidates = adaptive;
     selected
 }
 

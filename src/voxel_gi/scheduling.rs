@@ -1,7 +1,7 @@
 //! Bounded adaptive candidate selection; the caller separately reserves a fair
 //! all-loaded-world sweep and drains edits/simulation requests first.
+use bevy::platform::collections::HashSet;
 use bevy::prelude::*;
-use std::collections::HashSet;
 use std::time::Instant;
 
 use super::{
@@ -184,34 +184,67 @@ fn priority(probe: &SurfaceProbe, source_revision: u64, now: Instant) -> f32 {
     error + age * 0.1 + f32::from(probe.source_revision != source_revision)
 }
 
-pub(crate) fn ranked_candidates(
+/// Retained bounded ranking storage. Ranking order and sweep fairness do not
+/// depend on hash iteration; the set only deduplicates the ordered windows.
+#[derive(Default)]
+pub(crate) struct RankedCandidates {
+    seen: HashSet<IVec3>,
+    ranked: Vec<(f32, IVec3)>,
+}
+
+impl RankedCandidates {
+    pub fn clear(&mut self) {
+        self.seen.clear();
+        self.ranked.clear();
+    }
+
+    pub fn pop(&mut self) -> Option<IVec3> {
+        self.ranked.pop().map(|(_, voxel)| voxel)
+    }
+
+    pub fn refresh(
+        &mut self,
+        field: &VoxelEnergyField,
+        nearby: &[IVec3],
+        cursor: &mut usize,
+        now: Instant,
+        budget: usize,
+    ) {
+        // Never scan/sort the whole world on a frame. Rotating windows eventually
+        // consider every probe, including uncertain non-visible transport bands.
+        let window = budget.clamp(64, 1024);
+        self.clear();
+        let seen = &mut self.seen;
+        let candidates = &mut self.ranked;
+        for (positions, bonus) in [(&field.order[..], 0.0), (nearby, 0.25)] {
+            for index in 0..window.min(positions.len()) {
+                let voxel = positions[cursor.wrapping_add(index) % positions.len()];
+                if seen.insert(voxel)
+                    && let Some(probe) = field.probes.get(&voxel)
+                {
+                    candidates.push((priority(probe, field.source_revision, now) + bonus, voxel));
+                }
+            }
+        }
+        *cursor = cursor.wrapping_add(window);
+        candidates.sort_unstable_by(|(a, va), (b, vb)| {
+            a.total_cmp(b)
+                .then_with(|| (va.x, va.y, va.z).cmp(&(vb.x, vb.y, vb.z)))
+        });
+    }
+}
+
+#[cfg(test)]
+fn ranked_candidates(
     field: &VoxelEnergyField,
     nearby: &[IVec3],
     cursor: &mut usize,
     now: Instant,
     budget: usize,
 ) -> Vec<IVec3> {
-    // Never scan/sort the whole world on a frame. Rotating windows eventually
-    // consider every probe, including uncertain non-visible transport bands.
-    let window = budget.clamp(64, 1024);
-    let mut seen = HashSet::new();
-    let mut candidates = Vec::new();
-    for (positions, bonus) in [(&field.order[..], 0.0), (nearby, 0.25)] {
-        for index in 0..window.min(positions.len()) {
-            let voxel = positions[cursor.wrapping_add(index) % positions.len()];
-            if seen.insert(voxel)
-                && let Some(probe) = field.probes.get(&voxel)
-            {
-                candidates.push((priority(probe, field.source_revision, now) + bonus, voxel));
-            }
-        }
-    }
-    *cursor = cursor.wrapping_add(window);
-    candidates.sort_unstable_by(|(a, va), (b, vb)| {
-        a.total_cmp(b)
-            .then_with(|| (va.x, va.y, va.z).cmp(&(vb.x, vb.y, vb.z)))
-    });
-    candidates.into_iter().map(|(_, voxel)| voxel).collect()
+    let mut scratch = RankedCandidates::default();
+    scratch.refresh(field, nearby, cursor, now, budget);
+    scratch.ranked.into_iter().map(|(_, voxel)| voxel).collect()
 }
 
 #[cfg(test)]
@@ -392,5 +425,43 @@ mod tests {
             visited.extend(candidates);
         }
         assert_eq!(visited.len(), 3000);
+    }
+
+    #[test]
+    fn ranking_reuses_storage_and_keeps_deterministic_order_with_overlapping_windows() {
+        let now = Instant::now();
+        let mut field = VoxelEnergyField::default();
+        for x in 0..256 {
+            let voxel = IVec3::new(x, 0, 0);
+            field.order.push(voxel);
+            field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
+        }
+        // First half overlaps the global window; the near bonus belongs only
+        // to sites not already seen there, as in the original ordered search.
+        let nearby: Vec<_> = (32..96).map(|x| IVec3::new(x, 0, 0)).collect();
+        let mut scratch = RankedCandidates::default();
+        let mut cursor = 0;
+        scratch.refresh(&field, &nearby, &mut cursor, now, 64);
+        let ranked_ptr = scratch.ranked.as_ptr();
+        let ranked_capacity = scratch.ranked.capacity();
+        let seen_capacity = scratch.seen.capacity();
+        let expected: Vec<_> = (64..96)
+            .rev()
+            .chain((0..64).rev())
+            .map(|x| IVec3::new(x, 0, 0))
+            .collect();
+        for _ in 0..4 {
+            assert_eq!(cursor, 64);
+            let actual: Vec<_> = std::iter::from_fn(|| scratch.pop()).collect();
+            assert_eq!(actual, expected);
+            cursor = 0;
+            scratch.refresh(&field, &nearby, &mut cursor, now, 64);
+            assert_eq!(scratch.ranked.as_ptr(), ranked_ptr);
+            assert_eq!(scratch.ranked.capacity(), ranked_capacity);
+            assert_eq!(scratch.seen.capacity(), seen_capacity);
+        }
+        scratch.clear();
+        assert!(scratch.pop().is_none());
+        assert!(scratch.seen.is_empty());
     }
 }

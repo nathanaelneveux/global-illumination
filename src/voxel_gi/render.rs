@@ -1,11 +1,12 @@
-use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use bevy::image::{ImageAddressMode, TextureReinterpretationError};
 use bevy::pbr::{
     ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
 };
-use bevy::platform::collections::HashSet as SlotSet;
+use bevy::platform::collections::{HashMap as VoxelMap, HashSet};
 use bevy::prelude::*;
 use bevy::render::erased_render_asset::prepare_erased_assets;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
@@ -142,8 +143,8 @@ pub struct VoxelTransportAssets {
 /// never rehashes or reuploads the entire loaded world.
 #[derive(Resource, Default)]
 pub struct GpuTransportCache {
-    slots: HashMap<IVec3, usize>,
-    hash_slots: HashMap<IVec3, usize>,
+    slots: VoxelMap<IVec3, usize>,
+    hash_slots: VoxelMap<IVec3, usize>,
     hash_entries: Vec<GpuHashEntry>,
     free_probe_slots: Vec<usize>,
     probe_capacity: usize,
@@ -165,8 +166,8 @@ struct ProbePatchState {
     // Mirrors own the authoritative bytes. Dirty ledgers need only slot IDs;
     // retaining another 208-byte GpuProbe per slot duplicates a large payload
     // and forces expensive hash-table moves during bursty publication.
-    pending_probes: SlotSet<usize>,
-    pending_hash: SlotSet<usize>,
+    pending_probes: HashSet<usize>,
+    pending_hash: HashSet<usize>,
     probe_mirror: Vec<u8>,
     hash_mirror: Vec<u8>,
 }
@@ -285,8 +286,8 @@ pub(crate) struct GpuCacheBuild {
     patch_state: ProbePatchState,
     hash_data: Vec<u8>,
     probe_data: Vec<u8>,
-    slots: HashMap<IVec3, usize>,
-    hash_slots: HashMap<IVec3, usize>,
+    slots: VoxelMap<IVec3, usize>,
+    hash_slots: VoxelMap<IVec3, usize>,
     hash_entries: Vec<GpuHashEntry>,
     probe_capacity: usize,
     high_water: usize,
@@ -352,8 +353,8 @@ pub(crate) fn build_gpu_cache(snapshot: Vec<(IVec3, GpuProbe)>) -> GpuCacheBuild
     let mut hash_capacity = probe_capacity.saturating_mul(2).next_power_of_two().max(1);
     loop {
         let mut entries = vec![GpuHashEntry::EMPTY; hash_capacity];
-        let mut slots = HashMap::with_capacity(snapshot.len());
-        let mut hash_slots = HashMap::with_capacity(snapshot.len());
+        let mut slots = VoxelMap::with_capacity(snapshot.len());
+        let mut hash_slots = VoxelMap::with_capacity(snapshot.len());
         let mut longest_probe = 0;
         for (probe_index, (voxel, _)) in snapshot.iter().enumerate() {
             let mut slot = hash_voxel(*voxel) as usize & (hash_capacity - 1);
@@ -473,7 +474,7 @@ pub(crate) fn patch_gpu_topology(
         .rev()
         .chain(cache.free_probe_slots.iter().rev());
     let mut high_water = cache.high_water;
-    let mut hash_delta: HashMap<_, _> = removed
+    let mut hash_delta: VoxelMap<_, _> = removed
         .iter()
         .filter_map(|voxel| cache.hash_slots.get(voxel).copied())
         .map(|slot| (slot, GpuHashEntry::TOMBSTONE))
@@ -1286,6 +1287,7 @@ mod tests {
         world.insert_resource(materials);
         world.insert_resource(VoxelWorldMaterialHandle { handle });
         world.insert_resource(VoxelGiSettings::default());
+        world.init_resource::<super::super::telemetry::GiWorkTimings>();
         world.run_system_once(upload_transport_cache).unwrap();
         assert!(
             world
@@ -1527,8 +1529,8 @@ mod tests {
         let mut state = ProbePatchState {
             probe_mirror: vec![7; GPU_PROBE_BYTES * 2],
             hash_mirror: vec![3; 64],
-            pending_probes: SlotSet::from([1]),
-            pending_hash: SlotSet::from([3]),
+            pending_probes: HashSet::from([1]),
+            pending_hash: HashSet::from([3]),
         };
         // Smaller old hash allocation, even though the probe buffer fits.
         assert!(
@@ -1711,7 +1713,7 @@ mod tests {
         let mut state = ProbePatchState {
             probe_mirror: vec![0; GPU_PROBE_BYTES],
             hash_mirror: vec![0; new_hash.size() as usize],
-            pending_hash: SlotSet::from([OFFSET / 16]),
+            pending_hash: HashSet::from([OFFSET / 16]),
             ..default()
         };
         write_hash_entry(&mut state.hash_mirror, OFFSET / 16, expected);
