@@ -200,14 +200,15 @@ pub(crate) struct GpuTracer {
 
 impl GpuTracer {
     pub fn new(context: GpuTransportDevice) -> Result<Self, String> {
-        Self::with_kernel(context, "trace_faces", 64)
+        Self::with_kernel(context, true)
     }
 
-    fn with_kernel(
-        context: GpuTransportDevice,
-        entry: &str,
-        faces_per_workgroup: u32,
-    ) -> Result<Self, String> {
+    fn with_kernel(context: GpuTransportDevice, cooperative: bool) -> Result<Self, String> {
+        let (entry, faces_per_workgroup) = if cooperative {
+            ("trace_faces_parallel", 16)
+        } else {
+            ("trace_faces", 64)
+        };
         let device = &context.device;
         if device.limits().max_storage_buffers_per_shader_stage < 8 {
             return Err("GPU transport needs eight storage-buffer bindings".into());
@@ -1276,9 +1277,8 @@ mod tests {
             naadf::{linear_index, volume_len},
             world::{AIR, MaterialTransport, PAGE_SIZE},
         };
-        let mut serial = native_tracer();
-        let mut parallel =
-            GpuTracer::with_kernel(serial.context.clone(), "trace_faces_parallel", 16).unwrap();
+        let mut parallel = native_tracer();
+        let mut serial = GpuTracer::with_kernel(parallel.context.clone(), false).unwrap();
         let mut materials = VoxelMaterialTransportTable::default();
         materials.set(
             4,
@@ -1322,7 +1322,20 @@ mod tests {
             let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
             let mut worker_ms: [Vec<f32>; 2] = default();
             let mut gpu_ms: [Vec<f32>; 2] = default();
-            for round in 0..33 {
+            for round in 0..36 {
+                // Untimed tail/count cases also exercise inactive barrier lanes
+                // and the generalized subsequence loop used by reference tests.
+                let samples = match round {
+                    33 => 1,
+                    34 => 7,
+                    35 => 64,
+                    _ => 4,
+                };
+                let receivers = if round >= 33 {
+                    &initial[..17]
+                } else {
+                    &initial[..]
+                };
                 let mut outputs: [Vec<SurfaceProbe>; 2] = default();
                 // Alternate order, warm both caches, and use matching advancing
                 // sequences. Keep ray count and all transport bands fixed.
@@ -1332,7 +1345,7 @@ mod tests {
                     } else {
                         &mut parallel
                     };
-                    let mut actual = initial.clone();
+                    let mut actual = receivers.to_vec();
                     for probe in &mut actual {
                         probe.sequence = [(round * 4) as u32; 6];
                     }
@@ -1343,11 +1356,11 @@ mod tests {
                             &sources,
                             &materials,
                             &mut actual,
-                            4,
+                            samples,
                             &emitters,
                         )
                         .unwrap();
-                    if round >= 3 {
+                    if (3..33).contains(&round) {
                         worker_ms[mode].push(started.elapsed().as_secs_f32() * 1000.0);
                         gpu_ms[mode].push(tracer.last_dispatch_ms);
                     }
