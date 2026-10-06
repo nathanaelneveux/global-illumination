@@ -76,10 +76,15 @@ fn sample_1d(stream: u32, sequence: u32, dimension: u32) -> f32 {
     var index = (sequence & 0x00ffffffu) + 1u;
     var scale = 1.0;
     var value = 0.0;
+    var digit_seed = pcg(stream ^ pcg(dimension + 0x68bc21ebu));
     while index != 0u {
         scale /= f32(base);
-        value += f32(index % base) * scale;
+        var digit = index % base;
+        // Match CPU sampling: decorrelate high-base emitter dimensions only.
+        if dimension >= 12u { digit = digit * (1u + digit_seed % (base - 1u)) % base; }
+        value += f32(digit) * scale;
         index /= base;
+        digit_seed = pcg(digit_seed);
     }
     let rotation = f32(pcg(stream ^ pcg(dimension)) >> 9u) / 8388608.0;
     return fract(value + rotation);

@@ -11,17 +11,29 @@ pub(crate) fn stream_id(voxel: IVec3, face: u32) -> u32 {
     pcg(pcg(pcg(voxel.x as u32) ^ voxel.y as u32) ^ voxel.z as u32) ^ pcg(face.wrapping_add(1))
 }
 
-/// Independently rotated Halton dimensions; the rotation is stable per face.
+/// Independently rotated Halton dimensions. Only the high-base emitter
+/// dimensions use digit permutations: their unpermuted prefixes otherwise
+/// walk slowly through the light CDF and produce long runs of one light color.
+/// A nonzero multiplier permutes a prime base and fixes zero, so omitted leading
+/// zeros remain valid. Rotation supplies the uniform offset. This is a limited
+/// digit scramble, not full Owen scrambling; low-base path dimensions retain
+/// their original ordering, which tested better in the narrow-skylight fixture.
 pub(crate) fn sample_1d(stream: u32, sequence: u32, dimension: u32) -> f32 {
     const PRIMES: [u32; 16] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53];
     let base = PRIMES[dimension as usize % PRIMES.len()];
     let mut index = (sequence & 0x00ff_ffff) + 1;
     let mut scale = 1.0;
     let mut value = 0.0;
+    let mut digit_seed = pcg(stream ^ pcg(dimension.wrapping_add(0x68bc_21eb)));
     while index != 0 {
         scale /= base as f32;
-        value += (index % base) as f32 * scale;
+        let mut digit = index % base;
+        if dimension >= 12 {
+            digit = digit * (1 + digit_seed % (base - 1)) % base;
+        }
+        value += digit as f32 * scale;
         index /= base;
+        digit_seed = pcg(digit_seed);
     }
     let rotation = (pcg(stream ^ pcg(dimension)) >> 9) as f32 / (1_u32 << 23) as f32;
     (value + rotation).fract()
@@ -51,6 +63,44 @@ mod tests {
         assert!((values.iter().sum::<f32>() / values.len() as f32 - 0.5).abs() < 0.001);
         assert_ne!(values[3], values[7]);
         assert_ne!(values[255], values[511]);
+        assert_ne!(sample_1d(stream, 65_535, 0), sample_1d(stream, 65_536, 0));
+    }
+
+    #[test]
+    fn emitter_dimensions_remain_uniform_and_low_dimensions_keep_their_order() {
+        for stream in [0, 123, stream_id(IVec3::new(-19, 7, 12), 2)] {
+            for dimension in 12..15 {
+                let mean = (0..4096)
+                    .map(|i| {
+                        let value = sample_1d(stream, i, dimension);
+                        assert!((0.0..1.0).contains(&value));
+                        value
+                    })
+                    .sum::<f32>()
+                    / 4096.0;
+                assert!((mean - 0.5).abs() < 0.004, "dimension {dimension}: {mean}");
+            }
+            for (dimension, base) in [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]
+                .into_iter()
+                .enumerate()
+            {
+                for sequence in [0, 3, 7, 64, 2047, 65_536] {
+                    let mut index = sequence + 1;
+                    let mut scale = 1.0;
+                    let mut value = 0.0;
+                    while index != 0 {
+                        scale /= base as f32;
+                        value += (index % base) as f32 * scale;
+                        index /= base;
+                    }
+                    let rotation = (pcg(stream ^ pcg(dimension as u32)) >> 9) as f32 / 8_388_608.0;
+                    assert_eq!(
+                        sample_1d(stream, sequence, dimension as u32),
+                        (value + rotation).fract()
+                    );
+                }
+            }
+        }
     }
 
     #[test]

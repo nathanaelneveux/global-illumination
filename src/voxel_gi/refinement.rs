@@ -277,7 +277,32 @@ fn fixed_scene_refinement_diagnostic() {
             "late_raw_step_max": percentile(raw_steps, 100),
             "late_display_step_p95": percentile(display_steps.clone(), 95),
             "late_display_step_max": percentile(display_steps, 100),
-            "gpu_batch_ms_p50": percentile(gpu_ms, 50)});
+            "gpu_batch_ms_p50": (!gpu_ms.is_empty()).then(|| percentile(gpu_ms, 50))});
+        // Broad fixture-specific regression bounds, not universal convergence
+        // guarantees. They reject the original rolling-history plateau and the
+        // high-base emitter prefixes at the same path count and display policy.
+        if kind == 1 {
+            assert!(
+                report["checkpoints"][2]["raw"]["relative_p95"]
+                    .as_f64()
+                    .unwrap()
+                    < 0.09
+            );
+            assert!(
+                report["checkpoints"][7]["raw"]["relative_p95"]
+                    .as_f64()
+                    .unwrap()
+                    < 0.01
+            );
+        } else if kind == 2 {
+            assert!(
+                report["checkpoints"][7]["raw"]["relative_p95"]
+                    .as_f64()
+                    .unwrap()
+                    < 0.20
+            );
+            assert!(report["late_display_step_p95"].as_f64().unwrap() < 0.02);
+        }
         eprintln!("Refinement: {report}");
         reports.push(json!({"summary": report, "reference": reference.iter().map(|v| channels(*v)).collect::<Vec<_>>(),
             "timeline": timeline}));
