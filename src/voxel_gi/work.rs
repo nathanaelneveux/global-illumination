@@ -316,6 +316,29 @@ mod tests {
     }
 
     #[test]
+    fn long_refinement_history_does_not_delay_geometry_or_source_changes() {
+        let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
+        probe.samples[2] = super::super::tracer::HISTORY_LIMIT;
+        probe.sequence[2] = 100_000;
+        probe.radiance[2] = EnergySpectrum::ONE;
+        let mut work = TraceWork::default();
+        for (revision, source_limit, restart, expected) in [
+            (0, u32::MAX, false, super::super::tracer::HISTORY_LIMIT),
+            (1, u32::MAX, false, 64),
+            (0, 4, false, 4),
+            (0, u32::MAX, true, 0),
+        ] {
+            work.clear();
+            work.push(&probe, 4, revision, 0, restart, source_limit);
+            assert_eq!(work.faces[0].samples, expected);
+            assert_eq!(work.faces[0].sequence, 100_000);
+            if restart {
+                assert_eq!(work.faces[0].radiance, EnergySpectrum::ZERO);
+            }
+        }
+    }
+
+    #[test]
     fn single_face_work_is_less_than_half_a_full_probe_and_sky_copies_no_history() {
         let bytes = size_of::<ProbeWork>() + size_of::<FaceWork>();
         assert!(bytes < size_of::<SurfaceProbe>() / 2);

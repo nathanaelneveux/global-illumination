@@ -22,7 +22,11 @@ const MAX_BOUNCES: u32 = 3;
 /// Coverage milestone, not a convergence or quality guarantee. Sampling never
 /// stops here; the scheduler continually improves every loaded surface.
 pub const BOOTSTRAP_SAMPLES: u32 = 8;
-pub const HISTORY_LIMIT: u32 = 256;
+/// Accumulate evidence while the integrand is unchanged. A short rolling
+/// history imposes a permanent noise floor on static refinement. Scene/source
+/// revisions independently cap retained weight at 16/64/4 or reset it to zero;
+/// a long static history therefore does not delay tracked lighting changes.
+pub const HISTORY_LIMIT: u32 = 65_536;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DirectionalTransportLight {
@@ -715,6 +719,28 @@ mod tests {
     use super::*;
     use crate::voxel_gi::naadf::{linear_index, volume_len};
     use crate::voxel_gi::world::{PAGE_SIZE, TransportScene};
+
+    #[test]
+    fn unchanged_refinement_retains_evidence_beyond_the_old_rolling_window() {
+        let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
+        for _ in 0..1024 {
+            accumulate_sample(&mut probe, 2, EnergySpectrum::ONE);
+        }
+        for _ in 0..1024 {
+            accumulate_sample(&mut probe, 2, EnergySpectrum::ZERO);
+        }
+        assert_eq!(probe.samples[2], 2048);
+        assert_eq!(probe.sequence[2], 2048);
+        assert!(
+            (probe.radiance[2] - EnergySpectrum::ONE * 0.5)
+                .visible
+                .length()
+                < 1e-5
+        );
+        assert!((probe.radiance[2].infrared - 0.5).abs() < 1e-5);
+        assert!((probe.radiance[2].ionizing - 0.5).abs() < 1e-5);
+        assert_eq!(probe.radiance[2], probe.second_moment[2]);
+    }
 
     #[test]
     fn sky_corners_preserve_wall_contact_shadow_missed_by_face_center() {
