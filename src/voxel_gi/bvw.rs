@@ -192,10 +192,12 @@ pub(super) fn start_scene_task(
             )
         });
         let changed_materials = super::emission::changed_voxel_materials(&previous_scene, &scene);
+        let transport_changed = scene.transport_changed_from(&previous_scene);
         SceneBuildResult {
             scene,
             changed,
             changed_materials,
+            transport_changed,
             pages: pages.into(),
             exact_edits,
             broad_edits,

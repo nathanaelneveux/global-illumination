@@ -141,13 +141,17 @@ fn advance_box(position: vec3<f32>, direction: vec3<f32>, cell: vec3<i32>, negat
     }
     return vec4(normal, max(distance + 0.001, 0.001));
 }
-fn loaded_region_ahead(start: vec3<f32>, direction: vec3<f32>) -> bool {
+fn geometry_ahead(start: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> bool {
     var position = start;
+    var remaining = max_distance;
     for (var step = 0u; step < 2048u; step += 1u) {
         let region = vec3<i32>(floor(position / 16.0));
-        if !in_bounds(region) { return false; }
-        if lookup_region(region) != 0xffffffffu { return true; }
-        position += direction * advance_box(position, direction, region, vec3(0), vec3(0), 16.0).w;
+        if remaining < 0.0 || !in_bounds(region) { return false; }
+        let index = lookup_region(region);
+        if index != 0xffffffffu && regions[index].x != 1u { return true; }
+        let travel = advance_box(position, direction, region, vec3(0), vec3(0), 16.0).w;
+        position += direction * travel;
+        remaining -= travel;
     }
     return true;
 }
@@ -192,7 +196,7 @@ fn trace_domain(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, visi
                     normal = advance.xyz;
                     continue;
                 }
-                result.status = select(0u, 2u, loaded_region_ahead(position, direction));
+                result.status = select(0u, 2u, geometry_ahead(position, direction, max_distance - distance));
                 return result;
             }
             metadata = regions[index];

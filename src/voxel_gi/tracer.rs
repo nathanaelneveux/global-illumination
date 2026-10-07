@@ -157,7 +157,7 @@ impl TransportScene {
                     last_normal = normal;
                     continue;
                 }
-                return if self.has_loaded_region_ahead(position, direction) {
+                return if self.has_geometry_ahead(position, direction, max_distance - distance) {
                     TraceResult::Unknown
                 } else {
                     TraceResult::Escaped
@@ -229,18 +229,23 @@ impl TransportScene {
     }
 
     /// Sparse streaming domains are rarely rectangular. A missing region is
-    /// an unknown occluder only when the ray would re-enter loaded terrain; if
-    /// no loaded cell remains ahead, this is the actual world frontier.
-    fn has_loaded_region_ahead(&self, mut position: Vec3, direction: Vec3) -> bool {
+    /// unknown before occupied terrain, but known-empty regions cannot occlude
+    /// light or move this frontier. Otherwise looking upward and loading air
+    /// can darken an unrelated receiver. Respect this segment's distance limit.
+    fn has_geometry_ahead(&self, mut position: Vec3, direction: Vec3, mut remaining: f32) -> bool {
         for _ in 0..MAX_TRACE_STEPS {
             let region = position
                 .floor()
                 .as_ivec3()
                 .div_euclid(IVec3::splat(REGION_EDGE as i32));
-            if !self.top_level.contains(region) {
+            if remaining < 0.0 || !self.top_level.contains(region) {
                 return false;
             }
-            if self.regions.contains_key(&region) {
+            if self
+                .regions
+                .get(&region)
+                .is_some_and(|region| region.any_solid)
+            {
                 return true;
             }
 
@@ -253,6 +258,7 @@ impl TransportScene {
                 REGION_EDGE as f32,
             );
             position += direction * travel;
+            remaining -= travel;
         }
         true
     }
@@ -1033,7 +1039,8 @@ mod tests {
     fn unloaded_holes_are_unknown_not_open_sky() {
         let mut near_page = vec![AIR; volume_len(PAGE_SIZE)];
         near_page[linear_index(UVec3::new(31, 8, 8), PAGE_SIZE)] = 1;
-        let far_page = vec![AIR; volume_len(PAGE_SIZE)];
+        let mut far_page = vec![AIR; volume_len(PAGE_SIZE)];
+        far_page[linear_index(UVec3::new(8, 8, 8), PAGE_SIZE)] = 1;
         let scene = TransportScene::with_page_delta(
             &TransportScene::default(),
             vec![(IVec3::ZERO, near_page), (IVec3::new(2, 0, 0), far_page)],
@@ -1044,6 +1051,53 @@ mod tests {
             scene.trace_ray_result(Vec3::new(32.01, 8.5, 8.5), Vec3::X, 100.0),
             TraceResult::Unknown
         );
+        assert_eq!(
+            scene.trace_ray_result(Vec3::new(32.01, 8.5, 8.5), Vec3::X, 10.0),
+            TraceResult::Escaped,
+            "geometry beyond the segment limit cannot occlude it"
+        );
+        let filled = TransportScene::with_page_delta(
+            &scene,
+            vec![(IVec3::X, vec![AIR; volume_len(PAGE_SIZE)])],
+            &[],
+        );
+        assert!(filled.transport_changed_from(&scene));
+        assert!(scene.transport_changed_from(&filled));
+        assert!(matches!(
+            filled.trace_ray_result(Vec3::new(32.01, 8.5, 8.5), Vec3::X, 100.0),
+            TraceResult::Hit(_)
+        ));
+    }
+
+    #[test]
+    fn streaming_empty_frontiers_preserves_transport_but_geometry_still_invalidates() {
+        let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+        page[linear_index(UVec3::new(31, 8, 8), PAGE_SIZE)] = 1;
+        let scene = TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, page)],
+            &[],
+        );
+        for x in [2, 2000] {
+            let air = TransportScene::with_page_delta(
+                &scene,
+                vec![(IVec3::new(x, 0, 0), vec![AIR; volume_len(PAGE_SIZE)])],
+                &[],
+            );
+            assert!(!air.transport_changed_from(&scene));
+            assert!(!scene.transport_changed_from(&air));
+            assert_eq!(
+                air.trace_ray_result(Vec3::new(32.01, 8.5, 8.5), Vec3::X, 100.0),
+                TraceResult::Escaped
+            );
+            let solid = TransportScene::with_page_delta(
+                &air,
+                vec![(IVec3::new(x, 0, 0), vec![1; volume_len(PAGE_SIZE)])],
+                &[],
+            );
+            assert!(solid.transport_changed_from(&air));
+            assert!(air.transport_changed_from(&solid));
+        }
     }
 
     #[test]

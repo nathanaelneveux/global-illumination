@@ -300,6 +300,41 @@ pub struct TransportScene {
 }
 
 impl TransportScene {
+    /// Whether a new snapshot can change transport from existing receivers.
+    /// Loaded-air bookkeeping outside the occupied region bounds cannot lie
+    /// between a receiver and geometry. Holes INSIDE those bounds still matter:
+    /// filling one can turn a conservative unknown path into a measured hit.
+    /// Run on the scene worker; unchanged regions retain their Arc identity.
+    pub(crate) fn transport_changed_from(&self, previous: &Self) -> bool {
+        let mut occupied_min = IVec3::MAX;
+        let mut occupied_max = IVec3::MIN;
+        for (coordinate, region) in &previous.regions {
+            if region.any_solid {
+                occupied_min = occupied_min.min(*coordinate);
+                occupied_max = occupied_max.max(*coordinate);
+            }
+        }
+        self.regions
+            .keys()
+            .chain(
+                previous
+                    .regions
+                    .keys()
+                    .filter(|p| !self.regions.contains_key(p)),
+            )
+            .any(|coordinate| {
+                let before = previous.regions.get(coordinate);
+                let after = self.regions.get(coordinate);
+                if before.zip(after).is_some_and(|(a, b)| Arc::ptr_eq(a, b)) {
+                    return false;
+                }
+                before.is_some_and(|r| r.any_solid)
+                    || after.is_some_and(|r| r.any_solid)
+                    || (coordinate.cmpge(occupied_min).all()
+                        && coordinate.cmple(occupied_max).all())
+            })
+    }
+
     pub fn with_page_delta(
         previous: &Self,
         changed_pages: Vec<(IVec3, Vec<u16>)>,

@@ -337,6 +337,7 @@ impl Default for VoxelGiRuntime {
 struct SceneBuildResult {
     scene: Arc<TransportScene>,
     changed: bool,
+    transport_changed: bool,
     changed_materials: [bool; 256],
     pages: VecDeque<(IVec3, Vec<SurfaceProbeDescriptor>)>,
     exact_edits: Vec<IVec3>,
@@ -403,7 +404,9 @@ fn apply_scene_task(
         }
         runtime.scene = result.scene.clone();
         runtime.generation = runtime.generation.wrapping_add(1);
-        advance_transport_revision(&mut runtime, &mut field);
+        if result.transport_changed {
+            advance_transport_revision(&mut runtime, &mut field);
+        }
         field
             .publishing_pages
             .extend(result.pages.iter().map(|(page, _)| *page));
@@ -1592,6 +1595,7 @@ mod tests {
         let mut result = SceneBuildResult {
             scene: runtime.scene.clone(),
             changed: true,
+            transport_changed: true,
             changed_materials: [false; 256],
             pages: VecDeque::new(),
             exact_edits: vec![],
@@ -1652,6 +1656,7 @@ mod tests {
         let result = SceneBuildResult {
             scene: Arc::new(TransportScene::default()),
             changed: true,
+            transport_changed: true,
             changed_materials: [false; 256],
             pages: VecDeque::from([
                 (
@@ -1753,6 +1758,7 @@ mod tests {
             scene_publication: Some(SceneBuildResult {
                 scene: Arc::new(TransportScene::default()),
                 changed: true,
+                transport_changed: true,
                 changed_materials: [false; 256],
                 pages,
                 exact_edits: vec![],

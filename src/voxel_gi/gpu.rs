@@ -817,6 +817,41 @@ mod tests {
 
     #[test]
     #[ignore = "requires a native compute adapter"]
+    fn empty_frontier_streaming_does_not_relight_native_receivers() {
+        use super::super::{
+            naadf::{linear_index, volume_len},
+            world::{AIR, PAGE_SIZE},
+        };
+        let mut gpu = native_tracer();
+        let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+        let voxel = IVec3::new(31, 8, 8);
+        page[linear_index(voxel.as_uvec3(), PAGE_SIZE)] = 1;
+        let base = Arc::new(TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, page)],
+            &[],
+        ));
+        let extended = Arc::new(TransportScene::with_page_delta(
+            &base,
+            vec![(IVec3::new(2, 0, 0), vec![AIR; volume_len(PAGE_SIZE)])],
+            &[],
+        ));
+        let sources = TransportSources::default();
+        let materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        let mut before = vec![SurfaceProbe::new(voxel, 1)];
+        let mut after = before.clone();
+        gpu.trace(base, &sources, &materials, &mut before, 256, &emitters)
+            .unwrap();
+        gpu.trace(extended, &sources, &materials, &mut after, 256, &emitters)
+            .unwrap();
+        assert_eq!(before[0].radiance[0], after[0].radiance[0]);
+        assert_eq!(before[0].second_moment[0], after[0].second_moment[0]);
+        assert!(before[0].radiance[0].visible.max_element() > 0.1);
+    }
+
+    #[test]
+    #[ignore = "requires a native compute adapter"]
     fn static_dispatch_resources_reuse_and_rebind_after_growth() {
         let mut gpu = native_tracer();
         let (scene, mut sources, mut probes) = super::super::sky::contact_shadow_fixture();
@@ -1871,11 +1906,15 @@ mod tests {
         // Display shadows cross streamed gaps; simulation energy stays strict.
         // Also exercise sparse-directory reuse after the preceding edit.
         let empty = vec![AIR; volume_len(PAGE_SIZE)];
+        let mut distant_geometry = empty.clone();
+        // An occupied region across the gap, but not on this sun ray. Empty
+        // page bookkeeping alone must never create an unknown occluder.
+        distant_geometry[linear_index(UVec3::new(8, 12, 8), PAGE_SIZE)] = 1;
         let sparse = Arc::new(TransportScene::with_page_delta(
             &TransportScene::default(),
             vec![
                 (IVec3::ZERO, empty.clone()),
-                (IVec3::new(2, 0, 0), empty.clone()),
+                (IVec3::new(2, 0, 0), distant_geometry),
             ],
             &[],
         ));
