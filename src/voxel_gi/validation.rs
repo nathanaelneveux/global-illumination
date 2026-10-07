@@ -1,5 +1,6 @@
 //! Opt-in scripted workloads. Gameplay keeps the preferred presentation;
 //! comparisons and toggle stress have distinct report identities.
+mod house;
 mod metrics;
 mod profiles;
 mod response;
@@ -91,6 +92,7 @@ pub(super) struct ValidationRun {
     emissive: Option<(IVec3, WorldVoxel<u8>, MaterialTransport)>,
     emitter_started: bool,
     response: response::ResponseRun,
+    house: house::HouseRun,
     max_pages: usize,
     capture_pause_until: f32,
     done: bool,
@@ -207,6 +209,16 @@ pub(super) fn run_validation(
     let elapsed = run.started.unwrap().elapsed().as_secs_f32();
     let profile = run.profile;
     let (ref mut player, ref mut look) = *player_state;
+    if profile == Profile::House {
+        run.house.tick(
+            elapsed,
+            &field,
+            &runtime,
+            &mut commands,
+            &cameras,
+            &mut lights,
+        );
+    }
     if matches!(profile, Profile::Response | Profile::Edits) {
         run.response.tick(
             elapsed,
@@ -384,8 +396,10 @@ pub(super) fn run_validation(
         }
         run.edit_attempts += 1;
     }
-    if !matches!(profile, Profile::Compare | Profile::Streaming)
-        && (45.0..65.0).contains(&elapsed)
+    if matches!(
+        profile,
+        Profile::Gameplay | Profile::Sources | Profile::Stress
+    ) && (45.0..65.0).contains(&elapsed)
         && ((elapsed - 45.0) / 4.0) as u32 >= run.moves
     {
         player.translation += Vec3::new(24.0, 2.0, 0.0);
@@ -431,6 +445,14 @@ pub(super) fn run_validation(
         return;
     }
     let config = configs.get(&assets.prototype_config);
+    if profile == Profile::House
+        && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("house.json"),
+            json!({"samples": run.house.samples,
+                "note": "Unmodified prototype house, fixed eye, opposite ceiling corners at 30/50/70s. Normal terrain streaming and adaptive scheduling remain enabled. Not a windowed FPS benchmark."}).to_string()) {
+            evidence.fail(&format!("Could not save house sequence: {error}"));
+            commands.write_message(AppExit::error());
+            return;
+    }
     if matches!(profile, Profile::Response | Profile::Edits)
         && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("response.json"),
             json!({"samples": run.response.samples, "captures": run.response.captures,

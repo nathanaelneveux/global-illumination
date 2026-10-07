@@ -7,6 +7,7 @@ pub(super) enum Profile {
     #[default]
     Gameplay,
     Streaming,
+    House,
     Response,
     Edits,
     Sources,
@@ -19,13 +20,14 @@ impl Profile {
         match value {
             "gameplay" => Ok(Self::Gameplay),
             "streaming" => Ok(Self::Streaming),
+            "house" => Ok(Self::House),
             "response" => Ok(Self::Response),
             "edits" => Ok(Self::Edits),
             "sources" => Ok(Self::Sources),
             "compare" => Ok(Self::Compare),
             "stress" => Ok(Self::Stress),
             _ => Err(format!(
-                "unknown validation profile {value:?}; choose gameplay, streaming, response, edits, sources, compare, or stress"
+                "unknown validation profile {value:?}; choose gameplay, streaming, house, response, edits, sources, compare, or stress"
             )),
         }
     }
@@ -34,6 +36,7 @@ impl Profile {
         match self {
             Self::Gameplay => "gameplay",
             Self::Streaming => "streaming",
+            Self::House => "house",
             Self::Response => "response",
             Self::Edits => "edits",
             Self::Sources => "sources",
@@ -46,6 +49,7 @@ impl Profile {
         match self {
             Self::Compare => 29.0,
             Self::Streaming => 35.0,
+            Self::House => 90.0,
             Self::Response | Self::Edits => 30.0,
             _ => 72.0,
         }
@@ -60,7 +64,17 @@ impl Profile {
     }
 
     pub fn captures(self) -> &'static [(f32, &'static str)] {
-        if self == Self::Edits {
+        if self == Self::House {
+            &[
+                (29.0, "first-corner"),
+                (30.4, "turned-0400ms"),
+                (40.0, "turned-10s"),
+                (49.0, "second-corner"),
+                (50.4, "return-0400ms"),
+                (69.0, "first-corner-returned"),
+                (89.0, "second-corner-returned"),
+            ]
+        } else if self == Self::Edits {
             &[
                 (14.5, "room-settled"),
                 (15.05, "dig-0050ms"),
@@ -122,7 +136,14 @@ impl Profile {
     }
 
     pub fn phase(self, elapsed: f32) -> &'static str {
-        if self == Self::Edits {
+        if self == Self::House {
+            match elapsed {
+                t if t < 30.0 => "first-corner",
+                t if t < 50.0 => "second-corner",
+                t if t < 70.0 => "first-corner-returned",
+                _ => "second-corner-returned",
+            }
+        } else if self == Self::Edits {
             match elapsed {
                 t if t < 15.0 => "settling",
                 t if t < 23.0 => "underground-edits",
@@ -194,6 +215,7 @@ mod tests {
         for profile in [
             Profile::Gameplay,
             Profile::Streaming,
+            Profile::House,
             Profile::Response,
             Profile::Edits,
             Profile::Sources,
