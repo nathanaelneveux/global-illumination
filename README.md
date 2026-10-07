@@ -7,7 +7,7 @@ The implementation draws on [vxray](https://github.com/Nelarius/vxray), its [dev
 ## What is implemented
 
 - Each loaded 32³ page is split into eight 16³ regions, with nested 4³ brick and voxel distance fields. Empty and uniform regions are compressed. On the GPU, bricks also have empty/uniform/mixed tags: empty bricks carry AADFs, uniform bricks carry a material, and mixed bricks point to 64 packed 16-bit voxel cells. Identical mixed bricks share reference-counted storage with copy-on-write edits and full-content equality checks. Unchanged regions are shared between snapshots; GPU geometry is persistent and receives changed-region patches.
-- Missing regions inside the streamed domain are unknown, not open sky, for transport/simulation queries. Those rays terminate conservatively. Display-only direct-sun rays instead continue across gaps and test all loaded geometry beyond them, matching the geometry that Bevy renders rather than inventing opaque streaming slabs. Geometry outside the loaded set cannot cast display shadows.
+- Missing regions before occupied loaded terrain within a ray's remaining range are unknown, not open sky, for transport/simulation queries. Those rays terminate conservatively. Empty loaded regions do not create an occluding frontier. Display-only direct-sun rays instead continue across gaps and test all loaded geometry beyond them, matching the geometry that Bevy renders rather than inventing opaque streaming slabs. Geometry outside the loaded set cannot cast display shadows.
 - Every exposed solid voxel owns a six-direction ambient-cube probe. Surface sampling is independent of camera visibility and screen resolution.
 - GPU compute traces four new paths per **selected exposed face** per transport dispatch, with cosine-weighted directions, three diffuse bounces, visibility-tested analytic sources, Russian roulette, and power-weighted emissive-face sampling with multiple importance sampling. A CPU reference/fallback uses the same transport model.
 - Low-discrepancy sequences continue advancing independently of history weights. Unchanged surfaces retain up to 65,536 samples of evidence; scene/source changes shorten or reset histories separately. Eight samples is only a bootstrap milestone, not convergence. Settled faces reduce their update frequency rather than stopping forever; see change-driven scheduling below.
@@ -62,6 +62,15 @@ Sky repairs have an independent urgent queue and loaded-world refresh cursor, bu
 Indirect faces become eligible for reduced-frequency updates only after at least 64 samples by default, four stable batches, low relative error and drift in **every energy band**, and a sufficiently settled display value. They remain eligible for background verification every two seconds; eligibility is not a service-time guarantee. Explicit simulation refresh requests override resting state. Geometry, streaming, material, and source changes wake faces through a revision check. The mechanism follows NAADF Section 4.2's selective-sample-generation principle, adapted to world-space faces rather than TAA/pixel history; it is not the paper's resampling estimator.
 
 Indirect invalidation is intentionally conservative and **currently global**, unlike the spatially targeted direct-sky cache. There is no claim of complete per-path dependency tracking. This avoids permanently stale distant light after an edit, including insertion into previously empty space, but frequent edits/moving sources can keep indirect work active. The rotating audit remains necessary: a stable low-sample estimate is not proof that a rare light contribution does not exist. Simulation freshness includes a transport revision and each requested face's own age; a fresh top face cannot make an old side-face measurement appear fresh.
+
+Empty-page streaming outside the occupied region bounds is bookkeeping, not a
+transport invalidation: it preserves history and settled state. Filling/removing
+unknown gaps **inside** those bounds still invalidates conservatively, as does
+any geometry change. Dark indirect receivers (peak RGB below 0.02) require at
+least 256 samples before sparse audits. Refinement uses a 0.002 per-band energy
+floor, separate from the presentation filter's 0.02 floor, so dark noisy faces
+are not prematurely labeled settled. The HUD can therefore report less settling
+initially even while those faces obtain better evidence sooner.
 
 Global wake-up is separate from evidence destruction: remote histories retain up to 64 samples of temporal weight, rather than falling back to four on every streamed air page or local light movement. Local geometry changes retain at most 16 measured samples on unchanged faces, mark them stale, reject pre-edit worker results, and prioritize fresh paths. Newly exposed faces and changed materials still start with zero measurements; opening one face no longer clears every other face of that voxel. Global source changes/nearby moving lights still use the short four-sample response. Retained measurements can therefore keep coverage/bootstrap high after edits; those percentages do not certify current lighting. Inspect `transport_current`, `sources_current`, age and variance for simulations. Candidate scanning is independent of emitted work: settled probes do not consume ray slots, and underfilled cheap batches cannot collapse the scheduling budget. Searches remain bounded to at most 8,192 candidates per selection, plus the bounded priority windows.
 
@@ -188,6 +197,7 @@ RUST_LOG=info VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_EXIT=1 VOXEL_GI_VALIDATE_PRO
 | `response` (30 s) | Focused cavity/emitter temporal inspection | Fixed-camera synthetic enclosed room; delete one floor block at 15 s, add a warm emitter at 20 s, remove it at 25 s; 14 captures and sampled receiver history in `response.json`; no streaming moves or mode switches |
 | `edits` (30 s) | Initial geometry/lighting handoff | Same enclosed room: dig/restore its floor, place/remove an ordinary block, then inspect a roof excavation from above; 18 captures at 50/150/400 ms offsets and receiver history; no source or mode changes |
 | `streaming` (35 s) | Turn-around/walk streaming regression | Settle 15 s at spawn, turn 180°, translate at 4.32 blocks/s for 15 s, recover 5 s; fixed preferred look. Scripted translation, not a character-controller movement test |
+| `house` (90 s) | Ceiling refinement and camera-turn invalidation | Fixed eye inside the unmodified prototype house; turn between opposite ceiling corners at 30/50/70 s. Normal streaming remains enabled. Seven captures and 25 fixed underside receivers recorded in `house.json`; no edits, player translation, sources, or mode switches |
 | `sources` (72 s) | Point-light and emissive-material updates, including IR/ionizing transport | Same timing and streaming path, but moving RGB/IR/ionizing point source plus emissive voxel replace repeated digging; remove sources for recovery |
 | `compare` (29 s) | Appearance inspection, **not** performance evidence | Explicit corner sun, per-pixel sun, flat voxel, corner/flat irradiance, indirect-disabled, and restored-default captures |
 | `stress` (72 s, targeted only) | Regression check for the fixed buffer-generation/mode-switch failure, **not** routine performance work | Editing, sources, streaming, and F4–F7 combinations eight times per second, followed by recovery |
@@ -620,6 +630,81 @@ not a fresh paired performance experiment or a measured speedup. No code or
 asset edits/builds ran during measurement (only these documentation edits).
 Artifacts: `target/gi-validation/gameplay-1791304485423591000-89508/` and
 `target/refinement-gameplay.log`.
+
+### House ceiling and camera-turn regression (October 6)
+
+The fixed-scene floor diagnostic above did **not** cover the reported house
+ceiling/camera-turn failure. `4b1bb1d` adds the `house` profile: a fixed eye inside
+the real prototype house, opposite ceiling-corner views at 30/50/70 seconds,
+normal terrain streaming, and 25 fixed roof-underside receivers sampled at about
+100 ms intervals even while offscreen. Reproduce it with:
+
+```sh
+RUST_LOG=warn VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_HEADLESS=1 \
+  VOXEL_GI_VALIDATE_PROFILE=house VOXEL_GI_VALIDATE_EXIT=1 cargo run --locked --offline
+```
+
+Two causes were reproduced and addressed separately:
+
+- `594569f`: distant **empty** chunks could turn a sparse gap into an unknown
+  occluder, changing the lighting itself. Every scene revision also shortened
+  world-wide histories to 64 samples. CPU/GPU frontier queries now ignore empty
+  regions and respect the segment limit. Air-only changes outside occupied
+  region bounds update the scene without invalidating transport. Interior gaps
+  and real geometry/source changes still invalidate conservatively.
+- `703ca85`: the scheduler reused the presentation filter's generous dark-energy
+  floor. Ceiling faces were called settled near 100 samples, then received only
+  about two new paths per second until a rare bright path woke them. A tighter
+  independent refinement criterion and 256-sample dark minimum keep them working.
+  The 75 ms display filter, four paths per batch, 4 ms dispatch target and fair
+  world sweep are unchanged. This is still a heuristic, not certified convergence.
+
+Apple M4/Metal, shared-cache development profile, preferred look, 2560×1440
+offscreen. One exploratory sequence, not repeated statistical trials:
+
+| House observation | `4b1bb1d` baseline | Frontier fix | Both fixes |
+| --- | ---: | ---: | ---: |
+| Transport revisions after 10 s | 7 | 1 | 1 |
+| History-count drops across 25 faces after 10 s | 150 | 25 | 25 |
+| Median ceiling history at 29 s | 128 | 400 | 1,120 |
+| Median ceiling history at 89 s | 116 | 492 | 2,116 |
+| Nonzero display-step p95 during 50–90 s | 0.10642 | 0.03986 | 0.01583 |
+| Maximum display step during 50–90 s | 0.64703 | 0.24648 | 0.11100 |
+
+Step means max absolute RGB change divided by `0.002 + max(old_RGB,new_RGB)`
+between recorded observations. Unchanged observations are excluded from the
+percentile; there were 1,621/495/6,102 changed observations respectively. This is
+observed cache variation, **not image-space flicker or error against ground truth**.
+The single remaining reset followed actual new terrain loading on the first
+turn. More selective geometry invalidation is still future work. The stricter
+test can lower the HUD's early settled percentage while producing better evidence.
+
+All three runs completed seven valid captures with clean render logs; inspected
+returned-corner captures preserve textures and show a more uniform ceiling.
+Streaming discovery/order is stochastic. The frontier-only run also overlapped
+focused compilation/native checks early on, so this sequence makes no FPS claim.
+Local artifacts under `target/gi-validation/`:
+
+- Baseline `4b1bb1d`: `house-1791332068681180000-88752/`.
+- `4b1bb1d` plus the runtime diff committed as `594569f`:
+  `house-1791332268553231000-91840/`.
+- `594569f` plus the runtime diff committed as `703ca85`:
+  `house-1791332452113600000-94741/`.
+
+Logs: `target/house-{baseline-clean,frontier,dark-scheduling}.log`. The earlier
+preliminary `house-1791331816480324000-83963/` predates removal of unused
+player-body translations from this profile and is excluded from the table.
+
+Final gameplay integration (`703ca85` runtime, no concurrent builds): 80 edits,
+five moves, five valid captures, no pending/superseded edit watches, clean logs.
+First-fresh edit p50/p95 was 150.47/171.20 ms (previous `e1a5ac0` sanity run:
+149.20/167.93 ms); 74.88 million paths, 100% coverage. Editing offscreen frame
+p50/p99 was 20.65/33.36 ms, streaming 21.94/39.27 ms. Startup/streaming maxima
+remain 613.5/104.7 ms. This is not a fresh paired FPS experiment or a hitch fix.
+Artifacts: `gameplay-1791332653004925000-97991/`, `target/house-fix-gameplay.log`.
+Focused scheduler/history/worker/orchestration checks, native CPU/GPU frontier
+and geometry/emitter parity, Naga validation, formatting and strict all-target
+Clippy passed. No broad toggle stress run.
 
 ### Next performance work
 
