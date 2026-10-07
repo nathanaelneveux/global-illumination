@@ -1483,7 +1483,7 @@ mod tests {
         use bevy::ecs::system::RunSystemOnce;
         let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(1).build();
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
-        probe.samples = [128; 6];
+        probe.samples = [256; 6];
         probe.stable_batches = [3; 6];
         let mut field = VoxelEnergyField::default();
         field.probes.insert(IVec3::ZERO, probe);
@@ -1986,7 +1986,7 @@ mod tests {
         for x in 0..4096 {
             let voxel = IVec3::new(x, 0, 0);
             let mut probe = SurfaceProbe::new(voxel, 4);
-            probe.samples[2] = 128;
+            probe.samples[2] = 256;
             probe.stable_batches[2] = 4;
             probe.face_updated_at[2] = Some(now);
             field.order.push(voxel);
@@ -2004,7 +2004,7 @@ mod tests {
         let selected = select_probes(&mut runtime, &field);
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].voxel, noisy);
-        assert_eq!(selected[0].samples[2], 128);
+        assert_eq!(selected[0].samples[2], 256);
     }
 
     #[test]
@@ -2119,7 +2119,7 @@ mod tests {
         for x in 0..64 {
             let voxel = IVec3::new(10_000 + x, 0, 0);
             let mut probe = SurfaceProbe::new(voxel, 5);
-            probe.samples = [128; 6];
+            probe.samples = [256; 6];
             probe.stable_batches = [4; 6];
             probe.updated_at = Some(now);
             probe.face_updated_at = [Some(now); 6];
@@ -2156,7 +2156,7 @@ mod tests {
                 && probe.samples[2] == 64)
         );
         assert!(
-            field.probes.values().all(|probe| probe.samples[2] == 128),
+            field.probes.values().all(|probe| probe.samples[2] == 256),
             "scheduling must not mutate published histories"
         );
         enqueue_sky(&mut runtime, field.order.iter().copied());
@@ -2164,7 +2164,7 @@ mod tests {
         append_sky_work(&mut runtime, &field, &mut sky);
         assert_eq!(sky.probes.len(), 64);
         assert!(sky.faces.is_empty());
-        assert!(field.probes.values().all(|probe| probe.samples[2] == 128));
+        assert!(field.probes.values().all(|probe| probe.samples[2] == 256));
     }
 
     #[test]

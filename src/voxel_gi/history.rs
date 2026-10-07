@@ -123,6 +123,18 @@ fn measured_display(
 /// bound: QMC samples and bounded temporal histories are correlated. Normalize
 /// each band independently so bright RGB cannot hide uncertain infrared.
 pub(crate) fn relative_error(mean: EnergySpectrum, second: EnergySpectrum, samples: u32) -> f32 {
+    relative_error_with_floor(mean, second, samples, 0.02)
+}
+
+/// The presentation filter and the refinement scheduler have different error
+/// tolerances. A display-stabilizing floor must not make dark transport appear
+/// well measured. Callers supply a positive floor in normalized energy units.
+pub(crate) fn relative_error_with_floor(
+    mean: EnergySpectrum,
+    second: EnergySpectrum,
+    samples: u32,
+    floor: f32,
+) -> f32 {
     if samples < 2 {
         return 1.0;
     }
@@ -144,7 +156,7 @@ pub(crate) fn relative_error(mean: EnergySpectrum, second: EnergySpectrum, sampl
     means
         .into_iter()
         .zip(variances)
-        .map(|(mean, variance)| (variance / samples as f32).sqrt() / (0.02 + mean.abs()))
+        .map(|(mean, variance)| (variance / samples as f32).sqrt() / (floor + mean.abs()))
         .fold(0.0, f32::max)
         .min(8.0)
 }

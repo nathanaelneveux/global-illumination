@@ -19,6 +19,8 @@ pub struct VoxelGiSettings {
     /// Settled faces still receive verification rays at this cadence. This is
     /// eligibility, not a deadline: loaded-world size and work budget matter.
     pub stable_audit_interval: Duration,
+    /// Baseline minimum. Dark indirect RGB (peak below 0.02) requires at least
+    /// 256 samples before sparse audits, even if early observed variance is zero.
     pub stable_min_samples: u32,
     /// Per-band relative-error heuristic, not a certified convergence bound.
     pub stable_relative_error: f32,

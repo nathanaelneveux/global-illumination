@@ -5,11 +5,36 @@ use bevy::prelude::*;
 use std::time::Instant;
 
 use super::{
-    field::VoxelEnergyField, history::relative_error, settings::VoxelGiSettings,
+    field::VoxelEnergyField, history::relative_error_with_floor, settings::VoxelGiSettings,
     world::SurfaceProbe,
 };
 
 const STABLE_BATCHES: u8 = 4;
+// Dark indirect energy is often below the presentation filter's 0.02 floor.
+// That floor permitted order-one relative errors before switching to slow
+// audits. Refinement needs a tighter, independent tolerance.
+const REFINEMENT_ENERGY_FLOOR: f32 = 0.002;
+
+fn required_samples(probe: &SurfaceProbe, face: usize, settings: &VoxelGiSettings) -> u32 {
+    let minimum = settings.stable_samples();
+    if probe.radiance[face].visible.max_element() < 0.02 {
+        // Zero observed variance after a few missed bright paths is not enough
+        // evidence in a dark room. This is still a heuristic, not a guarantee
+        // that every small light/portal has been sampled.
+        minimum.max(256)
+    } else {
+        minimum
+    }
+}
+
+fn refinement_error(probe: &SurfaceProbe, face: usize) -> f32 {
+    relative_error_with_floor(
+        probe.radiance[face],
+        probe.second_moment[face],
+        probe.samples[face],
+        REFINEMENT_ENERGY_FLOOR,
+    )
+}
 
 /// Faces whose latest measurements passed the adaptive stability checks in
 /// this scene revision. An audit becoming due does not itself revoke stability.
@@ -66,7 +91,7 @@ pub(crate) fn due_faces(
         if force
             || probe.transport_revision != revision
             || probe.fresh_mask & (1 << face) == 0
-            || probe.samples[face] < settings.stable_samples()
+            || probe.samples[face] < required_samples(probe, face, settings)
             || probe.stable_batches[face] < STABLE_BATCHES
             || probe.face_updated_at[face]
                 .is_none_or(|last| now.saturating_duration_since(last) >= settings.audit_interval())
@@ -109,11 +134,7 @@ pub(crate) fn record_face_batch(
     now: Instant,
     settings: &VoxelGiSettings,
 ) {
-    let error = relative_error(
-        probe.radiance[face],
-        probe.second_moment[face],
-        probe.samples[face],
-    );
+    let error = refinement_error(probe, face);
     let after = probe.radiance[face];
     let a = [
         before.visible.x,
@@ -132,15 +153,16 @@ pub(crate) fn record_face_batch(
     let drift = a
         .into_iter()
         .zip(b)
-        .map(|(a, b)| (a - b).abs() / (0.02 + a.abs().max(b.abs())))
+        .map(|(a, b)| (a - b).abs() / (REFINEMENT_ENERGY_FLOOR + a.abs().max(b.abs())))
         .fold(0.0, f32::max);
     let display_settled = (probe.display[face].indirect - after.visible)
         .abs()
         .max_element()
-        <= 0.01 + after.visible.max_element() * settings.stable_error() * 0.5;
+        <= REFINEMENT_ENERGY_FLOOR * 0.5
+            + after.visible.max_element() * settings.stable_error() * 0.5;
     probe.stable_batches[face] = if same_revision
         && display_settled
-        && probe.samples[face] >= settings.stable_samples()
+        && probe.samples[face] >= required_samples(probe, face, settings)
         && error <= settings.stable_error()
         && drift <= settings.stable_error() * 0.5
     {
@@ -172,11 +194,7 @@ fn priority(probe: &SurfaceProbe, source_revision: u64, now: Instant) -> f32 {
             let value = if probe.samples[face] == 0 {
                 8.0
             } else {
-                relative_error(
-                    probe.radiance[face],
-                    probe.second_moment[face],
-                    probe.samples[face],
-                )
+                refinement_error(probe, face)
             };
             error = error.max(value);
         }
@@ -366,6 +384,48 @@ mod tests {
         assert_eq!(
             probe.stable_batches[2], 0,
             "energy drift must wake even with zero variance"
+        );
+    }
+
+    #[test]
+    fn dark_receivers_need_evidence_before_sparse_audits() {
+        let now = Instant::now();
+        let settings = VoxelGiSettings::default();
+        let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
+        probe.trace_mask = 4;
+        probe.samples[2] = 128;
+        probe.face_updated_at[2] = Some(now);
+        probe.stable_batches[2] = STABLE_BATCHES;
+        assert_eq!(
+            due_faces(&probe, 0, now, &settings, false),
+            4,
+            "an early run of black samples must not enter two-second audits"
+        );
+        let old = probe.clone();
+        record_batch(&mut probe, &old, now, &settings);
+        assert_eq!(probe.stable_batches[2], 0);
+
+        probe.samples[2] = 256;
+        probe.radiance[2] = super::super::EnergySpectrum::new(Vec3::splat(0.002), 0.0, 0.0);
+        probe.second_moment[2] = super::super::EnergySpectrum::new(Vec3::splat(0.000128), 0.0, 0.0);
+        probe.display[2].indirect = probe.radiance[2].visible;
+        assert!(
+            super::super::history::relative_error(probe.radiance[2], probe.second_moment[2], 256)
+                < settings.stable_error(),
+            "this dark noisy fixture passed the old presentation-floor test"
+        );
+        let old = probe.clone();
+        record_batch(&mut probe, &old, now, &settings);
+        assert_eq!(probe.stable_batches[2], 0);
+        probe.samples[2] = 4096;
+        for _ in 0..STABLE_BATCHES {
+            let old = probe.clone();
+            record_batch(&mut probe, &old, now, &settings);
+        }
+        assert_eq!(
+            due_faces(&probe, 0, now, &settings, false),
+            0,
+            "sufficiently measured dark faces must still be able to rest"
         );
     }
 
