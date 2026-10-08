@@ -5,11 +5,10 @@ any one paper. Separate a reference's reported results from results measured in
 this repository. In particular, voxel traversal speed, estimator variance and
 display stability are different problems.
 
-This review used the primary sources below. The NAADF publication page and vxpg
-author abstract were accessible; their large/full PDFs were not retrieved in
-this review. Do not treat those entries as a fresh equation-by-equation audit of
-the papers. Solari's entry is explicitly versioned, not a claim about its latest
-implementation or platform compatibility.
+NAADF's implementation findings below are pinned to a source revision, separate
+from its paper's reported results. The vxpg entry uses the author's abstract,
+not an equation-by-equation paper audit. Solari's entry is explicitly versioned,
+not a claim about its latest implementation or platform compatibility.
 
 ## What the references contribute
 
@@ -26,6 +25,62 @@ packing and content deduplication are implemented. We do **not** implement that
 complete renderer, its bounce-sample history or ReSTIR reuse. Our per-face means
 and moments are not equivalent to retained, re-evaluable path samples. Published
 speedups cannot be transferred to this code or machine without a paired test.
+
+#### Source implementation findings
+
+Source revision [3ea3bb6](https://github.com/cg-tuwien/NAADF/tree/3ea3bb6a836aa4a30277c055f812d65a9d7d6766),
+MIT licensed. The construction experiments below are independent changes to our
+builder/cache, not copied shader implementations.
+
+- **Bound construction has two schedules.**
+  [boundsCommon.fxh](https://github.com/cg-tuwien/NAADF/blob/3ea3bb6a836aa4a30277c055f812d65a9d7d6766/NAADF/Content/shaders/world/data/boundsCommon.fxh)
+  performs three XYZ rounds for each 4³ block in GPU group-shared memory.
+  [boundsCalc.fx](https://github.com/cg-tuwien/NAADF/blob/3ea3bb6a836aa4a30277c055f812d65a9d7d6766/NAADF/Content/shaders/world/data/boundsCalc.fx)
+  schedules top-level 4³ groups by bound size and axis using queues and indirect
+  dispatch. Its `anyBoundsIncrease` flag is written but does not gate requeueing
+  at this revision; this is not an early-fixed-point implementation. Our full-cycle
+  early-exit experiment is separate and was rejected for mixed-workload overhead.
+- **Edits repair bounds separately from lighting history.**
+  [ChangeHandler.cs](https://github.com/cg-tuwien/NAADF/blob/3ea3bb6a836aa4a30277c055f812d65a9d7d6766/NAADF/World/Data/ChangeHandler.cs)
+  and [worldChange.fx](https://github.com/cg-tuwien/NAADF/blob/3ea3bb6a836aa4a30277c055f812d65a9d7d6766/NAADF/Content/shaders/world/data/worldChange.fx)
+  identify affected groups, shrink unsafe bounds and requeue refinement. Small
+  voxel/block fields are rebuilt locally. We retain transactional CPU-built
+  snapshots; publishing conservative geometry before full accelerator refinement
+  remains a possible larger change, not an implemented feature.
+- **Traversal uses the packed directional bounds directly.**
+  [rayTracing.fxh](https://github.com/cg-tuwien/NAADF/blob/3ea3bb6a836aa4a30277c055f812d65a9d7d6766/NAADF/Content/shaders/render/rayTracing.fxh)
+  preselects bound shifts from the ray direction, uses reciprocal direction and
+  steps all tied axes with a vector mask. It also separates integer/fractional
+  positions. This suggests a distinct branchless traversal experiment; our earlier
+  reciprocal-only candidate did not show a win. Their step limits are 60–120 by
+  ray type, versus our conservative 2,048; shortening ours is not a free equivalent
+  optimization because incomplete traversal has explicit unknown semantics.
+- **GI retains individual path samples, including their geometry.**
+  [renderGlobalIllum.fx](https://github.com/cg-tuwien/NAADF/blob/3ea3bb6a836aa4a30277c055f812d65a9d7d6766/NAADF/Content/shaders/render/versions/base/renderGlobalIllum.fx)
+  stores 32-byte lit samples and 16-byte unlit samples. Lit records retain the
+  original receiver, direction and bounce-hit information; only one eighth of
+  unlit records is retained. It also applies radiance roulette and samples
+  atmosphere on escaped paths at probability 1/16 with compensation. These are
+  storage/work tradeoffs, not something our per-face means and moments already do.
+- **Reuse includes rejection, weighting and a visibility ray.**
+  [renderSampleRefine.fx](https://github.com/cg-tuwien/NAADF/blob/3ea3bb6a836aa4a30277c055f812d65a9d7d6766/NAADF/Content/shaders/render/versions/base/renderSampleRefine.fx)
+  reprojects history into 8×8 screen buckets, admits up to 32 lit candidates and
+  writes at most seven into an eight-slot refined allocation. Unlit counts are
+  weighted by eight. Its optional leveling and distance-outlier suppression
+  deliberately modify sample radiance. In
+  [renderSpatialResampling.fx](https://github.com/cg-tuwien/NAADF/blob/3ea3bb6a836aa4a30277c055f812d65a9d7d6766/NAADF/Content/shaders/render/versions/base/renderSpatialResampling.fx),
+  twelve neighborhood candidates undergo normal/depth, PDF-ratio and Jacobian
+  checks; weighted selection is followed by visibility testing. Direct sun still
+  gets a separate visibility ray. This is much more than temporal blending.
+
+**Implications for this engine:** exact uniform-field construction and topology-keyed
+top-level reuse are now measured wins in [the experiment record](experiments.md#naadf-construction-experiments).
+The largest unimplemented GI opportunity from this source is world-space reuse
+of individual samples. A receiver-owned design must retain path geometry, proposal
+density and all five energy bands; reconnect with current visibility; invalidate
+source/geometry dependencies; and preserve unbiased zero-sample accounting before
+adding any deliberate display-only bias. Screen buckets, RGB compression and
+darkening heuristics are not suitable as the authoritative simulation field.
 
 ### vxray
 
@@ -132,6 +187,8 @@ multi-band tests before considering promotion.
 
 The [October 8 experiment results](experiments.md) record completed branches.
 Emitter-only scrambled Sobol sampling and explicit sky demand are now defaults.
+Uniform AADF construction and topology-keyed top-level reuse also remove measured
+scene-building work without changing transport samples.
 The four-sector local guide, dense wavefront implementation and broader Sobol
 variants were not promoted. The experiments below remain research directions,
 not claims that those tested variants should be retried unchanged.

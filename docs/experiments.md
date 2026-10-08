@@ -1,7 +1,8 @@
 # GI performance experiment results
 
-Two compatible changes are retained: better emitter sampling and explicit sky
-work. Other candidates remain on separate local branches. The preferred shared
+Four compatible changes are retained: better emitter sampling, explicit sky
+work, exact uniform-field construction and topology-keyed acceleration reuse.
+Other candidates remain on separate local branches. The preferred shared
 corner appearance, four paths per dispatch, three-bounce estimator, history
 policy and temporal display filter are unchanged. There is no new debounce,
 per-corner indirect transport, reservoir history or screen-space dependency.
@@ -23,6 +24,9 @@ comparison infrastructure is `9186a55`. Winners were merged into
 | `hybrid-sampler` | `70cb3f8` | Reject primary-Sobol/secondary-Halton mixture: did not resolve the room tradeoff. |
 | `emitter-sobol` | `5f3cee2` | Retain: lower emitter error, original path directions and nonemissive results preserved. |
 | `explicit-sky-work` | `a250cbb` | Retain: remove repeated warm sky lookups/copies from indirect-only work. |
+| `aadf-convergence` | `5fecb63` | Reject full-cycle early exit: loaded islands improve, mixed terrain and bricks regress. |
+| `uniform-aadf` | `21d2409` | Retain: solve empty/full acceleration volumes exactly, without iterative sweeps. |
+| `topology-cache` | `b57d853` | Retain: share top-level acceleration across edits that preserve region residency and occupancy. |
 
 Rejected variants are not dormant production toggles or extra runtime resources.
 A rejected implementation does not disprove its broader research family: the
@@ -162,3 +166,100 @@ A 32-frame history can be a reasonable latency budget at 60 Hz, but half a secon
 of delay is not evidence of correct visibility or probability accounting. Reuse
 experiments still need current-geometry/source checks, bounded state and both
 brightening and darkening references before promotion.
+
+## NAADF construction experiments
+
+The next series starts at `af4a724`, preserved as
+`experiment/gi-baseline-naadf-source-20261008`. Source findings are pinned in
+[the research notes](research.md#source-implementation-findings). These are
+CPU acceleration-construction changes; GI paths, source evaluation, history,
+presentation and the GPU shader are unchanged. No external implementation was
+copied. Winners were merged at `ee136fc` and `01d7e43`; rejected early termination
+remains isolated, with no dormant runtime switch.
+
+All timings below: Apple M4, Rust 1.95.0, development `opt-level=1`, shared-cache
+settings from `validation.md`, isolated CPU execution with no viewport. Baseline
+and candidate alternate in one test binary after warmup. Frozen test-only
+references keep the original algorithms available without production resources.
+
+### Exact uniform fields
+
+`dac6dcf` freezes the `af4a724` builder, independently retaining its neighbor rule.
+Its baseline control timings agree with the unchanged production implementation.
+Candidate `21d2409` was measured as `dac6dcf` plus its `naadf.rs` diff: 20 measured
+pairs after four warmups, 256 builds per small-volume observation.
+
+| Construction p50 | Full sweeps | Uniform fast path |
+| --- | ---: | ---: |
+| Empty 4³ brick | 3.635 µs | 0.089 µs |
+| Solid 4³ brick | 0.529 µs | 0.037 µs |
+| Mixed planar 4³ brick | 2.015 µs | 2.007 µs |
+| Mixed scattered 4³ brick | 2.574 µs | 2.588 µs |
+| 48×16×48 terrain field | 25.952 ms | 25.707 ms |
+
+The win is avoiding relaxation and a second allocation for uniform volumes,
+including uniform bricks inside mixed regions. Mixed timings are effectively
+unchanged, not a separate claimed improvement. Every field equals the full-sweep
+reference. Tests exhaust all 2³ occupancy patterns and cover seeded volumes,
+uniform fields, zero/single-cell dimensions and each 255-cell axis.
+
+The rejected `5fecb63` candidate stopped only after an unchanged full XYZ cycle.
+It reduced the loaded-island fixture from 7.321 to 1.953 ms, but top terrain rose
+25.938 → 26.827 ms and scattered occupancy 27.952 → 29.230 ms. Its bookkeeping
+also slowed empty/mixed bricks. This result does not reject NAADF's queued GPU
+refinement, which uses a different schedule.
+
+Evidence: `target/aadf-baseline-control.log`, `aadf-uniform-paired.log`,
+`aadf-uniform-tests.log`, `aadf-uniform-world-tests.log`,
+`aadf-convergence-paired.log` and `aadf-convergence-tests.log`.
+
+### Topology keyed reuse
+
+Top-level skip bounds depend on region membership and empty/nonempty occupancy,
+not every voxel/material change. `b57d853` shares an immutable `Arc<[Aadf]>` when
+those inputs match. Edits still replace changed region objects and generate
+normal transport/source changes. Last-solid removal, first-solid addition and
+residency changes rebuild bounds; older snapshots remain valid.
+
+Harness `19dc564` preserves the old rebuild-on-any-region-change decision.
+Its control pair measured 3.445 versus 3.450 ms. Candidate measurements use that
+commit plus the two-file diff committed as `b57d853`, including the uniform-field
+winner. Each pair deletes one surface voxel among 8,192 resident regions
+(1,024 pages), building a fresh successor of the same immutable baseline.
+
+| Complete scene construction | Old rebuild policy | Topology reuse |
+| --- | ---: | ---: |
+| First run p50 | 3.447 ms | 0.145 ms |
+| First run p95 | 3.664 ms | 0.162 ms |
+| Repeat p50 | 3.483 ms | 0.143 ms |
+| Repeat p95 | 3.551 ms | 0.151 ms |
+
+Forty measured alternating pairs per run follow four warmups. Approximately 24×
+faster **scene construction for this edit**, not 24× FPS or faster ray integration.
+References match materials, material masks, every voxel/brick/top-level bound and
+residency. Ordinary tests also cover material-only edits, occupancy transitions,
+negative coordinates, same-count island replacement and source invalidation.
+
+Evidence: `target/topology-baseline-control.log`, `topology-cache-paired.log`,
+`topology-cache-confirm.log`, `topology-cache-tests.log`.
+
+### Integrated verification
+
+Code committed as `b57d853` and merged unchanged at `01d7e43`: 135 regular tests
+pass, 18 opt-in tests ignored; strict all-target Clippy and development build pass.
+Native Metal CPU/GPU reference RMS is 0.000000 for ordinary and emissive fixtures,
+with edit upload/sky invalidation and extra-band checks passing. No toggle stress
+run was needed. Logs: `target/naadf-source-integration-tests.log`,
+`naadf-source-clippy.log`, `naadf-source-build.log`, `naadf-source-native-parity.log`.
+
+At `01d7e43` with only documentation edits during the run, the 35-second
+`streaming` workload completed on M4/Metal, development build, 2560×1440 offscreen,
+preferred corner look, textures on and AO off. All three captures had valid
+targets and nonblank content; streaming/recovery images were inspected and render
+logs were clean. It loaded at most 635 pages and ended at full coverage.
+Streaming cadence p99 was 43.38 ms with a 248.00 ms maximum; near-field age p95
+was 1.95 seconds. Large stalls remain. This is an integration check, not a paired
+gameplay speed claim, and these timings are not windowed FPS.
+
+Artifact: `target/gi-validation/streaming-1791494602912343000-36808/`;
+log: `target/naadf-source-streaming.log`.

@@ -63,6 +63,13 @@ reference at equal path counts. Neither benchmark establishes gameplay FPS.
 unchanged transport and displayed sunlight. These remain opt-in, not a new
 mandatory suite for ordinary edits.
 
+For acceleration construction, `aadf_construction_benchmark` compares exact
+bounds and paired CPU timings against the frozen full-sweep builder.
+`scene_topology_reuse_benchmark` compares a one-block edit among 8,192 resident
+regions against rebuilding top-level bounds after any region change. Both are
+opt-in, have no viewport and measure construction, not frame time. Ordinary
+oracle tests cover topology, material changes, residency and immutable snapshots.
+
 ## End-to-end workloads
 
 Defaults stay shared-corner sunlight, corner-reconstructed indirect, textures on,

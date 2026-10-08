@@ -54,6 +54,8 @@ The host exports immutable dense 32³ pages of material IDs. A page contains eig
 16³ regions; each region contains 4³ bricks of 4³ voxels. Material IDs are 0–255;
 air is the distinct value 256. Regions that are unchanged retain `Arc` identity.
 Empty and uniform regions avoid dense voxel storage.
+Uniform empty brick fields use exact distances to the volume edges; fully blocked
+fields are zero. Only mixed fields require iterative neighbor merging.
 
 Nested axis-aligned empty-space bounds accelerate rays at the region, brick and
 voxel levels. GPU brick tags distinguish empty, uniform and mixed storage. Mixed
@@ -63,6 +65,9 @@ tracer is an independent representation/reference, not a decoder of GPU cells.
 
 Top-level bounds include loaded regions, but do not allocate an arbitrarily large
 box between disconnected islands: oversized domains fall back to region DDA.
+The top-level field depends only on region residency and empty/nonempty occupancy.
+Immutable snapshots share its allocation across edits that preserve that topology;
+changed voxel regions still trigger normal source and transport invalidation.
 Rays normalize direction, offset from surfaces, traverse at most 2,048 steps and
 768 voxel units per segment, and distinguish hits, escape and unknown traversal.
 These limits and the small-throughput cutoff are approximations, not an exact
