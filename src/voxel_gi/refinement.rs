@@ -312,3 +312,212 @@ fn fixed_scene_refinement_diagnostic() {
             "notes": "Fixed scene, 100 faces, 4 paths per batch, virtual 50ms display cadence. Not gameplay FPS or wall-clock response. References use disjoint 16384-path estimates or independent analytic/quadrature values."})).unwrap()).unwrap();
     }
 }
+
+/// Matched-sample history tradeoff, independent of scheduling and streaming.
+/// Closure has an exact zero-energy reference; the open roof uses two disjoint
+/// high-sample estimates, whose disagreement is reported rather than hidden.
+#[test]
+#[ignore = "matched-ray geometry response diagnostic; requires a native compute adapter"]
+fn geometry_history_response_sweep() {
+    let mut gpu = super::tests::native_tracer();
+    let mut fixture = fixture(2);
+    let mut closed_page = vec![AIR; volume_len(PAGE_SIZE)];
+    for z in 0..32 {
+        for y in 0..32 {
+            for x in 0..32 {
+                let v = UVec3::new(x, y, z);
+                closed_page[linear_index(v, PAGE_SIZE)] =
+                    if y == 20 && (13..=17).contains(&x) && (13..=17).contains(&z) {
+                        2
+                    } else {
+                        fixture.scene.material_at(v.as_ivec3()).unwrap()
+                    };
+            }
+        }
+    }
+    let closed = Arc::new(TransportScene::with_page_delta(
+        &fixture.scene,
+        vec![(IVec3::ZERO, closed_page.clone())],
+        &[],
+    ));
+    closed_page[linear_index(UVec3::new(16, 20, 16), PAGE_SIZE)] = AIR;
+    let open = Arc::new(TransportScene::with_page_delta(
+        &closed,
+        vec![(IVec3::ZERO, closed_page)],
+        &[],
+    ));
+    fixture.probes = [6, 10, 16, 21, 25]
+        .into_iter()
+        .flat_map(|z| {
+            [6, 10, 16, 21, 25]
+                .into_iter()
+                .filter(move |&x| x != 16 || z != 16)
+                .map(move |x| SurfaceProbe::new(IVec3::new(x, 20, z), 8))
+        })
+        .collect();
+    let face = 3;
+    let emitters = Arc::new(EmissionDistribution::build(&open, &fixture.materials));
+    let mut references = Vec::new();
+    for sequence in [65_536, 1_048_576] {
+        let mut probes = fixture.probes.clone();
+        let mut integrated = fixture.probes.clone();
+        for probe in &mut probes {
+            probe.sequence[face] = sequence;
+        }
+        for _ in 0..8 {
+            for probe in &mut probes {
+                probe.samples[face] = 0;
+                probe.radiance[face] = EnergySpectrum::ZERO;
+                probe.second_moment[face] = EnergySpectrum::ZERO;
+            }
+            gpu.trace(
+                open.clone(),
+                &fixture.sources,
+                &fixture.materials,
+                &mut probes,
+                65_536,
+                &emitters,
+            )
+            .unwrap();
+            for (total, batch) in integrated.iter_mut().zip(&probes) {
+                total.radiance[face] += batch.radiance[face] / 8.0;
+                total.second_moment[face] += batch.second_moment[face] / 8.0;
+            }
+        }
+        references.push(integrated);
+    }
+    let reference: Vec<_> = references[0]
+        .iter()
+        .zip(&references[1])
+        .map(|(a, b)| {
+            (
+                (a.radiance[face] + b.radiance[face]) * 0.5,
+                (a.second_moment[face] + b.second_moment[face]) * 0.5,
+            )
+        })
+        .collect();
+    let disagreement: Vec<_> = references[0]
+        .iter()
+        .zip(&references[1])
+        .zip(&reference)
+        .map(|((a, b), (mean, _))| {
+            (a.radiance[face].visible - b.radiance[face].visible)
+                .abs()
+                .max_element()
+                / mean.visible.max_element().max(1e-6)
+        })
+        .collect();
+    let mut reports = Vec::new();
+    const CAPS: [u32; 6] = [16, 24, 32, 64, 128, 256];
+    for closing in [false, true] {
+        let scene = if closing {
+            closed.clone()
+        } else {
+            open.clone()
+        };
+        let emitters = Arc::new(EmissionDistribution::build(&scene, &fixture.materials));
+        let start = Instant::now();
+        let mut fresh = fixture.probes.clone();
+        let mut candidates: Vec<_> = CAPS
+            .iter()
+            .map(|&cap| {
+                fixture
+                    .probes
+                    .iter()
+                    .zip(&reference)
+                    .map(|(probe, &(mean, second))| {
+                        let mut p = probe.clone();
+                        p.samples[face] = cap;
+                        p.radiance[face] = if closing { mean } else { EnergySpectrum::ZERO };
+                        p.second_moment[face] = if closing {
+                            second
+                        } else {
+                            EnergySpectrum::ZERO
+                        };
+                        p.display[face].indirect = p.radiance[face].visible;
+                        p.face_updated_at[face] = Some(start);
+                        p
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let mut steps = vec![Vec::new(); CAPS.len()];
+        let mut curves = vec![Vec::new(); CAPS.len()];
+        for batch in 1..=640 {
+            // Trace each fresh stream once, then feed identical moments into
+            // every candidate. No different random sequence or ray budget.
+            for p in &mut fresh {
+                p.samples[face] = 0;
+                p.radiance[face] = EnergySpectrum::ZERO;
+                p.second_moment[face] = EnergySpectrum::ZERO;
+            }
+            gpu.trace(
+                scene.clone(),
+                &fixture.sources,
+                &fixture.materials,
+                &mut fresh,
+                4,
+                &emitters,
+            )
+            .unwrap();
+            if closing {
+                assert!(
+                    fresh
+                        .iter()
+                        .all(|p| p.radiance[face] == EnergySpectrum::ZERO)
+                );
+            }
+            let now = start + Duration::from_millis(batch * 50);
+            for (index, probes) in candidates.iter_mut().enumerate() {
+                let mut raw_error = Vec::new();
+                let mut display_error = Vec::new();
+                for ((p, new), &(mean, _)) in probes.iter_mut().zip(&fresh).zip(&reference) {
+                    let old_display = p.display[face].indirect;
+                    p.samples[face] += 4;
+                    let alpha = 4.0 / p.samples[face] as f32;
+                    p.radiance[face] += (new.radiance[face] - p.radiance[face]) * alpha;
+                    p.second_moment[face] +=
+                        (new.second_moment[face] - p.second_moment[face]) * alpha;
+                    p.resolve_face(face, Some(now - Duration::from_millis(50)), now, 0.075);
+                    let target = if closing { Vec3::ZERO } else { mean.visible };
+                    let scale = mean.visible.max_element().max(1e-6);
+                    raw_error.push((p.radiance[face].visible - target).abs().max_element() / scale);
+                    display_error
+                        .push((p.display[face].indirect - target).abs().max_element() / scale);
+                    if batch <= 100 {
+                        steps[index].push(
+                            (p.display[face].indirect - old_display).abs().max_element() / scale,
+                        );
+                    }
+                }
+                curves[index].push(json!({"fresh_paths":batch*4, "raw_error_p95":percentile(raw_error,95), "display_error_p95":percentile(display_error,95)}));
+            }
+        }
+        for (index, cap) in CAPS.into_iter().enumerate() {
+            // First point after the LAST threshold violation, not the first
+            // lucky crossing. None means not reached during this workload.
+            let sustained = |threshold: f64| {
+                curves[index]
+                    .iter()
+                    .rposition(|p| p["display_error_p95"].as_f64().unwrap() > threshold)
+                    .map_or(Some(4), |i| {
+                        curves[index]
+                            .get(i + 1)
+                            .map(|p| p["fresh_paths"].as_u64().unwrap())
+                    })
+            };
+            let summary = json!({"closing":closing, "history_cap":cap,
+                "stay_within_10_percent_paths":sustained(0.1), "stay_within_20_percent_paths":sustained(0.2),
+                "first_100_batches_display_step_p95":percentile(steps[index].clone(),95),
+                "display_step_max":percentile(steps[index].clone(),100),
+                "checkpoints":curves[index].iter().filter(|p|[32,64,128,256,512,1024,2048,2560].contains(&p["fresh_paths"].as_u64().unwrap())).collect::<Vec<_>>()});
+            eprintln!("History response: {summary}");
+            reports.push(json!({"summary":summary,"curve":curves[index]}));
+        }
+    }
+    let report = json!({"reference_disagreement_p95":percentile(disagreement,95),"cases":reports,
+        "notes":"24 fixed roof receivers, one-block skylight, identical 4-path batches across caps. Closure is exactly zero. Opening reference averages two disjoint 524288-path estimates; reported disagreement limits accuracy claims. Virtual 50ms display cadence, NOT gameplay latency or FPS. No adaptive scheduler or streaming."});
+    if let Ok(path) = std::env::var("VOXEL_GI_RESPONSE_REPORT") {
+        std::fs::write(path, serde_json::to_vec(&report).unwrap()).unwrap();
+    }
+}
