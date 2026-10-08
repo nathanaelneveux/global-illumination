@@ -81,6 +81,20 @@ fn scramble_reverse(input: u32, seed: u32) -> u32 {
     return value;
 }
 fn sample_1d(stream: u32, sequence: u32, dimension: u32) -> f32 {
+    if dimension < 12u {
+        let primes = array<u32,12>(2u,3u,5u,7u,11u,13u,17u,19u,23u,29u,31u,37u);
+        let base = primes[dimension];
+        var index = (sequence & 0x00ffffffu) + 1u;
+        var scale = 1.0;
+        var value = 0.0;
+        while index != 0u {
+            scale /= f32(base);
+            value += f32(index % base) * scale;
+            index /= base;
+        }
+        let rotation = f32(pcg(stream ^ pcg(dimension)) >> 9u) / 8388608.0;
+        return fract(value + rotation);
+    }
     let seed = pcg(stream ^ pcg(dimension / 2u));
     var index = reverseBits(scramble_reverse(reverseBits(sequence), pcg(seed ^ 0x79c68e4au)));
     if (dimension & 1u) != 0u {

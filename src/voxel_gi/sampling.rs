@@ -11,10 +11,24 @@ pub(crate) fn stream_id(voxel: IVec3, face: u32) -> u32 {
     pcg(pcg(pcg(voxel.x as u32) ^ voxel.y as u32) ^ voxel.z as u32) ^ pcg(face.wrapping_add(1))
 }
 
-/// Shuffled, hash-Owen-scrambled Sobol pairs, padded independently for each
-/// dimension pair. World identity seeds the stream; the full 32-bit sequence
-/// continues independently of measurement-history resets. No tables or division.
+/// Preserve rotated Halton path directions and roulette; use independently
+/// padded, hash-Owen-scrambled Sobol pairs for emitter selection and surface
+/// coordinates. All streams continue independently of measurement resets.
 pub(crate) fn sample_1d(stream: u32, sequence: u32, dimension: u32) -> f32 {
+    if dimension < 12 {
+        const PRIMES: [u32; 12] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];
+        let base = PRIMES[dimension as usize];
+        let mut index = (sequence & 0x00ff_ffff) + 1;
+        let mut scale = 1.0;
+        let mut value = 0.0;
+        while index != 0 {
+            scale /= base as f32;
+            value += (index % base) as f32 * scale;
+            index /= base;
+        }
+        let rotation = (pcg(stream ^ pcg(dimension)) >> 9) as f32 / 8_388_608.0;
+        return (value + rotation).fract();
+    }
     let seed = pcg(stream ^ pcg(dimension / 2));
     let mut index =
         scramble_reverse(sequence.reverse_bits(), pcg(seed ^ 0x79c6_8e4a)).reverse_bits();
@@ -87,7 +101,7 @@ mod tests {
                     / 4096.0;
                 assert!((mean - 0.5).abs() < 0.004, "dimension {dimension}: {mean}");
             }
-            for dimension in (0..16).step_by(2) {
+            for dimension in [12, 14] {
                 for start in [0, 64, 4096, 65536, 16_777_216] {
                     for x_bits in 0..=6 {
                         let width = 1 << x_bits;
@@ -104,6 +118,32 @@ mod tests {
                             "pair {dimension}, start {start}, grid {width}x{height}"
                         );
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn path_dimensions_preserve_the_previous_halton_sequence() {
+        for stream in [0, 123, stream_id(IVec3::new(-19, 7, 12), 2)] {
+            for (dimension, base) in [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]
+                .into_iter()
+                .enumerate()
+            {
+                for sequence in [0, 3, 7, 64, 2047, 65536, 0x00ff_ffff] {
+                    let mut index = (sequence & 0x00ff_ffff) + 1;
+                    let mut scale = 1.0;
+                    let mut value = 0.0;
+                    while index != 0 {
+                        scale /= base as f32;
+                        value += (index % base) as f32 * scale;
+                        index /= base;
+                    }
+                    let rotation = (pcg(stream ^ pcg(dimension as u32)) >> 9) as f32 / 8_388_608.0;
+                    assert_eq!(
+                        sample_1d(stream, sequence, dimension as u32),
+                        (value + rotation).fract()
+                    );
                 }
             }
         }
