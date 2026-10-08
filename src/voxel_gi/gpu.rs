@@ -16,7 +16,7 @@ use bevy::render::storage::ShaderBuffer;
 use super::emission::EmissionDistribution;
 use super::gpu_scene::PackedScene;
 use super::spectrum::EnergySpectrum;
-use super::tracer::TransportSources;
+use super::tracer::{HISTORY_LIMIT, TransportSources};
 use super::work::TraceWork;
 #[cfg(test)]
 use super::world::SurfaceProbe;
@@ -702,9 +702,14 @@ impl GpuTracer {
             });
             let mean = decode_spectrum(&values[0..4], values[4]);
             let second = decode_spectrum(&values[8..12], values[12]);
-            face.accumulate_batch(mean, second, samples);
+            let count = face.samples.saturating_add(samples).min(HISTORY_LIMIT);
+            let alpha = (samples as f32 / count as f32).min(1.0);
+            face.radiance += (mean - face.radiance) * alpha;
+            face.second_moment += (second - face.second_moment) * alpha;
             face.direct = decode_spectrum(&values[16..20], values[20]);
             face.custom_direct = Vec3::new(values[21], values[22], values[23]);
+            face.samples = count;
+            face.sequence = face.sequence.wrapping_add(samples);
             face.updated_at = Some(now);
         }
         for (position, bytes) in sky_pending

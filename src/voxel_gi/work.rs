@@ -96,9 +96,6 @@ pub(crate) struct FaceWork {
     pub samples: u32,
     pub sequence: u32,
     pub updated_at: Option<Instant>,
-    /// Only the first fresh batch after invalidation validates retained weight.
-    /// Transient worker state; authoritative receivers need no extra storage.
-    revalidate: bool,
 }
 
 impl TraceWork {
@@ -151,7 +148,6 @@ impl TraceWork {
                         .min(source_history_limit)
                 },
                 sequence: probe.sequence[face],
-                revalidate: stale && !restart,
                 updated_at: if restart {
                     None
                 } else {
@@ -192,7 +188,6 @@ impl TraceWork {
             header.sky = probe.display.map(|face| face.sky);
             for face in &mut work.faces[header.faces()] {
                 face.samples = probe.samples[face.face];
-                face.revalidate = false;
             }
         }
         work
@@ -213,53 +208,6 @@ impl TraceWork {
 }
 
 impl FaceWork {
-    /// Shared CPU/GPU temporal accumulation. A retained prior must not prevent
-    /// strong fresh evidence from responding to an opening/closure. Compare
-    /// batch disagreement against BOTH path variances: a rare bright path or
-    /// a few black paths in a noisy dark room are not enough to reject history.
-    /// This three-standard-error heuristic is not a QMC confidence guarantee.
-    pub fn accumulate_batch(&mut self, mean: EnergySpectrum, second: EnergySpectrum, samples: u32) {
-        if samples == 0 {
-            return;
-        }
-        if self.revalidate && self.samples > super::geometry::NEAR_HISTORY && samples >= 2 {
-            let prior_variance =
-                (self.second_moment - self.radiance * self.radiance).finite_or_zero();
-            let batch_variance = (second - mean * mean).finite_or_zero();
-            let bands = |v: EnergySpectrum| {
-                [
-                    v.visible.x,
-                    v.visible.y,
-                    v.visible.z,
-                    v.infrared,
-                    v.ionizing,
-                ]
-            };
-            let variance = bands(prior_variance + batch_variance);
-            let incompatible = bands(self.radiance)
-                .into_iter()
-                .zip(bands(mean))
-                .enumerate()
-                .any(|(i, (old, new))| {
-                    let uncertainty = (variance[i] / (samples - 1) as f32).sqrt();
-                    (old - new).abs() > 0.002 + 3.0 * uncertainty
-                });
-            if incompatible {
-                self.samples = super::geometry::NEAR_HISTORY;
-            }
-        }
-        self.revalidate = false;
-        let count = self
-            .samples
-            .saturating_add(samples)
-            .min(super::tracer::HISTORY_LIMIT);
-        let alpha = (samples as f32 / count as f32).min(1.0);
-        self.radiance += (mean - self.radiance) * alpha;
-        self.second_moment += (second - self.second_moment) * alpha;
-        self.samples = count;
-        self.sequence = self.sequence.wrapping_add(samples);
-    }
-
     pub fn write(&self, probe: &mut SurfaceProbe) {
         let face = self.face;
         probe.radiance[face] = self.radiance;
@@ -276,61 +224,6 @@ impl FaceWork {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stale_prior_revalidation_responds_to_opening_and_closure_in_every_band() {
-        for band in 0..5 {
-            let mut channels = [0.0; 5];
-            channels[band] = 1.0;
-            let lit = EnergySpectrum::new(
-                Vec3::from_array(channels[..3].try_into().unwrap()),
-                channels[3],
-                channels[4],
-            );
-            for (before, after) in [(lit, EnergySpectrum::ZERO), (EnergySpectrum::ZERO, lit)] {
-                let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
-                probe.samples[2] = 2048;
-                probe.radiance[2] = before;
-                probe.second_moment[2] = before * before;
-                probe.sequence[2] = 9876;
-                let mut candidate = TraceWork::default();
-                candidate.push(&probe, 4, 1, 0, false, 256, u32::MAX);
-                let mut baseline = TraceWork::default();
-                baseline.push(&probe, 4, 1, 0, false, 16, u32::MAX);
-                for _ in 0..32 {
-                    candidate.faces[0].accumulate_batch(after, after * after, 4);
-                    baseline.faces[0].accumulate_batch(after, after * after, 4);
-                    assert_eq!(candidate.faces[0].samples, baseline.faces[0].samples);
-                    assert_eq!(candidate.faces[0].radiance, baseline.faces[0].radiance);
-                    assert_eq!(
-                        candidate.faces[0].second_moment,
-                        baseline.faces[0].second_moment
-                    );
-                    assert_eq!(candidate.faces[0].sequence, baseline.faces[0].sequence);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn noisy_dark_prior_does_not_reject_history_for_a_miss_or_one_bright_path() {
-        let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
-        probe.samples[2] = 2048;
-        // Bernoulli path energy: mostly zero, occasionally one. Four misses
-        // or one bright path are plausible under the unchanged integrand.
-        probe.radiance[2] = EnergySpectrum::ONE * 0.01;
-        probe.second_moment[2] = probe.radiance[2];
-        for mean in [0.0, 0.25] {
-            let mut work = TraceWork::default();
-            work.push(&probe, 4, 1, 0, false, 256, u32::MAX);
-            work.faces[0].accumulate_batch(
-                EnergySpectrum::ONE * mean,
-                EnergySpectrum::ONE * mean,
-                4,
-            );
-            assert_eq!(work.faces[0].samples, 260);
-        }
-    }
 
     #[test]
     fn compact_publication_matches_full_probe_reference_for_partial_faces_and_resets() {

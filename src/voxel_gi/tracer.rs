@@ -369,10 +369,8 @@ fn trace_face(
     let surface_position = voxel_center + normal * 0.5;
     (work.direct, work.custom_direct) = direct_at_surface(scene, sources, surface_position, normal);
     let stream = stream_id(work.voxel, face as u32);
-    let mut sum = EnergySpectrum::ZERO;
-    let mut second_sum = EnergySpectrum::ZERO;
-    for index in 0..samples_per_face {
-        let sequence = work.sequence.wrapping_add(index);
+    for _ in 0..samples_per_face {
+        let sequence = work.sequence;
         let direction = hemisphere(
             normal,
             sample_1d(stream, sequence, 0),
@@ -393,14 +391,13 @@ fn trace_face(
             true,
         );
         let sample = sample.finite_or_zero();
-        sum += sample;
-        second_sum += sample * sample;
+        let count = (work.samples + 1).min(HISTORY_LIMIT);
+        let alpha = 1.0 / count as f32;
+        work.radiance += (sample - work.radiance) * alpha;
+        work.second_moment += (sample * sample - work.second_moment) * alpha;
+        work.samples = count;
+        work.sequence = work.sequence.wrapping_add(1);
     }
-    work.accumulate_batch(
-        sum / samples_per_face as f32,
-        second_sum / samples_per_face as f32,
-        samples_per_face,
-    );
     work.updated_at = Some(std::time::Instant::now());
 }
 

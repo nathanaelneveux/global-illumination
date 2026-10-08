@@ -664,7 +664,7 @@ fn invalidate_near_voxel(
         }
         if let Some(probe) = field.probes.get_mut(&voxel) {
             let (_, samples, covered, settled) = probe_metrics(probe, field.transport_revision);
-            probe.request_relight_with_limit(geometry::history_at_distance(delta.length_squared()));
+            probe.request_relight();
             let (_, next_samples, next_covered, next_settled) =
                 probe_metrics(probe, field.transport_revision);
             runtime.completed_samples =

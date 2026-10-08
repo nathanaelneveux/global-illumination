@@ -14,14 +14,6 @@ const FAR_HISTORY: u32 = 256;
 pub(super) const UNTRACKED_HISTORY: u32 = 64;
 const MAX_REVISIONS: usize = 8;
 
-/// Short history at contact, smoothly increasing statistical weight for an
-/// unchanged receiver farther from the changed bounds. This is a response
-/// heuristic, not a visibility cutoff or a bound on indirect influence.
-pub(super) fn history_at_distance(distance_squared: i64) -> u32 {
-    let extra = distance_squared.saturating_sub(4).clamp(0, 60) as u32;
-    NEAR_HISTORY + extra * 4
-}
-
 #[derive(Clone, Copy)]
 struct Bounds {
     min: IVec3,
@@ -123,17 +115,20 @@ impl GeometryChange {
     }
 
     fn history_limit(&self, voxel: IVec3) -> u32 {
-        self.nearby
+        if self
+            .nearby
             .get(&super::page_of(voxel))
-            .map_or(FAR_HISTORY, |changes| {
-                changes
-                    .iter()
-                    .map(|bounds| {
-                        history_at_distance(bounds.distance_squared(Bounds::point(voxel)))
-                    })
-                    .min()
-                    .unwrap_or(FAR_HISTORY)
+            .is_some_and(|changes| {
+                changes.iter().any(|bounds| {
+                    bounds.distance_squared(Bounds::point(voxel))
+                        <= i64::from(RELIGHT_RADIUS).pow(2)
+                })
             })
+        {
+            NEAR_HISTORY
+        } else {
+            FAR_HISTORY
+        }
     }
 }
 
@@ -207,11 +202,10 @@ mod tests {
         edited[linear_index(UVec3::new(0, 8, 8), PAGE_SIZE)] = 2;
         let next = TransportScene::with_page_delta(&base, vec![(IVec3::ZERO, edited)], &[]);
         let change = GeometryChange::between(&base, &next).unwrap();
-        for x in [-2, 0, 2] {
+        for x in [-48, 0, 48] {
             assert_eq!(change.history_limit(IVec3::new(x, 8, 8)), NEAR_HISTORY);
         }
-        assert_eq!(change.history_limit(IVec3::new(4, 8, 8)), 64);
-        for x in [-49, -8, 8, 49] {
+        for x in [-49, 49] {
             assert_eq!(
                 change.history_limit(IVec3::new(x, 8, 8)),
                 FAR_HISTORY,
@@ -227,9 +221,8 @@ mod tests {
             GeometryChange::between(&base, &loaded).unwrap(),
             GeometryChange::between(&loaded, &base).unwrap(),
         ] {
-            assert_eq!(change.history_limit(IVec3::new(126, 8, 8)), NEAR_HISTORY);
-            assert_eq!(change.history_limit(IVec3::new(124, 8, 8)), 64);
-            assert_eq!(change.history_limit(IVec3::new(120, 8, 8)), FAR_HISTORY);
+            assert_eq!(change.history_limit(IVec3::new(80, 8, 8)), NEAR_HISTORY);
+            assert_eq!(change.history_limit(IVec3::new(79, 8, 8)), FAR_HISTORY);
         }
         let mut revision = GeometryHistory::default();
         revision.record(4, 5, change);
