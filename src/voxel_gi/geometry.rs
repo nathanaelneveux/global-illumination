@@ -5,12 +5,107 @@ use bevy::math::I64Vec3;
 use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 
-use super::world::{PAGE_EDGE, REGION_EDGE, TransportScene};
+use super::world::{AIR, PAGE_EDGE, REGION_EDGE, TransportScene};
+use std::sync::Arc;
 
 pub(super) const RELIGHT_RADIUS: i32 = 48;
 pub(super) const NEAR_HISTORY: u32 = 16;
 const FAR_HISTORY: u32 = 256;
 pub(super) const UNTRACKED_HISTORY: u32 = 64;
+
+/// One worker-side comparison supplies scene publication, material/source
+/// invalidation and spatial history retention. Material IDs (not an emission
+/// boolean) survive material-table changes while the worker is in flight.
+pub(super) struct SceneChanges {
+    pub changed: bool,
+    pub changed_materials: [bool; 256],
+    pub transport: Option<GeometryChange>,
+}
+
+impl SceneChanges {
+    pub fn between(previous: &TransportScene, next: &TransportScene) -> Self {
+        let mut occupied_min = IVec3::MAX;
+        let mut occupied_max = IVec3::MIN;
+        for (&coordinate, region) in &previous.regions {
+            if region.any_solid {
+                occupied_min = occupied_min.min(coordinate);
+                occupied_max = occupied_max.max(coordinate);
+            }
+        }
+        let mut result = Self {
+            changed: false,
+            changed_materials: [false; 256],
+            transport: None,
+        };
+        let mut bounds = Vec::new();
+        for coordinate in next.regions.keys().chain(
+            previous
+                .regions
+                .keys()
+                .filter(|p| !next.regions.contains_key(p)),
+        ) {
+            let before = previous.regions.get(coordinate);
+            let after = next.regions.get(coordinate);
+            if before.zip(after).is_some_and(|(a, b)| Arc::ptr_eq(a, b)) {
+                continue;
+            }
+            result.changed = true;
+            let origin = *coordinate * REGION_EDGE as i32;
+            let entire = Bounds {
+                min: origin,
+                max: origin + IVec3::splat(REGION_EDGE as i32 - 1),
+            };
+            let mut tight = Bounds {
+                min: IVec3::MAX,
+                max: IVec3::MIN,
+            };
+            let mut record = |a: u16, b: u16, extent: Bounds| {
+                if a == b {
+                    return;
+                }
+                tight.min = tight.min.min(extent.min);
+                tight.max = tight.max.max(extent.max);
+                for material in [a, b] {
+                    if material != AIR {
+                        result.changed_materials[material as usize] = true;
+                    }
+                }
+            };
+            let uniform_before = before.map_or(Some(AIR), |r| r.uniform_material());
+            let uniform_after = after.map_or(Some(AIR), |r| r.uniform_material());
+            if let (Some(a), Some(b)) = (uniform_before, uniform_after) {
+                record(a, b, entire);
+            } else {
+                for z in 0..REGION_EDGE {
+                    for y in 0..REGION_EDGE {
+                        for x in 0..REGION_EDGE {
+                            let local = UVec3::new(x, y, z);
+                            record(
+                                before.map_or(AIR, |r| r.material(local)),
+                                after.map_or(AIR, |r| r.material(local)),
+                                Bounds::point(origin + local.as_ivec3()),
+                            );
+                        }
+                    }
+                }
+            }
+            // Residency changes knowledge of air as well as solids. Unknown
+            // holes within the previous occupied bounds affect existing paths;
+            // outside air-only bookkeeping does not change their integrand.
+            let residency = before.is_none() || after.is_none();
+            let transport = before.is_some_and(|r| r.any_solid)
+                || after.is_some_and(|r| r.any_solid)
+                || (coordinate.cmpge(occupied_min).all() && coordinate.cmple(occupied_max).all());
+            if transport && (residency || tight.min.cmple(tight.max).all()) {
+                bounds.push(if residency { entire } else { tight });
+            }
+        }
+        if !bounds.is_empty() {
+            result.transport = Some(GeometryChange::from_bounds(previous, &bounds));
+        }
+        result
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Bounds {
@@ -45,47 +140,12 @@ pub(super) struct GeometryChange {
 }
 
 impl GeometryChange {
+    #[cfg(test)]
     pub fn between(previous: &TransportScene, next: &TransportScene) -> Option<Self> {
-        let regions = next.transport_changed_regions(previous);
-        if regions.is_empty() {
-            return None;
-        }
-        let changes: Vec<_> = regions
-            .into_iter()
-            .map(|coordinate| {
-                let origin = coordinate * REGION_EDGE as i32;
-                let entire = Bounds {
-                    min: origin,
-                    max: origin + IVec3::splat(REGION_EDGE as i32 - 1),
-                };
-                let (Some(before), Some(after)) = (
-                    previous.regions.get(&coordinate),
-                    next.regions.get(&coordinate),
-                ) else {
-                    // Residency also changes knowledge of air, not just solids.
-                    return entire;
-                };
-                // Tight bounds for edits inside known regions: a single block edit
-                // keeps the same 48-voxel distance as the explicit urgent path.
-                let mut bounds = Bounds {
-                    min: IVec3::MAX,
-                    max: IVec3::MIN,
-                };
-                for z in 0..REGION_EDGE {
-                    for y in 0..REGION_EDGE {
-                        for x in 0..REGION_EDGE {
-                            let local = UVec3::new(x, y, z);
-                            if before.material(local) != after.material(local) {
-                                let voxel = origin + local.as_ivec3();
-                                bounds.min = bounds.min.min(voxel);
-                                bounds.max = bounds.max.max(voxel);
-                            }
-                        }
-                    }
-                }
-                bounds
-            })
-            .collect();
+        SceneChanges::between(previous, next).transport
+    }
+
+    fn from_bounds(previous: &TransportScene, changes: &[Bounds]) -> Self {
         let pages: HashSet<_> = previous
             .regions
             .iter()
@@ -109,7 +169,7 @@ impl GeometryChange {
                 plan.nearby.insert(page, nearby);
             }
         }
-        Some(plan)
+        plan
     }
 
     fn history_limit(&self, voxel: IVec3) -> u32 {

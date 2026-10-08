@@ -5,51 +5,6 @@ use super::world::{AIR, FACE_OFFSETS, REGION_EDGE, TransportScene, VoxelMaterial
 use bevy::prelude::*;
 use std::sync::Arc;
 
-/// Geometry-change metadata, computed on the scene worker. Keep material IDs
-/// rather than an emission boolean: the live material table can change while
-/// a scene build is in flight. Unknown/air are both non-emitting here.
-pub(crate) fn changed_voxel_materials(old: &TransportScene, new: &TransportScene) -> [bool; 256] {
-    let mut changed = [false; 256];
-    for coordinate in new
-        .regions
-        .keys()
-        .chain(old.regions.keys().filter(|p| !new.regions.contains_key(p)))
-    {
-        let before = old.regions.get(coordinate);
-        let after = new.regions.get(coordinate);
-        if before.zip(after).is_some_and(|(a, b)| Arc::ptr_eq(a, b)) {
-            continue;
-        }
-        let uniform_before = before.map_or(Some(AIR), |r| r.uniform_material());
-        let uniform_after = after.map_or(Some(AIR), |r| r.uniform_material());
-        let mut record = |a: u16, b: u16| {
-            if a != b {
-                for material in [a, b] {
-                    if material != AIR {
-                        changed[material as usize] = true;
-                    }
-                }
-            }
-        };
-        if let (Some(a), Some(b)) = (uniform_before, uniform_after) {
-            record(a, b);
-            continue;
-        }
-        for z in 0..REGION_EDGE {
-            for y in 0..REGION_EDGE {
-                for x in 0..REGION_EDGE {
-                    let local = UVec3::new(x, y, z);
-                    record(
-                        before.map_or(AIR, |r| r.material(local)),
-                        after.map_or(AIR, |r| r.material(local)),
-                    );
-                }
-            }
-        }
-    }
-    changed
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct EmissiveFace {
     pub voxel: IVec3,
@@ -260,19 +215,23 @@ mod tests {
         page[linear_index(UVec3::splat(8), PAGE_SIZE)] = 4;
         let lit = TransportScene::with_page_delta(&empty, vec![(IVec3::ZERO, page.clone())], &[]);
         for changed in [
-            changed_voxel_materials(&empty, &lit),
-            changed_voxel_materials(&lit, &empty),
-            changed_voxel_materials(&lit, &TransportScene::default()),
+            super::super::geometry::SceneChanges::between(&empty, &lit).changed_materials,
+            super::super::geometry::SceneChanges::between(&lit, &empty).changed_materials,
+            super::super::geometry::SceneChanges::between(&lit, &TransportScene::default())
+                .changed_materials,
         ] {
             assert!(changed[4]);
             assert_eq!(changed.iter().filter(|v| **v).count(), 1);
         }
         page[linear_index(UVec3::splat(9), PAGE_SIZE)] = 2;
         let edited = TransportScene::with_page_delta(&lit, vec![(IVec3::ZERO, page)], &[]);
-        let changed = changed_voxel_materials(&lit, &edited);
+        let changed =
+            super::super::geometry::SceneChanges::between(&lit, &edited).changed_materials;
         assert!(changed[2]);
         assert!(!changed[4], "ordinary nearby edits retain bounded history");
-        assert!(!changed_voxel_materials(&lit, &lit).into_iter().any(|v| v));
+        let unchanged = super::super::geometry::SceneChanges::between(&lit, &lit);
+        assert!(!unchanged.changed);
+        assert!(!unchanged.changed_materials.into_iter().any(|v| v));
     }
     #[test]
     fn distribution_contains_only_exposed_emitters_and_normalizes_power() {

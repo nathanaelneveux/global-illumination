@@ -300,46 +300,11 @@ pub struct TransportScene {
 }
 
 impl TransportScene {
-    /// Regions whose changes can affect transport from existing receivers.
-    /// Loaded-air bookkeeping outside the occupied region bounds cannot lie
-    /// between a receiver and geometry. Holes INSIDE those bounds still matter:
-    /// filling one can turn a conservative unknown path into a measured hit.
-    /// Run on the scene worker; unchanged regions retain their Arc identity.
-    pub(crate) fn transport_changed_regions(&self, previous: &Self) -> Vec<IVec3> {
-        let mut occupied_min = IVec3::MAX;
-        let mut occupied_max = IVec3::MIN;
-        for (coordinate, region) in &previous.regions {
-            if region.any_solid {
-                occupied_min = occupied_min.min(*coordinate);
-                occupied_max = occupied_max.max(*coordinate);
-            }
-        }
-        self.regions
-            .keys()
-            .chain(
-                previous
-                    .regions
-                    .keys()
-                    .filter(|p| !self.regions.contains_key(p)),
-            )
-            .filter(|coordinate| {
-                let before = previous.regions.get(*coordinate);
-                let after = self.regions.get(*coordinate);
-                if before.zip(after).is_some_and(|(a, b)| Arc::ptr_eq(a, b)) {
-                    return false;
-                }
-                before.is_some_and(|r| r.any_solid)
-                    || after.is_some_and(|r| r.any_solid)
-                    || (coordinate.cmpge(occupied_min).all()
-                        && coordinate.cmple(occupied_max).all())
-            })
-            .copied()
-            .collect()
-    }
-
     #[cfg(test)]
     pub(crate) fn transport_changed_from(&self, previous: &Self) -> bool {
-        !self.transport_changed_regions(previous).is_empty()
+        super::geometry::SceneChanges::between(previous, self)
+            .transport
+            .is_some()
     }
 
     pub fn with_page_delta(

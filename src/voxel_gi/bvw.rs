@@ -154,14 +154,8 @@ pub(super) fn start_scene_task(
             changed_pages,
             &removed_pages,
         ));
-        let changed = scene.regions.len() != previous_scene.regions.len()
-            || scene.regions.iter().any(|(key, region)| {
-                previous_scene
-                    .regions
-                    .get(key)
-                    .is_none_or(|old| !Arc::ptr_eq(old, region))
-            });
-        let descriptors = if changed {
+        let changes = super::geometry::SceneChanges::between(&previous_scene, &scene);
+        let descriptors = if changes.changed {
             scan_surface_probe_pages(&scene, &affected_pages, focus_page)
         } else {
             Vec::new()
@@ -186,13 +180,11 @@ pub(super) fn start_scene_task(
                 (page.as_i64vec3() - focus_page.as_i64vec3()).length_squared(),
             )
         });
-        let changed_materials = super::emission::changed_voxel_materials(&previous_scene, &scene);
-        let geometry_change = super::geometry::GeometryChange::between(&previous_scene, &scene);
         SceneBuildResult {
             scene,
-            changed,
-            changed_materials,
-            geometry_change,
+            changed: changes.changed,
+            changed_materials: changes.changed_materials,
+            geometry_change: changes.transport,
             pages: pages.into(),
             exact_edits,
             build_time: started.elapsed(),
