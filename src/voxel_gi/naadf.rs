@@ -134,6 +134,9 @@ pub fn volume_len(size: UVec3) -> usize {
 }
 
 #[cfg(test)]
+mod construction_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
