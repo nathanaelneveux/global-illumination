@@ -6,6 +6,9 @@ use rayon::prelude::*;
 use super::emission::{EmissionDistribution, face_point};
 use super::sampling::pcg;
 use super::sampling::{hemisphere, sample_1d, stream_id};
+use super::sources::TransportSources;
+#[cfg(test)]
+use super::sources::{DirectionalTransportLight, PointTransportLight};
 use super::spectrum::EnergySpectrum;
 use super::work::{FaceWork, TraceWork};
 #[cfg(test)]
@@ -27,39 +30,6 @@ pub const BOOTSTRAP_SAMPLES: u32 = 8;
 /// geometry/source policies independently cap retained weight or reset it to zero;
 /// a long static history therefore does not delay tracked lighting changes.
 pub const HISTORY_LIMIT: u32 = 65_536;
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DirectionalTransportLight {
-    /// Direction from a surface toward the light.
-    pub direction: Vec3,
-    pub radiance: EnergySpectrum,
-    pub custom_visible: Vec3,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PointTransportLight {
-    pub position: Vec3,
-    pub intensity: EnergySpectrum,
-    pub range: f32,
-    pub custom_visible: Vec3,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct TransportSources {
-    pub environment: EnergySpectrum,
-    pub directional: Vec<DirectionalTransportLight>,
-    pub points: Vec<PointTransportLight>,
-}
-
-impl Default for TransportSources {
-    fn default() -> Self {
-        Self {
-            environment: EnergySpectrum::new(Vec3::new(0.16, 0.24, 0.38), 0.08, 0.0),
-            directional: Vec::new(),
-            points: Vec::new(),
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RayHit {

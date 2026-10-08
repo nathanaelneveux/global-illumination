@@ -21,6 +21,7 @@ mod scheduling;
 mod settings;
 mod sky;
 mod sky_cache;
+mod sources;
 mod spectrum;
 mod statistics;
 mod telemetry;
@@ -56,11 +57,11 @@ use render::{
     VoxelTransportMaterial, build_gpu_cache, install_gpu_cache, install_render_assets,
     patch_gpu_topology, patch_probe_values,
 };
-use telemetry::GiWorkTimings;
-use tracer::{
-    BOOTSTRAP_SAMPLES, DirectionalTransportLight, PointTransportLight, TransportSources,
-    trace_work_batch,
+use sources::{
+    TransportSources, invalidate_sources, synchronize_material_table, synchronize_transport_sources,
 };
+use telemetry::GiWorkTimings;
+use tracer::{BOOTSTRAP_SAMPLES, trace_work_batch};
 use work::TraceWork;
 use world::{PAGE_EDGE, SurfaceProbe, SurfaceProbeDescriptor, TransportScene};
 
@@ -677,124 +678,6 @@ fn invalidate_near_voxel(
             invalidated.insert(voxel);
         }
     }
-}
-
-fn synchronize_transport_sources(
-    mut runtime: ResMut<VoxelGiRuntime>,
-    mut field: ResMut<VoxelEnergyField>,
-    mut stats: ResMut<VoxelGiStats>,
-    directional_lights: Query<(&DirectionalLight, &GlobalTransform, Option<&EnergyEmitter>)>,
-    point_lights: Query<(&PointLight, &GlobalTransform, Option<&EnergyEmitter>)>,
-    energy_emitters: Query<
-        (&EnergyEmitter, &GlobalTransform),
-        (Without<PointLight>, Without<DirectionalLight>),
-    >,
-    mut timings: ResMut<GiWorkTimings>,
-) {
-    let _timing = timings.main_scope();
-    let mut next = TransportSources::default();
-    for (light, transform, extra) in &directional_lights {
-        let linear = light.color.to_linear();
-        let color = Vec3::new(linear.red, linear.green, linear.blue);
-        let mut radiance = EnergySpectrum::new(color * (light.illuminance / 10_000.0), 0.0, 0.0);
-        if let Some(extra) = extra {
-            radiance += extra.spectrum;
-        }
-        next.directional.push(DirectionalTransportLight {
-            direction: transform.back().as_vec3(),
-            radiance: radiance.bounded(1e12),
-            custom_visible: extra.map_or(Vec3::ZERO, |extra| extra.spectrum.bounded(1e12).visible),
-        });
-    }
-    for (light, transform, extra) in &point_lights {
-        let linear = light.color.to_linear();
-        let color = Vec3::new(linear.red, linear.green, linear.blue);
-        let mut intensity = EnergySpectrum::new(color * (light.intensity / 1_000.0), 0.0, 0.0);
-        if let Some(extra) = extra {
-            intensity += extra.spectrum;
-        }
-        next.points.push(PointTransportLight {
-            position: transform.translation(),
-            intensity: intensity.bounded(1e12),
-            range: extra.map_or(light.range, |emitter| emitter.range.max(light.range)),
-            custom_visible: extra.map_or(Vec3::ZERO, |extra| extra.spectrum.bounded(1e12).visible),
-        });
-    }
-    for (emitter, transform) in &energy_emitters {
-        next.points.push(PointTransportLight {
-            position: transform.translation(),
-            intensity: emitter.spectrum.bounded(1e12),
-            range: emitter.range,
-            custom_visible: emitter.spectrum.bounded(1e12).visible,
-        });
-    }
-    next.points
-        .retain(|light| light.position.is_finite() && light.range.is_finite() && light.range > 0.0);
-    next.directional
-        .retain(|light| light.direction.is_finite() && light.direction.length_squared() > 0.0);
-    next.directional
-        .sort_by(|a, b| compare_vec3(a.direction, b.direction));
-    next.points
-        .sort_by(|a, b| compare_vec3(a.position, b.position));
-    if next == runtime.sources {
-        return;
-    }
-    let global = next.directional != runtime.sources.directional
-        || next.environment != runtime.sources.environment;
-    // Old and new influence volumes both matter when a source moves or vanishes.
-    runtime.source_influences = runtime
-        .sources
-        .points
-        .iter()
-        .chain(next.points.iter())
-        .map(|light| (light.position, light.range + 16.0))
-        .collect();
-    if sky_cache::sky_lights(&next) != sky_cache::sky_lights(&runtime.sources) {
-        runtime.sky_revision = runtime.sky_revision.wrapping_add(1);
-        runtime.sky_remaining = field.order.len();
-    }
-    runtime.sources = next;
-    invalidate_sources(&mut runtime, &mut field, &mut stats);
-    if global {
-        runtime.global_source_revision = runtime.source_revision;
-    }
-}
-
-fn compare_vec3(a: Vec3, b: Vec3) -> std::cmp::Ordering {
-    a.x.total_cmp(&b.x)
-        .then_with(|| a.y.total_cmp(&b.y))
-        .then_with(|| a.z.total_cmp(&b.z))
-}
-
-fn synchronize_material_table(
-    mut runtime: ResMut<VoxelGiRuntime>,
-    materials: Res<VoxelMaterialTransportTable>,
-    mut field: ResMut<VoxelEnergyField>,
-    mut stats: ResMut<VoxelGiStats>,
-    mut timings: ResMut<GiWorkTimings>,
-) {
-    let _timing = timings.main_scope();
-    if !materials.is_changed() || materials.as_ref() == runtime.materials.as_ref() {
-        return;
-    }
-    runtime.materials = Arc::new(materials.clone());
-    invalidate_sources(&mut runtime, &mut field, &mut stats);
-    runtime.global_source_revision = runtime.source_revision;
-    runtime.reset_source_revision = runtime.source_revision;
-}
-
-fn invalidate_sources(
-    runtime: &mut VoxelGiRuntime,
-    field: &mut VoxelEnergyField,
-    stats: &mut VoxelGiStats,
-) {
-    // A moving source must not discard every in-flight batch every frame.
-    // Keep a versioned snapshot; shorten history lazily when each probe runs.
-    runtime.source_revision = runtime.source_revision.wrapping_add(1);
-    field.source_revision = runtime.source_revision;
-    advance_transport_revision(runtime, field);
-    request_global_refresh(runtime, field.order.len());
-    update_stats_from_counters(runtime, field, stats);
 }
 
 fn advance_transport_revision(runtime: &mut VoxelGiRuntime, field: &mut VoxelEnergyField) {

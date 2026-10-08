@@ -5,7 +5,7 @@
 use super::*;
 use crate::voxel_gi::{
     naadf::{linear_index, volume_len},
-    tracer::DirectionalTransportLight,
+    sources::DirectionalTransportLight,
     world::{AIR, MaterialTransport, PAGE_SIZE},
 };
 use serde_json::{Value, json};

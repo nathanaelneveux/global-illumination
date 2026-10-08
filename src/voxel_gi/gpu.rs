@@ -15,8 +15,9 @@ use bevy::render::storage::ShaderBuffer;
 
 use super::emission::EmissionDistribution;
 use super::gpu_scene::PackedScene;
+use super::sources::TransportSources;
 use super::spectrum::EnergySpectrum;
-use super::tracer::{HISTORY_LIMIT, TransportSources};
+use super::tracer::HISTORY_LIMIT;
 use super::work::TraceWork;
 #[cfg(test)]
 use super::world::SurfaceProbe;
@@ -1159,7 +1160,7 @@ mod tests {
             naadf::{linear_index, volume_len},
             scheduling::{due_faces, record_batch},
             settings::VoxelGiSettings,
-            tracer::DirectionalTransportLight,
+            sources::DirectionalTransportLight,
             world::{AIR, PAGE_SIZE},
         };
         let mut gpu = native_tracer();
@@ -1302,7 +1303,7 @@ mod tests {
     fn open_floor_fixture() -> (Arc<TransportScene>, TransportSources, Vec<SurfaceProbe>) {
         use super::super::{
             naadf::{linear_index, volume_len},
-            tracer::DirectionalTransportLight,
+            sources::DirectionalTransportLight,
             world::{AIR, PAGE_SIZE},
         };
         let mut page = vec![AIR; volume_len(PAGE_SIZE)];
@@ -1622,7 +1623,8 @@ mod tests {
     fn gpu_matches_cpu_reference_and_reuses_geometry_after_edit() {
         use super::super::{
             naadf::{linear_index, volume_len},
-            tracer::{DirectionalTransportLight, PointTransportLight, trace_probe_batch},
+            sources::{DirectionalTransportLight, PointTransportLight},
+            tracer::trace_probe_batch,
             world::{AIR, PAGE_SIZE},
         };
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());

@@ -47,12 +47,12 @@ pub(crate) fn corner_position(voxel: IVec3, face: usize, corner: usize) -> IVec3
 #[cfg(test)]
 pub(crate) fn contact_shadow_fixture() -> (
     std::sync::Arc<super::world::TransportScene>,
-    super::tracer::TransportSources,
+    super::sources::TransportSources,
     Vec<super::world::SurfaceProbe>,
 ) {
     use super::EnergySpectrum;
     use super::naadf::{linear_index, volume_len};
-    use super::tracer::{DirectionalTransportLight, TransportSources};
+    use super::sources::{DirectionalTransportLight, TransportSources};
     use super::world::{AIR, PAGE_SIZE, SurfaceProbe, TransportScene};
     let mut page = vec![AIR; volume_len(PAGE_SIZE)];
     for z in 7..12 {

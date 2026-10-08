@@ -214,7 +214,8 @@ mod tests {
     use super::super::{
         field::VoxelEnergyField,
         naadf::{linear_index, volume_len},
-        tracer::{TransportSources, trace_probe_batch},
+        sources::TransportSources,
+        tracer::trace_probe_batch,
         world::{PAGE_SIZE, VoxelMaterialTransportTable},
     };
     use super::*;

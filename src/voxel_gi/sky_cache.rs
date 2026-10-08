@@ -8,7 +8,8 @@ use bevy::platform::collections::{HashMap, hash_map::Entry};
 use bevy::prelude::*;
 
 use super::sky::corner_position;
-use super::tracer::{MAX_PATH_DISTANCE, TransportSources};
+use super::sources::TransportSources;
+use super::tracer::MAX_PATH_DISTANCE;
 use super::work::ProbeWork;
 #[cfg(test)]
 use super::world::SurfaceProbe;
@@ -296,8 +297,9 @@ mod tests {
     use super::super::{
         naadf::{linear_index, volume_len},
         sky::{pack, unpack},
+        sources::{DirectionalTransportLight, PointTransportLight},
         spectrum::EnergySpectrum,
-        tracer::{DirectionalTransportLight, PointTransportLight, sample_sky_corner},
+        tracer::sample_sky_corner,
         world::{PAGE_EDGE, PAGE_SIZE},
     };
     use super::*;
