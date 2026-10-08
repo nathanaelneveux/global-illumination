@@ -211,6 +211,14 @@ impl GpuTracer {
     }
 
     fn with_kernel(context: GpuTransportDevice, cooperative: bool) -> Result<Self, String> {
+        Self::with_shader(context, cooperative, SHADER)
+    }
+
+    fn with_shader(
+        context: GpuTransportDevice,
+        cooperative: bool,
+        shader: &str,
+    ) -> Result<Self, String> {
         let (entry, faces_per_workgroup) = if cooperative {
             ("trace_faces_parallel", 16)
         } else {
@@ -225,7 +233,7 @@ impl GpuTracer {
             .push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
             label: Some("World-space voxel transport"),
-            source: ShaderSource::Wgsl(Cow::Borrowed(SHADER)),
+            source: ShaderSource::Wgsl(Cow::Borrowed(shader)),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("World-space voxel face tracing"),
@@ -1334,12 +1342,29 @@ mod tests {
     #[test]
     #[ignore = "requires a native compute adapter; run explicitly on supported hardware"]
     fn cooperative_path_layout_benchmark() {
+        let parallel = native_tracer();
+        let serial = GpuTracer::with_kernel(parallel.context.clone(), false).unwrap();
+        compare_kernels(serial, parallel, ["serial", "cooperative"]);
+    }
+
+    /// Compare an archived shader to the current kernel with identical work,
+    /// alternating order and full five-band moment parity. The baseline path is
+    /// explicit so experiment shaders never become a production runtime mode.
+    #[test]
+    #[ignore = "requires a native adapter and VOXEL_GI_BASELINE_SHADER"]
+    fn shader_candidate_benchmark() {
+        let path = std::env::var("VOXEL_GI_BASELINE_SHADER").expect("baseline WGSL path");
+        let source = std::fs::read_to_string(path).expect("read baseline shader");
+        let candidate = native_tracer();
+        let baseline = GpuTracer::with_shader(candidate.context.clone(), true, &source).unwrap();
+        compare_kernels(baseline, candidate, ["baseline", "candidate"]);
+    }
+
+    fn compare_kernels(mut serial: GpuTracer, mut parallel: GpuTracer, labels: [&str; 2]) {
         use super::super::{
             naadf::{linear_index, volume_len},
             world::{AIR, MaterialTransport, PAGE_SIZE},
         };
-        let mut parallel = native_tracer();
-        let mut serial = GpuTracer::with_kernel(parallel.context.clone(), false).unwrap();
         let mut materials = VoxelMaterialTransportTable::default();
         materials.set(
             4,
@@ -1453,7 +1478,7 @@ mod tests {
                     }
                 }
             }
-            for (mode, label) in ["serial", "cooperative"].into_iter().enumerate() {
+            for (mode, label) in labels.into_iter().enumerate() {
                 worker_ms[mode].sort_by(f32::total_cmp);
                 gpu_ms[mode].sort_by(f32::total_cmp);
                 eprintln!(
