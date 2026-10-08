@@ -41,14 +41,12 @@ pub(super) fn collect_chunk_changes(
         runtime.removed_pages.remove(&event.chunk_key);
         runtime.dirty_pages.insert(event.chunk_key);
         runtime.full_resample_pages.insert(event.chunk_key);
-        runtime.broad_dirty_pages.insert(event.chunk_key);
         changed = true;
     }
     for event in despawned.read() {
         runtime.loaded_pages.remove(&event.chunk_key);
         runtime.dirty_pages.remove(&event.chunk_key);
         runtime.full_resample_pages.remove(&event.chunk_key);
-        runtime.broad_dirty_pages.remove(&event.chunk_key);
         runtime.removed_pages.insert(event.chunk_key);
         changed = true;
     }
@@ -56,7 +54,6 @@ pub(super) fn collect_chunk_changes(
         let pages: Vec<_> = runtime.loaded_pages.iter().copied().collect();
         runtime.dirty_pages.extend(pages.iter().copied());
         runtime.full_resample_pages.extend(pages.iter().copied());
-        runtime.broad_dirty_pages.extend(pages);
         explicit_dirty.all_loaded = false;
         changed = true;
     }
@@ -65,7 +62,6 @@ pub(super) fn collect_chunk_changes(
         if runtime.loaded_pages.contains(&page) {
             runtime.dirty_pages.insert(page);
             runtime.full_resample_pages.insert(page);
-            runtime.broad_dirty_pages.remove(&page);
             runtime.dirty_voxels.insert(voxel);
             runtime.urgent_edit = true;
             changed = true;
@@ -107,7 +103,6 @@ pub(super) fn start_scene_task(
     let mut dirty_pages: Vec<_> = runtime.dirty_pages.drain().collect();
     dirty_pages.sort_unstable_by_key(|p| (p.z, p.y, p.x));
     let full_resample = std::mem::take(&mut runtime.full_resample_pages);
-    let broad_edits: Vec<_> = runtime.broad_dirty_pages.drain().collect();
     let exact_edits: Vec<_> = runtime.dirty_voxels.drain().collect();
     let mut removed_pages: Vec<_> = runtime.removed_pages.drain().collect();
     removed_pages.sort_unstable_by_key(|p| (p.z, p.y, p.x));
@@ -192,15 +187,14 @@ pub(super) fn start_scene_task(
             )
         });
         let changed_materials = super::emission::changed_voxel_materials(&previous_scene, &scene);
-        let transport_changed = scene.transport_changed_from(&previous_scene);
+        let geometry_change = super::geometry::GeometryChange::between(&previous_scene, &scene);
         SceneBuildResult {
             scene,
             changed,
             changed_materials,
-            transport_changed,
+            geometry_change,
             pages: pages.into(),
             exact_edits,
-            broad_edits,
             build_time: started.elapsed(),
         }
     }));

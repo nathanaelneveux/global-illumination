@@ -114,6 +114,7 @@ impl TraceWork {
         transport_revision: u64,
         source_revision: u64,
         restart: bool,
+        stale_history_limit: u32,
         source_history_limit: u32,
     ) {
         let mask = mask & probe.face_mask;
@@ -143,7 +144,7 @@ impl TraceWork {
                     0
                 } else {
                     probe.samples[face]
-                        .min(if stale { 64 } else { u32::MAX })
+                        .min(if stale { stale_history_limit } else { u32::MAX })
                         .min(source_history_limit)
                 },
                 sequence: probe.sequence[face],
@@ -179,6 +180,7 @@ impl TraceWork {
                 probe.transport_revision,
                 probe.source_revision,
                 false,
+                super::geometry::UNTRACKED_HISTORY,
                 u32::MAX,
             );
             // Reference/benchmark inputs already own their history policy.
@@ -246,7 +248,7 @@ mod tests {
                 let revision = u64::from(mode != 0);
                 let restart = mode == 2;
                 let mut work = TraceWork::default();
-                work.push(&previous, mask, revision, revision, restart, u32::MAX);
+                work.push(&previous, mask, revision, revision, restart, 64, u32::MAX);
                 let mut reference = previous.clone();
                 reference.trace_mask = mask;
                 if revision != 0 {
@@ -316,20 +318,31 @@ mod tests {
     }
 
     #[test]
-    fn long_refinement_history_does_not_delay_geometry_or_source_changes() {
+    fn long_refinement_history_obeys_geometry_and_source_caps() {
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
         probe.samples[2] = super::super::tracer::HISTORY_LIMIT;
         probe.sequence[2] = 100_000;
         probe.radiance[2] = EnergySpectrum::ONE;
         let mut work = TraceWork::default();
-        for (revision, source_limit, restart, expected) in [
-            (0, u32::MAX, false, super::super::tracer::HISTORY_LIMIT),
-            (1, u32::MAX, false, 64),
-            (0, 4, false, 4),
-            (0, u32::MAX, true, 0),
+        for (revision, geometry_limit, source_limit, restart, expected) in [
+            (0, 64, u32::MAX, false, super::super::tracer::HISTORY_LIMIT),
+            (1, 64, u32::MAX, false, 64),
+            (1, 16, u32::MAX, false, 16),
+            (1, 256, u32::MAX, false, 256),
+            (1, 256, 4, false, 4),
+            (0, 64, 4, false, 4),
+            (1, 256, u32::MAX, true, 0),
         ] {
             work.clear();
-            work.push(&probe, 4, revision, 0, restart, source_limit);
+            work.push(
+                &probe,
+                4,
+                revision,
+                0,
+                restart,
+                geometry_limit,
+                source_limit,
+            );
             assert_eq!(work.faces[0].samples, expected);
             assert_eq!(work.faces[0].sequence, 100_000);
             if restart {
@@ -346,8 +359,8 @@ mod tests {
         probe.samples = [128; 6];
         probe.sequence = [901; 6];
         let mut work = TraceWork::default();
-        work.push(&probe, 4, 1, 0, false, u32::MAX);
-        work.push(&probe, 0, 0, 0, false, u32::MAX);
+        work.push(&probe, 4, 1, 0, false, 64, u32::MAX);
+        work.push(&probe, 0, 0, 0, false, 64, u32::MAX);
         assert_eq!(work.faces.len(), 1);
         assert_eq!(work.faces[0].face, 2);
         assert_eq!(work.faces[0].samples, 64);

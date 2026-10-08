@@ -300,12 +300,12 @@ pub struct TransportScene {
 }
 
 impl TransportScene {
-    /// Whether a new snapshot can change transport from existing receivers.
+    /// Regions whose changes can affect transport from existing receivers.
     /// Loaded-air bookkeeping outside the occupied region bounds cannot lie
     /// between a receiver and geometry. Holes INSIDE those bounds still matter:
     /// filling one can turn a conservative unknown path into a measured hit.
     /// Run on the scene worker; unchanged regions retain their Arc identity.
-    pub(crate) fn transport_changed_from(&self, previous: &Self) -> bool {
+    pub(crate) fn transport_changed_regions(&self, previous: &Self) -> Vec<IVec3> {
         let mut occupied_min = IVec3::MAX;
         let mut occupied_max = IVec3::MIN;
         for (coordinate, region) in &previous.regions {
@@ -322,9 +322,9 @@ impl TransportScene {
                     .keys()
                     .filter(|p| !self.regions.contains_key(p)),
             )
-            .any(|coordinate| {
-                let before = previous.regions.get(coordinate);
-                let after = self.regions.get(coordinate);
+            .filter(|coordinate| {
+                let before = previous.regions.get(*coordinate);
+                let after = self.regions.get(*coordinate);
                 if before.zip(after).is_some_and(|(a, b)| Arc::ptr_eq(a, b)) {
                     return false;
                 }
@@ -333,6 +333,13 @@ impl TransportScene {
                     || (coordinate.cmpge(occupied_min).all()
                         && coordinate.cmple(occupied_max).all())
             })
+            .copied()
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn transport_changed_from(&self, previous: &Self) -> bool {
+        !self.transport_changed_regions(previous).is_empty()
     }
 
     pub fn with_page_delta(
@@ -488,7 +495,9 @@ impl SurfaceProbe {
     /// enters these statistics. New faces/material changes still start empty.
     pub(crate) fn request_relight(&mut self) {
         self.revision = self.revision.wrapping_add(1);
-        self.samples = self.samples.map(|count| count.min(16));
+        self.samples = self
+            .samples
+            .map(|count| count.min(super::geometry::NEAR_HISTORY));
         self.fresh_mask = 0;
         self.stable_batches = [0; 6];
     }

@@ -9,6 +9,7 @@ mod bvw;
 mod diagnostics;
 mod emission;
 mod field;
+mod geometry;
 mod gpu;
 mod gpu_scene;
 mod history;
@@ -64,7 +65,7 @@ use world::{PAGE_EDGE, SurfaceProbe, SurfaceProbeDescriptor, TransportScene};
 
 const GPU_UPLOAD_INTERVAL: Duration = Duration::from_millis(50);
 const SAMPLES_PER_DISPATCH: u32 = 4;
-const EDIT_RELIGHT_RADIUS: i32 = 48;
+const EDIT_RELIGHT_RADIUS: i32 = geometry::RELIGHT_RADIUS;
 
 /// Transport and display-cache integration for the prototype BVW world.
 /// Debug controls, HUD and validation are opt-in via the demo diagnostics plugin.
@@ -201,13 +202,13 @@ struct VoxelGiRuntime {
     loaded_pages: HashSet<IVec3>,
     dirty_pages: HashSet<IVec3>,
     full_resample_pages: HashSet<IVec3>,
-    broad_dirty_pages: HashSet<IVec3>,
     dirty_voxels: HashSet<IVec3>,
     removed_pages: HashSet<IVec3>,
     last_world_change: Instant,
     dirty_since: Option<Instant>,
     urgent_edit: bool,
     generation: u64,
+    geometry_revision: Option<geometry::GeometryRevision>,
     source_revision: u64,
     batch_size: usize,
     global_source_revision: u64,
@@ -273,13 +274,13 @@ impl Default for VoxelGiRuntime {
             loaded_pages: HashSet::new(),
             dirty_pages: HashSet::new(),
             full_resample_pages: HashSet::new(),
-            broad_dirty_pages: HashSet::new(),
             dirty_voxels: HashSet::new(),
             removed_pages: HashSet::new(),
             last_world_change: now,
             dirty_since: None,
             urgent_edit: false,
             generation: 0,
+            geometry_revision: None,
             source_revision: 0,
             batch_size: 256,
             global_source_revision: 0,
@@ -337,11 +338,10 @@ impl Default for VoxelGiRuntime {
 struct SceneBuildResult {
     scene: Arc<TransportScene>,
     changed: bool,
-    transport_changed: bool,
+    geometry_change: Option<geometry::GeometryChange>,
     changed_materials: [bool; 256],
     pages: VecDeque<(IVec3, Vec<SurfaceProbeDescriptor>)>,
     exact_edits: Vec<IVec3>,
-    broad_edits: Vec<IVec3>,
     build_time: Duration,
 }
 
@@ -404,8 +404,14 @@ fn apply_scene_task(
         }
         runtime.scene = result.scene.clone();
         runtime.generation = runtime.generation.wrapping_add(1);
-        if result.transport_changed {
+        if let Some(change) = result.geometry_change.take() {
+            let from = field.transport_revision;
             advance_transport_revision(&mut runtime, &mut field);
+            runtime.geometry_revision = Some(geometry::GeometryRevision {
+                from,
+                to: field.transport_revision,
+                change,
+            });
         }
         field
             .publishing_pages
@@ -588,16 +594,6 @@ fn publish_scene_page(
         invalidate_near_voxel(runtime, field, voxel, EDIT_RELIGHT_RADIUS, &mut nearby);
         urgent.extend(nearby.iter().copied());
         invalidated.extend(nearby);
-    }
-    for page in result.broad_edits.drain(..) {
-        let center = page * PAGE_EDGE as i32 + IVec3::splat(PAGE_EDGE as i32 / 2);
-        invalidate_near_voxel(
-            runtime,
-            field,
-            center,
-            EDIT_RELIGHT_RADIUS,
-            &mut invalidated,
-        );
     }
     let relit_probes = invalidated.len();
     let mut urgent: Vec<_> = urgent.into_iter().collect();
@@ -873,6 +869,7 @@ fn append_sky_work(
                 probe.transport_revision,
                 probe.source_revision,
                 false,
+                geometry::UNTRACKED_HISTORY,
                 u32::MAX,
             );
         }
@@ -1155,6 +1152,12 @@ fn select_transport(
             field.transport_revision,
             runtime.source_revision,
             restart,
+            runtime
+                .geometry_revision
+                .as_ref()
+                .map_or(geometry::UNTRACKED_HISTORY, |change| {
+                    change.history_limit(voxel, probe.transport_revision, field.transport_revision)
+                }),
             history_limit,
         );
     }
@@ -1595,11 +1598,10 @@ mod tests {
         let mut result = SceneBuildResult {
             scene: runtime.scene.clone(),
             changed: true,
-            transport_changed: true,
+            geometry_change: Some(default()),
             changed_materials: [false; 256],
             pages: VecDeque::new(),
             exact_edits: vec![],
-            broad_edits: vec![],
             build_time: Duration::ZERO,
         };
         // Removing old-revision terrain must not subtract freshly settled faces
@@ -1656,7 +1658,7 @@ mod tests {
         let result = SceneBuildResult {
             scene: Arc::new(TransportScene::default()),
             changed: true,
-            transport_changed: true,
+            geometry_change: Some(default()),
             changed_materials: [false; 256],
             pages: VecDeque::from([
                 (
@@ -1677,7 +1679,6 @@ mod tests {
                 ),
             ]),
             exact_edits: vec![],
-            broad_edits: vec![],
             build_time: Duration::ZERO,
         };
         let mut world = World::new();
@@ -1758,11 +1759,10 @@ mod tests {
             scene_publication: Some(SceneBuildResult {
                 scene: Arc::new(TransportScene::default()),
                 changed: true,
-                transport_changed: true,
+                geometry_change: Some(default()),
                 changed_materials: [false; 256],
                 pages,
                 exact_edits: vec![],
-                broad_edits: vec![],
                 build_time: Duration::ZERO,
             }),
             ..default()

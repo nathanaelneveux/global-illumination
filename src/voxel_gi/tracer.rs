@@ -24,7 +24,7 @@ const MAX_BOUNCES: u32 = 3;
 pub const BOOTSTRAP_SAMPLES: u32 = 8;
 /// Accumulate evidence while the integrand is unchanged. A short rolling
 /// history imposes a permanent noise floor on static refinement. Scene/source
-/// revisions independently cap retained weight at 16/64/4 or reset it to zero;
+/// geometry/source policies independently cap retained weight or reset it to zero;
 /// a long static history therefore does not delay tracked lighting changes.
 pub const HISTORY_LIMIT: u32 = 65_536;
 
