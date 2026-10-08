@@ -208,7 +208,18 @@ impl SurfaceProbe {
         // eight-sample bootstrap milestone. Genuine changes catch up as
         // evidence arrives; there is no permanent brightness clamp.
         let evidence = samples as f32 / (samples as f32 + 32.0);
-        let alpha = time_alpha.min(evidence / (1.0 + uncertainty));
+        // Dark receivers often carry less energy than the 0.02 reconstruction
+        // weight floor. That floor must not make a noisy post-edit estimate look
+        // reliable enough to replace the retained display in one or two batches.
+        // Suppress uncertain innovations, not the measured energy: sustained
+        // changes still reach the target, and simulation statistics are untouched.
+        let noise = relative_error_with_floor(
+            EnergySpectrum::new(self.radiance[face].visible, 0.0, 0.0),
+            EnergySpectrum::new(self.second_moment[face].visible, 0.0, 0.0),
+            samples,
+            0.002,
+        );
+        let alpha = time_alpha.min(evidence / (1.0 + (2.0 * noise).powi(2)));
         let display = &mut self.display[face];
         display.indirect = temporal_blend(
             display.indirect,
@@ -489,6 +500,60 @@ mod tests {
                 }
                 previous = next;
             }
+        }
+    }
+
+    #[test]
+    fn dark_edit_noise_is_filtered_without_keeping_obsolete_transport_energy() {
+        let start = Instant::now();
+        for (initial, raw_second) in [(1.0, 1.0), (0.01, 0.01)] {
+            let mut probe = measured(IVec3::ZERO, initial, start);
+            probe.samples[2] = 2048;
+            probe.second_moment[2] = EnergySpectrum::ONE * raw_second;
+            probe.request_relight();
+            let mut legacy_display = Vec3::splat(initial);
+            let mut legacy_crossing = None;
+            let mut crossing = None;
+            for batch in 1..=64 {
+                for _ in 0..4 {
+                    // Closing the last opening makes every fresh path dark.
+                    super::super::tracer::accumulate_sample(&mut probe, 2, EnergySpectrum::ZERO);
+                }
+                let mean = probe.radiance[2];
+                let second = probe.second_moment[2];
+                let n = probe.samples[2];
+                let legacy_alpha = (1.0 - (-0.05_f32 / 0.075).exp())
+                    .min(n as f32 / (n as f32 + 32.0) / (1.0 + relative_error(mean, second, n)));
+                legacy_display = temporal_blend(legacy_display, mean.visible, legacy_alpha);
+                let at = start + Duration::from_millis(batch * 50);
+                probe.resolve_face(2, Some(at - Duration::from_millis(50)), at, 0.075);
+                assert_eq!(
+                    probe.radiance[2], mean,
+                    "display never changes simulation energy"
+                );
+                assert_eq!(probe.second_moment[2], second);
+                assert_eq!(probe.samples[2], n);
+                assert!((mean.visible.x - initial * 16.0 / n as f32).abs() < 1e-6);
+                if initial < 0.02 && batch == 1 {
+                    assert!(
+                        probe.display[2].indirect.x > initial * 0.99,
+                        "a few missed dark-room paths must not erase a settled display"
+                    );
+                }
+                if legacy_display.x < initial * 0.1 {
+                    legacy_crossing.get_or_insert(batch);
+                }
+                if probe.display[2].indirect.x < initial * 0.1 {
+                    crossing.get_or_insert(batch);
+                }
+            }
+            assert!(
+                crossing.unwrap() <= legacy_crossing.unwrap() + 4,
+                "closure response: new {crossing:?}, legacy {legacy_crossing:?} (50ms virtual batches)"
+            );
+            eprintln!(
+                "closure initial={initial}: display below 10% at batches new={crossing:?}, legacy={legacy_crossing:?}; raw transport identical"
+            );
         }
     }
 
