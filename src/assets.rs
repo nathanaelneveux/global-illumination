@@ -1,5 +1,4 @@
 use bevy::asset::AssetEvent;
-use bevy::image::ImageAddressMode;
 use bevy::prelude::*;
 use bevy_asset_loader::prelude::{AssetCollection, AssetCollectionApp};
 use bevy_common_assets::ron::RonAssetPlugin;
@@ -109,14 +108,103 @@ fn refresh_voxel_texture_on_change(
     let Some(mut image) = images.get_mut(&template_assets.voxel_texture) else {
         return;
     };
-
-    prepare_voxel_texture(&mut image, world.voxel_texture_layers());
+    let layers = world.voxel_texture_layers().max(1);
+    // Read through AssetMut first. Mutably dereferencing an already prepared
+    // image would emit Modified again and reupload the texture every frame.
+    if crate::voxel_gi::render::texture_array_ready(&image, layers) {
+        return;
+    }
+    if let Err(error) = crate::voxel_gi::render::prepare_texture_array(&mut image, layers) {
+        error!(%error, "failed to prepare terrain texture array");
+    }
 }
 
-fn prepare_voxel_texture(image: &mut Image, layers: u32) {
-    let descriptor = image.sampler.get_or_init_descriptor();
-    descriptor.address_mode_u = ImageAddressMode::Repeat;
-    descriptor.address_mode_v = ImageAddressMode::Repeat;
-    descriptor.address_mode_w = ImageAddressMode::Repeat;
-    let _ = image.reinterpret_stacked_2d_as_array(layers.max(1));
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::message::MessageCursor;
+    use bevy::image::ImagePlugin;
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+
+    fn stacked_image() -> Image {
+        Image::new_fill(
+            Extent3d {
+                width: 2,
+                height: 8,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[255; 4],
+            TextureFormat::Rgba8UnormSrgb,
+            default(),
+        )
+    }
+
+    #[test]
+    fn texture_preparation_does_not_create_a_modified_event_loop_and_handles_reload() {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            ImagePlugin::default(),
+        ))
+        .init_resource::<PrototypeWorld>()
+        .add_systems(Update, refresh_voxel_texture_on_change);
+        let texture = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(stacked_image());
+        app.insert_resource(TemplateAssets {
+            voxel_texture: texture.clone(),
+            prototype_config: default(),
+        });
+        let mut events = MessageCursor::<AssetEvent<Image>>::default();
+        let mut modified = 0;
+        for _ in 0..8 {
+            app.update();
+            modified += events
+                .read(app.world().resource::<Messages<AssetEvent<Image>>>())
+                .filter(|event| event.is_modified(texture.id()))
+                .count();
+        }
+        assert_eq!(
+            modified, 1,
+            "preparation must modify the image exactly once"
+        );
+        assert!(crate::voxel_gi::render::texture_array_ready(
+            app.world()
+                .resource::<Assets<Image>>()
+                .get(&texture)
+                .unwrap(),
+            4
+        ));
+        app.world_mut()
+            .resource_mut::<Assets<Image>>()
+            .insert(texture.id(), stacked_image())
+            .unwrap();
+        for _ in 0..8 {
+            app.update();
+            modified += events
+                .read(app.world().resource::<Messages<AssetEvent<Image>>>())
+                .filter(|event| event.is_modified(texture.id()))
+                .count();
+        }
+        assert_eq!(modified, 3, "one reload and one preparation, then idle");
+        *app.world_mut().resource_mut::<PrototypeWorld>() =
+            PrototypeWorld::from_config(PrototypeConfig {
+                voxel_texture_layers: 2,
+                ..default()
+            });
+        for _ in 0..4 {
+            app.update();
+        }
+        let image = app
+            .world()
+            .resource::<Assets<Image>>()
+            .get(&texture)
+            .unwrap();
+        assert!(crate::voxel_gi::render::texture_array_ready(image, 2));
+        assert_eq!(image.texture_descriptor.size.height, 4);
+        assert_eq!(image.data.as_ref().unwrap().len(), 64);
+    }
 }

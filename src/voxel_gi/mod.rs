@@ -67,7 +67,11 @@ const GPU_UPLOAD_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Transport and display-cache integration for the prototype BVW world.
 /// Debug controls, HUD and validation are opt-in via the demo diagnostics plugin.
-pub struct VoxelGiPlugin;
+pub struct VoxelGiPlugin {
+    /// Host-owned texture array matching the terrain mesh's material indices.
+    /// The host prepares/reloads the image; GI does not choose an asset or palette.
+    pub voxel_texture: Handle<Image>,
+}
 
 /// Schedule simulation readers after this set to observe this frame's published
 /// measurements. Workers remain asynchronous; inspect estimate freshness.
@@ -76,7 +80,7 @@ pub struct VoxelGiSystems;
 
 impl Plugin for VoxelGiPlugin {
     fn build(&self, app: &mut App) {
-        install_render_assets(app);
+        install_render_assets(app, self.voxel_texture.clone());
         app.init_resource::<VoxelGiDirty>()
             .init_resource::<VoxelGiRuntime>()
             .init_resource::<VoxelEnergyField>()

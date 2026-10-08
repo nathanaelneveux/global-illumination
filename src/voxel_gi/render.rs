@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use bevy::image::{ImageAddressMode, TextureReinterpretationError};
+use bevy::image::{ImageAddressMode, ImageSampler, TextureReinterpretationError};
 use bevy::pbr::{
     ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
 };
@@ -212,24 +212,14 @@ impl ProbePatchState {
     }
 }
 
-#[derive(Resource, Default)]
-struct TexturePrepared(bool);
-
 #[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]
 struct DisplayBuffersPrepared;
 
-pub fn install_render_assets(app: &mut App) {
+pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
     app.add_plugins((
         MaterialPlugin::<VoxelTransportMaterial>::default(),
         ExtractResourcePlugin::<GpuProbePatchQueue>::default(),
-    ))
-    .init_resource::<TexturePrepared>()
-    .add_systems(Update, prepare_voxel_texture);
-
-    let texture = app
-        .world()
-        .resource::<AssetServer>()
-        .load("example_voxel_texture.png");
+    ));
     let hash_entries = app
         .world_mut()
         .resource_mut::<Assets<ShaderBuffer>>()
@@ -729,42 +719,49 @@ fn pcg(value: u32) -> u32 {
     (word >> 22) ^ word
 }
 
-fn prepare_voxel_texture(
-    assets: Res<VoxelTransportAssets>,
-    asset_server: Res<AssetServer>,
-    mut prepared: ResMut<TexturePrepared>,
-    mut images: ResMut<Assets<Image>>,
-) {
-    if prepared.0
-        || !matches!(
-            asset_server.get_load_state(assets.texture.id()),
-            Some(bevy::asset::LoadState::Loaded)
-        )
-    {
-        return;
-    }
-
-    let Some(mut image) = images.get_mut(&assets.texture) else {
-        return;
-    };
-    if let Err(error) = prepare_texture_array(&mut image, 4) {
-        error!(%error, "failed to prepare voxel texture array");
-        return;
-    }
-    prepared.0 = true;
+/// The host can check this without marking an asset modified. Asset loading,
+/// layer-count policy and hot reload belong to the host, not GI cache lifetime.
+pub(crate) fn texture_array_ready(image: &Image, layers: u32) -> bool {
+    image.texture_descriptor.size.depth_or_array_layers == layers
+        && image
+            .texture_view_descriptor
+            .as_ref()
+            .is_some_and(|view| view.dimension == Some(TextureViewDimension::D2Array))
+        && matches!(&image.sampler, ImageSampler::Descriptor(sampler)
+            if sampler.address_mode_u == ImageAddressMode::Repeat
+                && sampler.address_mode_v == ImageAddressMode::Repeat
+                && sampler.address_mode_w == ImageAddressMode::Repeat)
 }
 
-fn prepare_texture_array(
+pub(crate) fn prepare_texture_array(
     image: &mut Image,
     layers: u32,
 ) -> Result<(), TextureReinterpretationError> {
+    if image.texture_descriptor.dimension != wgpu::TextureDimension::D2 {
+        return Err(TextureReinterpretationError::WrongDimension);
+    }
+    if layers == 0 {
+        return Err(TextureReinterpretationError::NotEnoughLayers);
+    }
+    if image.texture_descriptor.size.depth_or_array_layers != layers {
+        let old = image.texture_descriptor.size;
+        let height = old.height * old.depth_or_array_layers;
+        if !height.is_multiple_of(layers) {
+            return Err(TextureReinterpretationError::HeightNotDivisibleByLayers {
+                height,
+                layers,
+            });
+        }
+        image.reinterpret_size(wgpu::Extent3d {
+            width: old.width,
+            height: height / layers,
+            depth_or_array_layers: layers,
+        })?;
+    }
     let descriptor = image.sampler.get_or_init_descriptor();
     descriptor.address_mode_u = ImageAddressMode::Repeat;
     descriptor.address_mode_v = ImageAddressMode::Repeat;
     descriptor.address_mode_w = ImageAddressMode::Repeat;
-    if image.texture_descriptor.size.depth_or_array_layers == 1 {
-        image.reinterpret_stacked_2d_as_array(layers)?;
-    }
     image.texture_view_descriptor = Some(TextureViewDescriptor {
         dimension: Some(TextureViewDimension::D2Array),
         ..default()
@@ -1592,7 +1589,7 @@ mod tests {
                     ..default()
                 }),
         );
-        install_render_assets(&mut app);
+        install_render_assets(&mut app, Handle::default());
         let mut assets = app.world().resource::<VoxelTransportAssets>().clone();
         let mut texture = Image::new_fill(
             wgpu::Extent3d {
