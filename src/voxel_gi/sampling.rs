@@ -11,32 +11,53 @@ pub(crate) fn stream_id(voxel: IVec3, face: u32) -> u32 {
     pcg(pcg(pcg(voxel.x as u32) ^ voxel.y as u32) ^ voxel.z as u32) ^ pcg(face.wrapping_add(1))
 }
 
-/// Independently rotated Halton dimensions. Only the high-base emitter
-/// dimensions use digit permutations: their unpermuted prefixes otherwise
-/// walk slowly through the light CDF and produce long runs of one light color.
-/// A nonzero multiplier permutes a prime base and fixes zero, so omitted leading
-/// zeros remain valid. Rotation supplies the uniform offset. This is a limited
-/// digit scramble, not full Owen scrambling; low-base path dimensions retain
-/// their original ordering, which tested better in the narrow-skylight fixture.
+/// Preserve rotated Halton path directions and roulette; use independently
+/// padded, hash-Owen-scrambled Sobol pairs for emitter selection and surface
+/// coordinates. All streams continue independently of measurement resets.
 pub(crate) fn sample_1d(stream: u32, sequence: u32, dimension: u32) -> f32 {
-    const PRIMES: [u32; 16] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53];
-    let base = PRIMES[dimension as usize % PRIMES.len()];
-    let mut index = (sequence & 0x00ff_ffff) + 1;
-    let mut scale = 1.0;
-    let mut value = 0.0;
-    let mut digit_seed = pcg(stream ^ pcg(dimension.wrapping_add(0x68bc_21eb)));
-    while index != 0 {
-        scale /= base as f32;
-        let mut digit = index % base;
-        if dimension >= 12 {
-            digit = digit * (1 + digit_seed % (base - 1)) % base;
+    if dimension < 12 {
+        const PRIMES: [u32; 12] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];
+        let base = PRIMES[dimension as usize];
+        let mut index = (sequence & 0x00ff_ffff) + 1;
+        let mut scale = 1.0;
+        let mut value = 0.0;
+        while index != 0 {
+            scale /= base as f32;
+            value += (index % base) as f32 * scale;
+            index /= base;
         }
-        value += digit as f32 * scale;
-        index /= base;
-        digit_seed = pcg(digit_seed);
+        let rotation = (pcg(stream ^ pcg(dimension)) >> 9) as f32 / 8_388_608.0;
+        return (value + rotation).fract();
     }
-    let rotation = (pcg(stream ^ pcg(dimension)) >> 9) as f32 / (1_u32 << 23) as f32;
-    (value + rotation).fract()
+    let seed = pcg(stream ^ pcg(dimension / 2));
+    let mut index =
+        scramble_reverse(sequence.reverse_bits(), pcg(seed ^ 0x79c6_8e4a)).reverse_bits();
+    if dimension & 1 != 0 {
+        // Pascal matrix over GF(2), the second Sobol dimension. These butterfly
+        // stages equal XORing the 32 direction vectors, without a lookup table.
+        for (shift, mask) in [
+            (1, 0x5555_5555),
+            (2, 0x3333_3333),
+            (4, 0x0f0f_0f0f),
+            (8, 0x00ff_00ff),
+            (16, 0x0000_ffff),
+        ] {
+            index ^= (index >> shift) & mask;
+        }
+    }
+    let value = scramble_reverse(index, pcg(seed ^ pcg(dimension))).reverse_bits();
+    (value >> 9) as f32 / 8_388_608.0
+}
+
+// Hash-based reverse-bit Owen scramble adapted from Nathan Vegdahl's
+// sobol_burley (MIT); see licenses/sobol_burley-MIT.txt.
+fn scramble_reverse(mut value: u32, seed: u32) -> u32 {
+    value ^= value.wrapping_mul(0x3d20_adea);
+    value = value.wrapping_add(seed);
+    value = value.wrapping_mul((seed >> 16) | 1);
+    value ^= value.wrapping_mul(0x0552_6c56);
+    value ^= value.wrapping_mul(0x53a2_2864);
+    value
 }
 
 pub(crate) fn hemisphere(normal: Vec3, u: f32, v: f32) -> Vec3 {
@@ -67,9 +88,9 @@ mod tests {
     }
 
     #[test]
-    fn emitter_dimensions_remain_uniform_and_low_dimensions_keep_their_order() {
+    fn pairs_are_dyadically_stratified_in_aligned_sequence_blocks() {
         for stream in [0, 123, stream_id(IVec3::new(-19, 7, 12), 2)] {
-            for dimension in 12..15 {
+            for dimension in 0..16 {
                 let mean = (0..4096)
                     .map(|i| {
                         let value = sample_1d(stream, i, dimension);
@@ -80,12 +101,37 @@ mod tests {
                     / 4096.0;
                 assert!((mean - 0.5).abs() < 0.004, "dimension {dimension}: {mean}");
             }
+            for dimension in [12, 14] {
+                for start in [0, 64, 4096, 65536, 16_777_216] {
+                    for x_bits in 0..=6 {
+                        let width = 1 << x_bits;
+                        let height = 64 / width;
+                        let mut counts = [0; 64];
+                        for index in start..start + 64 {
+                            let x = (sample_1d(stream, index, dimension) * width as f32) as usize;
+                            let y =
+                                (sample_1d(stream, index, dimension + 1) * height as f32) as usize;
+                            counts[y * width + x] += 1;
+                        }
+                        assert!(
+                            counts.into_iter().all(|count| count == 1),
+                            "pair {dimension}, start {start}, grid {width}x{height}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn path_dimensions_preserve_the_previous_halton_sequence() {
+        for stream in [0, 123, stream_id(IVec3::new(-19, 7, 12), 2)] {
             for (dimension, base) in [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]
                 .into_iter()
                 .enumerate()
             {
-                for sequence in [0, 3, 7, 64, 2047, 65_536] {
-                    let mut index = sequence + 1;
+                for sequence in [0, 3, 7, 64, 2047, 65536, 0x00ff_ffff] {
+                    let mut index = (sequence & 0x00ff_ffff) + 1;
                     let mut scale = 1.0;
                     let mut value = 0.0;
                     while index != 0 {
