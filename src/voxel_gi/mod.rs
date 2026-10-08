@@ -208,7 +208,7 @@ struct VoxelGiRuntime {
     dirty_since: Option<Instant>,
     urgent_edit: bool,
     generation: u64,
-    geometry_revision: Option<geometry::GeometryRevision>,
+    geometry_history: geometry::GeometryHistory,
     source_revision: u64,
     batch_size: usize,
     global_source_revision: u64,
@@ -280,7 +280,7 @@ impl Default for VoxelGiRuntime {
             dirty_since: None,
             urgent_edit: false,
             generation: 0,
-            geometry_revision: None,
+            geometry_history: default(),
             source_revision: 0,
             batch_size: 256,
             global_source_revision: 0,
@@ -407,11 +407,9 @@ fn apply_scene_task(
         if let Some(change) = result.geometry_change.take() {
             let from = field.transport_revision;
             advance_transport_revision(&mut runtime, &mut field);
-            runtime.geometry_revision = Some(geometry::GeometryRevision {
-                from,
-                to: field.transport_revision,
-                change,
-            });
+            runtime
+                .geometry_history
+                .record(from, field.transport_revision, change);
         }
         field
             .publishing_pages
@@ -1152,12 +1150,11 @@ fn select_transport(
             field.transport_revision,
             runtime.source_revision,
             restart,
-            runtime
-                .geometry_revision
-                .as_ref()
-                .map_or(geometry::UNTRACKED_HISTORY, |change| {
-                    change.history_limit(voxel, probe.transport_revision, field.transport_revision)
-                }),
+            runtime.geometry_history.history_limit(
+                voxel,
+                probe.transport_revision,
+                field.transport_revision,
+            ),
             history_limit,
         );
     }
