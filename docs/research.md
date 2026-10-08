@@ -130,6 +130,12 @@ multi-band tests before considering promotion.
 
 ## Next speed experiments, in order
 
+The [October 8 experiment results](experiments.md) record completed branches.
+Emitter-only scrambled Sobol sampling and explicit sky demand are now defaults.
+The four-sector local guide, dense wavefront implementation and broader Sobol
+variants were not promoted. The experiments below remain research directions,
+not claims that those tested variants should be retried unchanged.
+
 1. **Measure useful work after this cleanup.** Attribute time to scene assembly,
    scheduling, GPU tracing, readback/merge and display publication. Pair frame
    tails with fresh-field latency; an idle renderer with stale light is not faster

@@ -53,6 +53,16 @@ benchmarks. Select by name; do not routinely run all ignored tests. The optional
 `stress` profile remains for relevant buffer/material/cache-generation changes or
 a returning toggle symptom, not ordinary sampling or performance work.
 
+For execution-only shader experiments, `shader_candidate_benchmark` reads an
+archived WGSL file from `VOXEL_GI_BASELINE_SHADER`, alternates warmed baseline and
+candidate runs, and checks five-band result equality at identical paths. Sampler
+changes deliberately alter those paths: use `sampler_candidate_benchmark` instead.
+It compares eight disjoint sequence blocks to the same analytic/high-sample
+reference at equal path counts. Neither benchmark establishes gameplay FPS.
+`explicit_sky_demand_benchmark` isolates warm sky-cache CPU work and verifies
+unchanged transport and displayed sunlight. These remain opt-in, not a new
+mandatory suite for ordinary edits.
+
 ## End-to-end workloads
 
 Defaults stay shared-corner sunlight, corner-reconstructed indirect, textures on,

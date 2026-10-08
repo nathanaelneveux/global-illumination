@@ -20,6 +20,8 @@ depends on greedy-mesh vertices or screen resolution.
   requirements, and the shared build cache.
 - [October 8 audit](docs/audit.md): findings, fixes, retained boundaries, and
   verification for this cleanup.
+- [Current performance experiments](docs/experiments.md): measured winners,
+  isolated alternatives, and the limits of each result.
 - [Historical experiments](docs/experiments-2026-10.md): previous measurements,
   rejected experiments, and their limitations. This is not the current design.
 

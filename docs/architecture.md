@@ -93,11 +93,15 @@ receiver records on the game thread. Stable logical keys are voxel coordinates,
 not mesh vertices or array indices.
 
 Each selected face receives four paths per normal dispatch. Rotated Halton
-dimensions sample cosine-weighted hemispheres, with limited digit scrambling in
-the emitter-selection dimensions. This is not full Owen scrambling. Sequences
-advance independently of retained history, so invalidation does not repeat the
-same early rays. The GPU uses four lanes per face; the serial entry remains an
-opt-in paired reference.
+dimensions preserve the tested cosine-hemisphere and roulette sequences. Emitter
+selection and emitter surface coordinates use independently padded 2D Sobol pairs
+with index shuffling and hash-based Owen scrambling. CPU and GPU use the same
+integer operations; the second Sobol dimension uses a Pascal-matrix butterfly,
+so no direction tables or per-receiver guide are needed. Sequences advance
+independently of retained history, so invalidation does not repeat early rays.
+The GPU uses four lanes per face; the serial entry remains an opt-in reference.
+The [experiment results](experiments.md) explain why Sobol is restricted to
+emitter dimensions rather than replacing every path dimension.
 
 Paths evaluate up to three diffuse bounces, analytic visibility, voxel emission,
 and the directional environment gradient. Analytic point lights use range and
@@ -133,6 +137,11 @@ Unknown corners retry; packed zero means unknown and packed one means measured
 black. Four RGBE corner colors per face preserve the 208-byte display probe.
 
 Sky jobs share the indirect worker/submission, geometry and scratch buffers.
+`ProbeWork::sky_requested` records explicit sunlight demand. Indirect refinement
+requests missing corners, but does not repeatedly look up or copy measured sun
+values. Geometry and sun changes use the existing urgent/global sky queues;
+overlapping requests attach to the same receiver job in linear time. Publication
+ignores unrequested sky output rather than interpreting zeroed scratch as dark.
 Sky-only receivers carry no transport faces, cannot alter simulation history,
 and submit no GPU work when all corners are cached. Deterministic sky changes
 bypass the normal display upload interval. Separate eligibility is useful here:
