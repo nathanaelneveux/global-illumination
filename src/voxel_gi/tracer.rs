@@ -763,7 +763,8 @@ mod tests {
         };
         assert_eq!(
             scene.trace_ray_result(Vec3::new(32.002, 8.0, 8.0), Vec3::X, 768.0),
-            TraceResult::Unknown
+            TraceResult::Escaped,
+            "air-only frontiers do not bound the transport domain"
         );
         let before = sky_at_corner(&scene, &sources, IVec3::new(31, 8, 8), 0, 0);
         assert!(super::super::sky::unpack(before).x > 0.99);
@@ -777,6 +778,11 @@ mod tests {
             &filled,
             vec![(IVec3::new(2, 0, 0), vec![2; volume_len(PAGE_SIZE)])],
             &[IVec3::X],
+        );
+        assert_eq!(
+            blocked.trace_ray_result(Vec3::new(32.002, 8.0, 8.0), Vec3::X, 768.0),
+            TraceResult::Unknown,
+            "a hole before occupied terrain still prevents certifying transport visibility"
         );
         assert_eq!(
             sky_at_corner(&blocked, &sources, IVec3::new(31, 8, 8), 0, 0),
