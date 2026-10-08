@@ -39,6 +39,28 @@ pub fn build_aadf(size: UVec3, blocked: &[bool]) -> Vec<Aadf> {
     assert!(size.max_element() <= u8::MAX as u32);
 
     let mut source = vec![Aadf::default(); blocked.len()];
+    if blocked.iter().all(|&cell| cell) {
+        return source;
+    }
+    if blocked.iter().all(|&cell| !cell) {
+        // An entirely empty volume has an exact closed-form solution. Mixed
+        // regions contain many uniform bricks; do not relax those cell by cell.
+        for z in 0..size.z {
+            for y in 0..size.y {
+                for x in 0..size.x {
+                    source[linear_index(UVec3::new(x, y, z), size)].bounds = [
+                        x as u8,
+                        (size.x - x - 1) as u8,
+                        y as u8,
+                        (size.y - y - 1) as u8,
+                        z as u8,
+                        (size.z - z - 1) as u8,
+                    ];
+                }
+            }
+        }
+        return source;
+    }
     let mut destination = source.clone();
     let rounds = size.max_element().saturating_sub(1);
 
