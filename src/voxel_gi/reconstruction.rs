@@ -2,6 +2,93 @@
 //! Kept independent of simulation estimates and of mesh tessellation.
 #[cfg(test)]
 mod tests {
+    use bevy::prelude::*;
+    use std::collections::{HashMap, HashSet};
+
+    /// Count the sites required by moving the existing oriented hemisphere
+    /// estimator to corners, preserving this reconstruction's connectivity.
+    /// This is NOT a ray-throughput benchmark or a full-sphere estimator test.
+    fn transport_sites(faces: &[(IVec3, usize)]) -> (usize, usize) {
+        let mut corners = HashMap::<(IVec3, usize), Vec<IVec3>>::new();
+        for &(voxel, face) in faces {
+            for corner in 0..4 {
+                corners
+                    .entry((
+                        super::super::sky::corner_position(voxel, face, corner),
+                        face,
+                    ))
+                    .or_default()
+                    .push(voxel);
+            }
+        }
+        let positions: HashSet<_> = corners.keys().map(|(position, _)| *position).collect();
+        let mut oriented_components = 0;
+        for mut neighbors in corners.into_values() {
+            while let Some(first) = neighbors.pop() {
+                oriented_components += 1;
+                let mut pending = vec![first];
+                while let Some(voxel) = pending.pop() {
+                    for index in (0..neighbors.len()).rev() {
+                        if (neighbors[index] - voxel).abs().element_sum() == 1 {
+                            pending.push(neighbors.swap_remove(index));
+                        }
+                    }
+                }
+            }
+        }
+        (positions.len(), oriented_components)
+    }
+
+    #[test]
+    fn corner_transport_topology_cost_preserves_normals_and_disconnected_sides() {
+        let plane: Vec<_> = (0..32)
+            .flat_map(|z| (0..32).map(move |x| (IVec3::new(x, 0, z), 2)))
+            .collect();
+        assert_eq!(transport_sites(&plane), (1089, 1089));
+        let cube: Vec<_> = (0..6).map(|face| (IVec3::ZERO, face)).collect();
+        assert_eq!(transport_sites(&cube), (8, 24));
+        let diagonal = [(IVec3::ZERO, 2), (IVec3::new(1, 0, 1), 2)];
+        assert_eq!(
+            transport_sites(&diagonal),
+            (7, 8),
+            "coincident corners on disconnected faces cannot share a display/transport state"
+        );
+
+        let world = crate::terrain::PrototypeWorld::default();
+        let solid = |voxel| {
+            matches!(
+                world.generated_voxel(voxel),
+                bevy_voxel_world::prelude::WorldVoxel::Solid(_)
+            )
+        };
+        let mut house = Vec::new();
+        for z in -24..=-12 {
+            for y in 10..=17 {
+                for x in -6..=6 {
+                    let voxel = IVec3::new(x, y, z);
+                    if !solid(voxel) {
+                        continue;
+                    }
+                    for (face, offset) in super::super::world::FACE_OFFSETS.iter().enumerate() {
+                        if !solid(voxel + *offset) {
+                            house.push((voxel, face));
+                        }
+                    }
+                }
+            }
+        }
+        let (positions, oriented) = transport_sites(&house);
+        println!(
+            "corner-site census: flat32 faces={} positions=1089 oriented=1089; cube faces=6 positions=8 oriented=24; house faces={} positions={} oriented={}",
+            plane.len(),
+            house.len(),
+            positions,
+            oriented
+        );
+        assert!(!house.is_empty());
+        assert!(oriented >= positions);
+    }
+
     fn weighted_corner(
         center: (f32, f32),
         u: Option<(f32, f32)>,
