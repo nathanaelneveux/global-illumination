@@ -72,7 +72,7 @@ floor, separate from the presentation filter's 0.02 floor, so dark noisy faces
 are not prematurely labeled settled. The HUD can therefore report less settling
 initially even while those faces obtain better evidence sooner.
 
-Global wake-up is separate from evidence destruction: remote histories retain up to 64 samples of temporal weight, rather than falling back to four on every streamed air page or local light movement. Local geometry changes retain at most 16 measured samples on unchanged faces, mark them stale, reject pre-edit worker results, and prioritize fresh paths. Newly exposed faces and changed materials still start with zero measurements; opening one face no longer clears every other face of that voxel. Global source changes/nearby moving lights still use the short four-sample response. Retained measurements can therefore keep coverage/bootstrap high after edits; those percentages do not certify current lighting. Inspect `transport_current`, `sources_current`, age and variance for simulations. Candidate scanning is independent of emitted work: settled probes do not consume ray slots, and underfilled cheap batches cannot collapse the scheduling budget. Searches remain bounded to at most 8,192 candidates per selection, plus the bounded priority windows.
+Global wake-up is separate from evidence destruction. Geometry loading, removal and edits now share one experimental distance policy: retain at most 16 samples within 48 voxels of changed geometry and 256 farther away. A bounded eight-revision spatial history combines overlapping changes; missing transitions fall back to 64. Distance controls history weight, not visibility or whether distant receivers refresh. Nearby moving lights/global source changes still use four samples, remote moving lights 64. Newly exposed faces and changed materials start with zero measurements; opening one face no longer clears every other face of that voxel. Retained measurements can therefore keep coverage/bootstrap high after edits; those percentages do not certify current lighting. Inspect `transport_current`, `sources_current`, age and variance for simulations. Candidate scanning is independent of emitted work: settled probes do not consume ray slots, and underfilled cheap batches cannot collapse the scheduling budget. Searches remain bounded to at most 8,192 candidates per selection, plus the bounded priority windows.
 
 Discrete voxel-emitter additions/removals (including loaded/unloaded emitters) and transport material-table changes are an exception: each receiver discards obsolete transport statistics lazily on its next dispatch, while preserving display history and sample-sequence progression. Old in-flight source results cannot republish obsolete energy. This prevents an extinguished emitter surviving as 16 or 64 old lit samples diluted over many batches. The existing display resolve still smooths replacement measurements; ordinary digging and moving analytic lights retain their bounded-history policies. Source reset is conservative across loaded receivers because path dependencies are not tracked. The focused `emitter_removal_replaces_energy_in_one_batch_and_fades_display` native test checks RGB/IR/ionizing removal in a sealed room and CPU/GPU agreement. Its virtual 50 ms batch cadence is not a gameplay latency measurement.
 
@@ -131,7 +131,7 @@ A top-right HUD shows smoothed **FPS**, **Coverage** (exposed faces with at leas
 
 **GI main** and **GI GPU** show average milliseconds **per app frame**, not per dispatch, over 250 ms windows; idle windows do not repeat the last busy batch's cost. Main measures the GI main-world system bodies (change collection, source synchronization, scene publication, scheduling, result merging and display-cache preparation). It excludes asynchronous scene/trace workers and render-world uploads/drawing. GPU uses only completed transport/sky compute-pass timestamps, excluding transfers, queue waits and graphics; it shows a dash before measurement, on the CPU backend, or when valid GPU timestamps are unavailable. Completion-based accounting can lag an in-flight batch. These overlapping costs must **not** be added or mistaken for total GI subsystem cost. Hover the HUD with the cursor released for definitions. Numbers refresh four times per second.
 
-Ordinary edits retain existing nearby faces' measured averages/moments with their history weight capped at 16 samples within 48 voxels; farther faces retain up to 64 when refreshed. These are statistical weights, not stored individual ray paths. Histories are marked stale until refreshed. Newly exposed faces start without measurements and can receive a presentation-only neighbor seed; material changes and discrete emitter additions/removals reset obsolete measurements while preserving presentation history for the temporal resolve.
+Ordinary edits and streamed geometry changes retain measured averages/moments with the shared 16-near/256-far history caps described above. The scene worker builds page-binned bounds: tight changed-voxel bounds inside existing regions, full 16³ bounds for region loading/removal. Selection examines only the receiver's bins across at most eight revisions, without retaining scene snapshots or adding per-probe storage. These are statistical weights, not stored individual ray paths. Histories remain stale until refreshed. Newly exposed faces start without measurements and can receive a presentation-only neighbor seed; material changes and discrete emitter additions/removals reset obsolete measurements while preserving presentation history for the temporal resolve. Larger distant history reduces disruption but can delay response to genuine distant occluder changes; the current gameplay checks do not certify that tradeoff for arbitrary scenes.
 
 Recurring terminal FPS/GI/rebuild stats are quiet during normal play; use `RUST_LOG=info VOXEL_GI_LOG_STATS=1 cargo run` to restore them. Warnings/errors remain enabled. Scripted validation retains terminal diagnostics and hides the HUD to preserve clean captures and blank-frame detection.
 
@@ -257,6 +257,7 @@ is still a prototype integration, not a published storage-independent library.
 | --- | --- |
 | `voxel_gi/bvw.rs` | BVW events and generator snapshots become immutable 32³ pages. This is the host-specific storage adapter. |
 | `world`, `naadf`, `gpu_scene`, `emission` | Immutable acceleration, persistent GPU geometry, and exact emissive-source discovery. No player or screen-space dependencies. |
+| `geometry` | Shared spatial history-retention plans for edits and streaming; bounded revision tracking, independent of camera and presentation. |
 | `tracer`, `gpu`, `sampling`, `sky_cache` | Multi-band face transport and shared-corner direct sun; bounded asynchronous work, with an independent CPU reference. |
 | `mod`, `field`, `scheduling` | Revision-checked publication, fair all-loaded-world scheduling, and simulation queries. Readers can order themselves after `VoxelGiSystems`. |
 | `history`, `reconstruction`, `render` | Display-only priors/filtering, corner reconstruction, and generation-owned GPU presentation. Never write borrowed values into simulation statistics. |
@@ -705,6 +706,52 @@ Artifacts: `gameplay-1791332653004925000-97991/`, `target/house-fix-gameplay.log
 Focused scheduler/history/worker/orchestration checks, native CPU/GPU frontier
 and geometry/emitter parity, Naga validation, formatting and strict all-target
 Clippy passed. No broad toggle stress run.
+
+### Unified geometry-change experiment (October 7)
+
+`b48cfe2` routes edits, loading and unloading through the same distance policy.
+Its first version remembered only one transition: two streaming publications
+before the next receiver update forced the old 64-sample fallback, and the house
+comparison showed no improvement. `8952264` keeps eight spatial plans and combines
+all intervening distance caps. Source reset policies, global freshness, fair
+world sweep, ray kernels, preferred look and 75 ms display filter are unchanged.
+No debounce or new validation profile was added.
+
+Fresh clean baseline `3d8b2f9` (runtime `703ca85`) versus `b48cfe2` plus the exact
+runtime diff committed as `8952264`: Apple M4/Metal, shared-cache development
+profile, 2560×1440 offscreen, preferred corner look, four paths per face batch,
+4 ms dispatch target. No concurrent builds during measurements.
+
+| House observation | Baseline | Bounded spatial history |
+| --- | ---: | ---: |
+| Median ceiling history at 33 s, after terrain-loading turn | 72 | 264 |
+| Nonzero cache-step p95, 32–50 s | 0.06030 | 0.03632 |
+| Maximum cache step, 32–50 s | 0.40108 | 0.21449 |
+| Nonzero cache-step p95, 50–90 s | 0.01603 | 0.01517 |
+| Post-turn offscreen frame p50/p99, ms | 21.92 / 32.45 | 21.76 / 33.31 |
+| Traced paths, millions | 47.73 | 48.21 |
+
+Same step definition as the October 6 comparison; 3,551/3,550 changed observations
+in the 32–50 s window. This preliminary pair supports reduced cache disruption,
+not a measured FPS gain, certified convergence or distant-occluder response.
+Streaming order is stochastic. Both runs completed seven valid captures with
+clean logs; inspected returned-corner captures retain the expected scene/textures.
+
+Existing gameplay integration completed 80 edits, five moves, five valid captures,
+no pending/superseded edit watches and 76.66 million paths. First-fresh edit
+p50/p95 was 147.47/167.86 ms, versus the prior unchanged-runtime sanity run's
+150.47/171.20 ms. Editing frame p50/p99 was 19.79/35.68 ms, streaming
+21.65/40.62 ms; startup/streaming maxima remain 600.7/133.3 ms. Frame tails are
+mixed, not an established speedup or hitch fix. Two spatial-policy tests, three
+compact-work tests, 17 orchestration tests, formatting and strict all-target
+Clippy passed. No broad suite, native-kernel parity rerun or toggle stress.
+
+Artifacts under `target/gi-validation/`: baseline
+`house-1791422515109146000-85315/`, unsuccessful one-transition candidate
+`house-1791422935447882000-91621/`, bounded candidate
+`house-1791423230106409000-96073/`, integration
+`gameplay-1791423365058400000-98249/`. Logs are
+`target/spatial-history-{baseline,house,ring-house,gameplay}.log`.
 
 ### Next performance work
 
