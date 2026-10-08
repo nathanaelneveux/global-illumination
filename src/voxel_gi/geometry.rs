@@ -4,7 +4,6 @@
 use bevy::math::I64Vec3;
 use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
-use std::collections::VecDeque;
 
 use super::world::{PAGE_EDGE, REGION_EDGE, TransportScene};
 
@@ -12,7 +11,6 @@ pub(super) const RELIGHT_RADIUS: i32 = 48;
 pub(super) const NEAR_HISTORY: u32 = 16;
 const FAR_HISTORY: u32 = 256;
 pub(super) const UNTRACKED_HISTORY: u32 = 64;
-const MAX_REVISIONS: usize = 8;
 
 #[derive(Clone, Copy)]
 struct Bounds {
@@ -132,52 +130,29 @@ impl GeometryChange {
     }
 }
 
-struct GeometryRevision {
-    from: u64,
-    to: u64,
-    change: GeometryChange,
-}
-
 #[derive(Default)]
-pub(super) struct GeometryHistory {
-    revisions: VecDeque<GeometryRevision>,
-}
+pub(super) struct GeometryHistory(super::revision::ChangeHistory<GeometryChange>);
 
 impl GeometryHistory {
     pub fn record(&mut self, from: u64, to: u64, change: GeometryChange) {
-        if self.revisions.back().is_some_and(|last| last.to != from) {
-            // An interleaved source revision already requires conservative
-            // source handling. Older spatial metadata is no longer useful.
-            self.revisions.clear();
-        }
-        if self.revisions.len() == MAX_REVISIONS {
-            self.revisions.pop_front();
-        }
-        self.revisions
-            .push_back(GeometryRevision { from, to, change });
+        self.0.record(from, to, change);
     }
 
-    /// Combine every intervening change, never only the latest one. Streaming
-    /// can publish several deltas before a receiver runs. Keep a bounded ring
-    /// of spatial metadata, not scene snapshots or an unbounded edit journal;
-    /// missing transitions conservatively fall back to the previous cap.
+    /// Distance determines retained weight, not freshness. Combine every
+    /// intervening delta; source-revision gaps or evictions use a conservative cap.
     pub fn history_limit(&self, voxel: IVec3, from: u64, to: u64) -> u32 {
         if from == to {
             return UNTRACKED_HISTORY;
         }
-        let mut expected = to;
         let mut limit = FAR_HISTORY;
-        for revision in self.revisions.iter().rev() {
-            if revision.to != expected {
-                break;
-            }
-            limit = limit.min(revision.change.history_limit(voxel));
-            if limit == NEAR_HISTORY || revision.from == from {
-                return limit;
-            }
-            expected = revision.from;
+        let complete = self.0.visit_since(from, to, |change| {
+            limit = limit.min(change.history_limit(voxel));
+        });
+        if complete {
+            limit
+        } else {
+            limit.min(UNTRACKED_HISTORY)
         }
-        limit.min(UNTRACKED_HISTORY)
     }
 }
 
@@ -264,10 +239,8 @@ mod tests {
         for from in 12..21 {
             history.record(from, from + 1, GeometryChange::default());
         }
-        assert_eq!(history.revisions.len(), MAX_REVISIONS);
         assert_eq!(history.history_limit(voxel, 10, 21), UNTRACKED_HISTORY);
         history.record(30, 31, GeometryChange::default());
-        assert_eq!(history.revisions.len(), 1);
         assert_eq!(history.history_limit(voxel, 21, 31), UNTRACKED_HISTORY);
     }
 }

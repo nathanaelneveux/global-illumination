@@ -16,6 +16,7 @@ mod history;
 mod naadf;
 mod reconstruction;
 pub(crate) mod render;
+mod revision;
 mod sampling;
 mod scheduling;
 mod settings;
@@ -45,6 +46,7 @@ use rayon::{ThreadPool, ThreadPoolBuilder};
 
 pub use field::{EnergyEstimate, VoxelEnergyField};
 pub use settings::VoxelGiSettings;
+pub use sources::VoxelGiEnvironment;
 pub use spectrum::{EnergyEmitter, EnergySpectrum};
 pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 
@@ -87,6 +89,7 @@ impl Plugin for VoxelGiPlugin {
             .init_resource::<VoxelGiStats>()
             .init_resource::<GiWorkTimings>()
             .init_resource::<VoxelGiSettings>()
+            .init_resource::<VoxelGiEnvironment>()
             .init_resource::<VoxelMaterialTransportTable>()
             .init_resource::<GpuTransportCache>()
             .add_systems(
@@ -213,10 +216,9 @@ struct VoxelGiRuntime {
     geometry_history: geometry::GeometryHistory,
     source_revision: u64,
     batch_size: usize,
-    global_source_revision: u64,
     /// Last discrete emission change: old energy must not survive as samples.
     reset_source_revision: u64,
-    source_influences: Vec<(Vec3, f32)>,
+    source_history: sources::SourceHistory,
     nearby: Vec<IVec3>,
     nearby_cursor: usize,
     adaptive_cursor: usize,
@@ -285,9 +287,8 @@ impl Default for VoxelGiRuntime {
             geometry_history: default(),
             source_revision: 0,
             batch_size: 256,
-            global_source_revision: 0,
             reset_source_revision: 0,
-            source_influences: Vec::new(),
+            source_history: default(),
             nearby: Vec::new(),
             nearby_cursor: 0,
             adaptive_cursor: 0,
@@ -1019,14 +1020,11 @@ fn select_transport(
         let mut history_limit = u32::MAX;
         if probe.source_revision != runtime.source_revision {
             restart = probe.source_revision < runtime.reset_source_revision;
-            let local = runtime.source_influences.iter().any(|(position, radius)| {
-                probe.voxel.as_vec3().distance_squared(*position) <= radius * radius
-            });
-            history_limit = if local || probe.source_revision < runtime.global_source_revision {
-                4
-            } else {
-                64
-            };
+            history_limit = runtime.source_history.history_limit(
+                probe.voxel,
+                probe.source_revision,
+                runtime.source_revision,
+            );
         }
         selected.push(
             probe,
@@ -1739,7 +1737,6 @@ mod tests {
         let mut runtime = VoxelGiRuntime::default();
         enqueue_many(&mut runtime, [voxel]);
         invalidate_sources(&mut runtime, &mut field, &mut VoxelGiStats::default());
-        runtime.global_source_revision = runtime.source_revision;
         assert_eq!(field.probes[&voxel].samples[2], 64);
         assert_eq!(runtime.pending.len(), 1);
         let selected = select_probes(&mut runtime, &field);
@@ -1790,8 +1787,12 @@ mod tests {
         field.probes.insert(voxel, probe);
         field.order.push(voxel);
         let mut runtime = VoxelGiRuntime::default();
-        runtime.source_influences.push((Vec3::ZERO, 24.0));
-        invalidate_sources(&mut runtime, &mut field, &mut VoxelGiStats::default());
+        sources::invalidate_source_change(
+            &mut runtime,
+            &mut field,
+            &mut VoxelGiStats::default(),
+            sources::SourceChange::Local(vec![(Vec3::ZERO, 24.0)]),
+        );
         let selected = select_probes(&mut runtime, &field);
         assert_eq!(selected[0].samples[2], 64);
         assert_eq!(selected[0].sequence[2], 1000);
