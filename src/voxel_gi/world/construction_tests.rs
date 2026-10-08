@@ -122,6 +122,46 @@ fn scene_construction_matches_full_rebuild_through_edit_and_residency_changes() 
     }
 }
 
+#[test]
+fn occupied_region_edits_share_only_top_level_acceleration() {
+    let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+    let point = linear_index(UVec3::new(4, 5, 6), PAGE_SIZE);
+    page[point] = 1;
+    let initial = TransportScene::with_page_delta(
+        &TransportScene::default(),
+        vec![(IVec3::ZERO, page.clone())],
+        &[],
+    );
+    page[point + 1] = 2;
+    let edited = TransportScene::with_page_delta(&initial, vec![(IVec3::ZERO, page.clone())], &[]);
+    assert!(Arc::ptr_eq(
+        &initial.top_level.fields,
+        &edited.top_level.fields
+    ));
+    assert!(!Arc::ptr_eq(
+        &initial.regions[&IVec3::ZERO],
+        &edited.regions[&IVec3::ZERO]
+    ));
+    assert_eq!(initial.material_at(IVec3::new(5, 5, 6)), Some(AIR));
+    assert_eq!(edited.material_at(IVec3::new(5, 5, 6)), Some(2));
+    let changes = super::super::geometry::SceneChanges::between(&initial, &edited);
+    assert!(changes.changed && changes.transport.is_some());
+    assert!(changes.changed_materials[2]);
+
+    page[point] = AIR;
+    page[point + 1] = AIR;
+    let emptied = TransportScene::with_page_delta(&edited, vec![(IVec3::ZERO, page)], &[]);
+    assert!(!Arc::ptr_eq(
+        &edited.top_level.fields,
+        &emptied.top_level.fields
+    ));
+    assert_eq!(edited.material_at(IVec3::new(5, 5, 6)), Some(2));
+    assert_eq!(
+        emptied.top_level.fields,
+        TopLevelAadf::build(&emptied.regions).fields
+    );
+}
+
 fn terrain_scene() -> (TransportScene, Vec<u16>) {
     // 1,024 resident pages represented by 8,192 regions. Uniform strata keep
     // setup compact; the edited page still goes through normal brick building.
