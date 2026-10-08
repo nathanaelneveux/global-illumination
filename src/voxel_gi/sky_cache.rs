@@ -29,7 +29,11 @@ impl SkyReceiver for ProbeWork {
         self.voxel
     }
     fn face_mask(&self) -> u8 {
-        self.face_mask
+        if self.sky_requested {
+            self.face_mask
+        } else {
+            0
+        }
     }
     fn set_sky(&mut self, face: usize, value: [u32; 4]) {
         self.sky[face] = value;

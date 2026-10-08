@@ -16,6 +16,9 @@ pub(crate) struct TraceWork {
 pub(crate) struct ProbeWork {
     pub voxel: IVec3,
     pub face_mask: u8,
+    /// Explicit sky demand, independent of indirect refinement. Unknown corners
+    /// request a retry; already measured corners wait for the sky change queue.
+    pub sky_requested: bool,
     pub trace_mask: u8,
     pub revision: u64,
     pub source_revision: u64,
@@ -158,6 +161,10 @@ impl TraceWork {
         self.probes.push(ProbeWork {
             voxel: probe.voxel,
             face_mask: probe.face_mask,
+            sky_requested: mask == 0
+                || (0..6).any(|face| {
+                    probe.face_mask & (1 << face) != 0 && probe.display[face].sky.contains(&0)
+                }),
             trace_mask: mask,
             revision: probe.revision,
             source_revision,
@@ -185,6 +192,9 @@ impl TraceWork {
             );
             // Reference/benchmark inputs already own their history policy.
             let header = work.probes.last_mut().unwrap();
+            // Reference calls explicitly request current sky, including when
+            // testing geometry/source changes without the production scheduler.
+            header.sky_requested = true;
             header.sky = probe.display.map(|face| face.sky);
             for face in &mut work.faces[header.faces()] {
                 face.samples = probe.samples[face.face];
@@ -197,8 +207,10 @@ impl TraceWork {
     pub fn copy_measurements(&self, probes: &mut [SurfaceProbe]) {
         for (job, probe) in self.probes.iter().zip(probes) {
             debug_assert_eq!(job.voxel, probe.voxel);
-            for face in 0..6 {
-                probe.display[face].sky = job.sky[face];
+            if job.sky_requested {
+                for face in 0..6 {
+                    probe.display[face].sky = job.sky[face];
+                }
             }
             for face in &self.faces[job.faces()] {
                 face.write(probe);

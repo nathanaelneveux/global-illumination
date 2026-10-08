@@ -23,11 +23,10 @@ pub(super) fn append_sky_work(
     field: &VoxelEnergyField,
     selected: &mut TraceWork,
 ) -> usize {
-    // Deduplicate before copying a receiver, including overlaps with transport.
-    // Do not inherit candidates rejected by transport's due-face filter.
+    // Collect explicit sky demand, then attach it to existing transport jobs.
+    // Removing overlaps is linear in both queues, not a search per candidate.
     let seen = &mut runtime.selection_seen;
     seen.clear();
-    seen.extend(selected.probes.iter().map(|probe| probe.voxel));
     let mut count = 0;
     for _ in 0..runtime.sky_batch_size {
         let voxel = if let Some(voxel) = runtime.sky_pending.pop_front() {
@@ -41,9 +40,15 @@ pub(super) fn append_sky_work(
         } else {
             break;
         };
-        if seen.insert(voxel)
-            && let Some(probe) = field.probes.get(&voxel)
-        {
+        seen.insert(voxel);
+    }
+    for job in &mut selected.probes {
+        if seen.remove(&job.voxel) {
+            job.sky_requested = true;
+        }
+    }
+    for voxel in seen.iter() {
+        if let Some(probe) = field.probes.get(voxel) {
             count += 1;
             selected.push(
                 probe,
@@ -439,7 +444,7 @@ pub(super) fn apply_trace_task(
             }
             continue;
         }
-        if sky_current {
+        if sky_current && job.sky_requested {
             let changed = (0..6).any(|face| {
                 old.face_mask & (1 << face) != 0 && old.display[face].sky != job.sky[face]
             });
