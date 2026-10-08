@@ -8,6 +8,7 @@ pub(super) enum Profile {
     Gameplay,
     Streaming,
     House,
+    HouseEdits,
     Response,
     Edits,
     Sources,
@@ -21,13 +22,14 @@ impl Profile {
             "gameplay" => Ok(Self::Gameplay),
             "streaming" => Ok(Self::Streaming),
             "house" => Ok(Self::House),
+            "house-edits" => Ok(Self::HouseEdits),
             "response" => Ok(Self::Response),
             "edits" => Ok(Self::Edits),
             "sources" => Ok(Self::Sources),
             "compare" => Ok(Self::Compare),
             "stress" => Ok(Self::Stress),
             _ => Err(format!(
-                "unknown validation profile {value:?}; choose gameplay, streaming, house, response, edits, sources, compare, or stress"
+                "unknown validation profile {value:?}; choose gameplay, streaming, house, house-edits, response, edits, sources, compare, or stress"
             )),
         }
     }
@@ -37,6 +39,7 @@ impl Profile {
             Self::Gameplay => "gameplay",
             Self::Streaming => "streaming",
             Self::House => "house",
+            Self::HouseEdits => "house-edits",
             Self::Response => "response",
             Self::Edits => "edits",
             Self::Sources => "sources",
@@ -50,6 +53,7 @@ impl Profile {
             Self::Compare => 29.0,
             Self::Streaming => 35.0,
             Self::House => 90.0,
+            Self::HouseEdits => 180.0,
             Self::Response | Self::Edits => 30.0,
             _ => 72.0,
         }
@@ -64,7 +68,19 @@ impl Profile {
     }
 
     pub fn captures(self) -> &'static [(f32, &'static str)] {
-        if self == Self::House {
+        if self == Self::HouseEdits {
+            &[
+                (89.0, "pre-edit"),
+                (90.4, "skylight-0400ms"),
+                (100.0, "skylight-10s"),
+                (119.0, "skylight-29s"),
+                (120.4, "west-door-0400ms"),
+                (149.0, "west-door-29s"),
+                (150.4, "east-door-turn-0400ms"),
+                (160.0, "east-door-turn-10s"),
+                (179.0, "east-door-turn-29s"),
+            ]
+        } else if self == Self::House {
             &[
                 (29.0, "first-corner"),
                 (30.4, "turned-0400ms"),
@@ -136,7 +152,13 @@ impl Profile {
     }
 
     pub fn phase(self, elapsed: f32) -> &'static str {
-        if self == Self::House {
+        if self == Self::HouseEdits && elapsed >= 90.0 {
+            match elapsed {
+                t if t < 120.0 => "skylight",
+                t if t < 150.0 => "west-door",
+                _ => "east-door-turn",
+            }
+        } else if matches!(self, Self::House | Self::HouseEdits) {
             match elapsed {
                 t if t < 30.0 => "first-corner",
                 t if t < 50.0 => "second-corner",
@@ -216,6 +238,7 @@ mod tests {
             Profile::Gameplay,
             Profile::Streaming,
             Profile::House,
+            Profile::HouseEdits,
             Profile::Response,
             Profile::Edits,
             Profile::Sources,

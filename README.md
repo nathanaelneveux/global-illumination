@@ -198,6 +198,7 @@ RUST_LOG=info VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_EXIT=1 VOXEL_GI_VALIDATE_PRO
 | `edits` (30 s) | Initial geometry/lighting handoff | Same enclosed room: dig/restore its floor, place/remove an ordinary block, then inspect a roof excavation from above; 18 captures at 50/150/400 ms offsets and receiver history; no source or mode changes |
 | `streaming` (35 s) | Turn-around/walk streaming regression | Settle 15 s at spawn, turn 180°, translate at 4.32 blocks/s for 15 s, recover 5 s; fixed preferred look. Scripted translation, not a character-controller movement test |
 | `house` (90 s) | Ceiling refinement and camera-turn invalidation | Fixed eye inside the unmodified prototype house; turn between opposite ceiling corners at 30/50/70 s. Normal streaming remains enabled. Seven captures and 25 fixed underside receivers recorded in `house.json`; no edits, player translation, sources, or mode switches |
+| `house-edits` (180 s) | Settled-house opening edits, with/without overlapping streaming | Same 90 s house warm-up; open a one-block roof skylight at 90 s, a three-block west doorway at 120 s, then an east doorway plus third-corner turn at 150 s. Nine captures; `house.json` records actual edit/capture times, removed-solid counts, moments and receiver/revision histories. Fixed warm-up is not certified convergence; opening edits are recorded in `house.json`, not the generic gameplay edit counter |
 | `sources` (72 s) | Point-light and emissive-material updates, including IR/ionizing transport | Same timing and streaming path, but moving RGB/IR/ionizing point source plus emissive voxel replace repeated digging; remove sources for recovery |
 | `compare` (29 s) | Appearance inspection, **not** performance evidence | Explicit corner sun, per-pixel sun, flat voxel, corner/flat irradiance, indirect-disabled, and restored-default captures |
 | `stress` (72 s, targeted only) | Regression check for the fixed buffer-generation/mode-switch failure, **not** routine performance work | Editing, sources, streaming, and F4–F7 combinations eight times per second, followed by recovery |
@@ -752,6 +753,50 @@ Artifacts under `target/gi-validation/`: baseline
 `house-1791423230106409000-96073/`, integration
 `gameplay-1791423365058400000-98249/`. Logs are
 `target/spatial-history-{baseline,house,ring-house,gameplay}.log`.
+
+### House opening-edit diagnosis (October 8)
+
+The `house-edits` workload extends the existing house fixture without changing
+normal runtime lighting. One run of `1f201f2` plus this validation-only diff,
+Apple M4/Metal, development profile, preferred corner look, 2560×1440 offscreen,
+four paths per batch and 4 ms dispatch target. No concurrent builds during capture.
+
+At 89 s all 25 monitored underside faces passed the current stability heuristic;
+history counts ranged from 1,060 to 2,444 (median 2,024). Removing the central roof
+block at 90 s left 24 receivers and capped **all** of them to 16 old samples.
+At the next recorded update they had 20 samples, not their previous long histories.
+The same happened for the west doorway at 120 s. Both edits produced exactly one
+transport revision, with the loaded-page count fixed at 662 and no source revision
+change. Thus overlapping streaming is **not necessary** for the observed swings.
+
+| Observation window | Nonzero cache-step p95 | Maximum step |
+| --- | ---: | ---: |
+| Before edits, 70–90 s | 0.01212 | 0.03599 |
+| Skylight, 90–100 s | 0.12243 | 0.60094 |
+| West doorway, 120–130 s | 0.13430 | 0.57944 |
+| East doorway + turn, 150–160 s | 0.13929 | 0.61382 |
+
+Same normalized indirect-cache step definition as above, not pixel flicker or
+ground-truth error. The camera turn did load more terrain (662 to 958 pages by
+151.4 s) and produced two transport revisions. There was only one observed count
+drop per surviving receiver, not a sequence rollback or repeated reset storm.
+At a representative ceiling receiver `(4,17,-23)`, opening the skylight reduced
+displayed green from 0.01112 to 0.00305 by 91 s, before recovering to 0.00845 at
+119 s. This and the moments/advancing sample sequences implicate low-history
+sampling variation after nearby invalidation, rather than repeated scene churn.
+
+Next targeted experiment: refine the shared geometry-retention policy **inside**
+its currently uniform 48-voxel near zone, preserving more evidence on unchanged
+receivers while still responding promptly to real occlusion changes. Do not
+simply increase every history cap or ray budget; check openings/closures and
+fresh response alongside noise. No estimator/filter/default changes made here.
+
+Nine valid captures, seven verified solid removals, clean render logs; two profile
+tests, strict all-target Clippy, formatting and diff checks passed. Inspected
+captures are nonblank with expected terrain/textures; sparse screenshots do not
+capture every numerical spike. Artifact:
+`target/gi-validation/house-edits-1791465905041513000-8835/`;
+log: `target/house-openings-baseline.log`. No FPS claim, broad suite or toggle stress.
 
 ### Next performance work
 

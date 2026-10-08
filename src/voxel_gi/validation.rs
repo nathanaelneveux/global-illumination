@@ -209,9 +209,12 @@ pub(super) fn run_validation(
     let elapsed = run.started.unwrap().elapsed().as_secs_f32();
     let profile = run.profile;
     let (ref mut player, ref mut look) = *player_state;
-    if profile == Profile::House {
+    if matches!(profile, Profile::House | Profile::HouseEdits) {
         run.house.tick(
             elapsed,
+            profile == Profile::HouseEdits,
+            &mut world,
+            &mut dirty,
             &field,
             &runtime,
             &mut commands,
@@ -285,6 +288,11 @@ pub(super) fn run_validation(
             .observe(save_to_disk(output));
         if matches!(profile, Profile::Response | Profile::Edits) {
             run.response
+                .captures
+                .push(json!({"name": name, "scheduled_s": at, "requested_s": elapsed}));
+        }
+        if matches!(profile, Profile::House | Profile::HouseEdits) {
+            run.house
                 .captures
                 .push(json!({"name": name, "scheduled_s": at, "requested_s": elapsed}));
         }
@@ -445,10 +453,10 @@ pub(super) fn run_validation(
         return;
     }
     let config = configs.get(&assets.prototype_config);
-    if profile == Profile::House
+    if matches!(profile, Profile::House | Profile::HouseEdits)
         && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("house.json"),
-            json!({"samples": run.house.samples,
-                "note": "Unmodified prototype house, fixed eye, opposite ceiling corners at 30/50/70s. Normal terrain streaming and adaptive scheduling remain enabled. Not a windowed FPS benchmark."}).to_string()) {
+            json!({"samples": run.house.samples, "events": run.house.events, "captures": run.house.captures,
+                "note": "Prototype house, fixed eye, opposite ceiling corners at 30/50/70s. House-edits opens a skylight at 90s, west door at 120s, east door plus third-corner turn at 150s. Fixed warm-up is not certified convergence. Normal terrain streaming and adaptive scheduling remain enabled. Not a windowed FPS benchmark."}).to_string()) {
             evidence.fail(&format!("Could not save house sequence: {error}"));
             commands.write_message(AppExit::error());
             return;
