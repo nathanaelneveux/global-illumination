@@ -225,7 +225,7 @@ Player input and manual F4–F7 switches are ignored only during validation. Scr
 
 - **Frame pacing:** compare per-phase p50/p95/p99/max and counts above 16.7/33.3/50 ms, not average FPS alone. Keep startup and recovery separate. Our working target is ~60 FPS median on the test Mac without large edit/streaming spikes; it is not a cross-hardware guarantee. Capture/readback frames and a 250 ms cooldown are counted as excluded, so capture overhead does not dominate gameplay tails.
 - **Lighting responsiveness:** inspect nearby and distant face-age distributions, stale/unmeasured observations, unknown-sky observations, and first-fresh-measurement latency after edits. Superseded, untargeted, and still-pending edits are reported alongside successful latencies. Do not accept better FPS obtained by starving the field. First measurement, first-sample coverage, and retained history are **not convergence**.
-- **Stability and look:** inspect textured corner sunlight, hill/wall contact shadows, chunk seams, and irradiance-only views (F6 includes cached direct sun when enabled). Field reports include nearby indirect display-step distributions and positive jumps from dark values; these are diagnostic indicators, not pixel-space noise, an error metric, or proof that flicker is absent. Check a fixed-camera sequence while digging a dark tunnel, placing/removing its roof, and stopping edits: no bright startup flash, false sky-exposed shadows, leaking across disconnected corners, or failure to settle. Still images alone cannot pass temporal stability.
+- **Stability and look:** inspect textured corner sunlight, hill/wall contact shadows, chunk seams, and irradiance-only views (F6 includes cached direct sun when enabled). Field reports include nearby indirect display-step distributions and positive jumps from dark values; these are diagnostic indicators, not pixel-space noise, an error metric, or proof that flicker is absent. Check a fixed-camera sequence while digging a dark tunnel, placing/removing its roof, and stopping edits: no bright startup flash, false sky-exposed shadows, leaking across disconnected corners, or failure to settle. Still images alone cannot pass temporal stability. Prefer a smooth three-second transition over a noisy two-second one; a modest intentional display delay is acceptable. Compare time to approach **and stay near** known final brightness, in both directions, rather than requiring unchanged first-response latency. Long-lived obsolete transport energy is a separate cost, especially for simulation consumers.
 - **Sources and simulations:** run `sources` and the CPU/GPU parity tests. Verify source removal recovers without stale glow and offscreen receivers continue updating. Display interpolation/filtering must not enter RGB/IR/ionizing simulation measurements; missing/freshness metadata must remain conservative. This does not validate physical heat/dose calibration or planet/asteroid coordinate warps.
 - **Robustness:** when the affected path warrants it, use the native cache-generation/buffer-bounds test; add `stress` for relevant integration risk or reproduction. Require no GPU validation errors, lost updates, or crashed runs. This is retained regression coverage, not an ongoing toggle-stability project.
 
@@ -785,11 +785,8 @@ displayed green from 0.01112 to 0.00305 by 91 s, before recovering to 0.00845 at
 119 s. This and the moments/advancing sample sequences implicate low-history
 sampling variation after nearby invalidation, rather than repeated scene churn.
 
-Next targeted experiment: refine the shared geometry-retention policy **inside**
-its currently uniform 48-voxel near zone, preserving more evidence on unchanged
-receivers while still responding promptly to real occlusion changes. Do not
-simply increase every history cap or ray budget; check openings/closures and
-fresh response alongside noise. No estimator/filter/default changes made here.
+This diagnosis motivated the history/filter comparisons below. This particular
+checkpoint made no estimator/filter/default changes.
 
 Nine valid captures, seven verified solid removals, clean render logs; two profile
 tests, strict all-target Clippy, formatting and diff checks passed. Inspected
@@ -797,6 +794,125 @@ captures are nonblank with expected terrain/textures; sparse screenshots do not
 capture every numerical spike. Artifact:
 `target/gi-validation/house-edits-1791465905041513000-8835/`;
 log: `target/house-openings-baseline.log`. No FPS claim, broad suite or toggle stress.
+
+### Retained-history versus smooth-response experiments (October 8)
+
+`58a59d9` adds the opt-in `geometry_history_response_sweep`. Twenty-four fixed
+ceiling receivers share the **same** fresh four-path batches across history caps
+16/24/32/64/128/256, without streaming or adaptive scheduling. Closing the last
+skylight has an exact zero reference. Opening it uses the average of two disjoint
+524,288-path estimates, whose p95 disagreement is 6.6%; this reference is not an
+independent integrator proof. Reported settling is the first point after the
+**last** threshold violation in the observed 2,560 fresh paths, not the first
+lucky crossing. Errors are normalized by each receiver's open-room brightness.
+
+```sh
+VOXEL_GI_RESPONSE_REPORT=target/history-response.json cargo test --locked --offline geometry_history_response_sweep -- --ignored --nocapture
+```
+
+Apple M4/Metal, development/test profile, no viewport. With the `2bee7f3` display
+filter, the zero-light closure gives:
+
+| Retained samples | Fresh paths to stay within 10% | At virtual 50 ms / four paths | Early display-step p95 |
+| --- | ---: | ---: | ---: |
+| 16 | 168 | 2.10 s | 0.04255 |
+| 24 | 228 | 2.85 s | 0.03693 |
+| 32 | 296 | 3.70 s | 0.03322 |
+| 64 | 584 | 7.30 s | 0.02532 |
+| 128 | 1,160 | 14.50 s | 0.01806 |
+| 256 | 2,312 | 28.90 s | 0.01172 |
+
+These are controlled **virtual-cadence** times, not gameplay latency or FPS.
+Steps cover the first 100 batches and use the reference normalization above,
+not the house metric. None of the caps sustained 20% opening accuracy within
+2,560 fresh paths: a previously sealed room with only one new aperture is a
+sparse-path problem that longer history cannot solve alone. It is substantially
+harder than opening another block in the already-windowed gameplay house.
+Artifacts: `target/history-response-sweep-v2.{json,log}`, measured `2bee7f3` plus
+the `58a59d9` harness (with an equivalent filter/map lint cleanup afterward).
+
+Two raw-history experiments remain in Git but are **not enabled**:
+
+- `ee30a29` tapered the near cap from 16 to 256 with distance and tried a
+  variance-based first-batch revalidation. House early-step p95 fell 45–62%,
+  but four fresh rays could not reliably identify a genuine noisy closure.
+  In a known-zero check after 128 fresh paths, it retained six times the old
+  energy of cap16 (0.00667 versus 0.00111). Reverted in `0c43ea3`.
+- `efdcb2b` tried the moderate cap24. The matched-ray closure cost above is
+  reasonable, but its single house run only improved early-step p95 another
+  2–7% beyond `2bee7f3`; the west-door maximum increased slightly. This small
+  unpaired difference was not sufficient to promote the raw-history change.
+  `18c0bd1` restores cap16 for the display-only comparison.
+
+The taper run is `target/gi-validation/house-edits-1791474551844028000-34211/`
+(`1d83570` plus the `ee30a29` diff); cap24 is
+`house-edits-1791476166906699000-58951/` (`58a59d9` plus the `efdcb2b` diff).
+Both had nine valid captures and clean render logs on M4/Metal, development
+profile, 2560×1440 offscreen, preferred corner look and unchanged four-path /
+4 ms target. No concurrent builds during capture. Logs:
+`target/house-openings-{taper,history24}.log`. Offscreen cadence is not windowed FPS.
+
+### Smoother dark-room relighting (October 8)
+
+`2bee7f3` separates the display's dark-noise tolerance from the reconstruction
+confidence floor. `8a3a820` strengthens this filter to prefer a slower, smoother
+transition when measurements are uncertain. The temporal blend remains bounded
+and brightness-compressed; there is no permanent energy clamp or debounce.
+Direct-sun visibility is unchanged. Raw transport means, moments, sample counts,
+RGB/IR/ionizing simulation values, geometry history caps, scheduling and ray
+budget are unchanged. No new per-probe storage is allocated. The configured
+75 ms response is a lower-bound filter timescale, **not** a promise to settle
+within 75 ms: uncertain measurements intentionally receive less weight.
+
+In the matched-ray cap16 closure, stronger display history raises time to stay
+within 10% from 168 to 232 fresh paths: **2.1 to 2.9 seconds at the virtual
+cadence**, while lowering early-step p95 from 0.04255 to 0.03073. This is the
+accepted smoothness/latency tradeoff, without extending raw-energy retention.
+The separate unit closure stays monotonic and reaches 10% within 3 virtual
+seconds; low-variance closure is unchanged. The native emitter-removal test still
+replaces raw RGB/IR/ionizing energy in its first batch and passes its existing
+display thresholds. Native sweep artifacts:
+`target/history-response-sweep-noise4.{json,log}` (same final runtime, before
+comment/test-assertion cleanup). The rare-aperture opening still does not sustain
+20% reference accuracy by 2,560 paths; smoothing is not additional ray evidence.
+
+One `house-edits` run per candidate, same M4/Metal development build, 2560×1440
+offscreen, preferred corner look and four-path / 4 ms target as the baseline.
+The final runtime was `18c0bd1` plus the exact `8a3a820` diff; only README edits
+were concurrent, with no builds or other benchmarks during capture. All 25
+monitored faces passed the stability heuristic before editing. Normal streaming
+is nondeterministic: the final run had 661 rather than 662 pages at the first
+two edits, and 662 at the third.
+
+| First ten seconds after edit | Baseline p95 / max | Initial filter p95 / max | Final filter p95 / max |
+| --- | ---: | ---: | ---: |
+| Skylight | 0.122 / 0.601 | 0.096 / 0.443 | 0.055 / 0.202 |
+| West doorway | 0.134 / 0.579 | 0.102 / 0.455 | 0.066 / 0.254 |
+| East doorway + turn | 0.139 / 0.614 | 0.100 / 0.338 | 0.061 / 0.202 |
+
+These are nonzero steps between consecutive ~100 ms observations of the same
+face: largest RGB difference divided by `0.002 + max(old_RGB, new_RGB)`, with
+p95 selected at sorted index `floor(0.95 * count)`. They are not pixel flicker,
+ground-truth error, or certified convergence. The final early p95 is roughly
+50–56% lower than baseline; worst early steps are 56–67% lower. Later steps are
+not uniformly improved: the 160–180 s east-door maximum is 0.179 versus 0.138,
+with advancing samples (380 → 388), not another history reset. This addresses
+the disruptive initial response, not every remaining refinement fluctuation.
+
+The final run traced 99.883 million paths, effectively the same as baseline.
+Skylight/west/east offscreen frame p99 was 30.88/32.57/31.18 ms versus
+31.27/31.04/32.08 ms; far-receiver age p95 was 3.03/2.97/4.06 s versus
+3.05/2.98/4.06 s. No performance gain or windowed FPS claim. Nine valid nonblank
+captures with expected textures, seven solid removals and clean render logs.
+Thirteen focused history tests, native matched-ray response and unchanged
+emitter-removal regression, strict all-target Clippy, formatting and diff checks
+passed. No broad suite or toggle stress.
+
+Initial filter: `target/gi-validation/house-edits-1791475176731117000-43495/`
+(`0c43ea3` plus the `2bee7f3` diff), log `target/house-openings-uncertainty.log`.
+Final: `target/gi-validation/house-edits-1791476578593840000-64978/`, log
+`target/house-openings-noise4.log`. Screenshots establish capture integrity and
+spatial appearance; the temporal result comes from the recorded receiver series.
 
 ### Next performance work
 
