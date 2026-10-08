@@ -461,6 +461,7 @@ fn remote_local_light_motion_wakes_without_destroying_transport_history() {
 fn sky_queue_piggybacks_without_duplicating_rays_or_changing_history() {
     let initial = SurfaceProbe::new(IVec3::ZERO, 4);
     let mut transport = TraceWork::from_probes(std::slice::from_ref(&initial), false);
+    transport.probes[0].sky_requested = false;
     let mut sky_only = SurfaceProbe::new(IVec3::X, 5);
     sky_only.samples = [128; 6];
     sky_only.sequence = [1000; 6];
@@ -478,6 +479,7 @@ fn sky_queue_piggybacks_without_duplicating_rays_or_changing_history() {
     assert_eq!(append_sky_work(&mut runtime, &field, &mut transport), 1);
     assert_eq!(transport.probes.len(), 2);
     assert_eq!(transport.probes[0].trace_mask, 4);
+    assert!(transport.probes.iter().all(|job| job.sky_requested));
     assert_eq!(transport.probes[1].face_mask, 5);
     assert_eq!(transport.probes[1].trace_mask, 0);
     assert_eq!(
@@ -487,6 +489,27 @@ fn sky_queue_piggybacks_without_duplicating_rays_or_changing_history() {
     );
     assert_eq!(field.probes[&IVec3::X].samples, [128; 6]);
     assert_eq!(field.probes[&IVec3::X].sequence, [1000; 6]);
+}
+
+#[test]
+fn indirect_work_requests_only_unknown_sky_without_the_explicit_queue() {
+    let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
+    let push = |probe: &SurfaceProbe| {
+        let mut work = TraceWork::default();
+        work.push(probe, 4, 0, 0, false, 64, u32::MAX);
+        work
+    };
+    assert!(push(&probe).probes[0].sky_requested);
+    probe.display[2].sky = [1; 4]; // measured black is valid, not missing
+    assert!(!push(&probe).probes[0].sky_requested);
+    let work = push(&probe);
+    work.copy_measurements(std::slice::from_mut(&mut probe));
+    assert_eq!(
+        probe.display[2].sky, [1; 4],
+        "unrequested zero output must never replace valid sky"
+    );
+    probe.display[2].sky[3] = 0; // incomplete/unknown ray must retry
+    assert!(push(&probe).probes[0].sky_requested);
 }
 
 #[test]

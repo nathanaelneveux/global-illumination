@@ -1580,6 +1580,103 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "native equal-work benchmark for explicit sky demand"]
+    fn explicit_sky_demand_benchmark() {
+        use super::super::{
+            naadf::{linear_index, volume_len},
+            world::{AIR, PAGE_SIZE},
+        };
+        let mut gpu = native_tracer();
+        let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+        for z in 0..32 {
+            for x in 0..32 {
+                page[linear_index(UVec3::new(x, 4, z), PAGE_SIZE)] = 2;
+            }
+        }
+        let scene = Arc::new(TransportScene::with_page_delta(
+            &TransportScene::default(),
+            (0..8)
+                .map(|x| (IVec3::new(x, 0, 0), page.clone()))
+                .collect(),
+            &[],
+        ));
+        let sources = open_floor_fixture().1;
+        let materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        let mut warm: Vec<_> = (0..32)
+            .flat_map(|z| (0..256).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
+            .collect();
+        gpu.trace(scene.clone(), &sources, &materials, &mut warm, 4, &emitters)
+            .unwrap();
+        assert!(warm.iter().all(|p| !p.display[2].sky.contains(&0)));
+        let mut cpu_ms: [Vec<f32>; 2] = default();
+        let mut worker_ms: [Vec<f32>; 2] = default();
+        let mut gpu_ms: [Vec<f32>; 2] = default();
+        for round in 0..43 {
+            let mut results: [Vec<SurfaceProbe>; 2] = default();
+            for mode in (0..2).map(|offset| (offset + round) % 2) {
+                let mut probes = warm.clone();
+                for p in &mut probes {
+                    p.sequence[2] = (round * 4) as u32;
+                }
+                let mut work = TraceWork::from_probes(&probes, false);
+                for job in &mut work.probes {
+                    job.sky_requested = mode == 0;
+                }
+                let start = Instant::now();
+                gpu.trace_compact(
+                    scene.clone(),
+                    &sources,
+                    &materials,
+                    &mut work,
+                    4,
+                    &emitters,
+                    false,
+                )
+                .unwrap();
+                let elapsed = start.elapsed().as_secs_f32() * 1000.0;
+                assert_eq!(
+                    gpu.sky_cache.stats.requested,
+                    if mode == 0 { 32768 } else { 0 }
+                );
+                assert_eq!(
+                    gpu.sky_cache.stats.rays, 0,
+                    "both modes reuse measured sunlight"
+                );
+                if round >= 3 {
+                    cpu_ms[mode].push(gpu.last_prepare_ms + gpu.last_decode_ms);
+                    worker_ms[mode].push(elapsed);
+                    gpu_ms[mode].push(gpu.last_gpu_ms.unwrap());
+                }
+                work.copy_measurements(&mut probes);
+                results[mode] = probes;
+            }
+            for (a, b) in results[0].iter().zip(&results[1]) {
+                assert_eq!(a.radiance, b.radiance);
+                assert_eq!(a.second_moment, b.second_moment);
+                assert_eq!(a.direct, b.direct);
+                assert_eq!(a.display[2].sky, b.display[2].sky);
+                assert_eq!(a.sequence, b.sequence);
+            }
+        }
+        for mode in 0..2 {
+            cpu_ms[mode].sort_by(f32::total_cmp);
+            worker_ms[mode].sort_by(f32::total_cmp);
+            gpu_ms[mode].sort_by(f32::total_cmp);
+            eprintln!(
+                "Explicit sky demand {}: 8192faces x4paths, CPU prepare+decode p50/p95 {:.3}/{:.3}ms; worker {:.3}/{:.3}ms; GPU {:.3}/{:.3}ms (40 alternating pairs)",
+                ["legacy", "explicit"][mode],
+                cpu_ms[mode][20],
+                cpu_ms[mode][38],
+                worker_ms[mode][20],
+                worker_ms[mode][38],
+                gpu_ms[mode][20],
+                gpu_ms[mode][38]
+            );
+        }
+    }
+
+    #[test]
     #[ignore = "requires a native compute adapter; run explicitly on supported hardware"]
     fn shared_sky_corner_benchmark() {
         let mut gpu = native_tracer();
