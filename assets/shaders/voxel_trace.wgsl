@@ -70,24 +70,28 @@ fn pcg(value: u32) -> u32 {
 fn hash_voxel(voxel: vec3<i32>) -> u32 {
     return pcg(pcg(pcg(bitcast<u32>(voxel.x)) ^ bitcast<u32>(voxel.y)) ^ bitcast<u32>(voxel.z));
 }
+// Hash-based Owen scramble: Nathan Vegdahl, MIT, licenses/sobol_burley-MIT.txt.
+fn scramble_reverse(input: u32, seed: u32) -> u32 {
+    var value = input;
+    value ^= value * 0x3d20adeau;
+    value += seed;
+    value *= (seed >> 16u) | 1u;
+    value ^= value * 0x05526c56u;
+    value ^= value * 0x53a22864u;
+    return value;
+}
 fn sample_1d(stream: u32, sequence: u32, dimension: u32) -> f32 {
-    let primes = array<u32, 16>(2u, 3u, 5u, 7u, 11u, 13u, 17u, 19u, 23u, 29u, 31u, 37u, 41u, 43u, 47u, 53u);
-    let base = primes[dimension % 16u];
-    var index = (sequence & 0x00ffffffu) + 1u;
-    var scale = 1.0;
-    var value = 0.0;
-    var digit_seed = pcg(stream ^ pcg(dimension + 0x68bc21ebu));
-    while index != 0u {
-        scale /= f32(base);
-        var digit = index % base;
-        // Match CPU sampling: decorrelate high-base emitter dimensions only.
-        if dimension >= 12u { digit = digit * (1u + digit_seed % (base - 1u)) % base; }
-        value += f32(digit) * scale;
-        index /= base;
-        digit_seed = pcg(digit_seed);
+    let seed = pcg(stream ^ pcg(dimension / 2u));
+    var index = reverseBits(scramble_reverse(reverseBits(sequence), pcg(seed ^ 0x79c68e4au)));
+    if (dimension & 1u) != 0u {
+        index ^= (index >> 1u) & 0x55555555u;
+        index ^= (index >> 2u) & 0x33333333u;
+        index ^= (index >> 4u) & 0x0f0f0f0fu;
+        index ^= (index >> 8u) & 0x00ff00ffu;
+        index ^= (index >> 16u) & 0x0000ffffu;
     }
-    let rotation = f32(pcg(stream ^ pcg(dimension)) >> 9u) / 8388608.0;
-    return fract(value + rotation);
+    let value = reverseBits(scramble_reverse(index, pcg(seed ^ pcg(dimension))));
+    return f32(value >> 9u) / 8388608.0;
 }
 fn face_normal(face: u32) -> vec3<f32> {
     var n = vec3(0.0);

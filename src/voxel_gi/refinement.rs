@@ -180,6 +180,89 @@ fn percentile(mut values: Vec<f32>, percentile: usize) -> f32 {
     values[(values.len() - 1) * percentile / 100]
 }
 
+/// Sampler experiments deliberately change paths, so compare equal work to one
+/// independent reference, not path-by-path equality or each sampler's own mean.
+#[test]
+#[ignore = "native paired sampler study; requires VOXEL_GI_BASELINE_SHADER"]
+fn sampler_candidate_benchmark() {
+    let source =
+        std::fs::read_to_string(std::env::var("VOXEL_GI_BASELINE_SHADER").unwrap()).unwrap();
+    let mut candidate = super::tests::native_tracer();
+    let mut baseline = GpuTracer::with_shader(candidate.context.clone(), true, &source).unwrap();
+    for kind in 0..3 {
+        let fixture = fixture(kind);
+        let emitters = Arc::new(EmissionDistribution::build(
+            &fixture.scene,
+            &fixture.materials,
+        ));
+        let mut high = fixture.probes.clone();
+        for p in &mut high {
+            p.sequence[2] = 1_048_576;
+        }
+        baseline
+            .trace(
+                fixture.scene.clone(),
+                &fixture.sources,
+                &fixture.materials,
+                &mut high,
+                65_536,
+                &emitters,
+            )
+            .unwrap();
+        let reference: Vec<_> = fixture
+            .analytic
+            .clone()
+            .unwrap_or_else(|| high.iter().map(|p| p.radiance[2]).collect());
+        let mut expected = Vec::new();
+        let mut estimates: [[Vec<EnergySpectrum>; 6]; 2] = default();
+        let mut times: [Vec<f32>; 2] = default();
+        for replicate in 0..8 {
+            expected.extend_from_slice(&reference);
+            let mut probes = [fixture.probes.clone(), fixture.probes.clone()];
+            for group in &mut probes {
+                for p in group {
+                    p.sequence[2] = replicate * 4096;
+                }
+            }
+            for batch in 1..=256 {
+                for mode in (0..2).map(|offset| (offset + batch + replicate as usize) % 2) {
+                    let gpu = if mode == 0 {
+                        &mut baseline
+                    } else {
+                        &mut candidate
+                    };
+                    gpu.trace(
+                        fixture.scene.clone(),
+                        &fixture.sources,
+                        &fixture.materials,
+                        &mut probes[mode],
+                        4,
+                        &emitters,
+                    )
+                    .unwrap();
+                    if batch > 4 {
+                        times[mode].push(gpu.last_gpu_ms.unwrap());
+                    }
+                    if let Some(index) = [2, 8, 16, 32, 128, 256].iter().position(|b| *b == batch) {
+                        estimates[mode][index].extend(probes[mode].iter().map(|p| p.radiance[2]));
+                    }
+                }
+            }
+        }
+        for mode in 0..2 {
+            let checkpoints: Vec<_> = estimates[mode]
+                .iter()
+                .zip([8, 32, 64, 128, 512, 1024])
+                .map(|(values, paths)| json!({"paths":paths,"error":errors(values, &expected)}))
+                .collect();
+            eprintln!(
+                "Sampler study: {}",
+                json!({"fixture":fixture.name,"mode":(["baseline","candidate"][mode]),"replicates":8,"gpu_p50_ms":percentile(times[mode].clone(),50),"checkpoints":checkpoints})
+            );
+        }
+    }
+}
+
 #[test]
 #[ignore = "fixed-work refinement diagnostic; requires a native compute adapter"]
 fn fixed_scene_refinement_diagnostic() {
