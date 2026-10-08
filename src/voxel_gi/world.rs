@@ -620,6 +620,9 @@ fn page_region_offsets() -> impl Iterator<Item = IVec3> {
 }
 
 #[cfg(test)]
+mod construction_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
