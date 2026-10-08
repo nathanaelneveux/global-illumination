@@ -13,7 +13,7 @@ use super::{
 };
 use crate::assets::{PrototypeConfig, TemplateAssets};
 use crate::{player::Player, terrain::PrototypeWorld};
-use bevy::camera::RenderTarget;
+use bevy::camera::{RenderTarget, ShadowLodOrigin};
 use bevy::prelude::*;
 use bevy::render::render_resource::{TextureFormat, TextureUsages};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
@@ -56,9 +56,12 @@ pub(super) fn setup_capture_target(
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     let target = images.add(image);
     for camera in &cameras {
+        // An image target has no implicit window camera. Make the same camera
+        // the explicit point/spot-shadow LOD origin, rather than relying on
+        // Bevy's warning-producing fallback to an arbitrary camera.
         commands
             .entity(camera)
-            .insert(RenderTarget::Image(target.clone().into()));
+            .insert((RenderTarget::Image(target.clone().into()), ShadowLodOrigin));
     }
     evidence.render_target = Some(target);
 }
