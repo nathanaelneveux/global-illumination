@@ -237,7 +237,9 @@ pub struct TopLevelAadf {
     pub minimum: IVec3,
     pub maximum: IVec3,
     pub size: UVec3,
-    fields: Vec<Aadf>,
+    // Immutable scene snapshots can share this independently of changed voxel
+    // data: only region residency and empty/nonempty topology define the field.
+    fields: Arc<[Aadf]>,
 }
 
 impl TopLevelAadf {
@@ -256,7 +258,7 @@ impl TopLevelAadf {
                 minimum,
                 maximum,
                 size,
-                fields: Vec::new(),
+                fields: Arc::default(),
             };
         }
 
@@ -274,7 +276,7 @@ impl TopLevelAadf {
             minimum,
             maximum,
             size,
-            fields,
+            fields: fields.into(),
         }
     }
 
@@ -330,14 +332,17 @@ impl TransportScene {
             regions.insert(region.coordinate, region);
         }
 
-        let unchanged = regions.len() == previous.regions.len()
+        // A voxel/material edit inside a still-occupied region changes rays,
+        // but not this level's skip bounds. Reuse only the acceleration field;
+        // region identities still drive normal transport/source invalidation.
+        let topology_unchanged = regions.len() == previous.regions.len()
             && regions.iter().all(|(key, region)| {
                 previous
                     .regions
                     .get(key)
-                    .is_some_and(|old| Arc::ptr_eq(old, region))
+                    .is_some_and(|old| old.any_solid == region.any_solid)
             });
-        let top_level = if unchanged {
+        let top_level = if topology_unchanged {
             previous.top_level.clone()
         } else {
             TopLevelAadf::build(&regions)
@@ -618,6 +623,9 @@ fn build_page_regions(
 fn page_region_offsets() -> impl Iterator<Item = IVec3> {
     (0..2).flat_map(|z| (0..2).flat_map(move |y| (0..2).map(move |x| IVec3::new(x, y, z))))
 }
+
+#[cfg(test)]
+mod construction_tests;
 
 #[cfg(test)]
 mod tests {
