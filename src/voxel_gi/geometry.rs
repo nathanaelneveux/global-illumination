@@ -9,9 +9,7 @@ use std::collections::VecDeque;
 use super::world::{PAGE_EDGE, REGION_EDGE, TransportScene};
 
 pub(super) const RELIGHT_RADIUS: i32 = 48;
-// A small retained weight smooths ordinary edits without the long response tail
-// of distant history. The matched-ray response sweep covers this tradeoff.
-pub(super) const NEAR_HISTORY: u32 = 24;
+pub(super) const NEAR_HISTORY: u32 = 16;
 const FAR_HISTORY: u32 = 256;
 pub(super) const UNTRACKED_HISTORY: u32 = 64;
 const MAX_REVISIONS: usize = 8;

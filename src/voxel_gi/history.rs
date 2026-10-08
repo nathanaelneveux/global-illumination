@@ -533,12 +533,7 @@ mod tests {
                 );
                 assert_eq!(probe.second_moment[2], second);
                 assert_eq!(probe.samples[2], n);
-                assert!(
-                    (mean.visible.x
-                        - initial * super::super::geometry::NEAR_HISTORY as f32 / n as f32)
-                        .abs()
-                        < 1e-6
-                );
+                assert!((mean.visible.x - initial * 16.0 / n as f32).abs() < 1e-6);
                 if initial < 0.02 && batch == 1 {
                     assert!(
                         probe.display[2].indirect.x > initial * 0.99,
@@ -601,7 +596,7 @@ mod tests {
             probe.revision, revision,
             "reject in-flight pre-edit results"
         );
-        assert_eq!(probe.samples[2], super::super::geometry::NEAR_HISTORY);
+        assert_eq!(probe.samples[2], 16);
         assert_eq!(probe.display[2].indirect, Vec3::ONE);
         let mut field = VoxelEnergyField::default();
         field.probes.insert(voxel, probe);
@@ -610,11 +605,7 @@ mod tests {
         assert_eq!(estimate.incident.infrared, 10.0);
         let probe = field.probes.get_mut(&voxel).unwrap();
         probe.update_face_mask(5);
-        assert_eq!(
-            probe.samples[2],
-            super::super::geometry::NEAR_HISTORY,
-            "unchanged face retains its history"
-        );
+        assert_eq!(probe.samples[2], 16, "unchanged face retains its history");
         assert_eq!(probe.samples[0], 0, "new face is genuinely unmeasured");
         assert_eq!(probe.radiance[0], EnergySpectrum::ZERO);
         assert!(field.estimate(voxel, Vec3::X).is_none());
