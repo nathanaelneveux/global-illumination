@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use std::time::Instant;
 
 use super::{
-    field::VoxelEnergyField, history::relative_error_with_floor, settings::VoxelGiSettings,
+    field::VoxelEnergyField, settings::VoxelGiSettings, statistics::relative_error_with_floor,
     world::SurfaceProbe,
 };
 
@@ -410,8 +410,11 @@ mod tests {
         probe.second_moment[2] = super::super::EnergySpectrum::new(Vec3::splat(0.000128), 0.0, 0.0);
         probe.display[2].indirect = probe.radiance[2].visible;
         assert!(
-            super::super::history::relative_error(probe.radiance[2], probe.second_moment[2], 256)
-                < settings.stable_error(),
+            super::super::statistics::relative_error(
+                probe.radiance[2],
+                probe.second_moment[2],
+                256
+            ) < settings.stable_error(),
             "this dark noisy fixture passed the old presentation-floor test"
         );
         let old = probe.clone();

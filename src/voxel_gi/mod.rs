@@ -22,6 +22,7 @@ mod settings;
 mod sky;
 mod sky_cache;
 mod spectrum;
+mod statistics;
 mod telemetry;
 mod tracer;
 #[cfg(debug_assertions)]
