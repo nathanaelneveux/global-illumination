@@ -50,6 +50,12 @@ interpolation, not a second production reconstruction path.
 
 ## Geometry and traversal
 
+Host terrain generation now composes reusable [structure stamps](structures.md)
+for the house and nearby cave. These are generation data, not GI-specific volumes:
+BVW generation and direct geometry fallback query the same deterministic plan,
+and player edits remain above it. The transport core has no structure identity
+or shape special cases.
+
 The host exports immutable dense 32³ pages of material IDs. A page contains eight
 16³ regions; each region contains 4³ bricks of 4³ voxels. Material IDs are 0–255;
 air is the distinct value 256. Regions that are unchanged retain `Arc` identity.

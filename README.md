@@ -14,6 +14,8 @@ depends on greedy-mesh vertices or screen resolution.
 
 - [Architecture](docs/architecture.md): data model, estimator, ownership,
   invalidation, presentation, simulation API, and integration limits.
+- [Structures experiment](docs/structures.md): shared templates, placements,
+  chunk-local generation, and the nearby cave route.
 - [Research and decisions](docs/research.md): what we adopted, what differs from
   NAADF/vxray/DDGI/Solari, and the next speed experiments.
 - [Validation](docs/validation.md): focused checks, visual workloads, evidence
@@ -31,7 +33,11 @@ depends on greedy-mesh vertices or screen resolution.
 cargo run --locked
 ```
 
-For the opt-in many-emitter cave:
+The many-emitter cave is now in the regular world. Walk toward the house, then
+follow the pale stone path to its right to the lit entrance near **(20, 11, -18)**.
+The passage and interior stairs lead down to the lava rim.
+
+For the original isolated many-emitter benchmark scene:
 
 ```sh
 VOXEL_GI_SCENE=cave cargo run --locked
@@ -41,7 +47,8 @@ This finite test chamber contains a lava floor with IR, a blue-lit central spire
 green ceiling crystals with ionizing emission, wall torches, and a roof skylight.
 It shares geometry/materials with the compute studies; it is not a calibrated
 thermal/radiation simulation or a finished art scene. E places a torch and right
-click places rock in this palette. Omit the variable to return to normal terrain.
+click places rock in this isolated palette. Omit the variable to explore the
+regular world, with both the house and nearby cave.
 
 The top-right HUD reports FPS, Coverage, Bootstrap, Settled, and GI CPU/GPU cost.
 Coverage means at least one sample; Bootstrap means progress toward eight samples;

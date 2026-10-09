@@ -13,6 +13,7 @@ pub(super) enum Profile {
     Edits,
     Sources,
     Cave,
+    Structures,
     Compare,
     Stress,
 }
@@ -28,10 +29,11 @@ impl Profile {
             "edits" => Ok(Self::Edits),
             "sources" => Ok(Self::Sources),
             "cave" => Ok(Self::Cave),
+            "structures" => Ok(Self::Structures),
             "compare" => Ok(Self::Compare),
             "stress" => Ok(Self::Stress),
             _ => Err(format!(
-                "unknown validation profile {value:?}; choose gameplay, streaming, house, house-edits, response, edits, sources, cave, compare, or stress"
+                "unknown validation profile {value:?}; choose gameplay, streaming, house, house-edits, response, edits, sources, cave, structures, compare, or stress"
             )),
         }
     }
@@ -46,6 +48,7 @@ impl Profile {
             Self::Edits => "edits",
             Self::Sources => "sources",
             Self::Cave => "cave",
+            Self::Structures => "structures",
             Self::Compare => "compare",
             Self::Stress => "stress",
         }
@@ -56,7 +59,7 @@ impl Profile {
             Self::Compare => 29.0,
             Self::Streaming => 35.0,
             Self::House => 90.0,
-            Self::Cave => 62.0,
+            Self::Cave | Self::Structures => 62.0,
             Self::HouseEdits => 180.0,
             Self::Response | Self::Edits => 30.0,
             _ => 72.0,
@@ -72,7 +75,14 @@ impl Profile {
     }
 
     pub fn captures(self) -> &'static [(f32, &'static str)] {
-        if self == Self::Cave {
+        if self == Self::Structures {
+            &[
+                (10.0, "house-and-path"),
+                (22.0, "entrance"),
+                (45.0, "cave-21s"),
+                (60.0, "cave-36s"),
+            ]
+        } else if self == Self::Cave {
             &[(15.0, "cave-15s"), (30.0, "cave-30s"), (60.0, "cave-60s")]
         } else if self == Self::HouseEdits {
             &[
@@ -158,7 +168,15 @@ impl Profile {
     }
 
     pub fn phase(self, elapsed: f32) -> &'static str {
-        if self == Self::Cave {
+        if self == Self::Structures {
+            if elapsed < 12.0 {
+                "approach"
+            } else if elapsed < 24.0 {
+                "entrance"
+            } else {
+                "cave"
+            }
+        } else if self == Self::Cave {
             if elapsed < 15.0 {
                 "startup"
             } else {
@@ -255,6 +273,7 @@ mod tests {
             Profile::Edits,
             Profile::Sources,
             Profile::Cave,
+            Profile::Structures,
         ] {
             for tick in 0..720 {
                 let mut settings = GpuTransportSettings {

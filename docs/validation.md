@@ -112,6 +112,7 @@ Durations start after required assets are ready and exclude process compilation.
 | `edits` | 30 | Early frames after underground and surface edits |
 | `sources` | 72 | Analytic/emissive source changes, multi-band field and streaming |
 | `cave` | 62 | Fixed view of many-emitter chamber; automatically selects cave geometry/palette |
+| `structures` | 62 | Normal-world house/path, cave entrance, and underground interior |
 | `compare` | 29 | Controlled display-mode visual comparison |
 | `stress` | 72 | Optional toggle/buffer lifetime stress |
 
@@ -138,6 +139,13 @@ capturing at 15/30/60 seconds. Fixed warm-up is not certified convergence. Use
 chamber uses a four-chunk spawning distance; do not compare its cadence against
 the normal ten-chunk terrain workload. RGB, IR and ionizing transport use the
 same fixture palette as the native compute studies, with no cavity-specific GI.
+
+The `structures` profile stays in the normal world, moving its detached view at
+12/24 seconds and capturing at 10/22/45/60 seconds. It checks integration of the
+nearby cave and house through ordinary streaming, not character locomotion.
+Normal sunlight/environment and the ten-chunk spawning distance stay active.
+Do not compare this workload with isolated `cave` timings. See
+[structure ownership and verification](structures.md).
 
 Each run creates a unique `target/gi-validation/<profile>-<stamp>-<pid>/` directory
 with status, report and images. Schema 3 identifies offscreen/window capture;

@@ -4,6 +4,7 @@ mod house;
 mod metrics;
 mod profiles;
 mod response;
+mod structures;
 
 use super::render::VoxelTransportMaterial;
 use super::world::FACE_OFFSETS;
@@ -97,6 +98,7 @@ pub(super) struct ValidationRun {
     response: response::ResponseRun,
     house: house::HouseRun,
     cave_camera_initialized: bool,
+    structures: structures::StructuresRun,
     max_pages: usize,
     capture_pause_until: f32,
     done: bool,
@@ -213,6 +215,10 @@ pub(super) fn run_validation(
     let elapsed = run.started.unwrap().elapsed().as_secs_f32();
     let profile = run.profile;
     let (ref mut player, ref mut look) = *player_state;
+    if profile == Profile::Structures {
+        run.structures
+            .tick(elapsed, player, &mut commands, &cameras, &mut lights);
+    }
     if profile == Profile::Cave && !run.cave_camera_initialized {
         for camera in &cameras {
             commands
