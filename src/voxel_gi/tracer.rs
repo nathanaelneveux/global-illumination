@@ -97,14 +97,22 @@ impl TransportScene {
             return TraceResult::Escaped;
         };
         let mut distance = entry_distance.max(0.0);
-        let exhausted =
-            if policy == UnloadedPolicy::BoundedTransport && max_distance < exit_distance {
+        let exhausted = || {
+            if policy == UnloadedPolicy::BoundedTransport
+                && max_distance < exit_distance
+                && self.has_geometry_ahead(
+                    origin + direction * max_distance,
+                    direction,
+                    MAX_PATH_DISTANCE - max_distance,
+                )
+            {
                 TraceResult::Unknown
             } else {
                 TraceResult::Escaped
-            };
+            }
+        };
         if distance > max_distance {
-            return exhausted;
+            return exhausted();
         }
 
         let mut position = origin + direction * (distance + RAY_EPSILON);
@@ -113,7 +121,7 @@ impl TransportScene {
 
         for _ in 0..MAX_TRACE_STEPS {
             if distance > max_distance {
-                return exhausted;
+                return exhausted();
             }
 
             let voxel = position.floor().as_ivec3();

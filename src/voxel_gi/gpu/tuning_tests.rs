@@ -10,6 +10,65 @@ use crate::voxel_gi::{
 
 #[test]
 #[ignore = "requires a native compute adapter"]
+fn tuning_short_reach_preserves_known_empty_streaming_frontier() {
+    let mut gpu = super::tests::native_tracer();
+    let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+    let voxel = IVec3::new(31, 8, 8);
+    page[linear_index(voxel.as_uvec3(), PAGE_SIZE)] = 1;
+    let base = Arc::new(TransportScene::with_page_delta(
+        &TransportScene::default(),
+        vec![(IVec3::ZERO, page)],
+        &[],
+    ));
+    let extended = Arc::new(TransportScene::with_page_delta(
+        &base,
+        vec![(IVec3::X, vec![AIR; volume_len(PAGE_SIZE)])],
+        &[],
+    ));
+    let sources = TransportSources::default();
+    let materials = VoxelMaterialTransportTable::default();
+    let emitters = Arc::new(EmissionDistribution::default());
+    let mut results = Vec::new();
+    for scene in [base, extended] {
+        let receivers = [SurfaceProbe::new(voxel, 1)];
+        let mut cpu = TraceWork::from_probes(&receivers, false);
+        let mut native = TraceWork::from_probes(&receivers, false);
+        cpu.transport.reach = 16.0;
+        native.transport = cpu.transport;
+        trace_work_batch(
+            &scene,
+            &sources,
+            &materials,
+            &mut cpu,
+            256,
+            &emitters,
+            &mut default(),
+        );
+        gpu.trace_compact(
+            scene,
+            &sources,
+            &materials,
+            &mut native,
+            256,
+            &emitters,
+            false,
+        )
+        .unwrap();
+        assert!(
+            (cpu.faces[0].radiance - native.faces[0].radiance)
+                .visible
+                .abs()
+                .max_element()
+                < 0.001
+        );
+        results.push(native.faces[0].radiance);
+    }
+    assert_eq!(results[0], results[1]);
+    assert!(results[0].visible.max_element() > 0.1);
+}
+
+#[test]
+#[ignore = "requires a native compute adapter"]
 fn tuning_reach_depth_and_batch_size_match_cpu_without_sky_leaks() {
     let mut gpu = super::tests::native_tracer();
     let mut page = vec![AIR; volume_len(PAGE_SIZE)];

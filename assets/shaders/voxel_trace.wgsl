@@ -290,8 +290,11 @@ fn trace_domain_bounded(origin: vec3<f32>, direction: vec3<f32>, max_distance: f
     var metadata = vec4<u32>(0u);
     for (var step = 0u; step < 2048u; step += 1u) {
         if distance > max_distance {
-            // Reaching an artificial local cutoff is not escaping to the sky.
-            result.status = select(0u, 2u, bounded_transport && max_distance < far);
+            // A cutoff is not sky unless the remaining coarse frontier is
+            // empty. Loading known-empty pages must not darken open terrain.
+            if bounded_transport && max_distance < far && geometry_ahead(origin + direction * max_distance, direction, params.extra.y - max_distance) {
+                result.status = 2u;
+            }
             return result;
         }
         let voxel = vec3<i32>(floor(position));

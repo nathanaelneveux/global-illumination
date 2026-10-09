@@ -4,7 +4,7 @@ use std::time::Duration;
 /// Quality and work limits. All loaded pages remain eligible.
 /// Insert before `VoxelGiPlugin` or change this resource at runtime.
 #[derive(Resource, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct VoxelGiSettings {
     pub transport: TransportSettings,
     /// New paths per selected face, not a lifetime sample limit. Smaller batches
@@ -85,12 +85,13 @@ impl VoxelGiSettings {
 /// The integrand, separate from scheduling and presentation. Changing this
 /// restarts measurements lazily, retaining display priors and sample sequences.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TransportSettings {
     /// Maximum length in voxels of each diffuse ray and voxel-emitter connection,
     /// not total path length or Minecraft-style per-block attenuation. Directional
     /// visibility keeps its independent 768-voxel horizon. A shortened diffuse
-    /// ray exhausting its reach inside the scene contributes no environment.
+    /// ray exhausting its reach contributes environment only if the remaining
+    /// coarse occupancy frontier is empty, never through possible occluders.
     /// Analytic point lights keep their own source-defined range.
     pub reach: f32,
     /// Explicit diffuse surface hits after the receiver. Limited to the current
