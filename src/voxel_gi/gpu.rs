@@ -27,6 +27,9 @@ const SHADER: &str = include_str!("../../assets/shaders/voxel_trace.wgsl");
 const RESULT_BYTES: usize = 96;
 const SKY_RESULT_BYTES: usize = 32;
 
+#[cfg(test)]
+mod traversal_tests;
+
 #[derive(Resource, Clone)]
 pub(crate) struct GpuTransportDevice {
     pub device: RenderDevice,
