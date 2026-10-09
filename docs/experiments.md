@@ -31,6 +31,8 @@ comparison infrastructure is `9186a55`. Winners were merged into
 | `directional-planes` | `ffbabde` | Reject: integer plane selection adds no gain over vector stepping. |
 | `geometry-upload-deltas` | `9bac5c8` | Retain: rebuild/upload the directory only for residency changes and patch changed headers. |
 | `packed-region-reuse` | `be1386a` | Retain: preserve unchanged region allocations while still updating their skip bounds. |
+| `emitter-resampling` | `fcfca22` | Reject fresh four-candidate RIS: increased colored-emitter noise and GPU cost. Not temporal/spatial path reuse. |
+| `task-encoding` | `0020e7d` | Retain: encode complete task records directly into reusable upload storage. |
 
 Rejected variants are not dormant production toggles or extra runtime resources.
 A rejected implementation does not disprove its broader research family: the
@@ -395,3 +397,68 @@ and these timings are not windowed FPS or a gameplay speedup claim.
 
 Artifact: `target/gi-validation/edits-1791505230889909000-94935/`;
 log: `target/traversal-upload-edits.log`.
+
+## Fresh resampling and task serialization
+
+Baseline `d893bc4` is preserved at `experiment/gi-baseline-resampling-20261008`.
+Both experiments use Apple M4/Metal, Rust 1.95.0, development/shared-cache profile
+and no viewport. They change separate mechanisms and were tested independently.
+
+### Fresh emitter resampling rejected
+
+`fcfca22` is a GPU-only experiment: four fresh emitter candidates are scored
+before tracing one selected shadow ray. The weight is the maximum of the original
+MIS-weighted contribution's five bands. Selected estimates are corrected by
+`weight_sum / (4 * selected_weight)`; zero candidates remain in that denominator.
+The complementary cosine-hit estimator is unchanged. There is no persistent
+reservoir, reconnection or temporal reuse, and the CPU tracer remains the baseline.
+
+The paired sampler study used eight sequence blocks, 100 receivers and four
+paths per dispatch, comparing both kernels to the same analytic/high-sample
+reference. At 64 paths, colored-emitter normalized error p95 rose from 0.006746
+to 0.074010; at 1,024 paths it rose from 0.002146 to 0.018359. GPU batch median
+rose from 0.069334 to 0.080083 ms. The no-emitter open sky and skylight room outputs
+were unchanged. Selecting one colored source adds variance that defeats this
+fixture's existing low-discrepancy sampling. Do not promote this candidate or
+extrapolate its failure to retained-path reuse.
+
+WGSL validation and the reporting benchmark passed; those passes mean the study
+ran, not that quality passed. Logs: `target/emitter-resampling-wgsl.log` and
+`target/emitter-resampling-paired.log`. A high-sample bias/occlusion study and CPU
+implementation were unnecessary after this clear early rejection.
+
+### Direct task encoding retained
+
+`0020e7d`, measured as `d893bc4` plus its three-file diff, removes the intermediate
+typed GPU task vector. A reusable byte vector receives one complete 32-byte record
+at a time. Word-at-a-time appends were slower in an initial trial and are not the
+retained implementation. The test-only reference uses the generic ShaderType
+encoder; the comparison shares the remaining dispatch code rather than running
+two archived executables.
+
+Forty alternating measured pairs follow four warmups at 17, 1,024 and 8,192 faces,
+four paths each. Cold mixed sky/indirect batches also check correctness; timed
+batches are indirect-only. Full five-band means/moments, direct energy, sequences,
+sample counts and corner sky outputs match exactly.
+
+| 8,192 faces | Generic | Direct | Repeat generic | Repeat direct |
+| --- | ---: | ---: | ---: | ---: |
+| Preparation p50 | 0.2326 ms | 0.1595 ms | 0.1793 ms | 0.1233 ms |
+| Preparation p95 | 0.3112 ms | 0.2048 ms | 0.2157 ms | 0.1554 ms |
+| Worker p50 | 1.9473 ms | 1.8677 ms | 1.8751 ms | 1.8292 ms |
+| Worker p95 | 2.1185 ms | 1.9966 ms | 2.0247 ms | 1.8910 ms |
+
+Preparation falls about 31%, while worker medians fall 2–4%. At 1,024 faces the
+preparation saving is 0.011–0.012 ms; 17-face differences are noise-sized. This is
+reduced CPU dispatch overhead, not improved GPU tracing, convergence or FPS.
+Scratch retains its largest dispatched capacity (256 KiB of task contents for
+8,192 indirect-only faces), replacing recurring allocations; it is not a cache
+allocated per loaded world face.
+
+Verification: byte-layout oracle, three focused GPU unit tests, native CPU/GPU
+ordinary/emissive RMS 0.000000, sky-only/partial-face parity, buffer growth/rebinding
+and strict all-target Clippy. No presentation, scheduler, estimator or history
+changes required another image profile. Logs under `target/`:
+`task-encoding-record-paired.log`, `task-encoding-record-confirm.log`,
+`task-encoding-gpu-tests.log`, `task-encoding-native-parity.log`,
+`task-encoding-sky-parity.log`, `task-encoding-growth.log`, `task-encoding-clippy.log`.

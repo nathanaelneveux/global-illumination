@@ -83,6 +83,16 @@ source/geometry dependencies; and preserve unbiased zero-sample accounting befor
 adding any deliberate display-only bias. Screen buckets, RGB compression and
 darkening heuristics are not suitable as the authoritative simulation field.
 
+The isolated fresh-emitter resampling experiment (`fcfca22`) tested four new
+candidates followed by one selected visibility ray, not retained-path reuse.
+It used [weighted reservoir selection](https://www.pbr-book.org/4ed/Sampling_Algorithms/Reservoir_Sampling)
+over all five bands, with the original MIS contribution inside the corrected
+estimate. It regressed against our stratified emitter sampler and was rejected.
+This result does not test or reject NAADF's spatial reuse or
+[ReSTIR GI](https://research.nvidia.com/publication/2021-06_restir-gi-path-resampling-real-time-path-tracing).
+Future reuse experiments must compare error per measured execution time and
+preserve source diversity; adding candidate selection alone is not a win here.
+
 ### vxray
 
 The [repository](https://github.com/Nelarius/vxray) and

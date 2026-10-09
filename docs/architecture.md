@@ -112,6 +112,11 @@ integer operations; the second Sobol dimension uses a Pascal-matrix butterfly,
 so no direction tables or per-receiver guide are needed. Sequences advance
 independently of retained history, so invalidation does not repeat early rays.
 The GPU uses four lanes per face; the serial entry remains an opt-in reference.
+Dispatch tasks are encoded directly into a reusable 32-byte-per-task upload
+array, with explicit little-endian words and initialized padding. This removes
+the intermediate typed array without changing the shader ABI. Scratch capacity
+tracks the largest dispatch, not the number of loaded receivers; no path history
+is added. A test-only generic encoder is the byte-layout oracle.
 The [experiment results](experiments.md) explain why Sobol is restricted to
 emitter dimensions rather than replacing every path dimension.
 

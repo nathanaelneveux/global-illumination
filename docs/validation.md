@@ -78,6 +78,13 @@ sparse metadata plus allocation reuse at identical paths. Its companion
 buffers, removed/recycled headers and edits. These target the changed paths; they
 do not require the solved toggle stress workload.
 
+`task_encoding_matches_shader_layout_and_clears_reused_tails` compares dispatch
+bytes with the generic shader-layout encoder, including signed coordinates,
+large sequences and shrinking/mixed task arrays. The opt-in
+`task_encoding_benchmark` compares preparation and worker time at 17, 1,024 and
+8,192 faces with identical transport outputs. Native sky-only/partial dispatch
+and resource-growth tests cover the integration without a toggle-stress run.
+
 ## End-to-end workloads
 
 Defaults stay shared-corner sunlight, corner-reconstructed indirect, textures on,
