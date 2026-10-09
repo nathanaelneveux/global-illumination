@@ -6,10 +6,21 @@ use bevy_voxel_world::prelude::WorldVoxel;
 use crate::voxel_gi::{EnergySpectrum, MaterialTransport, VoxelMaterialTransportTable};
 
 pub fn enabled() -> bool {
+    if background_terrain_requested() {
+        return false;
+    }
     std::env::var("VOXEL_GI_SCENE").is_ok_and(|v| v == "cave")
         || (cfg!(debug_assertions)
             && std::env::var_os("VOXEL_GI_VALIDATE").is_some()
             && std::env::var("VOXEL_GI_VALIDATE_PROFILE").is_ok_and(|v| v == "cave"))
+}
+
+/// Validation composition only: keep the real terrain generator and use the
+/// nearby structure instead of replacing the world with the isolated chamber.
+pub fn background_terrain_requested() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var_os("VOXEL_GI_VALIDATE").is_some()
+        && std::env::var("VOXEL_GI_VALIDATE_BACKGROUND").is_ok_and(|v| v == "1")
 }
 
 pub const SPAWN: Vec3 = Vec3::new(8.0, 6.5, 55.0);

@@ -1,5 +1,7 @@
 //! Opt-in scripted workloads. Gameplay keeps the preferred presentation;
 //! comparisons and toggle stress have distinct report identities.
+mod background;
+mod cave;
 mod house;
 mod metrics;
 mod profiles;
@@ -99,6 +101,8 @@ pub(super) struct ValidationRun {
     house: house::HouseRun,
     cave_camera_initialized: bool,
     structures: structures::StructuresRun,
+    background: background::BackgroundRun,
+    cave: cave::CaveObservations,
     max_pages: usize,
     capture_pause_until: f32,
     done: bool,
@@ -215,21 +219,35 @@ pub(super) fn run_validation(
     let elapsed = run.started.unwrap().elapsed().as_secs_f32();
     let profile = run.profile;
     let (ref mut player, ref mut look) = *player_state;
+    if crate::cave_scene::background_terrain_requested() {
+        run.background
+            .tick(elapsed, &evidence, &mut commands, &mut lights);
+    }
     if profile == Profile::Structures {
         run.structures
             .tick(elapsed, player, &mut commands, &cameras, &mut lights);
     }
     if profile == Profile::Cave && !run.cave_camera_initialized {
+        let (eye, target) = if crate::cave_scene::enabled() {
+            (crate::cave_scene::EYE, crate::cave_scene::TARGET)
+        } else {
+            (Vec3::new(47.0, -11.4, -18.0), Vec3::new(76.0, -17.0, -34.0))
+        };
+        player.translation = eye - Vec3::Y * 1.62;
         for camera in &cameras {
             commands
                 .entity(camera)
                 .remove::<bevy_ahoy::prelude::CharacterControllerCameraOf>()
-                .insert(
-                    Transform::from_translation(crate::cave_scene::EYE)
-                        .looking_at(crate::cave_scene::TARGET, Vec3::Y),
-                );
+                .insert(Transform::from_translation(eye).looking_at(target, Vec3::Y))
+                .insert(Projection::Perspective(PerspectiveProjection {
+                    fov: 65.0_f32.to_radians(),
+                    ..default()
+                }));
         }
         run.cave_camera_initialized = true;
+    }
+    if matches!(profile, Profile::Cave | Profile::Structures) {
+        run.cave.record(elapsed, &field);
     }
     if matches!(profile, Profile::House | Profile::HouseEdits) {
         run.house.tick(
@@ -475,6 +493,13 @@ pub(super) fn run_validation(
         return;
     }
     let config = configs.get(&assets.prototype_config);
+    if matches!(profile, Profile::Cave | Profile::Structures)
+        && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("cave.json"),
+            json!({"samples": run.cave.samples, "note": "Fixed wall receivers; all five measured bands, RGB display, history and measurement age. No ground-truth/convergence claim."}).to_string()) {
+        evidence.fail(&format!("Could not save cave sequence: {error}"));
+        commands.write_message(AppExit::error());
+        return;
+    }
     if matches!(profile, Profile::House | Profile::HouseEdits)
         && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("house.json"),
             json!({"samples": run.house.samples, "events": run.house.events, "captures": run.house.captures,
@@ -498,6 +523,9 @@ pub(super) fn run_validation(
         "performance_baseline": profile == Profile::Gameplay && evidence.render_target.is_none(),
         "build": "development", "backend": stats.backend,
         "scene": if crate::cave_scene::enabled() { "many-emitter cave" } else { "terrain" },
+        "background_terrain": {"enabled": crate::cave_scene::background_terrain_requested(),
+            "moves": run.background.moves, "speed_voxels_per_second": 4.32,
+            "note": "Inactive BVW loader walks from (-96,40,0) toward -Z. Does not render or alter GI view priority. Loaded terrain participates in transport."},
         "presentation": "shared-corner sun + corner-reconstructed indirect; preferred modes except compare/stress",
         "settings": {"trace_budget_ms": settings.trace_budget_ms, "max_probes_per_dispatch": settings.max_probes_per_dispatch,
             "scene_publish_budget_ms": settings.scene_publish_budget.as_secs_f32() * 1000.0,

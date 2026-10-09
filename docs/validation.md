@@ -147,6 +147,30 @@ Normal sunlight/environment and the ten-chunk spawning distance stay active.
 Do not compare this workload with isolated `cave` timings. See
 [structure ownership and verification](structures.md).
 
+### Background-terrain variants
+
+Add `VOXEL_GI_VALIDATE_BACKGROUND=1` to any profile, including the small `house`,
+`house-edits`, `response`, `edits`, `sources`, and `cave` fixtures. An inactive BVW
+loading camera walks at 4.32 voxels/s from (-96,40,0) toward -Z throughout the run.
+It generates and meshes real terrain through the ordinary residency/NAADF/GI
+publication paths; it does not render another view or take over GI camera priority.
+The measured view and its scripted edits remain unchanged. This is a continuous
+background-load variant, not merely a room surrounded by already-loaded chunks.
+
+`cave` with this flag uses the nearby normal-world structure and its entrance
+landing view, the normal palette/environment and ten-chunk draw distance. Without
+it, `cave` retains the isolated chamber control. The report identifies the variant,
+loader updates and scene-revision timeline; compare matching variants only. The
+small fixed-work native compute studies remain isolated estimator controls, not
+evidence of throughput under streaming. Use these composed end-to-end profiles
+before promoting their winners.
+
+`cave` and `structures` also save `cave.json`: fixed receivers on all four walls,
+including five-band measurements, moments, history, sequence, RGB display and
+measurement age. Missing receivers are recorded, not silently excluded. Use it
+to distinguish lack of work from sampling error; neither history nor coverage is
+ground-truth convergence.
+
 Each run creates a unique `target/gi-validation/<profile>-<stamp>-<pid>/` directory
 with status, report and images. Schema 3 identifies offscreen/window capture;
 older schema-2 records in the archive retain their original limitations. The

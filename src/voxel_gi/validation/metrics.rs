@@ -88,6 +88,7 @@ impl Metrics {
             "loaded_pages": runtime.loaded_pages.len(), "published_probes": field.probes.len(),
             "publishing_pages": field.publishing_pages.len(),
             "dirty_pages": runtime.dirty_pages.len(), "scene_build_pending": runtime.scene_task.is_some(),
+            "transport_revision": field.transport_revision, "scene_generation": runtime.generation,
             "coverage": stats.interactive_coverage, "bootstrap": stats.bootstrap_coverage,
             "traced_paths": stats.traced_paths, "transport_batches": stats.transport_batches,
             "pending_probes": stats.pending_probes,
