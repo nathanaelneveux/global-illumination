@@ -70,6 +70,14 @@ regions against rebuilding top-level bounds after any region change. Both are
 opt-in, have no viewport and measure construction, not frame time. Ordinary
 oracle tests cover topology, material changes, residency and immutable snapshots.
 
+`native_box_steps_match_scalar_boundary_policy` checks 210,001 native box steps
+against the scalar XYZ rule, including zero/tiny directions, ties and offsets.
+`sparse_geometry_upload_benchmark` rotates full metadata, sparse metadata and
+sparse metadata plus allocation reuse at identical paths. Its companion
+`sparse_geometry_uploads_survive_growth_and_residency_changes` exercises growing
+buffers, removed/recycled headers and edits. These target the changed paths; they
+do not require the solved toggle stress workload.
+
 ## End-to-end workloads
 
 Defaults stay shared-corner sunlight, corner-reconstructed indirect, textures on,

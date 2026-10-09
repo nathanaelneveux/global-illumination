@@ -62,6 +62,10 @@ voxel levels. GPU brick tags distinguish empty, uniform and mixed storage. Mixed
 bricks use packed 16-bit cells and content-checked, reference-counted deduplication;
 editing shared data is copy-on-write. Freed allocations are recycled. The CPU
 tracer is an independent representation/reference, not a decoder of GPU cells.
+Unchanged region identities retain packed allocations. Their top-level bounds are
+still refreshed when neighbours change. GPU upload plans contain changed header
+and cell ranges; the directory is rebuilt/uploaded only for residency changes.
+A grown buffer receives the full live array before sparse patching resumes.
 
 Top-level bounds include loaded regions, but do not allocate an arbitrarily large
 box between disconnected islands: oversized domains fall back to region DDA.
@@ -72,6 +76,9 @@ Rays normalize direction, offset from surfaces, traverse at most 2,048 steps and
 768 voxel units per segment, and distinguish hits, escape and unknown traversal.
 These limits and the small-throughput cutoff are approximations, not an exact
 infinite-domain light solver.
+GPU empty-space box stepping uses vector operations with the scalar reference's
+ordered XYZ tie and epsilon policy. This is an execution optimization, not a new
+intersection rule, shorter traversal limit or change to the path estimator.
 
 Transport treats a missing region before occupied loaded regions along a ray as
 unknown and contributes no energy for that path. Air-only frontiers do not create

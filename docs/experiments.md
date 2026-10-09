@@ -1,7 +1,7 @@
 # GI performance experiment results
 
-Four compatible changes are retained: better emitter sampling, explicit sky
-work, exact uniform-field construction and topology-keyed acceleration reuse.
+Retained changes improve emitter sampling, avoid repeated sky work, accelerate
+geometry construction and traversal, and reduce geometry preparation/uploads.
 Other candidates remain on separate local branches. The preferred shared
 corner appearance, four paths per dispatch, three-bounce estimator, history
 policy and temporal display filter are unchanged. There is no new debounce,
@@ -27,6 +27,10 @@ comparison infrastructure is `9186a55`. Winners were merged into
 | `aadf-convergence` | `5fecb63` | Reject full-cycle early exit: loaded islands improve, mixed terrain and bricks regress. |
 | `uniform-aadf` | `21d2409` | Retain: solve empty/full acceleration volumes exactly, without iterative sweeps. |
 | `topology-cache` | `b57d853` | Retain: share top-level acceleration across edits that preserve region residency and occupancy. |
+| `vector-box-step` | `f7e57aa` | Retain: vectorize empty-space stepping while preserving the scalar XYZ boundary policy. |
+| `directional-planes` | `ffbabde` | Reject: integer plane selection adds no gain over vector stepping. |
+| `geometry-upload-deltas` | `9bac5c8` | Retain: rebuild/upload the directory only for residency changes and patch changed headers. |
+| `packed-region-reuse` | `be1386a` | Retain: preserve unchanged region allocations while still updating their skip bounds. |
 
 Rejected variants are not dormant production toggles or extra runtime resources.
 A rejected implementation does not disprove its broader research family: the
@@ -263,3 +267,131 @@ gameplay speed claim, and these timings are not windowed FPS.
 
 Artifact: `target/gi-validation/streaming-1791494602912343000-36808/`;
 log: `target/naadf-source-streaming.log`.
+
+## Traversal and GPU geometry updates
+
+Baseline `946888c` is preserved as `experiment/gi-baseline-traversal-20261008`.
+Three compatible winners were merged at `de2336f`, `b15aa25` and `27df3bd`.
+These changes retain the original paths, three bounces, five energy bands, history
+and presentation. They do not implement path-sample reuse or reduce sampling work.
+All isolated measurements below use Apple M4/Metal, Rust 1.95.0, the same
+development/shared-cache profile and no viewport.
+
+### Vector box stepping
+
+`f7e57aa` replaces the dynamic XYZ loop in `advance_box` with vector arithmetic
+and ordered selects. It preserves the scalar rule even when a crossing is slightly
+negative: clamp the accepted distance before comparing the next axis. It does not
+adopt NAADF's simultaneous tied-axis normal, shorten rays or add a cache.
+
+Paired shader baseline `946888c` versus its WGSL-only diff committed as `f7e57aa`:
+30 alternating warmed pairs, identical advancing sequences, four paths per face.
+The follow-up `ffbabde` integer-plane selection candidate showed no added benefit
+(room GPU median 1.406 → 1.430 ms) and remains isolated.
+
+| GPU batch p50 | Baseline | Vector step | Repeat baseline | Repeat vector |
+| --- | ---: | ---: | ---: | ---: |
+| 1,024 open-floor faces | 0.063 ms | 0.051 ms | 0.060 ms | 0.049 ms |
+| 8,100 faces in nine emissive rooms | 1.817 ms | 1.416 ms | 1.798 ms | 1.419 ms |
+
+Room GPU time falls 21–22%. Whole-worker medians are essentially unchanged
+(4.714 → 4.724 ms; repeat 4.606 → 4.619 ms), and p95 timings are mixed. This frees
+GPU execution capacity but does not establish equivalent whole-engine throughput
+or frame pacing. Five-band moments, direct lighting, sample counts and sky output
+pass the paired comparison; inactive lanes and 1/7/64-path cases are included.
+
+The native boundary test covers 210,001 cases across brick/region scales, negative
+coordinates, zero and near-zero components, equal crossings and small negative
+crossings. Normals equal the independent scalar oracle; distances agree within
+floating-point tolerance. Native CPU/GPU transport RMS is 0.000000 in ordinary
+and emissive fixtures, including edits and extra bands.
+
+Evidence under `target/`: `vector-box-step-paired.log`,
+`vector-box-step-confirm.log`, `vector-box-step-native-parity.log`,
+`vector-box-step-boundaries.log`, `directional-planes-paired.log`.
+
+### Sparse metadata uploads
+
+`9bac5c8`, measured as `de2336f` plus its committed three-file diff, changes
+`PackedScene::update` to return directory changes and header/cell element ranges.
+Directory membership is unchanged by ordinary voxel edits. Existing buffers get
+coalesced patches; growth triggers a complete array upload, so sparse updates
+cannot omit old contents when allocations change. Buffer-identity binding checks
+are unchanged.
+
+The native benchmark alternates deleting/restoring one surface block among 8,192
+regions (1,024 pages), tracing 64 receivers × four paths. Forty measured pairs
+follow four warmups. The test-only reference shares dirty bookkeeping but forces
+the former directory rebuild and full metadata uploads.
+
+| First comparison | Full metadata | Sparse metadata |
+| --- | ---: | ---: |
+| CPU preparation p50 | 1.257 ms | 1.079 ms |
+| CPU preparation p95 | 1.543 ms | 1.320 ms |
+| Whole worker p50 | 2.850 ms | 2.673 ms |
+| Uploaded geometry per edit | 393,216–393,600 bytes | 16–400 bytes |
+
+Repeat preparation p50 was 1.263 → 1.093 ms and worker 2.830 → 2.693 ms.
+Lighting outputs are equal. The transfer reduction is over 99.8% in this
+occupancy-preserving edit fixture, not for loading new terrain or changed
+top-level bounds. Evidence: `geometry-deltas-native.log`,
+`geometry-deltas-confirm.log`, `geometry-deltas-parity.log` under `target/`.
+
+### Unchanged packed allocations
+
+`be1386a`, measured as `b15aa25` plus its two-file diff, avoids map
+removal/reinsertion and no-op allocation handling for unchanged region identities.
+Their top-level bounds still get checked and patched: unchanged voxel data does
+not imply unchanged skip distances after neighbouring residency/occupancy changes.
+
+The same fixture rotates three variants in 40 measured trios after four warmups.
+The reference bypasses the new identity lookup; exploratory runs that charged
+that lookup to every variant are not used for promotion. All variants retain
+common dirty bookkeeping, and their complete transport outputs match.
+
+| First corrected comparison | Full metadata | Sparse metadata | Sparse plus allocation reuse |
+| --- | ---: | ---: | ---: |
+| CPU preparation p50 | 1.469 ms | 1.253 ms | 0.871 ms |
+| CPU preparation p95 | 1.812 ms | 1.564 ms | 1.078 ms |
+| Whole worker p50 | 3.084 ms | 2.853 ms | 2.475 ms |
+| Whole worker p95 | 3.426 ms | 3.195 ms | 2.690 ms |
+
+Repeat preparation p50 was 1.459 / 1.247 / 0.874 ms and worker p50 was
+3.056 / 2.843 / 2.474 ms. Allocation reuse saves about 30% of preparation versus
+sparse uploads alone. Together they save about 40% of preparation and 19–20% of
+whole-worker time versus the full-metadata reference. These are edit-dispatch
+costs, not overall FPS or convergence claims.
+
+Evidence: `target/packed-region-reuse-fair-control.log` and
+`target/packed-region-reuse-fair-confirm.log`. Native comparisons cover buffer
+growth, unload, recycled headers, negative coordinates and empty-region changes.
+A CPU upload mirror also checks every header's bounds against the current scene.
+
+### Integrated verification
+
+At code `be1386a`, merged unchanged at `27df3bd`: 136 regular tests pass, 21
+opt-in tests ignored, strict all-target Clippy and development build pass. Native
+CPU/GPU RMS remains 0.000000 for ordinary and emissive fixtures. Targeted native
+growth/recycling checks cover the upload changes; toggle stress was not needed.
+Logs under `target/`: `traversal-upload-integration-tests.log`,
+`traversal-upload-clippy.log`, `traversal-upload-build.log`,
+`traversal-upload-native-parity.log`.
+
+The integrated `edits` profile at `27df3bd` (documentation-only dirty changes)
+completed offscreen on Apple M4/Metal using the development/shared-cache build,
+2560 × 1440 target and preferred corner presentation. All 18 captures had valid
+targets and nonblank content; render logs had no warnings/errors. The response
+log records all five synthetic edits. The profile's generic edit counter does
+not count these scripted events and must not be used as their verification.
+Inspected early, 400 ms and recovered captures show textured room/surface geometry
+and the resulting cavities. Some 50 ms captures precede mesh publication; this
+check does not establish instant edit response or a flicker improvement.
+
+Offscreen cadence p50/p95 was 22.60/30.61 ms during underground edits and
+22.67/30.77 ms during the surface edit. Nearby measurement-age p95 was 1.26 s and
+1.77 s respectively; final coverage was 100%, not proof of convergence. Startup
+still included a 685 ms frame. There is no paired application baseline here,
+and these timings are not windowed FPS or a gameplay speedup claim.
+
+Artifact: `target/gi-validation/edits-1791505230889909000-94935/`;
+log: `target/traversal-upload-edits.log`.

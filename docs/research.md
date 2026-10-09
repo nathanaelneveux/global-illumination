@@ -51,8 +51,9 @@ builder/cache, not copied shader implementations.
   [rayTracing.fxh](https://github.com/cg-tuwien/NAADF/blob/3ea3bb6a836aa4a30277c055f812d65a9d7d6766/NAADF/Content/shaders/render/rayTracing.fxh)
   preselects bound shifts from the ray direction, uses reciprocal direction and
   steps all tied axes with a vector mask. It also separates integer/fractional
-  positions. This suggests a distinct branchless traversal experiment; our earlier
-  reciprocal-only candidate did not show a win. Their step limits are 60–120 by
+  positions. Our vector box-step experiment is now retained, with the original
+  XYZ boundary policy; the earlier reciprocal-only candidate did not show a win.
+  Their step limits are 60–120 by
   ray type, versus our conservative 2,048; shortening ours is not a free equivalent
   optimization because incomplete traversal has explicit unknown semantics.
 - **GI retains individual path samples, including their geometry.**
@@ -189,6 +190,9 @@ The [October 8 experiment results](experiments.md) record completed branches.
 Emitter-only scrambled Sobol sampling and explicit sky demand are now defaults.
 Uniform AADF construction and topology-keyed top-level reuse also remove measured
 scene-building work without changing transport samples.
+Vector box stepping, sparse GPU metadata uploads and unchanged packed allocation
+reuse now remove execution/preparation work as well; see the measured scope in
+the experiment record. Re-evaluable path samples remain unimplemented.
 The four-sector local guide, dense wavefront implementation and broader Sobol
 variants were not promoted. The experiments below remain research directions,
 not claims that those tested variants should be retried unchanged.
