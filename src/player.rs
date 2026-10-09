@@ -152,6 +152,13 @@ fn spawn_player(mut commands: Commands, world: Res<PrototypeWorld>) {
         ))
         .id();
 
+    if crate::cave_scene::enabled() {
+        commands.entity(player).insert(bevy_ahoy::CharacterLook {
+            yaw: -std::f32::consts::FRAC_PI_4,
+            ..default()
+        });
+    }
+
     // Automated GI comparisons own the camera path. Background mouse motion
     // must not rotate it and change the streamed/rendered workload between runs.
     #[cfg(debug_assertions)]
@@ -165,6 +172,14 @@ fn spawn_player(mut commands: Commands, world: Res<PrototypeWorld>) {
         Name::new("PlayerCamera"),
         PlayerCamera,
         Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection {
+            fov: if crate::cave_scene::enabled() {
+                65.0_f32.to_radians()
+            } else {
+                std::f32::consts::FRAC_PI_4
+            },
+            ..default()
+        }),
         DistanceFog {
             color: sky_color(),
             falloff: FogFalloff::Linear {
@@ -320,7 +335,18 @@ fn edit_voxels(
             voxel_world.get_voxel(placement_position),
             WorldVoxel::Air | WorldVoxel::Unset
         ) {
-            voxel_world.set_voxel(placement_position, material.voxel());
+            let voxel = if crate::cave_scene::enabled() {
+                // The cave palette uses 4 for lava; the warm emitter shortcut
+                // places a torch instead. Ordinary placement extends its rock.
+                WorldVoxel::Solid(if material == TerrainMaterial::Emissive {
+                    7
+                } else {
+                    2
+                })
+            } else {
+                material.voxel()
+            };
+            voxel_world.set_voxel(placement_position, voxel);
             voxel_gi_dirty.mark_voxel(placement_position);
         }
     }

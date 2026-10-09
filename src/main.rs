@@ -1,6 +1,7 @@
 mod ambient_occlusion;
 mod app_controls;
 mod assets;
+mod cave_scene;
 mod chunk_colliders;
 mod player;
 mod terrain;

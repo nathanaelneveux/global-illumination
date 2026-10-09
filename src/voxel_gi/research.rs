@@ -1,7 +1,7 @@
 //! Deterministic transport fixtures shared by opt-in research studies. These
-//! contain no gameplay/material-ID policies and allocate nothing in normal runs.
+//! reuse the host cave's geometry/material policy and allocate only in tests.
 use super::{
-    EnergySpectrum, MaterialTransport, TransportSources, VoxelMaterialTransportTable,
+    EnergySpectrum, TransportSources, VoxelMaterialTransportTable,
     naadf::{linear_index, volume_len},
     sources::DirectionalTransportLight,
     world::{AIR, FACE_OFFSETS, PAGE_SIZE, SurfaceProbe, TransportScene},
@@ -32,7 +32,11 @@ pub(super) fn cave() -> Cave {
                         for x in 0..32 {
                             let local = UVec3::new(x, y, z);
                             let p = coordinate * 32 + local.as_ivec3();
-                            page[linear_index(local, PAGE_SIZE)] = cave_material(p);
+                            page[linear_index(local, PAGE_SIZE)] = match crate::cave_scene::voxel(p)
+                            {
+                                bevy_voxel_world::prelude::WorldVoxel::Solid(id) => id as u16,
+                                _ => AIR,
+                            };
                         }
                     }
                 }
@@ -45,36 +49,7 @@ pub(super) fn cave() -> Cave {
         pages,
         &[],
     ));
-    let mut materials = VoxelMaterialTransportTable::default();
-    for (id, diffuse, emission) in [
-        (
-            2,
-            EnergySpectrum::new(Vec3::splat(0.55), 0.35, 0.08),
-            EnergySpectrum::ZERO,
-        ),
-        (
-            4,
-            EnergySpectrum::new(Vec3::splat(0.15), 0.1, 0.01),
-            EnergySpectrum::new(Vec3::new(3.0, 0.45, 0.02), 9.0, 0.0),
-        ),
-        (
-            5,
-            EnergySpectrum::new(Vec3::splat(0.2), 0.1, 0.01),
-            EnergySpectrum::new(Vec3::new(0.03, 0.4, 12.0), 0.05, 0.0),
-        ),
-        (
-            6,
-            EnergySpectrum::new(Vec3::splat(0.2), 0.1, 0.01),
-            EnergySpectrum::new(Vec3::new(0.3, 6.0, 0.08), 0.0, 15.0),
-        ),
-        (
-            7,
-            EnergySpectrum::new(Vec3::splat(0.2), 0.1, 0.01),
-            EnergySpectrum::new(Vec3::new(14.0, 4.0, 0.8), 5.0, 0.0),
-        ),
-    ] {
-        materials.set(id, MaterialTransport { diffuse, emission });
-    }
+    let materials = crate::cave_scene::materials();
     let mut receivers = Vec::new();
     for t in (8..58).step_by(7) {
         for y in [9, 22, 37] {
@@ -104,49 +79,15 @@ pub(super) fn cave() -> Cave {
         materials,
         receivers,
         sources: TransportSources {
-            environment: EnergySpectrum::new(Vec3::new(0.35, 0.45, 0.7), 0.08, 0.0),
+            environment: crate::cave_scene::ENVIRONMENT,
             directional: vec![DirectionalTransportLight {
-                direction: Vec3::new(-0.2, 1.0, -0.15).normalize(),
+                direction: crate::cave_scene::sun_direction(),
                 radiance: EnergySpectrum::new(Vec3::splat(4.0), 2.0, 0.0),
                 custom_visible: Vec3::ZERO,
             }],
             points: vec![],
         },
     }
-}
-
-fn cave_material(p: IVec3) -> u16 {
-    let IVec3 { x, y, z } = p;
-    if !(4..=59).contains(&x) || !(4..=43).contains(&y) || !(4..=59).contains(&z) {
-        return AIR;
-    }
-    if y == 43 && (51..=55).contains(&x) && (51..=55).contains(&z) {
-        return AIR;
-    }
-    if y == 4 {
-        return if (10..=54).contains(&x) && (10..=54).contains(&z) {
-            4
-        } else {
-            2
-        };
-    }
-    if x == 4 || x == 59 || z == 4 || z == 59 || y == 43 {
-        return 2;
-    }
-    if (30..=34).contains(&x) && (30..=34).contains(&z) && y <= 37 {
-        return if y % 4 == 0 && (x == 30 || x == 34 || z == 30 || z == 34) {
-            5
-        } else {
-            2
-        };
-    }
-    if y >= 40 && x % 11 == 7 && z % 13 == 8 {
-        return 6;
-    }
-    if y == 10 && (((x == 5 || x == 58) && z % 8 == 0) || ((z == 5 || z == 58) && x % 8 == 0)) {
-        return 7;
-    }
-    AIR
 }
 
 pub(super) fn channels(value: EnergySpectrum) -> [f32; 5] {

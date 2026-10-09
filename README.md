@@ -29,6 +29,18 @@ depends on greedy-mesh vertices or screen resolution.
 cargo run --locked
 ```
 
+For the opt-in many-emitter cave:
+
+```sh
+VOXEL_GI_SCENE=cave cargo run --locked
+```
+
+This finite test chamber contains a lava floor with IR, a blue-lit central spire,
+green ceiling crystals with ionizing emission, wall torches, and a roof skylight.
+It shares geometry/materials with the compute studies; it is not a calibrated
+thermal/radiation simulation or a finished art scene. E places a torch and right
+click places rock in this palette. Omit the variable to return to normal terrain.
+
 The top-right HUD reports FPS, Coverage, Bootstrap, Settled, and GI CPU/GPU cost.
 Coverage means at least one sample; Bootstrap means progress toward eight samples;
 Settled means passing a revisitable stability heuristic. None means convergence.

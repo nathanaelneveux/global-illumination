@@ -27,24 +27,47 @@ pub fn sky_color() -> Color {
 }
 
 fn setup_lighting(mut commands: Commands) {
+    let cave = crate::cave_scene::enabled();
+    if cave {
+        commands.insert_resource(crate::voxel_gi::VoxelGiEnvironment(
+            crate::cave_scene::ENVIRONMENT,
+        ));
+    }
     let cascade_shadow_config = CascadeShadowConfigBuilder {
         maximum_distance: TERRAIN_VIEW_DISTANCE,
         ..default()
     }
     .build();
 
-    commands.spawn((
+    let mut sun = commands.spawn((
         Name::new("Sun"),
         DemoSun,
         DirectionalLight {
-            color: Color::srgb(1.0, 0.96, 0.88),
-            illuminance: 18_000.0,
+            color: if cave {
+                Color::WHITE
+            } else {
+                Color::srgb(1.0, 0.96, 0.88)
+            },
+            illuminance: if cave { 40_000.0 } else { 18_000.0 },
             shadow_maps_enabled: true,
             ..default()
         },
-        Transform::from_xyz(0.0, 0.0, 0.0).looking_at(Vec3::new(0.35, -0.8, 0.25), Vec3::Y),
+        Transform::IDENTITY.looking_at(
+            if cave {
+                -crate::cave_scene::sun_direction()
+            } else {
+                Vec3::new(0.35, -0.8, 0.25)
+            },
+            Vec3::Y,
+        ),
         cascade_shadow_config,
     ));
+    if cave {
+        sun.insert(crate::voxel_gi::EnergyEmitter {
+            spectrum: crate::voxel_gi::EnergySpectrum::new(Vec3::ZERO, 2.0, 0.0),
+            range: 0.0,
+        });
+    }
 
     commands.insert_resource(GlobalAmbientLight::NONE);
 }

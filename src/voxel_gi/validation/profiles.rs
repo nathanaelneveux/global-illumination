@@ -12,6 +12,7 @@ pub(super) enum Profile {
     Response,
     Edits,
     Sources,
+    Cave,
     Compare,
     Stress,
 }
@@ -26,10 +27,11 @@ impl Profile {
             "response" => Ok(Self::Response),
             "edits" => Ok(Self::Edits),
             "sources" => Ok(Self::Sources),
+            "cave" => Ok(Self::Cave),
             "compare" => Ok(Self::Compare),
             "stress" => Ok(Self::Stress),
             _ => Err(format!(
-                "unknown validation profile {value:?}; choose gameplay, streaming, house, house-edits, response, edits, sources, compare, or stress"
+                "unknown validation profile {value:?}; choose gameplay, streaming, house, house-edits, response, edits, sources, cave, compare, or stress"
             )),
         }
     }
@@ -43,6 +45,7 @@ impl Profile {
             Self::Response => "response",
             Self::Edits => "edits",
             Self::Sources => "sources",
+            Self::Cave => "cave",
             Self::Compare => "compare",
             Self::Stress => "stress",
         }
@@ -53,6 +56,7 @@ impl Profile {
             Self::Compare => 29.0,
             Self::Streaming => 35.0,
             Self::House => 90.0,
+            Self::Cave => 62.0,
             Self::HouseEdits => 180.0,
             Self::Response | Self::Edits => 30.0,
             _ => 72.0,
@@ -68,7 +72,9 @@ impl Profile {
     }
 
     pub fn captures(self) -> &'static [(f32, &'static str)] {
-        if self == Self::HouseEdits {
+        if self == Self::Cave {
+            &[(15.0, "cave-15s"), (30.0, "cave-30s"), (60.0, "cave-60s")]
+        } else if self == Self::HouseEdits {
             &[
                 (89.0, "pre-edit"),
                 (90.4, "skylight-0400ms"),
@@ -152,7 +158,13 @@ impl Profile {
     }
 
     pub fn phase(self, elapsed: f32) -> &'static str {
-        if self == Self::HouseEdits && elapsed >= 90.0 {
+        if self == Self::Cave {
+            if elapsed < 15.0 {
+                "startup"
+            } else {
+                "settling"
+            }
+        } else if self == Self::HouseEdits && elapsed >= 90.0 {
             match elapsed {
                 t if t < 120.0 => "skylight",
                 t if t < 150.0 => "west-door",
@@ -242,6 +254,7 @@ mod tests {
             Profile::Response,
             Profile::Edits,
             Profile::Sources,
+            Profile::Cave,
         ] {
             for tick in 0..720 {
                 let mut settings = GpuTransportSettings {

@@ -100,6 +100,7 @@ Durations start after required assets are ready and exclude process compilation.
 | `response` | 30 | Underground cavity and emitter on/off response |
 | `edits` | 30 | Early frames after underground and surface edits |
 | `sources` | 72 | Analytic/emissive source changes, multi-band field and streaming |
+| `cave` | 62 | Fixed view of many-emitter chamber; automatically selects cave geometry/palette |
 | `compare` | 29 | Controlled display-mode visual comparison |
 | `stress` | 72 | Optional toggle/buffer lifetime stress |
 
@@ -119,6 +120,13 @@ screen, but system sleep can still suspend execution. Do not change security or
 screensaver settings. Omit `VOXEL_GI_VALIDATE_HEADLESS` for a windowed run, then
 verify its real window size, focus and unobscured captures. Never compare offscreen
 app cadence to windowed FPS or present it as interactive frame pacing.
+
+The `cave` profile uses the preferred corner look and a fixed 65° vertical FOV,
+capturing at 15/30/60 seconds. Fixed warm-up is not certified convergence. Use
+`VOXEL_GI_SCENE=cave cargo run --locked` for interactive exploration. The finite
+chamber uses a four-chunk spawning distance; do not compare its cadence against
+the normal ten-chunk terrain workload. RGB, IR and ionizing transport use the
+same fixture palette as the native compute studies, with no cavity-specific GI.
 
 Each run creates a unique `target/gi-validation/<profile>-<stamp>-<pid>/` directory
 with status, report and images. Schema 3 identifies offscreen/window capture;

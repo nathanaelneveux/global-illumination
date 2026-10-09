@@ -47,6 +47,10 @@ impl TerrainMaterial {
     }
 
     fn texture_indices(index: MaterialIndex) -> [u32; 3] {
+        // Demo source materials use the existing neutral texture layer.
+        if (5..=7).contains(&index) {
+            return [0; 3];
+        }
         const SNOW_TEXTURE: u32 = 0;
         const SNOW_BRICK_TEXTURE: u32 = 1;
         const BRICK_TEXTURE: u32 = 2;
@@ -93,6 +97,9 @@ impl Plugin for TerrainPlugin {
                 TerrainMaterial::Emissive.index(),
                 emissive_block_transport(),
             );
+        if crate::cave_scene::enabled() {
+            app.insert_resource(crate::cave_scene::materials());
+        }
         let transport_assets = app.world().resource::<VoxelTransportAssets>().clone();
         app.add_plugins(
             VoxelWorldPlugin::with_config(PrototypeWorld::default())
@@ -113,6 +120,7 @@ fn emissive_block_transport() -> MaterialTransport {
 pub struct PrototypeWorld {
     config: PrototypeConfig,
     noise: Arc<TerrainNoise>,
+    cave: bool,
 }
 
 impl Default for PrototypeWorld {
@@ -126,10 +134,14 @@ impl PrototypeWorld {
         Self {
             noise: Arc::new(TerrainNoise::from_config(&config)),
             config,
+            cave: crate::cave_scene::enabled(),
         }
     }
 
     pub fn player_spawn_position(&self) -> Vec3 {
+        if self.cave {
+            return crate::cave_scene::SPAWN;
+        }
         Vec3::new(
             0.0,
             self.noise.player_spawn_height(0, 0) + self.config.player_spawn_height_offset,
@@ -142,6 +154,9 @@ impl PrototypeWorld {
     }
 
     pub fn generated_voxel(&self, position: IVec3) -> WorldVoxel<MaterialIndex> {
+        if self.cave {
+            return crate::cave_scene::voxel(position);
+        }
         if position.y <= BEDROCK_FLOOR_Y {
             return TerrainMaterial::Brick.voxel();
         }
@@ -160,7 +175,7 @@ impl VoxelWorldConfig for PrototypeWorld {
     type ChunkUserBundle = ();
 
     fn spawning_distance(&self) -> u32 {
-        SPAWNING_DISTANCE
+        if self.cave { 4 } else { SPAWNING_DISTANCE }
     }
 
     fn min_despawn_distance(&self) -> u32 {
@@ -175,10 +190,20 @@ impl VoxelWorldConfig for PrototypeWorld {
     }
 
     fn texture_index_mapper(&self) -> Arc<dyn Fn(Self::MaterialIndex) -> [u32; 3] + Send + Sync> {
-        Arc::new(TerrainMaterial::texture_indices)
+        let cave = self.cave;
+        Arc::new(move |id| {
+            if cave && id == 2 {
+                [0; 3]
+            } else {
+                TerrainMaterial::texture_indices(id)
+            }
+        })
     }
 
     fn voxel_lookup_delegate(&self) -> VoxelLookupDelegate<Self::MaterialIndex> {
+        if self.cave {
+            return Box::new(|_, _, _| Box::new(|p, _| crate::cave_scene::voxel(p)));
+        }
         let terrain_noise = Arc::clone(&self.noise);
 
         Box::new(move |chunk_pos, _lod, _previous| {

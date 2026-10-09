@@ -96,6 +96,7 @@ pub(super) struct ValidationRun {
     emitter_started: bool,
     response: response::ResponseRun,
     house: house::HouseRun,
+    cave_camera_initialized: bool,
     max_pages: usize,
     capture_pause_until: f32,
     done: bool,
@@ -212,6 +213,18 @@ pub(super) fn run_validation(
     let elapsed = run.started.unwrap().elapsed().as_secs_f32();
     let profile = run.profile;
     let (ref mut player, ref mut look) = *player_state;
+    if profile == Profile::Cave && !run.cave_camera_initialized {
+        for camera in &cameras {
+            commands
+                .entity(camera)
+                .remove::<bevy_ahoy::prelude::CharacterControllerCameraOf>()
+                .insert(
+                    Transform::from_translation(crate::cave_scene::EYE)
+                        .looking_at(crate::cave_scene::TARGET, Vec3::Y),
+                );
+        }
+        run.cave_camera_initialized = true;
+    }
     if matches!(profile, Profile::House | Profile::HouseEdits) {
         run.house.tick(
             elapsed,
@@ -478,6 +491,7 @@ pub(super) fn run_validation(
         "timing_domain": if evidence.render_target.is_some() { "offscreen app cadence; 60Hz ScheduleRunner; no swapchain/vsync" } else { "windowed frame pacing" },
         "performance_baseline": profile == Profile::Gameplay && evidence.render_target.is_none(),
         "build": "development", "backend": stats.backend,
+        "scene": if crate::cave_scene::enabled() { "many-emitter cave" } else { "terrain" },
         "presentation": "shared-corner sun + corner-reconstructed indirect; preferred modes except compare/stress",
         "settings": {"trace_budget_ms": settings.trace_budget_ms, "max_probes_per_dispatch": settings.max_probes_per_dispatch,
             "scene_publish_budget_ms": settings.scene_publish_budget.as_secs_f32() * 1000.0,
