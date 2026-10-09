@@ -96,6 +96,36 @@ large sequences and shrinking/mixed task arrays. The opt-in
 8,192 faces with identical transport outputs. Native sky-only/partial dispatch
 and resource-growth tests cover the integration without a toggle-stress run.
 
+### Quality-lever comparisons
+
+Use **Esc → Lighting controls…** for exploratory comparisons. Save defaults to A
+and a candidate to B; change one lever at a time. Model Apply/Load resets measured
+history progressively but preserves display history, so a screenshot immediately
+after loading is not an independent candidate result. Compare settled appearance
+and edit response as well as cost; a dark field or starved transport is not a win.
+
+For repeatable starts, export applied JSON, save it outside tracked source (for
+example `target/reach16.json`), and set `VOXEL_GI_SETTINGS` for either interactive
+or scripted runs. Partial files are supported:
+
+```json
+{"transport":{"reach":16,"bounces":3}}
+```
+
+The report records reach, depth, batch samples and existing work settings. Keep
+the profile, background-terrain option, build and viewport fixed. A shortened
+reach removes some light paths rather than reproducing Minecraft attenuation.
+Budget, batch samples, stability thresholds and temporal response answer separate
+questions; do not change them together in the first reach comparison.
+
+Focused checks are `tuning_` (CPU configuration/widget/preset contracts),
+`voxel_gi::gpu::tuning_tests -- --ignored --nocapture` (native variable-model parity,
+sealed-roof and empty-streaming-frontier checks), and optional
+`tuning_panel_offscreen_capture -- --ignored --nocapture`. The latter saves
+`target/gi-tuning-panel.png` using production widgets and Bevy's image capture,
+without a window. It is UI layout evidence, not gameplay lighting or FPS evidence.
+No routine toggle stress is needed for tuning.
+
 ## End-to-end workloads
 
 Defaults stay shared-corner sunlight, corner-reconstructed indirect, textures on,

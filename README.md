@@ -63,6 +63,7 @@ CPU and GPU work overlap, so their displayed costs must not be added.
 | Space / Ctrl / Shift | Jump / crouch / sprint |
 | Left / right click | Remove / place a voxel |
 | E / Add emitting block button | Place a warm emitting voxel at the aimed-at face |
+| Lighting controls… button | Quality/work sliders, A/B settings, defaults reset and JSON export |
 | F3 | Mesh debug overlay |
 | F4 | Toggle indirect GI display |
 | F5 | Flat faces / virtual-corner interpolation |
@@ -73,9 +74,34 @@ CPU and GPU work overlap, so their displayed costs must not be added.
 Aim before releasing the cursor to use the emitter button. Movement/look pauses
 while the cursor is released. Display toggles do not invalidate transport.
 
+### Visual quality tuning
+
+Press **Esc**, then **Lighting controls…** in the HUD. The light-model section
+stages changes until **Apply model**; work/refinement and presentation sliders
+apply live. Defaults remain 768-voxel reach, three diffuse surface hits, four paths
+per face per batch, a 4 ms batch target and 75 ms display response.
+
+Start by saving defaults to **A**, then compare reach **16 / 32 / 64 / 128 / 256**
+with bounce depth and budget unchanged. Save a candidate to **B**. These restore
+settings, not cached images: a changed model needs fresh refinement. Keep an eye
+on FPS, GI cost, dark-corner quality and response after edits, not just coverage.
+
+Reach limits each diffuse ray and voxel-emitter connection, not total path length
+or Minecraft-style block-by-block light attenuation. A shorter reach may discard
+useful distant light, and is not guaranteed to run faster: empty space is already
+cheap to traverse, while rejected distant emitter samples still cost work. Sun
+visibility keeps its independent 768-voxel horizon; analytic point lights retain
+their source ranges. All loaded receivers remain eligible, including IR/radiation.
+
+**Copy applied JSON** exports transport/work settings (not display toggles/gain).
+Paste JSON into the same panel to import, or save it to a file and launch with
+`VOXEL_GI_SETTINGS=path.json cargo run --locked`. Omitted fields use defaults;
+unknown fields or malformed files are errors, and numeric values are clamped to
+supported ranges. A/B slots are session-only and include presentation.
+
 ## Current behavior
 
-Four new paths per selected face update RGB, infrared, and ionizing channels.
+By default, four new paths per selected face update RGB, infrared, and ionizing channels.
 Every loaded exposed surface remains eligible, including offscreen receivers.
 Bounded asynchronous work prioritizes nearby changes while reserving a world
 sweep for distant surfaces. Finite work budgets mean lighting changes are
@@ -93,7 +119,7 @@ latency. A 75 ms response setting is not a promise to reach final brightness in
 Increasing raw history is not our default answer to noise.
 
 Terrain configuration is hot-reloaded from
-[default.prototype.ron](assets/config/default.prototype.ron). Work limits live in
+[default.prototype.ron](assets/config/default.prototype.ron). Quality/work limits live in
 `VoxelGiSettings`; background transport energy in `VoxelGiEnvironment`; optical
 properties in `VoxelMaterialTransportTable`. Source adaptation and texture assets
 have explicit owners rather than being encoded into the tracer.

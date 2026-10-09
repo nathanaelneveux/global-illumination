@@ -35,6 +35,7 @@ host chunks / edits / sources / material table
 | Change metadata and retention | `geometry.rs`, `sources.rs`, `revision.rs` |
 | Receiver page publication | `publication.rs` |
 | Eligibility, priority and dispatch | `scheduling.rs`, `dispatch.rs` |
+| Model/work configuration and revision synchronization | `settings.rs` |
 | Thread-transfer payload and result merge | `work.rs` |
 | Source model and Bevy light adaptation | `sources.rs` |
 | Sampling, emitters and transport | `sampling.rs`, `emission.rs`, `tracer.rs`, `gpu.rs`, `voxel_trace.wgsl` |
@@ -42,7 +43,7 @@ host chunks / edits / sources / material table
 | Direct-sun visibility cache | `sky.rs`, `sky_cache.rs` |
 | Temporal display and initialization | `history.rs` |
 | Display publication and rendering | `display.rs`, `render.rs`, `voxel_transport.wgsl` |
-| Accounting, optional UI, fixtures | `telemetry.rs`, `diagnostics.rs`, `validation/` |
+| Accounting, optional UI, fixtures | `telemetry.rs`, `diagnostics.rs`, `diagnostics/`, `validation/` |
 
 Shader paths are under `assets/shaders/`; Rust paths above are under
 `src/voxel_gi/`. `reconstruction.rs` is an independent CPU test oracle for shader
@@ -86,7 +87,7 @@ The top-level field depends only on region residency and empty/nonempty occupanc
 Immutable snapshots share its allocation across edits that preserve that topology;
 changed voxel regions still trigger normal source and transport invalidation.
 Rays normalize direction, offset from surfaces, traverse at most 2,048 steps and
-768 voxel units per segment, and distinguish hits, escape and unknown traversal.
+768 voxel units per segment by default, and distinguish hits, escape and unknown traversal.
 These limits and the small-throughput cutoff are approximations, not an exact
 infinite-domain light solver.
 GPU empty-space box stepping uses vector operations with the scalar reference's
@@ -354,6 +355,43 @@ retain the existing explicit-path estimator and reference/fallback; do not combi
 residency with recursive cache feedback or path guiding.
 
 ## Integration contract and limits
+
+### Quality controls and model changes
+
+`VoxelGiSettings.transport` is a normalized `TransportSettings` snapshot: diffuse
+ray / voxel-emitter reach (1–768 voxels) and explicit diffuse hits (1–3). The upper
+depth bound preserves the existing validated sampler dimension allocation. Reach
+is per connection, not total path length or per-block light-level propagation.
+Directional visibility remains at 768; analytic point lights retain their own
+range. For a shortened diffuse segment, reaching the artificial cutoff does not
+certify sky: only an empty remaining coarse occupancy frontier admits environment.
+Possible occluders terminate conservatively. This avoids both leaking light
+through distant roofs and darkening a receiver merely by loading known-empty
+pages. The coarse check can reject energy that a longer fine ray would recover.
+
+The normalized model is captured on `TraceWork` for CPU/GPU parity. A model change
+uses the existing discrete source epoch: outstanding old-model results are
+rejected, new selections reset measured means/moments lazily, and old simulation
+estimates report stale until replaced. Sample sequences and display history
+survive; geometry, emissive distributions and direct-sun caches need no rebuild.
+No synchronous full-field clear or debounce is introduced. Coverage can remain
+high during this transition because it is not a current-model convergence metric.
+
+Work knobs (including 1–16 paths per batch) do not change the integrand or reset
+measurements. Adaptive stability tolerances are reevaluated as faces run/audit.
+Presentation settings only change the displayed result. Temporal response is a
+time constant subject to the existing evidence/uncertainty filter, not a promise
+to settle in that many milliseconds. Display gain/toggles do not change energy
+returned to simulation readers.
+
+`diagnostics/tuning.rs` is the optional host UI: staged model Apply, live work and
+display sliders, session A/B presets, and explicit JSON import/export. Presets
+copy only presentation fields, never GPU addressing/generation state. Opening an
+idle panel does not mark settings or material assets changed every frame. The
+demo's `VOXEL_GI_SETTINGS` file loader is opt-in and fails visibly on invalid JSON;
+the reusable plugin still accepts a host-provided settings resource directly.
+
+### Host integration
 
 This is one axis-aligned unit-voxel world in integer coordinates, with f32 ray
 positions. There is no floating origin, world-ID key, deformation metric or

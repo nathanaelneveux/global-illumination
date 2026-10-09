@@ -1,5 +1,6 @@
 //! Optional demo instrumentation, separate from transport scheduling. The HUD
 //! reuses O(1) counters; expensive field summaries and scripted edits are opt-in.
+mod tuning;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::window::{CursorOptions, PrimaryWindow};
@@ -18,6 +19,7 @@ pub(crate) struct VoxelGiDiagnosticsPlugin;
 
 impl Plugin for VoxelGiDiagnosticsPlugin {
     fn build(&self, app: &mut App) {
+        tuning::load_launch_settings(app);
         if terminal_stats_enabled() {
             app.add_plugins(LogDiagnosticsPlugin::default())
                 .add_systems(Update, log_voxel_gi_stats.after(VoxelGiSystems));
@@ -27,7 +29,10 @@ impl Plugin for VoxelGiDiagnosticsPlugin {
             app.add_systems(Update, toggle_voxel_gi.after(VoxelGiSystems));
         }
         if !crate::headless_validation() {
-            app.add_systems(EguiPrimaryContextPass, draw_hud);
+            app.init_resource::<tuning::TuningPanel>().add_systems(
+                EguiPrimaryContextPass,
+                (draw_hud, tuning::draw_panel).chain(),
+            );
         }
         #[cfg(debug_assertions)]
         if scripted {
@@ -76,6 +81,7 @@ fn draw_hud(
     mut state: Local<HudState>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     mut place_emissive: MessageWriter<PlaceEmissiveBlock>,
+    mut tuning: ResMut<tuning::TuningPanel>,
 ) {
     if !state.visible {
         return;
@@ -113,6 +119,11 @@ fn draw_hud(
                         .on_hover_text("Place a warm emitting voxel against the aimed-at face. E works while playing; Esc releases the cursor for this button.")
                         .clicked() {
                         place_emissive.write(PlaceEmissiveBlock);
+                    }
+                    if ui.button("Lighting controls…")
+                        .on_hover_text("Esc releases the cursor. Compare lighting reach, quality, work budget and presentation.")
+                        .clicked() {
+                        tuning.open = !tuning.open;
                     }
                 });
         });
