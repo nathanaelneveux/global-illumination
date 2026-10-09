@@ -25,6 +25,11 @@ pub enum TerrainMaterial {
     SnowBrick = 2,
     Snow = 3,
     Emissive = 4,
+    CaveRock = 5,
+    Lava = 6,
+    SpireLight = 7,
+    ThoriumCrystal = 8,
+    CaveTorch = 9,
 }
 
 impl TerrainMaterial {
@@ -43,15 +48,16 @@ impl TerrainMaterial {
             2 => Some(Self::SnowBrick),
             3 => Some(Self::Snow),
             4 => Some(Self::Emissive),
+            5 => Some(Self::CaveRock),
+            6 => Some(Self::Lava),
+            7 => Some(Self::SpireLight),
+            8 => Some(Self::ThoriumCrystal),
+            9 => Some(Self::CaveTorch),
             _ => None,
         }
     }
 
     fn texture_indices(index: MaterialIndex) -> [u32; 3] {
-        // Demo source materials use the existing neutral texture layer.
-        if (5..=7).contains(&index) {
-            return [0; 3];
-        }
         const SNOW_TEXTURE: u32 = 0;
         const SNOW_BRICK_TEXTURE: u32 = 1;
         const BRICK_TEXTURE: u32 = 2;
@@ -61,7 +67,13 @@ impl TerrainMaterial {
             Self::Grass => [GRASS_TEXTURE, GRASS_TEXTURE, GRASS_TEXTURE],
             Self::Brick => [BRICK_TEXTURE, BRICK_TEXTURE, BRICK_TEXTURE],
             Self::SnowBrick => [SNOW_TEXTURE, SNOW_BRICK_TEXTURE, BRICK_TEXTURE],
-            Self::Snow | Self::Emissive => [SNOW_TEXTURE, SNOW_TEXTURE, SNOW_TEXTURE],
+            Self::Snow
+            | Self::Emissive
+            | Self::CaveRock
+            | Self::Lava
+            | Self::SpireLight
+            | Self::ThoriumCrystal
+            | Self::CaveTorch => [SNOW_TEXTURE; 3],
         }
     }
 }
@@ -100,6 +112,14 @@ impl Plugin for TerrainPlugin {
             );
         if crate::cave_scene::enabled() {
             app.insert_resource(crate::cave_scene::materials());
+        } else {
+            let cave = crate::cave_scene::materials();
+            let mut table = app
+                .world_mut()
+                .resource_mut::<VoxelMaterialTransportTable>();
+            for &(local, global) in &showcase::CAVE_PALETTE {
+                table.set(global.index(), cave.get(local));
+            }
         }
         let transport_assets = app.world().resource::<VoxelTransportAssets>().clone();
         app.add_plugins(
@@ -372,6 +392,101 @@ fn apply_live_prototype_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn normal_world() -> PrototypeWorld {
+        let config = PrototypeConfig::default();
+        PrototypeWorld {
+            noise: Arc::new(TerrainNoise::from_config(&config)),
+            config,
+            cave: false,
+            structures: Some(showcase::world_structures()),
+        }
+    }
+
+    #[test]
+    fn structure_cave_has_a_clear_supported_route_and_open_skylight() {
+        let world = normal_world();
+        let mut route: Vec<_> = (0..=18).map(|x| IVec3::new(x, 10, -6)).collect();
+        route.extend((-18..=-6).rev().map(|z| IVec3::new(18, 10, z)));
+        route.extend((19..=20).map(|x| IVec3::new(x, 10, -18)));
+        route.extend((21..=44).map(|x| IVec3::new(x, 30 - x, -18)));
+        route.extend((45..=47).map(|x| IVec3::new(x, -14, -18)));
+        route.extend(
+            (-43..=-19)
+                .rev()
+                .map(|z| IVec3::new(47, if z >= -21 { -14 } else { z + 7 }, z)),
+        );
+        for &floor in &route {
+            assert_eq!(
+                world.generated_voxel(floor),
+                TerrainMaterial::CaveRock.voxel(),
+                "support at {floor:?}"
+            );
+            for h in 1..=3 {
+                assert_eq!(
+                    world.generated_voxel(floor + IVec3::Y * h),
+                    WorldVoxel::Air,
+                    "headroom at {floor:?}"
+                );
+            }
+        }
+        for step in route.windows(2) {
+            let d = step[1] - step[0];
+            assert!(
+                d.x.abs() + d.z.abs() <= 1 && (-1..=0).contains(&d.y),
+                "{step:?}"
+            );
+        }
+        for y in 3..=MAX_SURFACE_Y + 1 {
+            assert_eq!(
+                world.generated_voxel(IVec3::new(93, y, -11)),
+                WorldVoxel::Air
+            );
+        }
+        assert_eq!(
+            world.generated_voxel(IVec3::new(60, -36, -40)),
+            TerrainMaterial::Lava.voxel()
+        );
+        assert_eq!(
+            world.generated_voxel(IVec3::new(72, -20, -34)),
+            TerrainMaterial::SpireLight.voxel()
+        );
+    }
+
+    #[test]
+    fn structure_lookup_matches_bvw_jobs_across_bedrock_and_chunk_halos() {
+        let world = normal_world();
+        let delegate = world.voxel_lookup_delegate();
+        for chunk in [
+            IVec3::new(0, 0, -1),
+            IVec3::new(1, -1, -1),
+            IVec3::new(1, -2, -2),
+            IVec3::new(2, -1, -1),
+            IVec3::new(3, 0, -1),
+            IVec3::new(0, -3, 0),
+            IVec3::new(0, 3, 0),
+        ] {
+            let mut job = delegate(chunk, 0, None);
+            for z in -1..=32 {
+                for y in -1..=32 {
+                    for x in -1..=32 {
+                        let p = chunk * 32 + IVec3::new(x, y, z);
+                        assert_eq!(job(p, None), world.generated_voxel(p), "{p:?} in {chunk:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn structure_palette_never_repurposes_terrain_or_existing_lamps() {
+        let mut ids = std::collections::HashSet::new();
+        for &(_, material) in &showcase::CAVE_PALETTE {
+            assert!(material.index() > TerrainMaterial::Emissive.index());
+            assert!(ids.insert(material.index()));
+            assert_eq!(TerrainMaterial::texture_indices(material.index()), [0; 3]);
+        }
+    }
 
     #[test]
     fn structures_preserve_original_house_and_foundation() {
