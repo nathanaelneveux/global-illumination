@@ -19,6 +19,8 @@ mod naadf;
 mod publication;
 mod reconstruction;
 pub(crate) mod render;
+#[cfg(test)]
+mod research;
 mod revision;
 mod sampling;
 mod scheduling;
