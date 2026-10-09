@@ -3,6 +3,7 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use rayon::prelude::*;
 
+use super::TransportSettings;
 use super::emission::{EmissionDistribution, face_point};
 use super::sampling::pcg;
 use super::sampling::{hemisphere, sample_1d, stream_id};
@@ -21,7 +22,6 @@ use super::world::{
 const RAY_EPSILON: f32 = 0.001;
 const MAX_TRACE_STEPS: usize = 2_048;
 pub(crate) const MAX_PATH_DISTANCE: f32 = 768.0;
-const MAX_BOUNCES: u32 = 3;
 /// Coverage milestone, not a convergence or quality guarantee. Sampling never
 /// stops here; the scheduler continually improves every loaded surface.
 pub const BOOTSTRAP_SAMPLES: u32 = 8;
@@ -51,6 +51,9 @@ enum TraceResult {
 enum UnloadedPolicy {
     /// Unknown space cannot certify energy arriving at a simulation surface.
     Conservative,
+    /// A deliberately shortened diffuse segment cannot certify environment
+    /// visibility merely by exhausting its reach inside the scene bounds.
+    BoundedTransport,
     /// Match the visible scene: only loaded geometry can cast a display shadow.
     VisibleGeometry,
 }
@@ -88,14 +91,20 @@ impl TransportScene {
         let Some((world_minimum, world_maximum)) = self.world_bounds() else {
             return TraceResult::Escaped;
         };
-        let Some((entry_distance, _, entry_normal)) =
+        let Some((entry_distance, exit_distance, entry_normal)) =
             ray_box_interval(origin, direction, world_minimum, world_maximum)
         else {
             return TraceResult::Escaped;
         };
         let mut distance = entry_distance.max(0.0);
+        let exhausted =
+            if policy == UnloadedPolicy::BoundedTransport && max_distance < exit_distance {
+                TraceResult::Unknown
+            } else {
+                TraceResult::Escaped
+            };
         if distance > max_distance {
-            return TraceResult::Escaped;
+            return exhausted;
         }
 
         let mut position = origin + direction * (distance + RAY_EPSILON);
@@ -104,7 +113,7 @@ impl TransportScene {
 
         for _ in 0..MAX_TRACE_STEPS {
             if distance > max_distance {
-                return TraceResult::Escaped;
+                return exhausted;
             }
 
             let voxel = position.floor().as_ivec3();
@@ -127,7 +136,15 @@ impl TransportScene {
                     last_normal = normal;
                     continue;
                 }
-                return if self.has_geometry_ahead(position, direction, max_distance - distance) {
+                // A shorter diffuse budget must not mistake an unloaded gap
+                // before a distant roof for open sky. This is only the cheap
+                // coarse occupancy frontier query, not another fine ray.
+                let horizon = if policy == UnloadedPolicy::BoundedTransport {
+                    MAX_PATH_DISTANCE
+                } else {
+                    max_distance
+                };
+                return if self.has_geometry_ahead(position, direction, horizon - distance) {
                     TraceResult::Unknown
                 } else {
                     TraceResult::Escaped
@@ -293,9 +310,18 @@ pub(crate) fn trace_work_batch(
     sky_cache: &mut super::sky_cache::SkyCache,
 ) {
     trace_sky_batch(scene, sources, &mut work.probes, sky_cache);
+    let transport = work.transport.normalized();
     if samples_per_face != 0 {
         work.faces.par_iter_mut().for_each(|face| {
-            trace_face(scene, sources, materials, face, samples_per_face, emitters);
+            trace_face(
+                scene,
+                sources,
+                materials,
+                face,
+                samples_per_face,
+                emitters,
+                transport,
+            );
         });
     }
 }
@@ -329,6 +355,7 @@ fn trace_face(
     work: &mut FaceWork,
     samples_per_face: u32,
     emitters: &EmissionDistribution,
+    transport: TransportSettings,
 ) {
     // The caller installs this work in the GI-owned, bounded Rayon pool. That
     // retains useful path-level parallelism without occupying Bevy's render and
@@ -349,6 +376,7 @@ fn trace_face(
         let origin = voxel_center + normal * 0.501;
         let sample = trace_path(
             scene, sources, materials, origin, direction, stream, sequence, normal, emitters,
+            transport,
         ) + sample_emitter(
             scene,
             materials,
@@ -359,6 +387,7 @@ fn trace_face(
             sequence,
             0,
             true,
+            transport.reach,
         );
         let sample = sample.finite_or_zero();
         let count = (work.samples + 1).min(HISTORY_LIMIT);
@@ -392,13 +421,19 @@ fn trace_path(
     sequence: u32,
     mut previous_normal: Vec3,
     emitters: &EmissionDistribution,
+    transport: TransportSettings,
 ) -> EnergySpectrum {
     let mut result = EnergySpectrum::ZERO;
     let mut throughput = EnergySpectrum::ONE;
     let mut previous_position = origin - previous_normal * 0.001;
 
-    for bounce in 0..MAX_BOUNCES {
-        let hit = match scene.trace_ray_result(origin, direction, MAX_PATH_DISTANCE) {
+    for bounce in 0..transport.bounces {
+        let policy = if transport.reach < MAX_PATH_DISTANCE {
+            UnloadedPolicy::BoundedTransport
+        } else {
+            UnloadedPolicy::Conservative
+        };
+        let hit = match scene.trace_ray_with_policy(origin, direction, transport.reach, policy) {
             TraceResult::Hit(hit) => hit,
             TraceResult::Escaped => {
                 let horizon = direction.y.mul_add(0.35, 0.65).clamp(0.15, 1.0);
@@ -444,7 +479,8 @@ fn trace_path(
             stream,
             sequence,
             bounce + 1,
-            bounce + 1 < MAX_BOUNCES,
+            bounce + 1 < transport.bounces,
+            transport.reach,
         );
         result += throughput * material.diffuse * (direct + emissive_direct);
         throughput = throughput * material.diffuse;
@@ -483,6 +519,7 @@ fn sample_emitter(
     sequence: u32,
     bounce: u32,
     has_cosine_path: bool,
+    reach: f32,
 ) -> EnergySpectrum {
     let stream = stream ^ pcg(bounce.wrapping_add(0xa341_316c));
     let Some(emitter) = emitters.select_at(position, normal, sample_1d(stream, sequence, 12))
@@ -496,7 +533,7 @@ fn sample_emitter(
     );
     let delta = target - position;
     let distance_squared = delta.length_squared();
-    if !(0.0001..=MAX_PATH_DISTANCE * MAX_PATH_DISTANCE).contains(&distance_squared) {
+    if !(0.0001..=reach * reach).contains(&distance_squared) {
         return EnergySpectrum::ZERO;
     }
     let distance = distance_squared.sqrt();

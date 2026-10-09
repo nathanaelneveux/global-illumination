@@ -48,7 +48,7 @@ use bevy::tasks::Task;
 use rayon::ThreadPool;
 
 pub use field::{EnergyEstimate, VoxelEnergyField};
-pub use settings::VoxelGiSettings;
+pub use settings::{TransportSettings, VoxelGiSettings};
 pub use sources::VoxelGiEnvironment;
 pub use spectrum::{EnergyEmitter, EnergySpectrum};
 pub use world::{MaterialTransport, VoxelMaterialTransportTable};
@@ -98,6 +98,7 @@ impl Plugin for VoxelGiPlugin {
                     collect_chunk_changes,
                     synchronize_transport_sources,
                     synchronize_material_table,
+                    settings::synchronize_transport_settings,
                     apply_scene_task,
                     start_scene_task,
                     apply_trace_task,
@@ -203,6 +204,7 @@ struct VoxelGiRuntime {
     scene: Arc<TransportScene>,
     sources: TransportSources,
     materials: Arc<VoxelMaterialTransportTable>,
+    transport: TransportSettings,
     trace_pool: Arc<OnceLock<ThreadPool>>,
     loaded_pages: HashSet<IVec3>,
     dirty_pages: HashSet<IVec3>,
@@ -216,7 +218,7 @@ struct VoxelGiRuntime {
     geometry_history: geometry::GeometryHistory,
     source_revision: u64,
     batch_size: usize,
-    /// Last discrete emission change: old energy must not survive as samples.
+    /// Last discrete source/model change: old energy must not survive as samples.
     reset_source_revision: u64,
     source_history: sources::SourceHistory,
     nearby: Vec<IVec3>,
@@ -275,6 +277,7 @@ impl Default for VoxelGiRuntime {
             scene: Arc::new(TransportScene::default()),
             sources: TransportSources::default(),
             materials: Arc::new(VoxelMaterialTransportTable::default()),
+            transport: TransportSettings::default(),
             trace_pool: Arc::new(OnceLock::new()),
             loaded_pages: HashSet::new(),
             dirty_pages: HashSet::new(),

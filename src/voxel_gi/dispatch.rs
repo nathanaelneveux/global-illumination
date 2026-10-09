@@ -16,8 +16,6 @@ use bevy::{
 use rayon::ThreadPoolBuilder;
 use std::{sync::Arc, time::Instant};
 
-const SAMPLES_PER_DISPATCH: u32 = 4;
-
 pub(super) fn append_sky_work(
     runtime: &mut VoxelGiRuntime,
     field: &VoxelEnergyField,
@@ -94,6 +92,8 @@ pub(super) fn start_trace_task(
     // Independent work queues, one worker/submission. Cached sun lookups must
     // never consume the frames in which indirect transport could make progress.
     let mut selected = select_transport(&mut runtime, &field, &settings);
+    selected.transport = runtime.transport;
+    let samples = settings.batch_samples();
     let transport_count = selected.probes.len();
     let sky_count = append_sky_work(&mut runtime, &field, &mut selected);
     let sky_only = transport_count == 0;
@@ -104,7 +104,7 @@ pub(super) fn start_trace_task(
         update_stats_from_counters(&runtime, &field, &mut stats);
         return;
     }
-    let paths = selected.faces.len() as u64 * u64::from(SAMPLES_PER_DISPATCH);
+    let paths = selected.faces.len() as u64 * u64::from(samples);
     stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
     let scene = Arc::clone(&runtime.scene);
     let scene_generation = runtime.generation;
@@ -149,7 +149,7 @@ pub(super) fn start_trace_task(
                 &sources,
                 &materials,
                 &mut work,
-                SAMPLES_PER_DISPATCH,
+                samples,
                 &emitters,
                 sky_only,
             )
@@ -175,7 +175,7 @@ pub(super) fn start_trace_task(
                     &sources,
                     &materials,
                     &mut work,
-                    if sky_only { 0 } else { SAMPLES_PER_DISPATCH },
+                    if sky_only { 0 } else { samples },
                     &emitters,
                     &mut cpu_sky_cache,
                 )

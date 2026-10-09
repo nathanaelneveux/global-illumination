@@ -35,6 +35,8 @@ mod task_tests;
 #[cfg(test)]
 mod traversal_tests;
 #[cfg(test)]
+mod tuning_tests;
+#[cfg(test)]
 mod upload_tests;
 
 #[derive(Resource, Clone)]
@@ -50,6 +52,7 @@ struct GpuParams {
     maximum: IVec4,
     environment: Vec4,
     extra: Vec4,
+    transport: Vec4,
 }
 
 #[derive(Clone, Copy, Default, ShaderType)]
@@ -605,6 +608,7 @@ impl GpuTracer {
         } else {
             encode_tasks(&mut self.task_bytes, work, &sky_pending);
         }
+        let transport = work.transport.normalized();
         let params = GpuParams {
             counts: UVec4::new(
                 face_count as u32,
@@ -624,6 +628,7 @@ impl GpuTracer {
                 emitters.total_weight,
                 emitters.faces.len() as f32,
             ),
+            transport: Vec4::new(transport.reach, transport.bounces as f32, 0.0, 0.0),
         };
         self.params.upload(
             device,
@@ -866,7 +871,7 @@ mod tests {
                 .data
                 .unwrap()
                 .len(),
-            80
+            96
         );
         assert_eq!(
             ShaderBuffer::from(vec![GpuMaterial::default()])

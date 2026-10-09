@@ -5,7 +5,8 @@ struct Params {
     minimum: vec4<i32>, // xyz: scene bounds, w: shared corner task count
     maximum: vec4<i32>, // xyz: scene bounds, w: directional light count
     environment: vec4<f32>,
-    extra: vec4<f32>, // environment ionizing, path distance
+    extra: vec4<f32>, // environment ionizing, directional horizon, emitter power/count
+    transport: vec4<f32>, // diffuse/voxel-emitter reach, diffuse hits, reserved
 }
 struct Material {
     diffuse: vec4<f32>,
@@ -261,7 +262,7 @@ fn geometry_ahead(start: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> 
     }
     return true;
 }
-fn trace_domain(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, visible_geometry: bool) -> RayResult {
+fn trace_domain_bounded(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, visible_geometry: bool, bounded_transport: bool) -> RayResult {
     var result: RayResult;
     var near = -1e30;
     var far = 1e30;
@@ -288,7 +289,11 @@ fn trace_domain(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, visi
     var last_region = vec3<i32>(0x7fffffff);
     var metadata = vec4<u32>(0u);
     for (var step = 0u; step < 2048u; step += 1u) {
-        if distance > max_distance { return result; }
+        if distance > max_distance {
+            // Reaching an artificial local cutoff is not escaping to the sky.
+            result.status = select(0u, 2u, bounded_transport && max_distance < far);
+            return result;
+        }
         let voxel = vec3<i32>(floor(position));
         let region = voxel >> vec3<u32>(4u);
         if !in_bounds(region) { return result; }
@@ -302,7 +307,8 @@ fn trace_domain(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, visi
                     normal = advance.xyz;
                     continue;
                 }
-                result.status = select(0u, 2u, geometry_ahead(position, direction, max_distance - distance));
+                let horizon = select(max_distance, params.extra.y, bounded_transport);
+                result.status = select(0u, 2u, geometry_ahead(position, direction, horizon - distance));
                 return result;
             }
             metadata = regions[index];
@@ -351,6 +357,9 @@ fn trace_domain(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, visi
     }
     result.status = 2u;
     return result;
+}
+fn trace_domain(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, visible_geometry: bool) -> RayResult {
+    return trace_domain_bounded(origin, direction, max_distance, visible_geometry, false);
 }
 fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayResult {
     return trace_domain(origin, direction, max_distance, false);
@@ -446,7 +455,7 @@ fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, se
         + tangent * (sample_1d(stream, sequence, 13u) - 0.5) + bitangent * (sample_1d(stream, sequence, 14u) - 0.5);
     let delta = light_position - position;
     let d2 = dot(delta, delta);
-    if d2 < 0.0001 || d2 > params.extra.y * params.extra.y { return result; }
+    if d2 < 0.0001 || d2 > params.transport.x * params.transport.x { return result; }
     let distance = sqrt(d2);
     let direction = delta / distance;
     let receiver_cosine = max(dot(normal, direction), 0.0);
@@ -469,8 +478,8 @@ fn trace_path(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3
     var direction = first_direction;
     var previous_normal = initial_normal;
     var previous_position = start - initial_normal * 0.001;
-    for (var bounce = 0u; bounce < 3u; bounce += 1u) {
-        let hit = trace(origin, direction, params.extra.y);
+    for (var bounce = 0u; bounce < u32(params.transport.y); bounce += 1u) {
+        let hit = trace_domain_bounded(origin, direction, params.transport.x, false, params.transport.x < params.extra.y);
         if hit.status == 0u {
             let horizon = clamp(direction.y * 0.35 + 0.65, 0.15, 1.0);
             result.value += throughput.value * params.environment * horizon;
@@ -490,7 +499,7 @@ fn trace_path(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3
         let light_pdf = selection_pdf * dot(delta, delta) / max(dot(hit.normal, -direction), 1e-8);
         var mis = 1.0;
         if light_pdf > 0.0 { mis = cosine_pdf / (cosine_pdf + light_pdf); }
-        let nee = sample_emitter(hit.position, hit.normal, stream, sequence, bounce + 1u, bounce + 1u < 3u);
+        let nee = sample_emitter(hit.position, hit.normal, stream, sequence, bounce + 1u, bounce + 1u < u32(params.transport.y));
         result.value += throughput.value * (material.emission * mis + material.diffuse * (direct.value + nee.value));
         result.radiation += throughput.radiation * (material.emission_extra.x * mis + material.diffuse_extra.x * (direct.radiation + nee.radiation));
         throughput.value *= material.diffuse;

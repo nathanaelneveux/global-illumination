@@ -1,10 +1,15 @@
 use bevy::prelude::*;
 use std::time::Duration;
 
-/// Work limits, not world coverage limits. All loaded pages remain eligible.
+/// Quality and work limits. All loaded pages remain eligible.
 /// Insert before `VoxelGiPlugin` or change this resource at runtime.
-#[derive(Resource, Clone, Debug)]
+#[derive(Resource, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct VoxelGiSettings {
+    pub transport: TransportSettings,
+    /// New paths per selected face, not a lifetime sample limit. Smaller batches
+    /// trade per-face progress for scheduling/transfer overhead.
+    pub samples_per_dispatch: u32,
     /// Disable for a same-kernel continuous-sampling A/B baseline.
     pub adaptive_updates: bool,
     pub trace_budget_ms: f32,
@@ -29,6 +34,8 @@ pub struct VoxelGiSettings {
 impl Default for VoxelGiSettings {
     fn default() -> Self {
         Self {
+            transport: TransportSettings::default(),
+            samples_per_dispatch: 4,
             adaptive_updates: true,
             trace_budget_ms: 4.0,
             max_probes_per_dispatch: 8192,
@@ -43,6 +50,9 @@ impl Default for VoxelGiSettings {
 }
 
 impl VoxelGiSettings {
+    pub(super) fn batch_samples(&self) -> u32 {
+        self.samples_per_dispatch.clamp(1, 16)
+    }
     pub(super) fn audit_interval(&self) -> Duration {
         self.stable_audit_interval
             .clamp(Duration::from_millis(100), Duration::from_secs(30))
@@ -69,5 +79,142 @@ impl VoxelGiSettings {
     }
     pub(super) fn batch_limit(&self) -> usize {
         self.max_probes_per_dispatch.clamp(64, 8192)
+    }
+}
+
+/// The integrand, separate from scheduling and presentation. Changing this
+/// restarts measurements lazily, retaining display priors and sample sequences.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct TransportSettings {
+    /// Maximum length in voxels of each diffuse ray and voxel-emitter connection,
+    /// not total path length or Minecraft-style per-block attenuation. Directional
+    /// visibility keeps its independent 768-voxel horizon. A shortened diffuse
+    /// ray exhausting its reach inside the scene contributes no environment.
+    /// Analytic point lights keep their own source-defined range.
+    pub reach: f32,
+    /// Explicit diffuse surface hits after the receiver. Limited to the current
+    /// validated sampler's three-bounce dimension allocation.
+    pub bounces: u32,
+}
+
+impl Default for TransportSettings {
+    fn default() -> Self {
+        Self {
+            reach: 768.0,
+            bounces: 3,
+        }
+    }
+}
+
+impl TransportSettings {
+    pub(super) fn normalized(self) -> Self {
+        Self {
+            reach: if self.reach.is_finite() {
+                self.reach.clamp(1.0, 768.0)
+            } else {
+                768.0
+            },
+            bounces: self.bounces.clamp(1, 3),
+        }
+    }
+}
+
+/// Reuse the discrete source/model epoch: reject old in-flight measurements,
+/// reset each receiver only when selected, and leave geometry/sky caches intact.
+pub(super) fn synchronize_transport_settings(
+    settings: Res<VoxelGiSettings>,
+    mut runtime: ResMut<super::VoxelGiRuntime>,
+    mut field: ResMut<super::VoxelEnergyField>,
+    mut stats: ResMut<super::VoxelGiStats>,
+) {
+    let transport = settings.transport.normalized();
+    if runtime.transport == transport {
+        return;
+    }
+    runtime.transport = transport;
+    super::sources::invalidate_sources(&mut runtime, &mut field, &mut stats);
+    runtime.reset_source_revision = runtime.source_revision;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tuning_limits_are_finite_and_defaults_roundtrip() {
+        assert_eq!(
+            TransportSettings {
+                reach: f32::NAN,
+                bounces: 99
+            }
+            .normalized(),
+            TransportSettings::default()
+        );
+        assert_eq!(
+            TransportSettings {
+                reach: -2.0,
+                bounces: 0
+            }
+            .normalized(),
+            TransportSettings {
+                reach: 1.0,
+                bounces: 1
+            }
+        );
+        let settings = VoxelGiSettings::default();
+        let encoded = serde_json::to_string(&settings).unwrap();
+        assert_eq!(
+            serde_json::from_str::<VoxelGiSettings>(&encoded).unwrap(),
+            settings
+        );
+        assert_eq!(
+            serde_json::from_str::<VoxelGiSettings>("{}").unwrap(),
+            settings
+        );
+    }
+
+    #[test]
+    fn only_model_changes_restart_measurements_without_rebuilding_geometry_or_sky() {
+        let mut app = App::new();
+        app.init_resource::<VoxelGiSettings>()
+            .init_resource::<super::super::VoxelGiRuntime>()
+            .init_resource::<super::super::VoxelEnergyField>()
+            .init_resource::<super::super::VoxelGiStats>()
+            .add_systems(Update, synchronize_transport_settings);
+        app.update();
+        app.world_mut()
+            .resource_mut::<VoxelGiSettings>()
+            .trace_budget_ms = 1.0;
+        app.world_mut()
+            .resource_mut::<VoxelGiSettings>()
+            .display_response = Duration::from_millis(200);
+        app.world_mut()
+            .resource_mut::<VoxelGiSettings>()
+            .samples_per_dispatch = 1;
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<super::super::VoxelGiRuntime>()
+                .source_revision,
+            0
+        );
+        app.world_mut()
+            .resource_mut::<VoxelGiSettings>()
+            .transport
+            .reach = 16.0;
+        app.update();
+        let runtime = app.world().resource::<super::super::VoxelGiRuntime>();
+        assert_eq!(runtime.source_revision, 1);
+        assert_eq!(runtime.reset_source_revision, 1);
+        assert_eq!(runtime.generation, 0);
+        assert_eq!(runtime.sky_revision, 0);
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<super::super::VoxelGiRuntime>()
+                .source_revision,
+            1
+        );
     }
 }

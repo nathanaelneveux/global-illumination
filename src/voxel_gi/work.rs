@@ -9,6 +9,8 @@ use super::{EnergySpectrum, world::SurfaceProbe};
 
 #[derive(Default)]
 pub(crate) struct TraceWork {
+    /// Immutable model snapshot for this batch, shared by both backends.
+    pub transport: super::TransportSettings,
     pub probes: Vec<ProbeWork>,
     pub faces: Vec<FaceWork>,
 }

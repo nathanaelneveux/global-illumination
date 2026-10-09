@@ -31,7 +31,7 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
     world.init_resource::<VoxelGiStats>();
     world.init_resource::<VoxelGiSettings>();
     world.init_resource::<GiWorkTimings>();
-    for (case, expected) in [(0, 1.0), (1, 1.0), (2, 1.0), (3, 0.0)] {
+    for (case, expected) in [(0, 1.0), (1, 1.0), (2, 1.0), (3, 0.0), (4, 0.0)] {
         let mut probe = world.resource::<VoxelEnergyField>().probes[&IVec3::ZERO].clone();
         probe.trace_mask = 4;
         if case == 1 {
@@ -43,6 +43,14 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
         } else if case == 3 {
             probe.radiance[2] = EnergySpectrum::ONE;
             probe.second_moment[2] = EnergySpectrum::ONE;
+        } else if case == 4 {
+            // A batch dispatched before a tuning change must not publish into
+            // the new model. Geometry and the last display remain usable.
+            world.resource_mut::<VoxelGiSettings>().transport.reach = 16.0;
+            world
+                .run_system_once(settings::synchronize_transport_settings)
+                .unwrap();
+            probe.radiance[2] = EnergySpectrum::ONE * 100.0;
         }
         let task = pool.spawn(async move {
             TraceBatchResult {
@@ -72,6 +80,12 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
             expected,
             "case {case}"
         );
+        if case == 4 {
+            assert_eq!(
+                world.resource::<VoxelEnergyField>().probes[&IVec3::ZERO].radiance[2],
+                EnergySpectrum::ONE
+            );
+        }
     }
 }
 
@@ -548,6 +562,7 @@ fn dispatch_reuses_returned_storage_without_retaining_candidates() {
         trace_scratch: TraceWork {
             probes: Vec::with_capacity(1024),
             faces: Vec::with_capacity(1024),
+            ..default()
         },
         batch_size: 64,
         ..default()
