@@ -180,6 +180,11 @@ fn tuning_reach_depth_and_batch_size_match_cpu_without_sky_leaks() {
     // No emitters: finite diffuse rays must never invent environment through
     // the roof even though the environment itself is bright.
     materials.set(2, materials.get(1));
+    assert_eq!(
+        gpu.quality_pipelines.len(),
+        6,
+        "reach values reuse the finite-horizon variants"
+    );
     let emitters = Arc::new(EmissionDistribution::default());
     for reach in [1.0, 16.0, 768.0] {
         let mut work = TraceWork::from_probes(&receivers, false);

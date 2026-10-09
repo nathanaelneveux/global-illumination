@@ -369,6 +369,15 @@ Possible occluders terminate conservatively. This avoids both leaking light
 through distant roofs and darkening a receiver merely by loading known-empty
 pages. The coarse check can reject energy that a longer fine ray would recover.
 
+On GPU, depth and finite/default horizon policy are specialization constants.
+The worker lazily caches at most six face pipelines (three depths × two policies);
+numeric reach stays in the uniform, so 16→32 does not compile another variant.
+The default path keeps the original traversal loop without a runtime cutoff
+policy argument. First use of a variant can delay that asynchronous batch during
+compilation, not block gameplay. Auto-layout face bindings are recreated whenever
+the active pipeline changes; unchanged buffer identities alone are insufficient.
+Sky has its own pipeline and is independent of these variants.
+
 The normalized model is captured on `TraceWork` for CPU/GPU parity. A model change
 uses the existing discrete source epoch: outstanding old-model results are
 rejected, new selections reset measured means/moments lazily, and old simulation

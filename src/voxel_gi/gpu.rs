@@ -212,6 +212,12 @@ impl UploadBuffer {
 pub(crate) struct GpuTracer {
     context: GpuTransportDevice,
     pipeline: ComputePipeline,
+    module: wgpu::ShaderModule,
+    entry: &'static str,
+    pipeline_key: (u32, bool),
+    /// Three depths × finite/default horizon. Reach itself stays a uniform;
+    /// changing 16 to 32 never compiles another variant. Owned by the worker.
+    quality_pipelines: bevy::platform::collections::HashMap<(u32, bool), ComputePipeline>,
     faces_per_workgroup: u32,
     sky_pipeline: ComputePipeline,
     pub sky_cache: super::sky_cache::SkyCache,
@@ -314,6 +320,10 @@ impl GpuTracer {
                     })
             });
         Ok(Self {
+            quality_pipelines: [((3, false), pipeline.clone())].into_iter().collect(),
+            pipeline_key: (3, false),
+            module,
+            entry,
             pipeline,
             faces_per_workgroup,
             sky_pipeline,
@@ -418,6 +428,9 @@ impl GpuTracer {
         sky_only: bool,
     ) -> Result<(), String> {
         let work_started = Instant::now();
+        if !sky_only {
+            self.select_quality_pipeline(work.transport.normalized())?;
+        }
         let sky_pending = self.sky_cache.prepare(&scene, sources, &work.probes);
         #[cfg(test)]
         let sky_pending = if self.duplicate_sky_for_benchmark {
@@ -628,7 +641,7 @@ impl GpuTracer {
                 emitters.total_weight,
                 emitters.faces.len() as f32,
             ),
-            transport: Vec4::new(transport.reach, transport.bounces as f32, 0.0, 0.0),
+            transport: Vec4::new(transport.reach, 0.0, 0.0, 0.0),
         };
         self.params.upload(
             device,
@@ -816,6 +829,52 @@ impl GpuTracer {
         self.readback.buffer.unmap();
         self.sky_cache.apply(&mut work.probes);
         self.last_decode_ms = now.elapsed().as_secs_f32() * 1000.0;
+        Ok(())
+    }
+
+    fn select_quality_pipeline(
+        &mut self,
+        transport: super::TransportSettings,
+    ) -> Result<(), String> {
+        let key = (
+            transport.bounces,
+            transport.reach < super::tracer::MAX_PATH_DISTANCE,
+        );
+        if key == self.pipeline_key {
+            return Ok(());
+        }
+        let pipeline = if let Some(pipeline) = self.quality_pipelines.get(&key) {
+            pipeline.clone()
+        } else {
+            let device = &self.context.device;
+            let error_scope = device
+                .wgpu_device()
+                .push_error_scope(wgpu::ErrorFilter::Validation);
+            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Voxel transport quality variant"),
+                layout: None,
+                module: &self.module,
+                entry_point: Some(self.entry),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[
+                        ("DIFFUSE_HITS", key.0 as f64),
+                        ("LIMITED_REACH", f64::from(key.1)),
+                    ],
+                    ..default()
+                },
+                cache: None,
+            });
+            if let Some(error) = bevy::tasks::block_on(error_scope.pop()) {
+                return Err(error.to_string());
+            }
+            self.quality_pipelines.insert(key, pipeline.clone());
+            pipeline
+        };
+        self.pipeline = pipeline;
+        self.pipeline_key = key;
+        // Auto-layout bind groups belong to their pipeline, even when every
+        // buffer ID and binding type is unchanged. Sky has its own pipeline.
+        self.bindings = None;
         Ok(())
     }
 

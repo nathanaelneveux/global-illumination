@@ -1,12 +1,15 @@
 // World-space face transport. No camera, framebuffer or screen-space history.
 // Layouts and sampling dimensions are mirrored by gpu.rs and sampling.rs.
+// Six lazily cached pipeline variants, not per-face runtime loop controls.
+override DIFFUSE_HITS: u32 = 3u;
+override LIMITED_REACH: bool = false;
 struct Params {
     counts: vec4<u32>, // tasks, samples per face, directory mask, light count
     minimum: vec4<i32>, // xyz: scene bounds, w: shared corner task count
     maximum: vec4<i32>, // xyz: scene bounds, w: directional light count
     environment: vec4<f32>,
     extra: vec4<f32>, // environment ionizing, directional horizon, emitter power/count
-    transport: vec4<f32>, // diffuse/voxel-emitter reach, diffuse hits, reserved
+    transport: vec4<f32>, // shortened diffuse/voxel-emitter reach, reserved
 }
 struct Material {
     diffuse: vec4<f32>,
@@ -262,7 +265,7 @@ fn geometry_ahead(start: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> 
     }
     return true;
 }
-fn trace_domain_bounded(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, visible_geometry: bool, bounded_transport: bool) -> RayResult {
+fn trace_domain(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, visible_geometry: bool) -> RayResult {
     var result: RayResult;
     var near = -1e30;
     var far = 1e30;
@@ -289,14 +292,7 @@ fn trace_domain_bounded(origin: vec3<f32>, direction: vec3<f32>, max_distance: f
     var last_region = vec3<i32>(0x7fffffff);
     var metadata = vec4<u32>(0u);
     for (var step = 0u; step < 2048u; step += 1u) {
-        if distance > max_distance {
-            // A cutoff is not sky unless the remaining coarse frontier is
-            // empty. Loading known-empty pages must not darken open terrain.
-            if bounded_transport && max_distance < far && geometry_ahead(origin + direction * max_distance, direction, params.extra.y - max_distance) {
-                result.status = 2u;
-            }
-            return result;
-        }
+        if distance > max_distance { return result; }
         let voxel = vec3<i32>(floor(position));
         let region = voxel >> vec3<u32>(4u);
         if !in_bounds(region) { return result; }
@@ -310,8 +306,7 @@ fn trace_domain_bounded(origin: vec3<f32>, direction: vec3<f32>, max_distance: f
                     normal = advance.xyz;
                     continue;
                 }
-                let horizon = select(max_distance, params.extra.y, bounded_transport);
-                result.status = select(0u, 2u, geometry_ahead(position, direction, horizon - distance));
+                result.status = select(0u, 2u, geometry_ahead(position, direction, max_distance - distance));
                 return result;
             }
             metadata = regions[index];
@@ -361,11 +356,22 @@ fn trace_domain_bounded(origin: vec3<f32>, direction: vec3<f32>, max_distance: f
     result.status = 2u;
     return result;
 }
-fn trace_domain(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, visible_geometry: bool) -> RayResult {
-    return trace_domain_bounded(origin, direction, max_distance, visible_geometry, false);
-}
 fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayResult {
     return trace_domain(origin, direction, max_distance, false);
+}
+fn connection_reach() -> f32 {
+    if LIMITED_REACH { return params.transport.x; }
+    return params.extra.y;
+}
+fn trace_diffuse(origin: vec3<f32>, direction: vec3<f32>) -> RayResult {
+    let reach = connection_reach();
+    var result = trace(origin, direction, reach);
+    // A truncated miss is sky only if the remaining coarse frontier is empty.
+    // Specialization removes this policy from default and shadow traversal.
+    if LIMITED_REACH && result.status == 0u && geometry_ahead(origin + direction * reach, direction, params.extra.y - reach) {
+        result.status = 2u;
+    }
+    return result;
 }
 fn direct_at(position: vec3<f32>, normal: vec3<f32>) -> Energy {
     var energy: Energy;
@@ -458,7 +464,7 @@ fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, se
         + tangent * (sample_1d(stream, sequence, 13u) - 0.5) + bitangent * (sample_1d(stream, sequence, 14u) - 0.5);
     let delta = light_position - position;
     let d2 = dot(delta, delta);
-    if d2 < 0.0001 || d2 > params.transport.x * params.transport.x { return result; }
+    if d2 < 0.0001 || d2 > connection_reach() * connection_reach() { return result; }
     let distance = sqrt(d2);
     let direction = delta / distance;
     let receiver_cosine = max(dot(normal, direction), 0.0);
@@ -481,8 +487,8 @@ fn trace_path(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3
     var direction = first_direction;
     var previous_normal = initial_normal;
     var previous_position = start - initial_normal * 0.001;
-    for (var bounce = 0u; bounce < u32(params.transport.y); bounce += 1u) {
-        let hit = trace_domain_bounded(origin, direction, params.transport.x, false, params.transport.x < params.extra.y);
+    for (var bounce = 0u; bounce < DIFFUSE_HITS; bounce += 1u) {
+        let hit = trace_diffuse(origin, direction);
         if hit.status == 0u {
             let horizon = clamp(direction.y * 0.35 + 0.65, 0.15, 1.0);
             result.value += throughput.value * params.environment * horizon;
@@ -502,7 +508,7 @@ fn trace_path(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3
         let light_pdf = selection_pdf * dot(delta, delta) / max(dot(hit.normal, -direction), 1e-8);
         var mis = 1.0;
         if light_pdf > 0.0 { mis = cosine_pdf / (cosine_pdf + light_pdf); }
-        let nee = sample_emitter(hit.position, hit.normal, stream, sequence, bounce + 1u, bounce + 1u < u32(params.transport.y));
+        let nee = sample_emitter(hit.position, hit.normal, stream, sequence, bounce + 1u, bounce + 1u < DIFFUSE_HITS);
         result.value += throughput.value * (material.emission * mis + material.diffuse * (direct.value + nee.value));
         result.radiation += throughput.radiation * (material.emission_extra.x * mis + material.diffuse_extra.x * (direct.radiation + nee.radiation));
         throughput.value *= material.diffuse;

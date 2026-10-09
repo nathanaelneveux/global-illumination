@@ -85,6 +85,8 @@ Start by saving defaults to **A**, then compare reach **16 / 32 / 64 / 128 / 256
 with bounce depth and budget unchanged. Save a candidate to **B**. These restore
 settings, not cached images: a changed model needs fresh refinement. Keep an eye
 on FPS, GI cost, dark-corner quality and response after edits, not just coverage.
+The first use of a depth/range-policy combination also compiles a cached GPU
+variant on the worker; subsequent comparisons reuse it.
 
 Reach limits each diffuse ray and voxel-emitter connection, not total path length
 or Minecraft-style block-by-block light attenuation. A shorter reach may discard
