@@ -14,11 +14,14 @@ pub(crate) struct EmissiveFace {
     pub probability: f32,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct EmissionDistribution {
     pub faces: Vec<EmissiveFace>,
     pub total_weight: f32,
+    pub tree: Vec<tree::LightNode>,
 }
+
+mod tree;
 
 pub(crate) struct EmissionCache {
     scene: Arc<TransportScene>,
@@ -112,9 +115,15 @@ impl EmissionDistribution {
         if let Some(last) = faces.last_mut() {
             last.cumulative = 1.0;
         }
+        let tree = if faces.len() >= 32 {
+            tree::build(&faces)
+        } else {
+            Vec::new()
+        };
         Self {
             faces,
             total_weight,
+            tree,
         }
     }
 
@@ -126,6 +135,31 @@ impl EmissionDistribution {
             .faces
             .partition_point(|face| face.cumulative <= uniform);
         self.faces.get(index.min(self.faces.len() - 1)).copied()
+    }
+
+    pub fn select_at(&self, position: Vec3, normal: Vec3, uniform: f32) -> Option<EmissiveFace> {
+        if self.tree.is_empty() {
+            return self.select(uniform);
+        }
+        let (index, probability) = tree::select(&self.tree, position, normal, uniform);
+        let mut face = self.faces[index];
+        face.probability = probability;
+        Some(face)
+    }
+
+    pub fn probability_at(
+        &self,
+        position: Vec3,
+        normal: Vec3,
+        voxel: IVec3,
+        face: u32,
+        material: u8,
+        materials: &VoxelMaterialTransportTable,
+    ) -> f32 {
+        if self.tree.is_empty() {
+            return materials.get(material).emission.max_component() / self.total_weight.max(1e-20);
+        }
+        tree::probability(&self.tree, &self.faces, position, normal, voxel, face)
     }
 }
 

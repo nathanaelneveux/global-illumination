@@ -29,6 +29,8 @@ const SKY_RESULT_BYTES: usize = 32;
 const TASK_BYTES: usize = 32;
 
 #[cfg(test)]
+mod light_tree_experiment;
+#[cfg(test)]
 mod task_tests;
 #[cfg(test)]
 mod traversal_tests;
@@ -468,15 +470,21 @@ impl GpuTracer {
                         face.cumulative,
                         face.probability,
                         face.material as f32,
-                        0.0,
+                        emitters.tree.len() as f32,
                     ),
                 })
                 .collect();
             if data.is_empty() {
                 data.push(GpuEmitter::default());
             }
-            self.emitters
-                .upload(device, queue, &ShaderBuffer::from(data).data.unwrap())?;
+            let mut bytes = ShaderBuffer::from(data).data.unwrap();
+            bytes.extend(
+                emitters
+                    .tree
+                    .iter()
+                    .flat_map(|node| node.words().into_iter().flat_map(u32::to_le_bytes)),
+            );
+            self.emitters.upload(device, queue, &bytes)?;
             self.emission = Some(Arc::clone(emitters));
         }
         if self

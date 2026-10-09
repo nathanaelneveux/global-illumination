@@ -395,6 +395,7 @@ fn trace_path(
 ) -> EnergySpectrum {
     let mut result = EnergySpectrum::ZERO;
     let mut throughput = EnergySpectrum::ONE;
+    let mut previous_position = origin - previous_normal * 0.001;
 
     for bounce in 0..MAX_BOUNCES {
         let hit = match scene.trace_ray_result(origin, direction, MAX_PATH_DISTANCE) {
@@ -410,8 +411,19 @@ fn trace_path(
         let material = materials.get(hit.material);
         let cosine = previous_normal.dot(direction).max(0.0) / std::f32::consts::PI;
         let emission_cosine = hit.normal.dot(-direction).max(1e-8);
-        let light_pdf = if emitters.total_weight > 0.0 {
-            material.emission.max_component() / emitters.total_weight * hit.distance * hit.distance
+        let light_pdf = if emitters.total_weight > 0.0 && material.emission.max_component() > 0.0 {
+            emitters.probability_at(
+                previous_position,
+                previous_normal,
+                hit.voxel,
+                FACE_OFFSETS
+                    .iter()
+                    .position(|n| n.as_vec3() == hit.normal)
+                    .unwrap() as u32,
+                hit.material,
+                materials,
+            ) * hit.distance
+                * hit.distance
                 / emission_cosine
         } else {
             0.0
@@ -449,6 +461,7 @@ fn trace_path(
         }
 
         origin = hit.position + hit.normal * (RAY_EPSILON * 2.0);
+        previous_position = hit.position;
         previous_normal = hit.normal;
         direction = hemisphere(
             hit.normal,
@@ -472,7 +485,8 @@ fn sample_emitter(
     has_cosine_path: bool,
 ) -> EnergySpectrum {
     let stream = stream ^ pcg(bounce.wrapping_add(0xa341_316c));
-    let Some(emitter) = emitters.select(sample_1d(stream, sequence, 12)) else {
+    let Some(emitter) = emitters.select_at(position, normal, sample_1d(stream, sequence, 12))
+    else {
         return EnergySpectrum::ZERO;
     };
     let target = face_point(

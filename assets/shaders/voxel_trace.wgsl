@@ -60,7 +60,94 @@ struct RayResult {
 @group(0) @binding(6) var<storage, read> tasks: array<FaceTask>;
 // Six float4s per face, followed by two packed uint4s per shared sky corner.
 @group(0) @binding(7) var<storage, read_write> results: array<vec4<u32>>;
-@group(0) @binding(8) var<storage, read> emitters: array<EmissiveFace>;
+@group(0) @binding(8) var<storage, read> emitter_words: array<vec4<u32>>;
+
+fn load_emitter(index: u32) -> EmissiveFace {
+    let a = emitter_words[index * 2u];
+    return EmissiveFace(bitcast<vec3<i32>>(a.xyz), a.w, bitcast<vec4<f32>>(emitter_words[index * 2u + 1u]));
+}
+struct LightNode {
+    minimum_power: vec4<f32>,
+    maximum: vec3<f32>,
+    normals: u32,
+    pivot: vec3<i32>,
+    face: u32,
+    children: vec4<u32>,
+}
+fn load_node(index: u32) -> LightNode {
+    let offset = u32(params.extra.w) * 2u + index * 4u;
+    let a = emitter_words[offset + 1u];
+    let b = emitter_words[offset + 2u];
+    return LightNode(bitcast<vec4<f32>>(emitter_words[offset]), bitcast<vec3<f32>>(a.xyz), a.w,
+        bitcast<vec3<i32>>(b.xyz), b.w, emitter_words[offset + 3u]);
+}
+fn node_importance(node: LightNode, position: vec3<f32>, normal: vec3<f32>) -> f32 {
+    let delta = (node.minimum_power.xyz + node.maximum) * 0.5 - position;
+    let radius = length(node.maximum - node.minimum_power.xyz) * 0.5;
+    let distance = max(length(delta), 1e-5);
+    let direction = delta / distance;
+    let spread = min(radius / distance, 1.0);
+    let receiver = clamp(dot(normal, direction) + spread, 0.0, 1.0);
+    var emitter = 0.0;
+    for (var face = 0u; face < 6u; face += 1u) {
+        if (node.normals & (1u << face)) != 0u {
+            emitter = max(emitter, clamp(-dot(face_normal(face), direction) + spread, 0.0, 1.0));
+        }
+    }
+    return node.minimum_power.w * receiver * emitter / (distance * distance + radius * radius + 0.25);
+}
+fn node_left_probability(node: LightNode, position: vec3<f32>, normal: vec3<f32>) -> f32 {
+    let left = load_node(node.children.x);
+    let right = load_node(node.children.y);
+    let power = left.minimum_power.w / (left.minimum_power.w + right.minimum_power.w);
+    let a = node_importance(left, position, normal);
+    let b = node_importance(right, position, normal);
+    if a + b <= 1e-20 { return clamp(power, 1e-6, 1.0 - 1e-6); }
+    return clamp(0.05 * power + 0.95 * a / (a + b), 1e-6, 1.0 - 1e-6);
+}
+fn tree_emitter(position: vec3<f32>, normal: vec3<f32>, choice: f32) -> EmissiveFace {
+    var index = 0u;
+    var uniform = choice;
+    var probability = 1.0;
+    loop {
+        let node = load_node(index);
+        if node.children.x == 0xffffffffu {
+            var emitter = load_emitter(node.children.y);
+            emitter.sampling.y = probability;
+            return emitter;
+        }
+        let p = node_left_probability(node, position, normal);
+        if uniform < p { probability *= p; uniform /= p; index = node.children.x; }
+        else { probability *= 1.0 - p; uniform = (uniform - p) / (1.0 - p); index = node.children.y; }
+        uniform = min(uniform, bitcast<f32>(0x3f7fffffu));
+    }
+    return EmissiveFace(vec3(0), 0u, vec4(0.0));
+}
+fn key_less(voxel: vec3<i32>, face: u32, node: LightNode) -> bool {
+    let axis = node.children.z;
+    for (var j = 0u; j < 3u; j += 1u) {
+        let i = (axis + j) % 3u;
+        if voxel[i] != node.pivot[i] { return voxel[i] < node.pivot[i]; }
+    }
+    return face < node.face;
+}
+fn tree_probability(position: vec3<f32>, normal: vec3<f32>, voxel: vec3<i32>, hit_normal: vec3<f32>) -> f32 {
+    var face = 0u;
+    for (var i = 0u; i < 6u; i += 1u) { if all(face_normal(i) == hit_normal) { face = i; } }
+    var index = 0u;
+    var probability = 1.0;
+    loop {
+        let node = load_node(index);
+        if node.children.x == 0xffffffffu {
+            let found = load_emitter(node.children.y);
+            return select(0.0, probability, all(found.voxel == voxel) && found.face == face);
+        }
+        let p = node_left_probability(node, position, normal);
+        if key_less(voxel, face, node) { probability *= p; index = node.children.x; }
+        else { probability *= 1.0 - p; index = node.children.y; }
+    }
+    return 0.0;
+}
 
 fn pcg(value: u32) -> u32 {
     let state = value * 747796405u + 2891336453u;
@@ -339,14 +426,18 @@ fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, se
     if count == 0u { return result; }
     let stream = source_stream ^ pcg(bounce + 0xa341316cu);
     let choice = sample_1d(stream, sequence, 12u);
-    var low = 0u;
-    var high = count;
-    while low < high {
-        let middle = (low + high) / 2u;
-        if emitters[middle].sampling.x <= choice { low = middle + 1u; }
-        else { high = middle; }
+    var emitter: EmissiveFace;
+    if load_emitter(0u).sampling.w > 0.0 { emitter = tree_emitter(position, normal, choice); }
+    else {
+        var low = 0u;
+        var high = count;
+        while low < high {
+            let middle = (low + high) / 2u;
+            if load_emitter(middle).sampling.x <= choice { low = middle + 1u; }
+            else { high = middle; }
+        }
+        emitter = load_emitter(min(low, count - 1u));
     }
-    let emitter = emitters[min(low, count - 1u)];
     let emitter_normal = face_normal(emitter.face);
     let axis = emitter.face / 2u;
     let tangent = select(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), axis == 0u);
@@ -377,6 +468,7 @@ fn trace_path(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3
     var origin = start;
     var direction = first_direction;
     var previous_normal = initial_normal;
+    var previous_position = start - initial_normal * 0.001;
     for (var bounce = 0u; bounce < 3u; bounce += 1u) {
         let hit = trace(origin, direction, params.extra.y);
         if hit.status == 0u {
@@ -391,7 +483,11 @@ fn trace_path(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3
         let emission_weight = max(max(max(material.emission.x, material.emission.y), max(material.emission.z, material.emission.w)), material.emission_extra.x);
         let cosine_pdf = max(dot(previous_normal, direction), 0.0) / 3.14159265359;
         let delta = hit.position - origin;
-        let light_pdf = emission_weight / max(params.extra.z, 1e-20) * dot(delta, delta) / max(dot(hit.normal, -direction), 1e-8);
+        var selection_pdf = emission_weight / max(params.extra.z, 1e-20);
+        if emission_weight > 0.0 && params.extra.w > 0.0 && load_emitter(0u).sampling.w > 0.0 {
+            selection_pdf = tree_probability(previous_position, previous_normal, hit.voxel, hit.normal);
+        }
+        let light_pdf = selection_pdf * dot(delta, delta) / max(dot(hit.normal, -direction), 1e-8);
         var mis = 1.0;
         if light_pdf > 0.0 { mis = cosine_pdf / (cosine_pdf + light_pdf); }
         let nee = sample_emitter(hit.position, hit.normal, stream, sequence, bounce + 1u, bounce + 1u < 3u);
@@ -408,6 +504,7 @@ fn trace_path(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3
             throughput.radiation /= survival;
         }
         origin = hit.position + hit.normal * 0.002;
+        previous_position = hit.position;
         previous_normal = hit.normal;
         direction = hemisphere(hit.normal, sample_1d(stream, sequence, 2u + bounce * 2u), sample_1d(stream, sequence, 3u + bounce * 2u));
     }
