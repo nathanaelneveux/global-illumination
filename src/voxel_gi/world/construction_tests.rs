@@ -4,6 +4,204 @@
 use super::*;
 use std::hint::black_box;
 
+// Frozen 28585a0 constructor: neither reuse bookkeeping nor its new branches
+// are charged to the full-build control, including cold construction.
+fn full_region_reference(coordinate: IVec3, materials: Vec<u16>) -> NaadfRegion {
+    assert_eq!(materials.len(), volume_len(REGION_SIZE));
+
+    if materials.iter().all(|material| *material == AIR) {
+        return NaadfRegion {
+            coordinate,
+            storage: RegionStorage::Empty,
+            any_solid: false,
+            material_mask: [0; 4],
+        };
+    }
+    if materials.iter().all(|material| *material == materials[0]) {
+        let mut material_mask = [0; 4];
+        material_mask[materials[0] as usize / 64] |= 1 << (materials[0] % 64);
+        return NaadfRegion {
+            coordinate,
+            storage: RegionStorage::Uniform(materials[0]),
+            any_solid: true,
+            material_mask,
+        };
+    }
+
+    let mut voxel_aadf = vec![Aadf::default(); materials.len()];
+    let mut brick_occupied = vec![false; volume_len(BRICK_GRID_SIZE)];
+    let mut material_mask = [0; 4];
+
+    for brick_z in 0..BRICKS_PER_AXIS {
+        for brick_y in 0..BRICKS_PER_AXIS {
+            for brick_x in 0..BRICKS_PER_AXIS {
+                let brick = UVec3::new(brick_x, brick_y, brick_z);
+                let mut blocked = [false; (BRICK_EDGE * BRICK_EDGE * BRICK_EDGE) as usize];
+                let brick_size = UVec3::splat(BRICK_EDGE);
+
+                for z in 0..BRICK_EDGE {
+                    for y in 0..BRICK_EDGE {
+                        for x in 0..BRICK_EDGE {
+                            let local = UVec3::new(x, y, z);
+                            let region_local = brick * BRICK_EDGE + local;
+                            let material = materials[linear_index(region_local, REGION_SIZE)];
+                            blocked[linear_index(local, brick_size)] = material != AIR;
+                            if material != AIR {
+                                material_mask[material as usize / 64] |= 1 << (material % 64);
+                            }
+                        }
+                    }
+                }
+
+                let brick_index = linear_index(brick, BRICK_GRID_SIZE);
+                brick_occupied[brick_index] = blocked.iter().any(|occupied| *occupied);
+                let local_aadf = build_aadf(brick_size, &blocked);
+                for z in 0..BRICK_EDGE {
+                    for y in 0..BRICK_EDGE {
+                        for x in 0..BRICK_EDGE {
+                            let local = UVec3::new(x, y, z);
+                            let region_local = brick * BRICK_EDGE + local;
+                            voxel_aadf[linear_index(region_local, REGION_SIZE)] =
+                                local_aadf[linear_index(local, brick_size)];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let brick_aadf = build_aadf(BRICK_GRID_SIZE, &brick_occupied);
+    let any_solid = brick_occupied.iter().any(|occupied| *occupied);
+    NaadfRegion {
+        coordinate,
+        storage: RegionStorage::Dense {
+            materials: materials.into_boxed_slice(),
+            voxel_aadf: voxel_aadf.into_boxed_slice(),
+            brick_occupied: brick_occupied.into_boxed_slice(),
+            brick_aadf: brick_aadf.into_boxed_slice(),
+        },
+        any_solid,
+        material_mask,
+    }
+}
+
+fn assert_same_region(actual: NaadfRegion, expected: NaadfRegion) {
+    let a = TransportScene {
+        regions: HashMap::from([(actual.coordinate, Arc::new(actual))]),
+        ..default()
+    };
+    let b = TransportScene {
+        regions: HashMap::from([(expected.coordinate, Arc::new(expected))]),
+        ..default()
+    };
+    assert_same_scene(&a, &b);
+}
+
+#[test]
+fn incremental_bricks_match_full_construction_for_edits_and_materials() {
+    let coordinate = IVec3::new(-7, 2, -3);
+    let mut materials = vec![AIR; volume_len(REGION_SIZE)];
+    let mut previous = NaadfRegion::build(coordinate, materials.clone());
+    let mut state = 19_u32;
+    for step in 0..200 {
+        state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        let index = state as usize % materials.len();
+        materials[index] = [AIR, 0, 255, 2][step % 4];
+        if step == 60 {
+            materials.fill(255);
+        }
+        if step == 100 {
+            materials.fill(AIR);
+        }
+        if step == 140 {
+            materials.fill(0);
+        }
+        let next = previous.rebuild(materials.clone());
+        assert_same_region(
+            next.clone(),
+            full_region_reference(coordinate, materials.clone()),
+        );
+        // Old immutable fields are still correct after their successor builds.
+        let old: Vec<_> = (0..volume_len(REGION_SIZE))
+            .map(|i| {
+                previous.material(UVec3::new(
+                    i as u32 % 16,
+                    (i as u32 / 16) % 16,
+                    i as u32 / 256,
+                ))
+            })
+            .collect();
+        assert_same_region(previous.clone(), NaadfRegion::build(coordinate, old));
+        previous = next;
+    }
+    // Last solid and last air transitions, same-occupancy material replacement.
+    for fill in [AIR, 0, 255] {
+        let mut data = vec![fill; volume_len(REGION_SIZE)];
+        let original = NaadfRegion::build(coordinate, data.clone());
+        for value in [AIR, 0, 255] {
+            data[123] = value;
+            assert_same_region(
+                original.rebuild(data.clone()),
+                NaadfRegion::build(coordinate, data.clone()),
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "paired CPU incremental brick construction benchmark"]
+fn incremental_brick_construction_benchmark() {
+    for (name, scattered) in [("terrain", false), ("scattered", true)] {
+        let original: Vec<_> = (0..volume_len(REGION_SIZE))
+            .map(|i| {
+                let x = i % 16;
+                let y = (i / 16) % 16;
+                let z = i / 256;
+                let solid = if scattered {
+                    (x + 3 * y + 7 * z) % 5 == 0
+                } else {
+                    y < 6 + (x / 4 + z / 4) % 5
+                };
+                if solid { 2 } else { AIR }
+            })
+            .collect();
+        let previous = NaadfRegion::build(IVec3::ZERO, original.clone());
+        for material_only in [false, true] {
+            let mut edited = original.clone();
+            let index = edited.iter().position(|&v| v != AIR).unwrap();
+            edited[index] = if material_only { 255 } else { AIR };
+            assert_same_region(
+                previous.rebuild(edited.clone()),
+                NaadfRegion::build(IVec3::ZERO, edited.clone()),
+            );
+            let mut times = [Vec::new(), Vec::new(), Vec::new()];
+            for pair in 0..44 {
+                for mode in (0..3).map(|offset| (pair + offset) % 3) {
+                    let start = Instant::now();
+                    for _ in 0..64 {
+                        let data = black_box(edited.clone());
+                        black_box(match mode {
+                            0 => full_region_reference(IVec3::ZERO, data),
+                            1 => NaadfRegion::build(IVec3::ZERO, data),
+                            _ => previous.rebuild(data),
+                        });
+                    }
+                    if pair >= 4 {
+                        times[mode].push(start.elapsed().as_secs_f64() * 1e6 / 64.0);
+                    }
+                }
+            }
+            for t in &mut times {
+                t.sort_by(f64::total_cmp);
+            }
+            eprintln!(
+                "BRICK_REPAIR fixture={name} material_only={material_only} variants=original/cold/repaired us_p50={:.3}/{:.3}/{:.3} us_p95={:.3}/{:.3}/{:.3} exact=true",
+                times[0][20], times[1][20], times[2][20], times[0][37], times[1][37], times[2][37]
+            );
+        }
+    }
+}
+
 fn rebuild_on_any_change(
     previous: &TransportScene,
     changed_pages: Vec<(IVec3, Vec<u16>)>,

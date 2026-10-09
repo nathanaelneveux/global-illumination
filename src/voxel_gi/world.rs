@@ -119,6 +119,21 @@ impl NaadfRegion {
     }
 
     pub fn build(coordinate: IVec3, materials: Vec<u16>) -> Self {
+        Self::build_reusing::<false>(coordinate, materials, None)
+    }
+
+    fn rebuild(&self, materials: Vec<u16>) -> Self {
+        Self::build_reusing::<true>(self.coordinate, materials, Some(self))
+    }
+
+    /// Bounds depend on occupancy, not material identity. Reuse complete local
+    /// fields when that input is unchanged; snapshots remain immutable and all
+    /// published fields are fully refined, including after solid insertion.
+    fn build_reusing<const REUSE: bool>(
+        coordinate: IVec3,
+        materials: Vec<u16>,
+        previous: Option<&Self>,
+    ) -> Self {
         assert_eq!(materials.len(), volume_len(REGION_SIZE));
 
         if materials.iter().all(|material| *material == AIR) {
@@ -140,7 +155,19 @@ impl NaadfRegion {
             };
         }
 
-        let mut voxel_aadf = vec![Aadf::default(); materials.len()];
+        let previous_dense = previous.and_then(|region| match &region.storage {
+            RegionStorage::Dense {
+                materials,
+                voxel_aadf,
+                brick_occupied,
+                brick_aadf,
+            } => Some((materials, voxel_aadf, brick_occupied, brick_aadf)),
+            _ => None,
+        });
+        let mut voxel_aadf = previous_dense.map_or_else(
+            || vec![Aadf::default(); materials.len()],
+            |(_, fields, _, _)| fields.to_vec(),
+        );
         let mut brick_occupied = vec![false; volume_len(BRICK_GRID_SIZE)];
         let mut material_mask = [0; 4];
 
@@ -150,13 +177,19 @@ impl NaadfRegion {
                     let brick = UVec3::new(brick_x, brick_y, brick_z);
                     let mut blocked = [false; (BRICK_EDGE * BRICK_EDGE * BRICK_EDGE) as usize];
                     let brick_size = UVec3::splat(BRICK_EDGE);
+                    let mut occupancy_changed = previous_dense.is_none();
 
                     for z in 0..BRICK_EDGE {
                         for y in 0..BRICK_EDGE {
                             for x in 0..BRICK_EDGE {
                                 let local = UVec3::new(x, y, z);
                                 let region_local = brick * BRICK_EDGE + local;
-                                let material = materials[linear_index(region_local, REGION_SIZE)];
+                                let region_index = linear_index(region_local, REGION_SIZE);
+                                let material = materials[region_index];
+                                occupancy_changed |= REUSE
+                                    && previous_dense.is_some_and(|(old, _, _, _)| {
+                                        (old[region_index] != AIR) != (material != AIR)
+                                    });
                                 blocked[linear_index(local, brick_size)] = material != AIR;
                                 if material != AIR {
                                     material_mask[material as usize / 64] |= 1 << (material % 64);
@@ -167,6 +200,9 @@ impl NaadfRegion {
 
                     let brick_index = linear_index(brick, BRICK_GRID_SIZE);
                     brick_occupied[brick_index] = blocked.iter().any(|occupied| *occupied);
+                    if !occupancy_changed {
+                        continue;
+                    }
                     let local_aadf = build_aadf(brick_size, &blocked);
                     for z in 0..BRICK_EDGE {
                         for y in 0..BRICK_EDGE {
@@ -182,7 +218,13 @@ impl NaadfRegion {
             }
         }
 
-        let brick_aadf = build_aadf(BRICK_GRID_SIZE, &brick_occupied);
+        let brick_aadf = if let Some((_, _, old_occupied, old_bounds)) = previous_dense
+            && old_occupied.as_ref() == brick_occupied.as_slice()
+        {
+            old_bounds.to_vec()
+        } else {
+            build_aadf(BRICK_GRID_SIZE, &brick_occupied)
+        };
         let any_solid = brick_occupied.iter().any(|occupied| *occupied);
         Self {
             coordinate,
@@ -614,7 +656,11 @@ fn build_page_regions(
         {
             regions.push(Arc::clone(region));
         } else {
-            regions.push(Arc::new(NaadfRegion::build(coordinate, materials)));
+            let region = match previous.regions.get(&coordinate) {
+                Some(old) => old.rebuild(materials),
+                None => NaadfRegion::build(coordinate, materials),
+            };
+            regions.push(Arc::new(region));
         }
     }
     regions
