@@ -122,6 +122,7 @@ For unattended lighting/capture checks, use Bevy's offscreen target:
 RUST_LOG=info \
 VOXEL_GI_VALIDATE=1 \
 VOXEL_GI_VALIDATE_HEADLESS=1 \
+VOXEL_GI_VALIDATE_BACKGROUND=1 \
 VOXEL_GI_VALIDATE_PROFILE=house-edits \
 VOXEL_GI_VALIDATE_EXIT=1 \
 cargo run --locked --offline > target/house-edits.log 2>&1
@@ -156,6 +157,9 @@ It generates and meshes real terrain through the ordinary residency/NAADF/GI
 publication paths; it does not render another view or take over GI camera priority.
 The measured view and its scripted edits remain unchanged. This is a continuous
 background-load variant, not merely a room surrounded by already-loaded chunks.
+Use this variant for end-to-end refinement/response promotion decisions; omit the
+flag when diagnosing an isolated fixture. Do not require every profile each time:
+one affected large world plus the relevant small-room countercheck is sufficient.
 
 `cave` with this flag uses the nearby normal-world structure and its entrance
 landing view, the normal palette/environment and ten-chunk draw distance. Without

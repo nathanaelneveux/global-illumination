@@ -238,6 +238,17 @@ nearby rotating windows and a reserved one-quarter global sweep. The camera is
 a priority hint, never the extent of the lighting field. Empty/settled candidates
 do not consume the ray allowance or collapse the scheduler budget.
 
+The close window covers the camera page and its immediate neighbors; the second
+adaptive window covers the disjoint next page ring (Chebyshev page distance two).
+If that ring is empty it falls back to global uncertainty ranking. Both windows
+remain capped at 1,024 candidates, with the existing near bonus and close-range
+fallback cursor. This gives large rooms useful refinement across their far wall
+without mixing all surrounding terrain into the close-range sweep. It changes
+work allocation, not transport extent, spatial filtering, or the sampling PDF.
+The reserved global sweep still visits every loaded receiver, including hidden
+simulation bands. The [streaming experiment record](research-2026-10-09.md#refinement-under-continuous-terrain-loading)
+includes the rejected wider-window and separate-lane alternatives.
+
 Only selected measurements cross the worker boundary in `TraceWork`; topology
 indices, temporal display and scheduler state stay authoritative on the main
 world. Workers own scene/source snapshots and perform preparation, submission,
