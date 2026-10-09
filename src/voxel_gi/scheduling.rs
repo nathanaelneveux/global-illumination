@@ -224,17 +224,25 @@ impl RankedCandidates {
         &mut self,
         field: &VoxelEnergyField,
         nearby: &[IVec3],
+        regional: &[IVec3],
         cursor: &mut usize,
         now: Instant,
         budget: usize,
     ) {
-        // Never scan/sort the whole world on a frame. Rotating windows eventually
-        // consider every probe, including uncertain non-visible transport bands.
+        // Keep the close-range window and its fallback sweep intact. The second
+        // ranking window covers the next page ring, instead of spending more
+        // opportunistic slots on the already-reserved all-world sweep. If that
+        // ring is empty, retain the original global uncertainty window.
         let window = budget.clamp(64, 1024);
         self.clear();
         let seen = &mut self.seen;
         let candidates = &mut self.ranked;
-        for (positions, bonus) in [(&field.order[..], 0.0), (nearby, 0.25)] {
+        let outer = if regional.is_empty() {
+            &field.order[..]
+        } else {
+            regional
+        };
+        for (positions, bonus) in [(outer, 0.0), (nearby, 0.25)] {
             for index in 0..window.min(positions.len()) {
                 let voxel = positions[cursor.wrapping_add(index) % positions.len()];
                 if seen.insert(voxel)
@@ -261,7 +269,7 @@ fn ranked_candidates(
     budget: usize,
 ) -> Vec<IVec3> {
     let mut scratch = RankedCandidates::default();
-    scratch.refresh(field, nearby, cursor, now, budget);
+    scratch.refresh(field, nearby, &[], cursor, now, budget);
     scratch.ranked.into_iter().map(|(_, voxel)| voxel).collect()
 }
 
@@ -491,6 +499,34 @@ mod tests {
     }
 
     #[test]
+    fn regional_ranking_replaces_only_the_opportunistic_global_window() {
+        let mut field = VoxelEnergyField::default();
+        for x in 0..4096 {
+            let v = IVec3::new(x, 0, 0);
+            field.order.push(v);
+            field.probes.insert(v, SurfaceProbe::new(v, 4));
+        }
+        let nearby = &field.order[..32];
+        let regional = &field.order[3000..3100];
+        let mut scratch = RankedCandidates::default();
+        let mut cursor = 0;
+        let mut visited = HashSet::new();
+        for _ in 0..2 {
+            scratch.refresh(&field, nearby, regional, &mut cursor, Instant::now(), 64);
+            let candidates: Vec<_> = std::iter::from_fn(|| scratch.pop()).collect();
+            assert_eq!(candidates.len(), 96);
+            assert!(nearby.iter().all(|v| candidates.contains(v)));
+            assert!(
+                candidates
+                    .iter()
+                    .all(|v| nearby.contains(v) || regional.contains(v))
+            );
+            visited.extend(candidates);
+        }
+        assert!(regional.iter().all(|v| visited.contains(v)));
+    }
+
+    #[test]
     fn ranking_reuses_storage_and_keeps_deterministic_order_with_overlapping_windows() {
         let now = Instant::now();
         let mut field = VoxelEnergyField::default();
@@ -504,7 +540,7 @@ mod tests {
         let nearby: Vec<_> = (32..96).map(|x| IVec3::new(x, 0, 0)).collect();
         let mut scratch = RankedCandidates::default();
         let mut cursor = 0;
-        scratch.refresh(&field, &nearby, &mut cursor, now, 64);
+        scratch.refresh(&field, &nearby, &[], &mut cursor, now, 64);
         let ranked_ptr = scratch.ranked.as_ptr();
         let ranked_capacity = scratch.ranked.capacity();
         let seen_capacity = scratch.seen.capacity();
@@ -518,7 +554,7 @@ mod tests {
             let actual: Vec<_> = std::iter::from_fn(|| scratch.pop()).collect();
             assert_eq!(actual, expected);
             cursor = 0;
-            scratch.refresh(&field, &nearby, &mut cursor, now, 64);
+            scratch.refresh(&field, &nearby, &[], &mut cursor, now, 64);
             assert_eq!(scratch.ranked.as_ptr(), ranked_ptr);
             assert_eq!(scratch.ranked.capacity(), ranked_capacity);
             assert_eq!(scratch.seen.capacity(), seen_capacity);

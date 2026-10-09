@@ -352,6 +352,31 @@ fn urgent_work_cannot_starve_loaded_world_sweep() {
 }
 
 #[test]
+fn refinement_regions_keep_close_window_and_global_sweep() {
+    let mut field = VoxelEnergyField::default();
+    let focus = IVec3::new(1, -1, -1);
+    for page in [focus, focus + IVec3::X * 2, focus + IVec3::X * 3] {
+        let voxel = page * 32;
+        field.order.push(voxel);
+        field.pages.insert(page, vec![voxel]);
+        field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
+    }
+    let mut runtime = VoxelGiRuntime::default();
+    dispatch::update_focus(&mut runtime, &field, focus);
+    assert_eq!(runtime.nearby, [focus * 32]);
+    assert_eq!(runtime.regional, [(focus + IVec3::X * 2) * 32]);
+    let mut seen = HashSet::new();
+    for _ in 0..12 {
+        seen.extend(
+            select_probes(&mut runtime, &field)
+                .into_iter()
+                .map(|p| p.voxel),
+        );
+    }
+    assert_eq!(seen.len(), field.order.len());
+}
+
+#[test]
 fn in_flight_lighting_cannot_restore_indices_moved_by_streaming() {
     let mut field = VoxelEnergyField::default();
     let voxels = [IVec3::ZERO, IVec3::X, IVec3::Y, IVec3::Z];

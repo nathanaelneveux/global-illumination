@@ -205,15 +205,20 @@ pub(super) fn update_focus(runtime: &mut VoxelGiRuntime, field: &VoxelEnergyFiel
     runtime.focus_page = Some(focus);
     runtime.focus_topology = runtime.gpu_topology_version;
     runtime.nearby.clear();
+    runtime.regional.clear();
     let mut pages: Vec<_> = field
         .pages
         .keys()
         .copied()
-        .filter(|page| (*page - focus).abs().max_element() <= 1)
+        .filter(|page| (*page - focus).abs().max_element() <= 2)
         .collect();
     pages.sort_unstable_by_key(|page| ((*page - focus).length_squared(), page.z, page.y, page.x));
     for page in pages {
-        runtime.nearby.extend_from_slice(&field.pages[&page]);
+        if (page - focus).abs().max_element() <= 1 {
+            runtime.nearby.extend_from_slice(&field.pages[&page]);
+        } else {
+            runtime.regional.extend_from_slice(&field.pages[&page]);
+        }
     }
     runtime.nearby_cursor = 0;
 }
@@ -269,6 +274,7 @@ pub(super) fn select_transport(
         adaptive.refresh(
             field,
             &runtime.nearby,
+            &runtime.regional,
             &mut runtime.adaptive_cursor,
             now,
             runtime.batch_size,
