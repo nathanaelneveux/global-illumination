@@ -145,18 +145,19 @@ fn positive_extents(bits: u32) -> vec3<i32> {
 fn advance_box(position: vec3<f32>, direction: vec3<f32>, cell: vec3<i32>, negative: vec3<i32>, positive: vec3<i32>, size: f32) -> vec4<f32> {
     let minimum = vec3<f32>(cell - negative) * size;
     let maximum = vec3<f32>(cell + positive + vec3(1)) * size;
-    var distance = 1e30;
-    var normal = vec3(0.0);
-    for (var axis = 0u; axis < 3u; axis += 1u) {
-        if abs(direction[axis]) <= 1e-8 { continue; }
-        let plane = select(minimum[axis], maximum[axis], direction[axis] > 0.0);
-        let travel = (plane - position[axis]) / direction[axis];
-        if travel >= -0.001 && travel < distance {
-            distance = max(travel, 0.0);
-            normal = vec3(0.0);
-            normal[axis] = select(1.0, -1.0, direction[axis] > 0.0);
-        }
-    }
+    let moving = abs(direction) > vec3(1e-8);
+    let plane = select(minimum, maximum, direction > vec3(0.0));
+    let raw = (plane - position) / select(vec3(1.0), direction, moving);
+    let travel = select(vec3(1e30), raw, moving & (raw >= vec3(-0.001)) & (raw < vec3(1e30)));
+    // Match the scalar XYZ ordering, including a tiny negative crossing after
+    // roundoff: each accepted crossing is clamped before considering the next.
+    let choose_y = travel.y < max(travel.x, 0.0);
+    let distance_xy = max(select(travel.x, travel.y, choose_y), 0.0);
+    let choose_z = travel.z < distance_xy;
+    let distance = max(select(distance_xy, travel.z, choose_z), 0.0);
+    let axis_xy = select(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), choose_y);
+    let axis = select(axis_xy, vec3(0.0, 0.0, 1.0), choose_z);
+    let normal = select(vec3(0.0), axis * select(vec3(1.0), vec3(-1.0), direction > vec3(0.0)), distance < 1e30);
     return vec4(normal, max(distance + 0.001, 0.001));
 }
 fn geometry_ahead(start: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> bool {
