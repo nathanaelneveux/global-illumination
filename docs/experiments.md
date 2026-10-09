@@ -33,6 +33,8 @@ comparison infrastructure is `9186a55`. Winners were merged into
 | `packed-region-reuse` | `be1386a` | Retain: preserve unchanged region allocations while still updating their skip bounds. |
 | `emitter-resampling` | `fcfca22` | Reject fresh four-candidate RIS: increased colored-emitter noise and GPU cost. Not temporal/spatial path reuse. |
 | `task-encoding` | `0020e7d` | Retain: encode complete task records directly into reusable upload storage. |
+| `fresh-spatial-reuse` | `be32d40`, harness through `bd60c3f` | Keep isolated: two-receiver reuse lowers ceiling error at matched GPU budgets, but real task ordering pairs only 28% of faces. No end-to-end win established. |
+| `fresh-spatial-four` | `337bb87` | Reject this four-receiver implementation: substantially slower and invalid at high sample count. |
 
 Rejected variants are not dormant production toggles or extra runtime resources.
 A rejected implementation does not disprove its broader research family: the
@@ -462,3 +464,108 @@ changes required another image profile. Logs under `target/`:
 `task-encoding-record-paired.log`, `task-encoding-record-confirm.log`,
 `task-encoding-gpu-tests.log`, `task-encoding-native-parity.log`,
 `task-encoding-sky-parity.log`, `task-encoding-growth.log`, `task-encoding-clippy.log`.
+
+## Fresh spatial path reuse
+
+Baseline `8836ddf` is preserved at
+`experiment/gi-baseline-spatial-reuse-20261008`. The default remains unchanged;
+these GPU estimator experiments are isolated on their branches. CPU fallback
+still uses the original explicit-path estimator. No persistent path reservoir,
+temporal reuse, display filter or scheduling policy was added.
+
+### Two receiver prototype
+
+`be32d40` records a fresh path's first hit, direction and five-band suffix, then
+shares it with one compatible receiver. Adjacent task pairs must have the same
+normal, lie in the same plane and be within three voxels. A current-geometry
+connection ray checks visibility. Balance MIS weights compare both receivers'
+proposal densities at that hit; the first-hit emitter MIS is reevaluated for the
+destination. Unsupported connections leave the original self contribution intact.
+Primary emitter next-event estimation stays local. This is pairwise fresh-path
+MIS, not weighted reservoir selection or NAADF's complete reuse pipeline.
+
+Harness `6ead4ae` adds ceiling receivers, high-sample checks, visibility support
+tests and a throughput comparison that permits different indirect estimates.
+`bd60c3f` adds matched compute budgets. All isolated results below use Apple
+M4/Metal, Rust 1.95.0, development/shared-cache profile and no viewport. Baseline
+shader is exactly `8836ddf`; candidate shader is `be32d40`. Runs used the harness
+diffs later committed as the cited harness commits.
+
+The ceiling fixture has 96 underside receivers around a skylight, eight disjoint
+sequence blocks and four generated paths per batch. Both kernels use the same
+65,536-path reference from a separate sequence block. At 1,024 generated paths,
+normalized five-band error p95 falls 0.133091 → 0.094336, about 29%. GPU batch
+median rises 0.1141 → 0.1365 ms; sharing adds connection rays, so this is not an
+equal-ray comparison. Whole-worker medians are effectively unchanged in this
+small fixture (1.752 → 1.753 ms).
+
+The matched-budget study retains every four-path estimate and selects the last
+batch within each median cumulative GPU budget across eight sequence blocks.
+Normalization remains `abs(error) / (0.02 + abs(reference))`, pooled across
+receivers, blocks and bands.
+
+| GPU budget | Baseline generated paths | Reuse generated paths | Baseline error p95 | Reuse error p95 |
+| --- | ---: | ---: | ---: | ---: |
+| 4 ms | 132 | 112 | 0.52848 | 0.40525 |
+| 8 ms | 264 | 224 | 0.33487 | 0.25331 |
+| 16 ms | 532 | 448 | 0.21317 | 0.16004 |
+| 24 ms | 800 | 668 | 0.15758 | 0.12967 |
+
+This is encouraging quality per GPU time, not a universal speedup or interactive
+response measurement. The analytic colored-emitter fixture regresses slightly at
+64 paths (p95 0.006746 → 0.007961), though it improves at 1,024 paths
+(0.002146 → 0.001537). In the 8,100-face room throughput test, GPU p50/p95 rises
+1.425/2.125 → 1.702/3.377 ms and worker p95 rises 6.061 → 6.464 ms.
+
+Focused checks pass: shader validation; original-estimator agreement with sharing
+disabled at 1/7/64 paths and 17 receivers; and a sealed two-room test with
+interleaved receivers across an opaque wall. The latter checks 1/7/64/65,536 paths,
+inactive lanes and exact zero for invisible bands on each side (RGB versus
+infrared/ionizing emitters). High-sample analytic error is small; the ceiling's
+65,536-path discrepancy p95 is 0.01546 against the finite-sample reference, not
+proof of zero bias. Ordinary exact CPU/GPU estimator parity is not claimed for
+the changed estimator. Strict all-target Clippy passes through `bd60c3f`.
+
+Evidence under `target/`: `fresh-spatial-paired.log`,
+`fresh-spatial-ceiling-support.log`, `fresh-spatial-throughput.log`,
+`fresh-spatial-high-confirm.log`, `fresh-pair-equal-compute.log`,
+`fresh-pair-final-clippy.log`.
+
+### Real workload pairing
+
+Optional diagnostic `88d5930` counts compatible pairs without changing work
+ordering. One preliminary offscreen `response` pair used `6ead4ae` plus that
+`gpu.rs` diff; the baseline substituted the exact `8836ddf` shader into the same
+Rust code. Both were built before running, on M4/Metal with the development
+profile, 2560 × 1440 target, preferred corner modes, textures on and AO off.
+Both completed all three scripted events, produced 14 valid nonblank captures,
+and had clean render logs. Emitter-settled and recovered-room captures were
+inspected in both; sparse images cannot establish every-frame stability.
+
+Only **27.98%** of candidate faces were paired over 1,280 batches. Cavity
+offscreen cadence p95 was 30.325 → 30.456 ms; emitter-added cadence p95 was
+30.723 → 31.476 ms, with nearby measurement-age p95 1.641 → 1.858 seconds.
+Other phases were mixed. These are offscreen cadence observations, not windowed
+FPS, and establish no end-to-end improvement. Before promotion, build deliberate
+neighborhoods without starving urgent or all-world work, then repeat paired
+quality/freshness measurements including their CPU and memory costs.
+
+Artifacts under `target/gi-validation/`: candidate
+`response-1791509890472653000-65987/`, baseline
+`response-1791509968724481000-67446/`. Logs: `target/fresh-pair-response.log` and
+`target/fresh-pair-baseline-response.log`.
+
+### Four receiver implementation rejected
+
+`337bb87` extends sharing to four nearby coplanar receivers, with three connection
+rays per generated path and more workgroup scratch. Against `8836ddf`, ceiling
+GPU median rises 0.115 → 0.579 ms; the 8,100-face room median rises 1.428 →
+7.109 ms and worker median 5.008 → 11.208 ms. Although 1,024-path ceiling p95
+improves to 0.07773, the 65,536-path check produces invalid brightness (normalized
+error p95 about 6,690). A completed reporting benchmark is not a correctness pass.
+This candidate is rejected, not merged, and the large-count failure remains
+unresolved on its branch. It does not disprove more selective reuse designs.
+
+Same hardware/profile as above; code measured as `6ead4ae` plus the shader diff
+committed at `337bb87`. Evidence: `target/fresh-four-wgsl.log`,
+`fresh-four-ceiling.log`, `fresh-four-throughput.log`.

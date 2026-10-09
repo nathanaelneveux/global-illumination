@@ -290,6 +290,25 @@ response and emission; inputs are sanitized and reflectance is bounded to one.
 `VoxelGiEnvironment` makes the background energy host-configurable. Rendering
 never writes filtered RGB back into these measurements.
 
+### Planned tick based simulation delivery
+
+Future GPU-resident accumulation should separate visual updates from CPU
+simulation snapshots. Simulation may consume the field at a configurable tick
+cadence rather than every rendered frame; no fixed tick rate is assumed.
+This reduces required readback frequency, not the accuracy required of each
+measurement. The existing CPU-owned field and asynchronous query API remain the
+implemented design; tick snapshots are not implemented yet.
+
+Snapshots must identify their geometry/source revisions and measurement ages,
+retain all five bands and sample/variance metadata, and distinguish unknown or
+stale results from valid zero energy. A tick can reuse a sufficiently fresh
+measurement or request a bounded priority refresh without blocking rendering.
+Topology changes must not let a snapshot name a recycled receiver as the old
+surface. Readbacks should be bounded and driven by simulation demand, with an
+explicit policy for delayed data. Temporal display RGB is never a simulation
+input. Integrating heating or dose over tick duration belongs to the host
+simulation, as do thresholds and material changes that become transport updates.
+
 ## Integration contract and limits
 
 This is one axis-aligned unit-voxel world in integer coordinates, with f32 ray

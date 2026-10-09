@@ -93,6 +93,15 @@ This result does not test or reject NAADF's spatial reuse or
 Future reuse experiments must compare error per measured execution time and
 preserve source diversity; adding candidate selection alone is not a win here.
 
+The subsequent isolated fresh-path prototype (`be32d40`, harness through
+`bd60c3f`) reconnects one neighbor's first hit with current visibility and
+[balance MIS weights](https://www.pbr-book.org/4ed/Monte_Carlo_Integration/Improving_Efficiency).
+It lowers ceiling error at matched GPU budgets, but arbitrary task adjacency
+pairs only 28% of real workload faces. A four-receiver variant was slower and
+failed its high-sample check. Neither is a production default. These are fresh
+spatial MIS experiments, not ReSTIR reservoirs or temporal path history; see
+[the measured results](experiments.md#fresh-spatial-path-reuse).
+
 ### vxray
 
 The [repository](https://github.com/Nelarius/vxray) and
@@ -202,29 +211,38 @@ Uniform AADF construction and topology-keyed top-level reuse also remove measure
 scene-building work without changing transport samples.
 Vector box stepping, sparse GPU metadata uploads and unchanged packed allocation
 reuse now remove execution/preparation work as well; see the measured scope in
-the experiment record. Re-evaluable path samples remain unimplemented.
+the experiment record. Re-evaluable fresh paths exist only on an isolated branch;
+retained temporal path samples remain unimplemented.
 The four-sector local guide, dense wavefront implementation and broader Sobol
 variants were not promoted. The experiments below remain research directions,
 not claims that those tested variants should be retried unchanged.
 
-1. **Measure useful work after this cleanup.** Attribute time to scene assembly,
-   scheduling, GPU tracing, readback/merge and display publication. Pair frame
-   tails with fresh-field latency; an idle renderer with stale light is not faster
-   GI. The audit removes redundant work, not a proven 2–3× speedup.
-2. **Improve directions at the same ray budget.** Prototype a small world-space
-   directional guide with a cosine-mixture fallback. Compare to the current
-   estimator in opening/closing rooms, emitter addition/removal and steady scenes.
-   A guide must relearn after changes, recheck visibility and consider infrared/
-   ionizing sources even when invisible. Verify all bands against the reference.
-3. **Reduce CPU/GPU transfers if profiling warrants it.** GPU-resident moments
-   could remove repeated state uploads/readbacks. Preserve explicit versions,
-   topology ownership, bounded readback and demand-driven simulation queries.
-   Do not combine this storage experiment with a new estimator in one commit.
-4. **Then evaluate primary corners or reusable path samples.** Both are broader
-   changes than tuning presentation. Sample reuse needs current visibility,
-   probability accounting and finite-memory/lifetime policies. A temporal blend
-   of old RGB cannot substitute for those obligations.
+1. **World-space path reuse.** Continue the two-receiver fresh-path branch with
+   deliberate neighborhood formation, including its CPU cost and scheduling
+   fairness. Promote only after an end-to-end quality/freshness win. Temporal
+   reuse additionally needs retained proposal/path state, finite lifetimes and
+   current geometry/source validation; averaging old RGB is not equivalent.
+2. **Terminate secondary paths in a world-space cache.** Test a recursive
+   irradiance-cache estimator against explicit paths. Separate cache read/write
+   phases and verify feedback, occlusion and source removal in every band. Keep
+   this branch independent of path reuse until its own error/cost is understood.
+3. **Richer spatially shared guiding.** Learn useful incoming directions beyond
+   the rejected four-sector local guide. Preserve a known PDF and a fallback
+   that can discover new sources; test small openings and invisible emitters.
+4. **GPU-resident accumulation with tick-based simulation delivery.** Separate
+   visual updates from configurable CPU simulation snapshots, reducing transfer
+   frequency without confusing older data with current accurate measurements.
+   Preserve revision/age metadata, bounded readback and demand-driven refresh;
+   see the [planned contract](architecture.md#planned-tick-based-simulation-delivery).
+   Keep this storage change separate from estimator changes.
+5. **Conservative incremental acceleration repair.** Explore publishing safe
+   bounds before background refinement, following the NAADF source's separation
+   of geometry edits from accelerator quality. Every intermediate bound must be
+   safe for insertion/removal and unknown-region semantics. Compare edit latency
+   and subsequent ray cost, not just construction completion.
 
-All four are proposals, not promised gains. Hold the preferred corner look and
+These are proposals, not promised gains. Hold the preferred corner look and
 current temporal filter fixed while investigating speed. Change one mechanism
 per checkpoint and retain a failed experiment's evidence if it is rejected.
+Attribute scene, scheduling, tracing, readback and display costs separately;
+faster frames obtained by starving transport are not an improvement.
