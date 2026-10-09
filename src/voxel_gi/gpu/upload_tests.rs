@@ -7,7 +7,7 @@ use crate::voxel_gi::{
     world::{AIR, PAGE_SIZE},
 };
 
-fn compare_probes(a: &[SurfaceProbe], b: &[SurfaceProbe]) {
+pub(super) fn compare_probes(a: &[SurfaceProbe], b: &[SurfaceProbe]) {
     for (a, b) in a.iter().zip(b) {
         assert_eq!(a.radiance, b.radiance);
         assert_eq!(a.second_moment, b.second_moment);

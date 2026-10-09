@@ -26,7 +26,10 @@ use super::world::{TransportScene, VoxelMaterialTransportTable};
 const SHADER: &str = include_str!("../../assets/shaders/voxel_trace.wgsl");
 const RESULT_BYTES: usize = 96;
 const SKY_RESULT_BYTES: usize = 32;
+const TASK_BYTES: usize = 32;
 
+#[cfg(test)]
+mod task_tests;
 #[cfg(test)]
 mod traversal_tests;
 #[cfg(test)]
@@ -62,11 +65,39 @@ struct GpuLight {
     extra: Vec4,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Default, ShaderType)]
 struct GpuFaceTask {
     voxel: IVec3,
     face: u32,
     sequence: UVec4,
+}
+
+/// Encode the fixed WGSL task layout directly into reusable upload storage.
+/// Faces precede sky corners; integer words are explicitly little-endian, with
+/// all three padding words initialized. No Rust struct layout or unsafe cast.
+fn encode_tasks(bytes: &mut Vec<u8>, work: &TraceWork, sky: &[IVec3]) {
+    bytes.clear();
+    bytes.reserve((work.faces.len() + sky.len()) * TASK_BYTES);
+    let tasks = work
+        .faces
+        .iter()
+        .map(|face| (face.voxel, face.face as u32, face.sequence))
+        .chain(sky.iter().map(|&position| (position, 0, 0)));
+    for (voxel, face, sequence) in tasks {
+        let record = [
+            voxel.x as u32,
+            voxel.y as u32,
+            voxel.z as u32,
+            face,
+            sequence,
+            0,
+            0,
+            0,
+        ]
+        .map(u32::to_le_bytes);
+        bytes.extend_from_slice(record.as_flattened());
+    }
 }
 
 #[derive(Clone, Copy, Default, ShaderType)]
@@ -183,6 +214,8 @@ pub(crate) struct GpuTracer {
     duplicate_sky_for_benchmark: bool,
     #[cfg(test)]
     full_geometry_uploads_for_benchmark: bool,
+    #[cfg(test)]
+    legacy_task_encoding_for_benchmark: bool,
     packed: PackedScene,
     scene: Option<Arc<TransportScene>>,
     params: UploadBuffer,
@@ -196,6 +229,7 @@ pub(crate) struct GpuTracer {
     emitters: UploadBuffer,
     emission: Option<Arc<EmissionDistribution>>,
     tasks: UploadBuffer,
+    task_bytes: Vec<u8>,
     output: UploadBuffer,
     bindings: Option<CachedBindings<9>>,
     sky_bindings: Option<CachedBindings<7>>,
@@ -283,6 +317,8 @@ impl GpuTracer {
             duplicate_sky_for_benchmark: false,
             #[cfg(test)]
             full_geometry_uploads_for_benchmark: false,
+            #[cfg(test)]
+            legacy_task_encoding_for_benchmark: false,
             packed: PackedScene::default(),
             scene: None,
             params: UploadBuffer::new(
@@ -300,6 +336,7 @@ impl GpuTracer {
             emitters: UploadBuffer::new(device, "GI emissive face distribution", storage),
             emission: None,
             tasks: UploadBuffer::new(device, "GI face work queue", storage),
+            task_bytes: Vec::new(),
             output: UploadBuffer::new(
                 device,
                 "GI face estimates",
@@ -376,15 +413,6 @@ impl GpuTracer {
         sky_only: bool,
     ) -> Result<(), String> {
         let work_started = Instant::now();
-        let mut tasks: Vec<_> = work
-            .faces
-            .iter()
-            .map(|face| GpuFaceTask {
-                voxel: face.voxel,
-                face: face.face as u32,
-                sequence: UVec4::new(face.sequence, 0, 0, 0),
-            })
-            .collect();
         let sky_pending = self.sky_cache.prepare(&scene, sources, &work.probes);
         #[cfg(test)]
         let sky_pending = if self.duplicate_sky_for_benchmark {
@@ -413,7 +441,7 @@ impl GpuTracer {
         };
         // Reusing measured corners needs no queue writes, geometry upload, or
         // GPU submission. Leave geometry synchronization until rays need it.
-        if tasks.is_empty() && sky_pending.is_empty() {
+        if work.faces.is_empty() && sky_pending.is_empty() {
             self.last_dispatch_ms = 0.0;
             self.last_gpu_ms = Some(0.0);
             self.last_prepare_ms = work_started.elapsed().as_secs_f32() * 1000.0;
@@ -560,11 +588,15 @@ impl GpuTracer {
                 .upload(device, queue, &ShaderBuffer::from(gpu_lights).data.unwrap())?;
             self.sources = Some(sources.clone());
         }
-        let face_count = tasks.len();
-        tasks.extend(sky_pending.iter().map(|&position| GpuFaceTask {
-            voxel: position,
-            ..default()
-        }));
+        let face_count = work.faces.len();
+        #[cfg(not(test))]
+        encode_tasks(&mut self.task_bytes, work, &sky_pending);
+        #[cfg(test)]
+        if self.legacy_task_encoding_for_benchmark {
+            self.task_bytes = task_tests::legacy_task_bytes(work, &sky_pending);
+        } else {
+            encode_tasks(&mut self.task_bytes, work, &sky_pending);
+        }
         let params = GpuParams {
             counts: UVec4::new(
                 face_count as u32,
@@ -590,8 +622,7 @@ impl GpuTracer {
             queue,
             &ShaderBuffer::from(vec![params]).data.unwrap(),
         )?;
-        self.tasks
-            .upload(device, queue, &ShaderBuffer::from(tasks).data.unwrap())?;
+        self.tasks.upload(device, queue, &self.task_bytes)?;
         let face_bytes = face_count * RESULT_BYTES;
         let readback_bytes = face_bytes + sky_pending.len() * SKY_RESULT_BYTES;
         self.output.ensure(device, readback_bytes)?;
@@ -1344,7 +1375,8 @@ mod tests {
         }
     }
 
-    fn open_floor_fixture() -> (Arc<TransportScene>, TransportSources, Vec<SurfaceProbe>) {
+    pub(super) fn open_floor_fixture() -> (Arc<TransportScene>, TransportSources, Vec<SurfaceProbe>)
+    {
         use super::super::{
             naadf::{linear_index, volume_len},
             sources::DirectionalTransportLight,
