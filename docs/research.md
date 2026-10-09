@@ -203,46 +203,51 @@ compare a corner estimator at equal work and equal image/field error, not merely
 equal samples per receiver. Preserve disconnected-surface, hard-edge, emitter and
 multi-band tests before considering promotion.
 
-## Next speed experiments, in order
+## Decisions on the five speed directions
 
 The [October 8 experiment results](experiments.md) record completed branches.
 Emitter-only scrambled Sobol sampling and explicit sky demand are now defaults.
 Uniform AADF construction and topology-keyed top-level reuse also remove measured
-scene-building work without changing transport samples.
+scene-building work without changing transport samples. Exact brick repair is
+also retained: unchanged local occupancy reuses fully refined bounds.
 Vector box stepping, sparse GPU metadata uploads and unchanged packed allocation
 reuse now remove execution/preparation work as well; see the measured scope in
 the experiment record. Re-evaluable fresh paths exist only on an isolated branch;
 retained temporal path samples remain unimplemented.
-The four-sector local guide, dense wavefront implementation and broader Sobol
-variants were not promoted. The experiments below remain research directions,
-not claims that those tested variants should be retried unchanged.
+The [five-direction decision record](experiments.md#five-direction-decision-pass)
+separates measured prototypes from defaults. The four-sector guide, dense
+wavefront implementation and broader Sobol variants were not promoted either.
 
-1. **World-space path reuse.** Continue the two-receiver fresh-path branch with
-   deliberate neighborhood formation, including its CPU cost and scheduling
-   fairness. Promote only after an end-to-end quality/freshness win. Temporal
-   reuse additionally needs retained proposal/path state, finite lifetimes and
-   current geometry/source validation; averaging old RGB is not equivalent.
-2. **Terminate secondary paths in a world-space cache.** Test a recursive
-   irradiance-cache estimator against explicit paths. Separate cache read/write
-   phases and verify feedback, occlusion and source removal in every band. Keep
-   this branch independent of path reuse until its own error/cost is understood.
-3. **Richer spatially shared guiding.** Learn useful incoming directions beyond
-   the rejected four-sector local guide. Preserve a known PDF and a fallback
-   that can discover new sources; test small openings and invisible emitters.
-4. **GPU-resident accumulation with tick-based simulation delivery.** Separate
-   visual updates from configurable CPU simulation snapshots, reducing transfer
-   frequency without confusing older data with current accurate measurements.
-   Preserve revision/age metadata, bounded readback and demand-driven refresh;
-   see the [planned contract](architecture.md#planned-tick-based-simulation-delivery).
-   Keep this storage change separate from estimator changes.
-5. **Conservative incremental acceleration repair.** Explore publishing safe
-   bounds before background refinement, following the NAADF source's separation
-   of geometry edits from accelerator quality. Every intermediate bound must be
-   safe for insertion/removal and unknown-region semantics. Compare edit latency
-   and subsequent ray cost, not just construction completion.
+1. **World-space path reuse — defer default promotion.** Deliberate neighborhood
+   formation raises pairing to 94%, but adds worker cost without an established
+   gameplay quality/freshness win. Preserve the branch for selective reuse in
+   difficult receivers. Temporal reservoirs remain untested and need separate
+   probability, lifetime and visibility accounting.
+2. **Recursive cache termination — defer.** The white-furnace study confirms
+   that recursion changes the effective bounce depth and can circulate obsolete
+   source energy even without temporal filtering. First establish versioned
+   residency, then explicitly choose finite-depth layers or recursive feedback
+   with dependency resets. This is not a drop-in replacement for explicit paths.
+3. **Richer shared guiding — reject the fixed 64-bin candidate.** Shared angular
+   training increased error and CPU time in open sky and both room fixtures.
+   Adaptive spatio-directional trees remain a distinct possible approach; do not
+   retry fixed coarse histograms without new evidence.
+4. **GPU-resident accumulation and tick delivery — pursue next.** Fixed-slot
+   equal-work trials show a substantial reduction in worker round-trip cost with
+   matching five-band measurements. Production integration still needs stable
+   generation-owned slots, bounded in-flight work, actual sample ages, scheduling
+   feedback and GPU display publication independent of CPU tick snapshots. See
+   the [planned contract](architecture.md#planned-tick-based-simulation-delivery).
+   Retain the explicit-path estimator during this storage change.
+5. **Incremental acceleration — retain exact local repair, defer two-phase
+   refinement.** Rebuilding only changed brick occupancy is a measured default
+   win without weaker bounds or a second publication. Revisit queued top-level
+   refinement if profiling identifies topology-changing streaming construction
+   as the next dominant cost; safe insertion/removal and unknown semantics remain
+   mandatory for every intermediate field.
 
-These are proposals, not promised gains. Hold the preferred corner look and
-current temporal filter fixed while investigating speed. Change one mechanism
+The retained architecture direction is not a promised FPS gain. Hold the preferred
+corner look and current temporal filter fixed while investigating speed. Change one mechanism
 per checkpoint and retain a failed experiment's evidence if it is rejected.
 Attribute scene, scheduling, tracing, readback and display costs separately;
 faster frames obtained by starving transport are not an improvement.

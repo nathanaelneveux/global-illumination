@@ -35,6 +35,11 @@ comparison infrastructure is `9186a55`. Winners were merged into
 | `task-encoding` | `0020e7d` | Retain: encode complete task records directly into reusable upload storage. |
 | `fresh-spatial-reuse` | `be32d40`, harness through `bd60c3f` | Keep isolated: two-receiver reuse lowers ceiling error at matched GPU budgets, but real task ordering pairs only 28% of faces. No end-to-end win established. |
 | `fresh-spatial-four` | `337bb87` | Reject this four-receiver implementation: substantially slower and invalid at high sample count. |
+| `spatial-neighborhoods` | `8ed313f` | Defer promotion: 94% pairing, but higher worker costs without an established end-to-end win. |
+| `recursive-cache-contract` | `9a6c078` | Defer recursive termination: feedback changes bounce depth and source-removal semantics; reject unversioned mean reuse. |
+| `shared-angular-guide` | `a8ceaef`, lint fix `2de5d91` | Reject fixed shared 64-bin proposal: more error and CPU work in all three fixtures. |
+| `resident-tick-prototype` | `34c3476` | Keep architecture direction: matching fixed-slot transport with fewer readbacks; not production world residency. |
+| `incremental-brick-repair` | `4196b88`, merge `bdac2dc` | Retain exact local repair. Defer coarse-to-fine/background publication. |
 
 Rejected variants are not dormant production toggles or extra runtime resources.
 A rejected implementation does not disprove its broader research family: the
@@ -569,3 +574,153 @@ unresolved on its branch. It does not disprove more selective reuse designs.
 Same hardware/profile as above; code measured as `6ead4ae` plus the shader diff
 committed at `337bb87`. Evidence: `target/fresh-four-wgsl.log`,
 `fresh-four-ceiling.log`, `fresh-four-throughput.log`.
+
+## Five direction decision pass
+
+Baseline `28585a0` is preserved at `experiment/gi-baseline-five-decisions-20261008`.
+Only exact brick repair is merged into normal gameplay. The resident prototype
+is the strongest next architecture direction; a decision to pursue it is not a
+claim that production residency or simulation ticks are implemented.
+All compute/CPU studies below use Apple M4, Metal where applicable, Rust 1.95.0
+and the development/shared-cache profile. They have no viewport unless stated.
+Measurements used the cited commit's code as a dirty diff on its branch parent.
+
+### Spatial neighborhoods deferred
+
+`8ed313f`, based on `bd60c3f`, sorts a task-index permutation into 2×2 coplanar
+tiles and scatters results back to their original receivers. Scheduler membership
+and publication ranges do not change. The native scatter oracle passes at 17/100
+receivers with independently advancing sequences. Strict Clippy passes.
+The ceiling study retains 23–26% lower error p95 at 4–16 ms GPU budgets.
+
+The offscreen `response` run at 2560×1440, preferred corner modes, textures on and
+AO off raised compatible pairing from the previous 27.98% to **94.02%**. All
+14 captures were valid/nonblank, assets resolved and render logs were clean;
+emitter-settled and recovered-room images were inspected. Cavity/add/remove
+worker p95 was 5.699/5.986/6.742 ms, versus 5.039/5.121/5.138 ms in the earlier
+original-shader control. Near-field age p95 was 1.941/1.780/1.783 seconds versus
+1.850/1.641/1.684. Offscreen cadence p95 was lower in this run, but this preliminary
+comparison does not establish causation or windowed FPS. Additional worker cost
+and mixed freshness do not justify default promotion on controlled error alone.
+
+Decision: **defer**, retaining the branch for selective reuse in difficult
+receivers rather than enabling reconnection rays everywhere. Temporal reservoirs
+remain separate work, not a failed experiment. Evidence under `target/`:
+`neighborhood-{scatter,quality,clippy,response}.log`; captures in
+`target/gi-validation/response-1791510698889403000-79059/`.
+
+### Recursive cache termination deferred
+
+`9a6c078` adds a geometry-backed 216-receiver white-furnace contract test with
+separate cache read/write generations. The uniform interior makes each iteration
+exact, eliminating interpolation and Monte Carlo noise. The existing explicit
+32,768-path CPU reference agrees with the three-bounce analytic value.
+
+At reflectance 0.8 and emission 0.1, the red-band three-bounce value is 0.244;
+recursive feedback approaches 0.5. In a deliberately high-reflectance 0.98 band,
+52.39% of old energy remains after 32 complete updates with emission removed,
+even without an additional history filter. A complete generation reset restores
+exact zero. These are solver iterations, not frames or a calibrated radiation
+material. More bounces are not inherently wrong, but they change the model.
+
+Decision: **defer recursive termination**, and reject unversioned reuse of the
+existing means as a drop-in optimization. Choose finite-depth layers or an
+explicit recursive model with dependency/reset rules before integrating it.
+The [versioned Solari design](https://jms55.github.io/posts/2025-09-20-solari-bevy-0-17/)
+likewise separates cache reads from blending and spreads recursive paths across
+updates. Resident storage alone will not resolve feedback semantics. Focused test
+and strict Clippy pass; this was a correctness/response study, not a speed trial.
+Logs: `target/recursive-cache-{contract,clippy}.log`.
+
+### Fixed shared angular guide rejected
+
+`a8ceaef` tests 16 azimuth × 4 radial bins in cosine-hemisphere parameter space,
+shared across oriented 8-voxel cells. Sixty-four pilot paths train the proposal;
+those paths also contribute to the estimate and measured time. A known-density
+50% cosine fallback preserves support. Eight disjoint 1,024-path blocks compare
+against a common analytic/native 65,536-path reference.
+
+| Fixture | Baseline error p95 at 1,024 paths | Guided error p95 | CPU total p50 baseline → guided |
+| --- | ---: | ---: | ---: |
+| Open sky | 0.000394 | 0.003497 | 29.94 → 35.04 ms |
+| Skylight room floor | 0.18638 | 0.22530 | 110.13 → 116.07 ms |
+| Skylight ceiling | 0.13309 | 0.16302 | 100.65 → 111.76 ms |
+
+Decision: **reject this fixed proposal** before GPU integration. This does not
+reject adaptive spatio-directional trees from
+[Practical Path Guiding](https://jannovak.info/publications/PathGuide/index.html).
+Nonemissive fixtures suffice for the rejection; emitter MIS and live retraining
+were not implemented. Density/support tests pass. Commit `2de5d91` corrects a
+fixture lint and the preceding commit's mistaken Clippy-pass statement; strict
+Clippy then passes. Evidence: `target/shared-guide-{quality,support}.log` and
+`target/shared-guide-clippy-fixed.log`. The reporting study completing is not a
+quality pass.
+
+### Resident accumulation and tick snapshots retained as a direction
+
+`34c3476` keeps five-band means/moments, count and advancing sequence in GPU
+storage for stable fixture slots. Batches can submit without CPU readback;
+snapshots return accumulated measurements after the chosen number of batches.
+CPU counts/timestamps remain unchanged until delivery. Generation changes discard
+old accumulation, including two queued but unread batches before source removal.
+The reset snapshot is exactly zero. The experiment does not retain/reuse paths.
+
+Twenty alternating measured pairs follow four warmups. Each batch traces the
+same four paths; the candidate does not replace several batches with fewer paths.
+
+| 1,024-face workload | Ordinary worker total p50 | Resident total p50 | Confirmation ordinary → resident |
+| --- | ---: | ---: | ---: |
+| One batch and one snapshot | 1.824 ms | 1.824 ms | 1.888 → 1.891 ms |
+| Three batches and one resident snapshot | 5.456 ms | 2.275 ms | 5.359 → 2.298 ms |
+| Eight batches and one resident snapshot | 14.293 ms | 3.189 ms | 14.692 → 3.446 ms |
+
+Confirmation uses nonzero environment energy in all five bands. Means, moments
+and direct values agree within `1e-5 * (1 + magnitude)` tolerance; integer
+counts/sequences match exactly. Seventeen-face tail cases pass. This is
+back-to-back compute with amortized submission/wait/readback, not a simulated
+20 Hz tick, gameplay frame-pacing result or production memory measurement.
+
+Decision: **keep as the next architecture direction**. Do not merge the fixed-slot
+harness as a world implementation. Stable generation-owned slots, bounded
+in-flight snapshots, real sample ages, scheduling feedback and GPU display
+publication are integration requirements. Task headers still upload in this
+prototype; it does not prove their elimination. Strict Clippy passes.
+Logs: `target/resident-tick-{study,confirm,clippy}.log`.
+
+### Exact brick repair retained instead of background refinement
+
+`4196b88`, merged unchanged at `bdac2dc`, reuses complete voxel bounds for each
+occupancy-identical brick of a changed dense region. Material-only changes still
+update material data/masks and region identity. Region-level brick bounds are
+reused only if the brick occupancy map matches. Changed bounds are fully rebuilt;
+the resulting fields exactly equal the original constructor, so traversal quality
+does not temporarily degrade and there is no second publication phase.
+
+Forty alternating warmed trios, each with 64 constructions, compare a frozen
+`28585a0` constructor, new cold construction, and incremental repair. The internal
+constructor specializes away reuse comparisons for cold builds.
+
+| Region workload | Original p50 | New cold p50 | Repair p50 | Isolated repeat original → repair |
+| --- | ---: | ---: | ---: | ---: |
+| Terrain, one removal | 38.360 µs | 38.298 µs | 5.174 µs | 37.654 → 5.053 µs |
+| Scattered, one removal | 176.143 µs | 176.307 µs | 6.771 µs | 177.568 → 6.781 µs |
+| Terrain, material change | 37.500 µs | 37.328 µs | 4.436 µs | 36.482 → 4.357 µs |
+| Scattered, material change | 178.674 µs | 179.055 µs | 4.021 µs | 175.415 → 3.947 µs |
+
+The single-edit changed-region construction is about 7.4×/26× faster in these
+fixtures, not whole-scene construction or FPS. Cold timings are effectively
+unchanged. The first attempted confirmation overlapped Clippy and is excluded;
+the table uses the subsequent isolated repeat.
+
+Decision: **retain exact repair; defer coarse-to-fine background publication**.
+Queued top-level repair remains a possible response to measured topology-changing
+streaming costs, not a necessary part of this local win. Exact-oracle checks cover
+200 edits, IDs 0/255, empty/uniform transitions and old snapshot preservation.
+Seven world tests pass; the focused oracle reran after cold specialization. Native
+ordinary/emissive CPU/GPU RMS is 0.000000, including edit reuse. Strict all-target
+Clippy and diff review pass. No estimator, display or buffer-lifetime change
+required another toggle-stress or image run.
+
+Evidence under `target/`: `incremental-bricks-specialized.log`,
+`incremental-bricks-confirm-isolated.log`, `incremental-bricks-world-tests.log`,
+`incremental-bricks-native.log`, `incremental-bricks-clippy.log`.

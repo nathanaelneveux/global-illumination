@@ -57,6 +57,13 @@ Empty and uniform regions avoid dense voxel storage.
 Uniform empty brick fields use exact distances to the volume edges; fully blocked
 fields are zero. Only mixed fields require iterative neighbor merging.
 
+Within a changed dense region, occupancy-identical 4³ bricks reuse their complete
+voxel bounds. The region's brick-level bounds are reused only when its brick
+occupancy map is unchanged. Changed occupancy is fully rebuilt before publication;
+material IDs and presence masks update independently even when bounds are reused.
+Old snapshots remain immutable. This is exact incremental construction, not a
+temporary coarse field or background-refinement queue.
+
 Nested axis-aligned empty-space bounds accelerate rays at the region, brick and
 voxel levels. GPU brick tags distinguish empty, uniform and mixed storage. Mixed
 bricks use packed 16-bit cells and content-checked, reference-counted deduplication;
@@ -297,7 +304,8 @@ simulation snapshots. Simulation may consume the field at a configurable tick
 cadence rather than every rendered frame; no fixed tick rate is assumed.
 This reduces required readback frequency, not the accuracy required of each
 measurement. The existing CPU-owned field and asynchronous query API remain the
-implemented design; tick snapshots are not implemented yet.
+implemented production design. An isolated fixed-slot prototype validates resident
+accumulation and sparse snapshots; production tick delivery is not implemented.
 
 Snapshots must identify their geometry/source revisions and measurement ages,
 retain all five bands and sample/variance metadata, and distinguish unknown or
@@ -308,6 +316,14 @@ surface. Readbacks should be bounded and driven by simulation demand, with an
 explicit policy for delayed data. Temporal display RGB is never a simulation
 input. Integrating heating or dose over tick duration belongs to the host
 simulation, as do thresholds and material changes that become transport updates.
+
+The resident prototype is a measured direction to pursue, not ready-to-merge
+storage. Integration needs stable receiver slots with generation-checked recycling,
+bounded in-flight work, GPU-side display publication independent of CPU snapshots,
+and per-face sample timestamps rather than assigning readback time to old data.
+CPU task selection still needs compact scheduling/freshness feedback. Initially
+retain the existing explicit-path estimator and reference/fallback; do not combine
+residency with recursive cache feedback or path guiding.
 
 ## Integration contract and limits
 
