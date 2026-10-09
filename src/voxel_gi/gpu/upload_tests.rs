@@ -27,6 +27,9 @@ fn sparse_geometry_upload_benchmark() {
     let mut candidate = super::tests::native_tracer();
     let mut reference = GpuTracer::new(candidate.context.clone()).unwrap();
     reference.full_geometry_uploads_for_benchmark = true;
+    reference.packed.revisit_unchanged_for_benchmark = true;
+    let mut delta_only = GpuTracer::new(candidate.context.clone()).unwrap();
+    delta_only.packed.revisit_unchanged_for_benchmark = true;
     let page = vec![1; volume_len(PAGE_SIZE)];
     let empty = vec![AIR; volume_len(PAGE_SIZE)];
     let pages = (0..16)
@@ -64,17 +67,17 @@ fn sparse_geometry_upload_benchmark() {
     let probes: Vec<_> = (12..20)
         .flat_map(|z| (12..20).map(move |x| SurfaceProbe::new(IVec3::new(x, 31, z), 4)))
         .collect();
-    let mut prepare = [Vec::new(), Vec::new()];
-    let mut worker = [Vec::new(), Vec::new()];
-    let mut uploaded = [Vec::new(), Vec::new()];
+    let mut prepare = [Vec::new(), Vec::new(), Vec::new()];
+    let mut worker = [Vec::new(), Vec::new(), Vec::new()];
+    let mut uploaded = [Vec::new(), Vec::new(), Vec::new()];
     for pair in 0..44 {
         let scene_index = pair % 2;
-        let mut outputs = [probes.clone(), probes.clone()];
-        for mode in [pair % 2, 1 - pair % 2] {
-            let tracer = if mode == 0 {
-                &mut reference
-            } else {
-                &mut candidate
+        let mut outputs = [probes.clone(), probes.clone(), probes.clone()];
+        for mode in (0..3).map(|offset| (pair + offset) % 3) {
+            let tracer = match mode {
+                0 => &mut reference,
+                1 => &mut delta_only,
+                _ => &mut candidate,
             };
             let before = tracer.uploaded_geometry_bytes;
             let started = Instant::now();
@@ -95,14 +98,15 @@ fn sparse_geometry_upload_benchmark() {
             }
         }
         compare_probes(&outputs[0], &outputs[1]);
+        compare_probes(&outputs[0], &outputs[2]);
     }
-    for mode in 0..2 {
+    for mode in 0..3 {
         prepare[mode].sort_by(f32::total_cmp);
         worker[mode].sort_by(f32::total_cmp);
         uploaded[mode].sort_unstable();
         eprintln!(
-            "GEOMETRY_UPLOAD mode={} regions={} receivers={} pairs=40 prepare_ms_p50/p95={:.3}/{:.3} worker_ms_p50/p95={:.3}/{:.3} bytes_min/max={}/{} exact=true",
-            ["full", "delta"][mode],
+            "GEOMETRY_UPLOAD mode={} regions={} receivers={} trios=40 prepare_ms_p50/p95={:.3}/{:.3} worker_ms_p50/p95={:.3}/{:.3} bytes_min/max={}/{} exact=true",
+            ["full", "delta", "delta+reuse"][mode],
             scenes[0].regions.len(),
             probes.len(),
             prepare[mode][20],
@@ -121,6 +125,7 @@ fn sparse_geometry_uploads_survive_growth_and_residency_changes() {
     let mut candidate = super::tests::native_tracer();
     let mut reference = GpuTracer::new(candidate.context.clone()).unwrap();
     reference.full_geometry_uploads_for_benchmark = true;
+    reference.packed.revisit_unchanged_for_benchmark = true;
     let materials = VoxelMaterialTransportTable::default();
     let sources = TransportSources::default();
     let mut page = vec![AIR; volume_len(PAGE_SIZE)];

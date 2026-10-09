@@ -14,6 +14,8 @@ const TABLE_WORDS: usize = 64;
 
 #[derive(Default)]
 pub(crate) struct PackedScene {
+    #[cfg(test)]
+    pub(super) revisit_unchanged_for_benchmark: bool,
     regions: HashMap<IVec3, RegionAllocation>,
     free_headers: Vec<usize>,
     free_tables: Vec<usize>,
@@ -73,6 +75,32 @@ impl PackedScene {
         let mut ordered: Vec<_> = scene.regions.iter().collect();
         ordered.sort_unstable_by_key(|(key, _)| (key.z, key.y, key.x));
         for (&key, source) in ordered {
+            let top = scene.top_level.field(key);
+            let negative = pack_bytes(top.negative());
+            let positive = pack_bytes(top.positive());
+            #[cfg(not(test))]
+            let reuse_enabled = true;
+            #[cfg(test)]
+            let reuse_enabled = !self.revisit_unchanged_for_benchmark;
+            let reusable = if reuse_enabled {
+                self.regions
+                    .get(&key)
+                    .filter(|a| Arc::ptr_eq(&a.source, source))
+            } else {
+                None
+            };
+            if let Some(allocation) = reusable {
+                // Immutable voxel storage and its allocations remain valid.
+                // Neighbouring residency/occupancy changes can still alter this
+                // region's top-level skip bounds, independently of its voxels.
+                let header = &mut self.headers[allocation.header];
+                if header.z != negative || header.w != positive {
+                    header.z = negative;
+                    header.w = positive;
+                    delta.headers.push(allocation.header..allocation.header + 1);
+                }
+                continue;
+            }
             let mut allocation = self.regions.remove(&key).unwrap_or_else(|| {
                 delta.directory_changed = true;
                 let header = self.free_headers.pop().unwrap_or_else(|| {
@@ -89,9 +117,6 @@ impl PackedScene {
             let previous_header = self.headers[allocation.header];
             let changed =
                 !Arc::ptr_eq(&allocation.source, source) || self.headers[allocation.header].x == 0;
-            let top = scene.top_level.field(key);
-            let negative = pack_bytes(top.negative());
-            let positive = pack_bytes(top.positive());
             if let Some(material) = source.uniform_material() {
                 self.release_bricks(&allocation.bricks);
                 allocation.bricks.clear();
@@ -489,6 +514,15 @@ mod tests {
             assert_eq!(gpu_headers, packed.headers, "headers at stage {stage}");
             assert_eq!(gpu_cells, packed.cells, "cells at stage {stage}");
             for (&key, allocation) in &packed.regions {
+                let field = scene.top_level.field(key);
+                assert_eq!(
+                    gpu_headers[allocation.header].z,
+                    pack_bytes(field.negative())
+                );
+                assert_eq!(
+                    gpu_headers[allocation.header].w,
+                    pack_bytes(field.positive())
+                );
                 let mut slot = hash_region(key) as usize & (gpu_directory.len() - 1);
                 let mut found = false;
                 for _ in 0..32 {
