@@ -29,6 +29,8 @@ const SKY_RESULT_BYTES: usize = 32;
 
 #[cfg(test)]
 mod traversal_tests;
+#[cfg(test)]
+mod upload_tests;
 
 #[derive(Resource, Clone)]
 pub(crate) struct GpuTransportDevice {
@@ -179,6 +181,8 @@ pub(crate) struct GpuTracer {
     pub sky_cache: super::sky_cache::SkyCache,
     #[cfg(test)]
     duplicate_sky_for_benchmark: bool,
+    #[cfg(test)]
+    full_geometry_uploads_for_benchmark: bool,
     packed: PackedScene,
     scene: Option<Arc<TransportScene>>,
     params: UploadBuffer,
@@ -277,6 +281,8 @@ impl GpuTracer {
             sky_cache: default(),
             #[cfg(test)]
             duplicate_sky_for_benchmark: false,
+            #[cfg(test)]
+            full_geometry_uploads_for_benchmark: false,
             packed: PackedScene::default(),
             scene: None,
             params: UploadBuffer::new(
@@ -450,22 +456,49 @@ impl GpuTracer {
             .as_ref()
             .is_none_or(|previous| !Arc::ptr_eq(previous, &scene))
         {
-            let dirty = self.packed.update(&scene);
-            let directory = ShaderBuffer::from(self.packed.directory.clone())
-                .data
-                .unwrap();
-            let headers = ShaderBuffer::from(self.packed.headers.clone())
-                .data
-                .unwrap();
-            self.directory.upload(device, queue, &directory)?;
-            self.regions.upload(device, queue, &headers)?;
-            self.uploaded_geometry_bytes += (directory.len() + headers.len()) as u64;
+            let delta = self.packed.update(&scene);
+            #[cfg(test)]
+            let delta = if self.full_geometry_uploads_for_benchmark {
+                self.packed.rebuild_directory();
+                super::gpu_scene::SceneDelta {
+                    directory_changed: true,
+                    headers: std::iter::once(0..self.packed.headers.len()).collect(),
+                    ..delta
+                }
+            } else {
+                delta
+            };
+            if delta.directory_changed {
+                let directory = ShaderBuffer::from(self.packed.directory.clone())
+                    .data
+                    .unwrap();
+                self.directory.upload(device, queue, &directory)?;
+                self.uploaded_geometry_bytes += directory.len() as u64;
+            }
+            if self
+                .regions
+                .ensure(device, self.packed.headers.len() * 16)?
+            {
+                let headers = ShaderBuffer::from(self.packed.headers.clone())
+                    .data
+                    .unwrap();
+                queue.write_buffer(&self.regions.buffer, 0, &headers);
+                self.uploaded_geometry_bytes += headers.len() as u64;
+            } else {
+                for range in delta.headers {
+                    let bytes = ShaderBuffer::from(self.packed.headers[range.clone()].to_vec())
+                        .data
+                        .unwrap();
+                    queue.write_buffer(&self.regions.buffer, (range.start * 16) as u64, &bytes);
+                    self.uploaded_geometry_bytes += bytes.len() as u64;
+                }
+            }
             if self.cells.ensure(device, self.packed.cells.len() * 4)? {
                 let bytes = encode_words(&self.packed.cells);
                 queue.write_buffer(&self.cells.buffer, 0, &bytes);
                 self.uploaded_geometry_bytes += bytes.len() as u64;
             } else {
-                for range in dirty {
+                for range in delta.cells {
                     let bytes = encode_words(&self.packed.cells[range.clone()]);
                     queue.write_buffer(&self.cells.buffer, (range.start * 4) as u64, &bytes);
                     self.uploaded_geometry_bytes += bytes.len() as u64;

@@ -39,14 +39,27 @@ struct SharedBrick {
     references: usize,
 }
 
+/// Element ranges, not byte offsets. A new GPU allocation must receive the
+/// complete corresponding array; these deltas only patch an existing buffer.
+#[derive(Default)]
+pub(crate) struct SceneDelta {
+    pub directory_changed: bool,
+    pub headers: Vec<Range<usize>>,
+    pub cells: Vec<Range<usize>>,
+}
+
 impl PackedScene {
-    pub fn update(&mut self, scene: &TransportScene) -> Vec<Range<usize>> {
+    pub fn update(&mut self, scene: &TransportScene) -> SceneDelta {
         let removed: Vec<_> = self
             .regions
             .keys()
             .filter(|key| !scene.regions.contains_key(key))
             .copied()
             .collect();
+        let mut delta = SceneDelta {
+            directory_changed: !removed.is_empty() || self.directory.is_empty(),
+            ..default()
+        };
         for key in removed {
             let allocation = self.regions.remove(&key).unwrap();
             self.free_headers.push(allocation.header);
@@ -61,6 +74,7 @@ impl PackedScene {
         ordered.sort_unstable_by_key(|(key, _)| (key.z, key.y, key.x));
         for (&key, source) in ordered {
             let mut allocation = self.regions.remove(&key).unwrap_or_else(|| {
+                delta.directory_changed = true;
                 let header = self.free_headers.pop().unwrap_or_else(|| {
                     self.headers.push(UVec4::ZERO);
                     self.headers.len() - 1
@@ -72,6 +86,7 @@ impl PackedScene {
                     bricks: Vec::new(),
                 }
             });
+            let previous_header = self.headers[allocation.header];
             let changed =
                 !Arc::ptr_eq(&allocation.source, source) || self.headers[allocation.header].x == 0;
             let top = scene.top_level.field(key);
@@ -140,22 +155,18 @@ impl PackedScene {
                     dirty.push(offset..offset + TABLE_WORDS);
                 }
             }
+            if self.headers[allocation.header] != previous_header {
+                delta.headers.push(allocation.header..allocation.header + 1);
+            }
             allocation.source = Arc::clone(source);
             self.regions.insert(key, allocation);
         }
-        self.rebuild_directory();
-        dirty.sort_unstable_by_key(|range| range.start);
-        let mut merged: Vec<Range<usize>> = Vec::new();
-        for range in dirty {
-            if let Some(last) = merged.last_mut()
-                && range.start <= last.end
-            {
-                last.end = last.end.max(range.end);
-            } else {
-                merged.push(range);
-            }
+        if delta.directory_changed {
+            self.rebuild_directory();
         }
-        merged
+        delta.cells = merge_ranges(dirty);
+        delta.headers = merge_ranges(delta.headers);
+        delta
     }
 
     fn intern_brick(&mut self, data: [u32; BRICK_WORDS], dirty: &mut Vec<Range<usize>>) -> usize {
@@ -197,7 +208,7 @@ impl PackedScene {
         }
     }
 
-    fn rebuild_directory(&mut self) {
+    pub(super) fn rebuild_directory(&mut self) {
         let mut capacity = (self.regions.len() * 2).next_power_of_two().max(1);
         loop {
             self.directory = vec![IVec4::new(0, 0, 0, -1); capacity];
@@ -221,6 +232,21 @@ impl PackedScene {
             capacity *= 2;
         }
     }
+}
+
+fn merge_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    ranges.sort_unstable_by_key(|range| range.start);
+    let mut merged: Vec<Range<usize>> = Vec::new();
+    for range in ranges {
+        if let Some(last) = merged.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    merged
 }
 
 fn pack_bytes(value: UVec3) -> u32 {
@@ -308,7 +334,9 @@ mod tests {
         let edited =
             TransportScene::with_page_delta(&scene, vec![(IVec3::ZERO, page.clone())], &[]);
         let dirty = packed.update(&edited);
-        assert!(dirty.iter().map(|r| r.len()).sum::<usize>() <= TABLE_WORDS + BRICK_WORDS);
+        assert!(dirty.cells.iter().map(|r| r.len()).sum::<usize>() <= TABLE_WORDS + BRICK_WORDS);
+        assert!(!dirty.directory_changed);
+        assert!(dirty.headers.is_empty());
         assert_eq!(decoded_material(&packed, IVec3::new(4, 4, 4)), AIR);
         assert_eq!(
             decoded_material(&packed, IVec3::new(20, 4, 20)),
@@ -373,10 +401,13 @@ mod tests {
         );
         let mut packed = PackedScene::default();
         let dirty = packed.update(&scene);
-        assert_eq!(dirty.len(), 1);
+        assert_eq!(dirty.cells.len(), 1);
+        assert!(dirty.directory_changed);
         assert_eq!(packed.cells.len(), TABLE_WORDS + BRICK_WORDS);
         assert_eq!((packed.cells[TABLE_WORDS] & 65535) >> 1, 255);
-        assert!(packed.update(&scene).is_empty());
+        let unchanged = packed.update(&scene);
+        assert!(!unchanged.directory_changed);
+        assert!(unchanged.cells.is_empty() && unchanged.headers.is_empty());
         let empty = TransportScene::with_page_delta(
             &scene,
             vec![(IVec3::ZERO, vec![AIR; volume_len(PAGE_SIZE)])],
@@ -384,12 +415,97 @@ mod tests {
         );
         packed.update(&empty);
         let next = TransportScene::with_page_delta(&empty, vec![(IVec3::ZERO, page)], &[]);
-        assert_eq!(packed.update(&next).len(), 1);
+        assert_eq!(packed.update(&next).cells.len(), 1);
         assert_eq!(
             packed.cells.len(),
             TABLE_WORDS + BRICK_WORDS,
             "freed payload must be reused"
         );
+    }
+
+    #[test]
+    fn upload_deltas_reconstruct_every_live_table_through_residency_changes() {
+        let mut packed = PackedScene::default();
+        let mut scene = TransportScene::default();
+        let mut gpu_headers = Vec::new();
+        let mut gpu_cells = Vec::new();
+        let mut gpu_directory = Vec::new();
+        let mut header_capacity = 16;
+        let mut cell_capacity = 64;
+        let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+        let point = linear_index(UVec3::new(4, 4, 4), PAGE_SIZE);
+        page[point] = 1;
+        for stage in 0..7 {
+            let (changed, removed) = match stage {
+                0 => (vec![(IVec3::ZERO, page.clone())], vec![]),
+                1 => {
+                    page[point] = 255;
+                    (vec![(IVec3::ZERO, page.clone())], vec![])
+                }
+                2 => (
+                    (1..10)
+                        .map(|x| (IVec3::new(x, 0, 0), page.clone()))
+                        .collect(),
+                    vec![],
+                ),
+                3 => (vec![], (1..10).map(|x| IVec3::new(x, 0, 0)).collect()),
+                4 => (
+                    vec![(IVec3::new(-1, 0, 0), vec![2; volume_len(PAGE_SIZE)])],
+                    vec![IVec3::ZERO],
+                ),
+                5 => (
+                    vec![(IVec3::new(-1, 0, 0), vec![AIR; volume_len(PAGE_SIZE)])],
+                    vec![],
+                ),
+                _ => (vec![], vec![IVec3::new(-1, 0, 0)]),
+            };
+            scene = TransportScene::with_page_delta(&scene, changed, &removed);
+            let delta = packed.update(&scene);
+            if delta.directory_changed {
+                gpu_directory.clone_from(&packed.directory);
+            }
+            if packed.headers.len() > header_capacity {
+                header_capacity = packed.headers.len().next_power_of_two();
+                gpu_headers.clone_from(&packed.headers);
+            } else {
+                gpu_headers.resize(packed.headers.len(), UVec4::ZERO);
+                for range in delta.headers {
+                    gpu_headers[range.clone()].copy_from_slice(&packed.headers[range]);
+                }
+            }
+            if packed.cells.len() > cell_capacity {
+                cell_capacity = packed.cells.len().next_power_of_two();
+                gpu_cells.clone_from(&packed.cells);
+            } else {
+                gpu_cells.resize(packed.cells.len(), 0);
+                for range in delta.cells {
+                    gpu_cells[range.clone()].copy_from_slice(&packed.cells[range]);
+                }
+            }
+            assert_eq!(
+                gpu_directory, packed.directory,
+                "directory at stage {stage}"
+            );
+            assert_eq!(gpu_headers, packed.headers, "headers at stage {stage}");
+            assert_eq!(gpu_cells, packed.cells, "cells at stage {stage}");
+            for (&key, allocation) in &packed.regions {
+                let mut slot = hash_region(key) as usize & (gpu_directory.len() - 1);
+                let mut found = false;
+                for _ in 0..32 {
+                    let entry = gpu_directory[slot];
+                    if entry.w == -1 {
+                        break;
+                    }
+                    if entry.xyz() == key {
+                        assert_eq!(entry.w as usize, allocation.header);
+                        found = true;
+                        break;
+                    }
+                    slot = (slot + 1) & (gpu_directory.len() - 1);
+                }
+                assert!(found, "missing live region at stage {stage}");
+            }
+        }
     }
 
     #[test]
