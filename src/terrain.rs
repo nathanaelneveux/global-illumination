@@ -7,6 +7,7 @@ use bevy_voxel_world::custom_meshing::{CHUNK_SIZE_F, CHUNK_SIZE_I};
 use bevy_voxel_world::prelude::*;
 
 use crate::assets::{PrototypeConfig, TemplateAssets};
+use crate::structures::{Bounds, StructureLayer, VoxelOp, showcase};
 use crate::terrain_meshing::build_chunk_mesh;
 use crate::terrain_noise::{BEDROCK_FLOOR_Y, MAX_SURFACE_Y, TerrainColumn, TerrainNoise};
 use crate::voxel_gi::{
@@ -121,6 +122,7 @@ pub struct PrototypeWorld {
     config: PrototypeConfig,
     noise: Arc<TerrainNoise>,
     cave: bool,
+    structures: Option<Arc<StructureLayer>>,
 }
 
 impl Default for PrototypeWorld {
@@ -131,10 +133,12 @@ impl Default for PrototypeWorld {
 
 impl PrototypeWorld {
     pub fn from_config(config: PrototypeConfig) -> Self {
+        let cave = crate::cave_scene::enabled();
         Self {
             noise: Arc::new(TerrainNoise::from_config(&config)),
             config,
-            cave: crate::cave_scene::enabled(),
+            cave,
+            structures: (!cave).then(showcase::world_structures),
         }
     }
 
@@ -157,11 +161,18 @@ impl PrototypeWorld {
         if self.cave {
             return crate::cave_scene::voxel(position);
         }
+        if let Some(voxel) = self
+            .structures
+            .as_ref()
+            .and_then(|layer| stamped_voxel(layer.sample(position)))
+        {
+            return voxel;
+        }
         if position.y <= BEDROCK_FLOOR_Y {
             return TerrainMaterial::Brick.voxel();
         }
 
-        let column = terrain_column(&self.noise, position.x, position.z);
+        let column = self.noise.sample_column(position.x, position.z);
         terrain_voxel(position, column)
     }
 
@@ -205,16 +216,26 @@ impl VoxelWorldConfig for PrototypeWorld {
             return Box::new(|_, _, _| Box::new(|p, _| crate::cave_scene::voxel(p)));
         }
         let terrain_noise = Arc::clone(&self.noise);
+        let structures = self
+            .structures
+            .as_ref()
+            .expect("normal world has structure plan")
+            .clone();
 
         Box::new(move |chunk_pos, _lod, _previous| {
+            let origin = chunk_pos * CHUNK_SIZE_I;
+            let stamps = structures.for_bounds(Bounds {
+                min: origin - IVec3::ONE,
+                max: origin + IVec3::splat(CHUNK_SIZE_I + 1),
+            });
             let chunk_min_y = chunk_pos.y * CHUNK_SIZE_I;
             let chunk_max_y = chunk_min_y + CHUNK_SIZE_I - 1;
 
-            if chunk_max_y < BEDROCK_FLOOR_Y {
+            if stamps.is_empty() && chunk_max_y < BEDROCK_FLOOR_Y {
                 return Box::new(|_, _| TerrainMaterial::Brick.voxel());
             }
 
-            if chunk_min_y > MAX_SURFACE_Y + 1 {
+            if stamps.is_empty() && chunk_min_y > MAX_SURFACE_Y + 1 {
                 return Box::new(|_, _| WorldVoxel::Air);
             }
 
@@ -222,13 +243,16 @@ impl VoxelWorldConfig for PrototypeWorld {
             let noise = Arc::clone(&terrain_noise);
 
             Box::new(move |pos: IVec3, _previous| {
+                if let Some(voxel) = stamped_voxel(stamps.sample(pos)) {
+                    return voxel;
+                }
                 if pos.y <= BEDROCK_FLOOR_Y {
                     return TerrainMaterial::Brick.voxel();
                 }
 
                 let column = *column_cache
                     .entry((pos.x, pos.z))
-                    .or_insert_with(|| terrain_column(&noise, pos.x, pos.z));
+                    .or_insert_with(|| noise.sample_column(pos.x, pos.z));
 
                 terrain_voxel(pos, column)
             })
@@ -261,21 +285,15 @@ impl VoxelWorldConfig for PrototypeWorld {
     }
 }
 
-fn terrain_column(noise: &TerrainNoise, x: i32, z: i32) -> TerrainColumn {
-    if (-10..=10).contains(&x) && (-28..=-8).contains(&z) {
-        TerrainColumn {
-            surface_y: 10,
-            soil_depth: 4,
-        }
-    } else {
-        noise.sample_column(x, z)
+fn stamped_voxel(op: VoxelOp) -> Option<WorldVoxel<u8>> {
+    match op {
+        VoxelOp::Keep => None,
+        VoxelOp::Air => Some(WorldVoxel::Air),
+        VoxelOp::Solid(id) => Some(WorldVoxel::Solid(id)),
     }
 }
 
 fn terrain_voxel(position: IVec3, column: TerrainColumn) -> WorldVoxel<MaterialIndex> {
-    if let Some(voxel) = gi_showcase_voxel(position) {
-        return voxel;
-    }
     if position.y > column.surface_y {
         return WorldVoxel::Air;
     }
@@ -298,37 +316,6 @@ fn terrain_voxel(position: IVec3, column: TerrainColumn) -> WorldVoxel<MaterialI
     };
 
     material.voxel()
-}
-
-fn gi_showcase_voxel(position: IVec3) -> Option<WorldVoxel<MaterialIndex>> {
-    if !(-6..=6).contains(&position.x)
-        || !(-24..=-12).contains(&position.z)
-        || !(11..=17).contains(&position.y)
-    {
-        return None;
-    }
-
-    let roof = position.y == 17;
-    let west_wall = position.x == -6;
-    let east_wall = position.x == 6;
-    let north_wall = position.z == -24;
-    let south_wall = position.z == -12;
-    let doorway = south_wall && position.x.abs() <= 1 && position.y <= 14;
-    let window = (north_wall || south_wall)
-        && (-2..=2).contains(&position.x)
-        && (13..=14).contains(&position.y);
-
-    if roof {
-        Some(TerrainMaterial::Snow.voxel())
-    } else if west_wall && !doorway {
-        Some(TerrainMaterial::Grass.voxel())
-    } else if east_wall {
-        Some(TerrainMaterial::Brick.voxel())
-    } else if (north_wall || south_wall) && !doorway && !window {
-        Some(TerrainMaterial::SnowBrick.voxel())
-    } else {
-        Some(WorldVoxel::Air)
-    }
 }
 
 fn apply_live_prototype_config(
@@ -385,6 +372,70 @@ fn apply_live_prototype_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn structures_preserve_original_house_and_foundation() {
+        let config = PrototypeConfig::default();
+        let world = PrototypeWorld {
+            noise: Arc::new(TerrainNoise::from_config(&config)),
+            config,
+            cave: false,
+            structures: Some(showcase::world_structures()),
+        };
+        for x in -10..=10 {
+            for z in -28..=-9 {
+                for y in -24..=35 {
+                    let p = IVec3::new(x, y, z);
+                    let expected = original_house_voxel(p).unwrap_or_else(|| {
+                        if y <= BEDROCK_FLOOR_Y {
+                            TerrainMaterial::Brick.voxel()
+                        } else {
+                            terrain_voxel(
+                                p,
+                                TerrainColumn {
+                                    surface_y: 10,
+                                    soil_depth: 4,
+                                },
+                            )
+                        }
+                    });
+                    assert_eq!(world.generated_voxel(p), expected, "{p:?}");
+                }
+            }
+        }
+    }
+
+    // Frozen 9930e2b authoring policy; only used to prove the structure migration.
+    fn original_house_voxel(position: IVec3) -> Option<WorldVoxel<MaterialIndex>> {
+        if !(-6..=6).contains(&position.x)
+            || !(-24..=-12).contains(&position.z)
+            || !(11..=17).contains(&position.y)
+        {
+            return None;
+        }
+
+        let roof = position.y == 17;
+        let west_wall = position.x == -6;
+        let east_wall = position.x == 6;
+        let north_wall = position.z == -24;
+        let south_wall = position.z == -12;
+        let doorway = south_wall && position.x.abs() <= 1 && position.y <= 14;
+        let window = (north_wall || south_wall)
+            && (-2..=2).contains(&position.x)
+            && (13..=14).contains(&position.y);
+
+        if roof {
+            Some(TerrainMaterial::Snow.voxel())
+        } else if west_wall && !doorway {
+            Some(TerrainMaterial::Grass.voxel())
+        } else if east_wall {
+            Some(TerrainMaterial::Brick.voxel())
+        } else if (north_wall || south_wall) && !doorway && !window {
+            Some(TerrainMaterial::SnowBrick.voxel())
+        } else {
+            Some(WorldVoxel::Air)
+        }
+    }
 
     #[test]
     fn editing_lamp_uses_existing_texture_and_a_dedicated_emitting_material() {

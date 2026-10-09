@@ -4,6 +4,7 @@ mod assets;
 mod cave_scene;
 mod chunk_colliders;
 mod player;
+mod structures;
 mod terrain;
 mod terrain_meshing;
 mod terrain_noise;
