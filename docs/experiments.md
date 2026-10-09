@@ -7,6 +7,10 @@ corner appearance, four paths per dispatch, three-bounce estimator, history
 policy and temporal display filter are unchanged. There is no new debounce,
 per-corner indirect transport, reservoir history or screen-space dependency.
 
+The [October 9 follow-up](research-2026-10-09.md) records decisions on resident
+ownership, edit differences, ReSTCV, many-light trees and cache correction. It
+also includes the new playable cave and matched offscreen integration results.
+
 ## Baseline and decisions
 
 Baseline `8b863cb` is preserved as `experiment/gi-baseline-20261008`. Paired shader

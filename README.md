@@ -22,6 +22,8 @@ depends on greedy-mesh vertices or screen resolution.
   verification for this cleanup.
 - [Current performance experiments](docs/experiments.md): measured winners,
   isolated alternatives, and the limits of each result.
+- [Many-emitter research decisions](docs/research-2026-10-09.md): light-tree win,
+  cave workload, residency contract, and rejected/deferred correction strategies.
 - [Historical experiments](docs/experiments-2026-10.md): previous measurements,
   rejected experiments, and their limitations. This is not the current design.
 

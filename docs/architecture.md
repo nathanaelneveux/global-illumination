@@ -130,10 +130,19 @@ emitter dimensions rather than replacing every path dimension.
 Paths evaluate up to three diffuse bounces, analytic visibility, voxel emission,
 and the directional environment gradient. Analytic point lights use range and
 inverse-square attenuation with a one-unit near-distance clamp. Directional
-lights have no attenuation. All analytic sources are currently evaluated; there
-is no many-light acceleration structure. Emissive-face next-event sampling uses
-power weights and balance-heuristic MIS with cosine path hits. Source weights
-include all five scalar channels: R, G, B, infrared and ionizing.
+lights have no attenuation. All analytic sources are currently evaluated; the
+voxel light hierarchy does not accelerate the analytic point-light loop.
+Emissive-face next-event sampling uses a power CDF below 32 emitting faces and
+a receiver-conditioned spatial binary tree for larger sets. Node importance
+approximates distance, projected emitter/receiver normals and power, with a
+power-mixture fallback and numerical probability floor to preserve support.
+Selection and reverse density use the same receiver position/normal for
+balance-heuristic MIS with cosine path hits. Actual visibility still traces
+against current geometry. Source weights include all five scalar channels:
+R, G, B, infrared and ionizing. The tree shares the emitter storage binding,
+adds 64 bytes per node and rebuilds with the worker's emitter snapshot; there is
+no per-receiver allocation or incremental tree refit. See the
+[many-emitter results and tradeoffs](research-2026-10-09.md#spatial-light-hierarchy).
 
 The core stores normalized energy. It does not attach physical watts, temperature
 or dose to those values. The environment gradient uses world Y; it must become a
@@ -304,8 +313,10 @@ simulation snapshots. Simulation may consume the field at a configurable tick
 cadence rather than every rendered frame; no fixed tick rate is assumed.
 This reduces required readback frequency, not the accuracy required of each
 measurement. The existing CPU-owned field and asynchronous query API remain the
-implemented production design. An isolated fixed-slot prototype validates resident
-accumulation and sparse snapshots; production tick delivery is not implemented.
+implemented production design. An isolated prototype validates resident
+accumulation, sparse snapshots, slot incarnation/source epoch checks, task
+reordering and buffer growth that preserves measurements. This is not yet a
+production world allocator or tick-delivery implementation.
 
 Snapshots must identify their geometry/source revisions and measurement ages,
 retain all five bands and sample/variance metadata, and distinguish unknown or

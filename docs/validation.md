@@ -63,6 +63,17 @@ reference at equal path counts. Neither benchmark establishes gameplay FPS.
 unchanged transport and displayed sunlight. These remain opt-in, not a new
 mandatory suite for ordinary edits.
 
+`many_light_tree_study` uses the old shader supplied by
+`VOXEL_GI_BASELINE_SHADER` and compares mixed/torch/lava cases at matched GPU
+budgets. Warm short batches after a long reference pass before measuring.
+`native_light_tree_selection_pdf_matches_cpu` checks both selection and reverse
+MIS density. Sampler changes cannot pass an identical-path assertion by design;
+use distribution/PDF checks and independent high-sample field references.
+The edit-difference, resident-ownership and control-variate studies live only on
+their [recorded experiment branches](research-2026-10-09.md), not in the default
+test suite. Check out a branch only after stopping the app: shader hot reload
+would otherwise contaminate a running comparison.
+
 For acceleration construction, `aadf_construction_benchmark` compares exact
 bounds and paired CPU timings against the frozen full-sweep builder.
 `scene_topology_reuse_benchmark` compares a one-block edit among 8,192 resident

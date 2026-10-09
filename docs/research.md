@@ -10,6 +10,13 @@ from its paper's reported results. The vxpg entry uses the author's abstract,
 not an equation-by-equation paper audit. Solari's entry is explicitly versioned,
 not a claim about its latest implementation or platform compatibility.
 
+The [October 9 many-emitter decision pass](research-2026-10-09.md) concludes the
+next five candidates. A spatial voxel-emitter hierarchy is now retained. GPU
+residency and guarded edit differences remain isolated directions; retained
+temporal paths/ReSTCV are deferred; a frozen angular control cache is rejected.
+That record includes source audits, five-band cave results, and explicit limits
+on what was tested or integrated.
+
 ## What the references contribute
 
 ### NAADF, 2026
@@ -169,9 +176,10 @@ learns a spatial/directional importance distribution for incoming radiance.
 targets useful guiding under limited real-time samples. The latter's voxel
 organization does not mean it is specifically a block-world GI renderer.
 
-These suggest a relevant next experiment: help paths find small sky openings or
-emitters more often. Neither method is implemented here. A proposal distribution
-must have a known PDF, retain support for newly appearing sources, and preserve
+The motivation is to help paths find small sky openings or emitters more often.
+Neither full method is implemented here; the coarse four-sector and shared
+64-bin guiding candidates were rejected in the experiment record. A proposal
+distribution must have a known PDF, retain support for newly appearing sources, and preserve
 correct weighting. Reference implementation licenses must be reviewed separately;
 this audit copies no external implementation code.
 
