@@ -14,6 +14,9 @@ use serde_json::{Value, json};
 #[path = "history_audit.rs"]
 mod history_audit;
 
+#[path = "history_qualification.rs"]
+mod history_qualification;
+
 struct Fixture {
     name: &'static str,
     scene: Arc<TransportScene>,
