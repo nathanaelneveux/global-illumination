@@ -23,7 +23,8 @@ depends on greedy-mesh vertices or screen resolution.
 - [October 8 audit](docs/audit.md): findings, fixes, retained boundaries, and
   verification for this cleanup.
 - [October 10 scene-history audit](docs/scene-history-audit.md): removal of the
-  global emitter reset, measured response tradeoff, and remaining policy heuristics.
+  emitter-triggered global reset and receiver material-swap reset, completed
+  policy controls, response tradeoffs and next performance targets.
 - [Current performance experiments](docs/experiments.md): measured winners,
   isolated alternatives, and the limits of each result.
 - [Many-emitter research decisions](docs/research-2026-10-09.md): light-tree win,

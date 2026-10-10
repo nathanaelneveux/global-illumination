@@ -1,5 +1,6 @@
-//! Opt-in fixed-work refinement diagnostic. No streaming, edits, adaptive
-//! scheduling, display uploads, or wall-clock-dependent history invalidation.
+//! Opt-in fixed-work refinement diagnostics. No asynchronous streaming,
+//! adaptive scheduling, display uploads or wall-clock-dependent invalidation.
+//! Controlled scene/source changes and history policies have separate studies.
 //! Reports transport and presentation separately against independent analytic
 //! integration where possible, otherwise a disjoint high-sample reference.
 use super::*;

@@ -75,6 +75,15 @@ the house-turn stability gate; keep background-loader and ordinary camera-only
 streaming results separate. A failed gate stays failed, even when a candidate
 improves relative to its control. See the [audit evidence](scene-history-audit.md).
 
+The [completed policy controls](scene-history-audit.md#policy-closeout) cover
+material-ID null changes, moving analytic lights, rare portal discovery,
+repeated distant updates, and emission-cache rebuild cost. Run the relevant
+`policy_` test with `--ignored --nocapture` only when touching that policy;
+`policy_retention_extinction_bounds` is a regular exact-weight unit test.
+These fixed-work/virtual-cadence studies do not establish gameplay FPS. The
+material-swap cleanup's ordinary publication/late-job tests run without a GPU.
+Keep the accepted history/filter settings fixed for the next throughput A/Bs.
+
 `many_light_tree_study` uses the old shader supplied by
 `VOXEL_GI_BASELINE_SHADER` and compares mixed/torch/lava cases at matched GPU
 budgets. Warm short batches after a long reference pass before measuring.

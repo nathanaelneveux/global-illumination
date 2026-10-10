@@ -206,7 +206,7 @@ display, rewinding its sequence, or resetting the world sweep.
 | Tracked remote-only analytic changes | At most 64 |
 | Incomplete source transition history | At most 4 |
 | Global material-table or transport-model replacement | Restart measurements; retain display |
-| Existing receiver changes material ID | Restart that receiver; retain display |
+| Existing receiver changes material ID | At most 16; retain incident mean, moments and display, mark stale |
 | New face | No measurements; optional display-only seed |
 
 Geometry and sources use the same eight-transition `ChangeHistory` mechanism,
@@ -228,11 +228,16 @@ lighting influence: a very bright distant source can still matter greatly.
 `invalidate_model` is the explicit global restart operation. It advances both
 the source snapshot and model-reset watermark together, rejecting in-flight
 old-model jobs. Ordinary analytic light changes retain bounded history instead.
-Receiver material replacement is a separate conservative identity policy, not
-an emitter rule; its necessity has not been established by the global-reset
-ablation. No rule tests a house, tunnel, skylight or gameplay material ID inside
-the estimator. Remaining heuristics and follow-up experiments are inventoried
-in the audit rather than presented as physical requirements.
+Receiver material replacement uses ordinary local relighting: incident energy
+has the same spatial definition even when the receiver reflects or emits
+differently. Revision advancement rejects pre-replacement jobs; self-emission
+updates immediately and never becomes incoming simulation energy. New faces
+remain unmeasured. A new receiver's display-prior clock is initialized explicitly,
+independent of its material ID, not as a side effect of resetting measurements.
+No rule tests a house, tunnel, skylight or gameplay material ID inside the
+estimator. The [completed policy controls](scene-history-audit.md#policy-closeout)
+explain why the remaining history limits and dark-discovery minimum are retained
+as heuristics, not presented as physical requirements.
 
 Scene publication preserves compatible faces, introduces new faces without
 inventing measurements, and publishes at most four atomic pages within a nominal
