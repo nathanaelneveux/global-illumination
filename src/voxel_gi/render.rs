@@ -619,12 +619,23 @@ impl GpuCacheBuild {
     /// bounded catch-up completes. The owning private generation is the only
     /// writer; all mapped views are dropped before transfer to the renderer.
     pub fn prepare_buffers(mut self, device: &RenderDevice) -> Self {
+        let mut usage = ShaderBuffer::default().buffer_description.usage;
+        // Bevy enables this feature automatically on supported integrated GPUs,
+        // not discrete GPUs. Without MAP_WRITE, mapped-at-creation is a staging
+        // allocation: unmap queues another full-size GPU copy. Shared primary
+        // storage avoids that deferred copy on unified-memory hardware.
+        if device
+            .features()
+            .contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS)
+        {
+            usage |= wgpu::BufferUsages::MAP_WRITE;
+        }
         let make = |label, data: &[u8]| {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
                 size: data.len() as u64,
+                usage,
                 mapped_at_creation: true,
-                ..ShaderBuffer::default().buffer_description
             });
             buffer
                 .slice(..)
@@ -668,6 +679,7 @@ fn install_prepared_buffers(
                 buffer_descriptor: wgpu::BufferDescriptor {
                     label: Some(label),
                     size: buffer.size(),
+                    usage: buffer.usage(),
                     ..ShaderBuffer::default().buffer_description
                 },
                 had_data: false,
@@ -722,6 +734,10 @@ pub(crate) fn install_prepared_gpu_cache(
         buffer_description: bevy::render::render_resource::BufferDescriptor {
             label: Some("Voxel GI display hash"),
             size: (build.cache.hash_entries.len() * 16) as u64,
+            usage: build.patches.prepared.as_ref().map_or_else(
+                || ShaderBuffer::default().buffer_description.usage,
+                |prepared| prepared[1].usage(),
+            ),
             ..ShaderBuffer::default().buffer_description
         },
         ..default()
@@ -731,6 +747,10 @@ pub(crate) fn install_prepared_gpu_cache(
         buffer_description: bevy::render::render_resource::BufferDescriptor {
             label: Some("Voxel GI display probes"),
             size: (build.cache.probe_capacity * GPU_PROBE_BYTES) as u64,
+            usage: build.patches.prepared.as_ref().map_or_else(
+                || ShaderBuffer::default().buffer_description.usage,
+                |prepared| prepared[0].usage(),
+            ),
             ..ShaderBuffer::default().buffer_description
         },
         ..default()
