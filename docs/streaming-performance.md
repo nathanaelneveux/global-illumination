@@ -92,3 +92,36 @@ streaming, then evaluate dependency-aware retention without weakening response
 to real distant source/occluder changes. Simply increasing the retained cap has
 already shown a slow-extinction tradeoff in the scene-history audit. The house's
 0.1 variation gate is not a calibrated universal cave quality threshold.
+
+## Emission-distribution dependency reuse
+
+Follow-up to `0cd067e`: compare immutable region identities and emission material
+masks before rebuilding the emitter PDF/tree. A changed region with an emitter
+in either scene, or an emitter in any of its six neighboring regions, still
+rebuilds conservatively. This includes nonemitting occluders that expose/hide
+faces across region/page boundaries. Material-table identity changes still
+rebuild. Unrelated geometry reuses the distribution Arc, avoiding the GPU emitter
+buffer upload too. All visibility rays use the latest scene. This is a cache
+dependency optimization, **not** an emitter-specific lighting-history policy.
+
+The existing isolated `policy_emission_cache_rebuild_cost` benchmark now compares
+reuse with a full build on the same scenes: 576 regions, 4,585 emitting faces,
+32 alternating distant nonemitter edits. Median preparation: **0.02054 ms** with
+reuse versus **1.523 ms** for a full build. Same-scene identity fast path:
+0.000041 ms. These are worker-side CPU timings, not whole-GI or frame speedups.
+Log: `target/emission-dependencies-benchmark.log`.
+
+Five focused emission tests passed, including IR-only emitters, changed optical
+tables, emitter add/remove/unload, unrelated page residency, and adjacent-page
+occlusion/unload. Dev build passed; earlier all-target Clippy covered production
+changes and four tests (the fifth adjacent-page test was added afterwards).
+
+Integration run `cave-1791644516436002000-68041`: `0cd067e` plus the emission.rs and
+history_audit.rs changes in this section's commit. Same settings/machine/command
+as above, no concurrent compiler or profiler; three valid nonblank captures,
+clean log `target/cave-emission-dependencies.log`. Paths 84.28 M, near age
+p95/p99 453/1,392 ms, display p99 7.00 ms, app interval p95/p99 29.72/47.17 ms.
+Corner p95 variation 0.1440, all 144 present, minimum 80 fresh paths. This keeps
+the publication improvement and transport progress; the small timing differences
+against the preceding run are not evidence for an additional gameplay speedup.
+Persistent cave noise and the residual frame tail remain open.

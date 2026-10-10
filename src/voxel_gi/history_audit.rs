@@ -429,12 +429,13 @@ fn policy_emission_cache_rebuild_cost() {
     let reference = cache.distribution.clone();
     let mut unchanged = Vec::new();
     let mut rebuilt = Vec::new();
+    let mut full_build = Vec::new();
     for i in 0..32 {
         let scene = if i % 2 == 0 { b.clone() } else { a.clone() };
         let start = Instant::now();
         cache = EmissionCache::prepare(Some(cache), scene.clone(), materials.clone());
         rebuilt.push(start.elapsed().as_secs_f32() * 1000.0);
-        assert!(!Arc::ptr_eq(&reference, &cache.distribution));
+        assert!(Arc::ptr_eq(&reference, &cache.distribution));
         assert_eq!(reference.faces.len(), cache.distribution.faces.len());
         for (a, b) in reference.faces.iter().zip(&cache.distribution.faces) {
             assert_eq!(
@@ -444,16 +445,21 @@ fn policy_emission_cache_rebuild_cost() {
         }
         let distribution = cache.distribution.clone();
         let start = Instant::now();
-        cache = EmissionCache::prepare(Some(cache), scene, materials.clone());
+        cache = EmissionCache::prepare(Some(cache), scene.clone(), materials.clone());
         unchanged.push(start.elapsed().as_secs_f32() * 1000.0);
         assert!(Arc::ptr_eq(&distribution, &cache.distribution));
+        let start = Instant::now();
+        let full = EmissionCache::prepare(None, scene, materials.clone());
+        full_build.push(start.elapsed().as_secs_f32() * 1000.0);
+        assert_eq!(full.distribution.faces.len(), reference.faces.len());
     }
     eprintln!(
-        "POLICY emission-cache regions={} faces={} unchanged-ms-p50={} changed-ms-p50={} changed-ms-p95={}",
+        "POLICY emission-cache regions={} faces={} unchanged-ms-p50={} changed-ms-p50={} changed-ms-p95={} full-build-ms-p50={}",
         a.regions.len(),
         reference.faces.len(),
         percentile(unchanged, 50),
         percentile(rebuilt.clone(), 50),
-        percentile(rebuilt, 95)
+        percentile(rebuilt, 95),
+        percentile(full_build, 50)
     );
 }

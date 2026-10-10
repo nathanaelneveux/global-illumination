@@ -35,10 +35,14 @@ impl EmissionCache {
         scene: Arc<TransportScene>,
         materials: Arc<VoxelMaterialTransportTable>,
     ) -> Self {
-        if let Some(previous) = previous
-            && Arc::ptr_eq(&scene, &previous.scene)
+        if let Some(mut previous) = previous
             && Arc::ptr_eq(&materials, &previous.materials)
+            && (Arc::ptr_eq(&scene, &previous.scene)
+                || !emission_geometry_changed(&previous.scene, &scene, &materials))
         {
+            // Visibility rays still use the new scene. Only the distribution
+            // of exposed emitting faces (and its GPU allocation) is reused.
+            previous.scene = scene;
             return previous;
         }
         let distribution = Arc::new(EmissionDistribution::build(&scene, &materials));
@@ -48,6 +52,55 @@ impl EmissionCache {
             distribution,
         }
     }
+}
+
+/// The sampling distribution depends on emitter materials and their six face
+/// neighbors, not arbitrary geometry elsewhere. Region identities and material
+/// masks give a conservative dependency check without scanning voxel payloads.
+/// Checking old AND new neighbors covers removal/unload and newly exposed faces.
+fn emission_geometry_changed(
+    previous: &TransportScene,
+    next: &TransportScene,
+    materials: &VoxelMaterialTransportTable,
+) -> bool {
+    let mut emitting = [0_u64; 4];
+    for material in 0..256 {
+        if materials.get(material as u8).emission.max_component() > 0.0 {
+            emitting[material / 64] |= 1 << (material % 64);
+        }
+    }
+    if emitting == [0; 4] {
+        return false;
+    }
+    next.regions
+        .keys()
+        .chain(
+            previous
+                .regions
+                .keys()
+                .filter(|p| !next.regions.contains_key(p)),
+        )
+        .any(|coordinate| {
+            if previous
+                .regions
+                .get(coordinate)
+                .zip(next.regions.get(coordinate))
+                .is_some_and(|(a, b)| Arc::ptr_eq(a, b))
+            {
+                return false;
+            }
+            std::iter::once(IVec3::ZERO)
+                .chain(FACE_OFFSETS)
+                .any(|offset| {
+                    let neighbor = *coordinate + offset;
+                    [previous, next].into_iter().any(|scene| {
+                        scene
+                            .regions
+                            .get(&neighbor)
+                            .is_some_and(|region| region.contains_any_material(&emitting))
+                    })
+                })
+        })
 }
 
 impl EmissionDistribution {
@@ -181,6 +234,101 @@ mod tests {
     use crate::voxel_gi::naadf::{linear_index, volume_len};
     use crate::voxel_gi::world::PAGE_SIZE;
     use crate::voxel_gi::{EnergySpectrum, MaterialTransport};
+
+    #[test]
+    fn distribution_reuses_unrelated_residency_but_tracks_emitter_changes() {
+        let mut voxels = vec![AIR; volume_len(PAGE_SIZE)];
+        voxels[0] = 4;
+        let scene = Arc::new(TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, voxels.clone())],
+            &[],
+        ));
+        let mut materials = VoxelMaterialTransportTable::default();
+        // IR-only emitters participate even when their visible energy is zero.
+        materials.set(
+            4,
+            MaterialTransport {
+                emission: EnergySpectrum::new(Vec3::ZERO, 8.0, 0.0),
+                ..default()
+            },
+        );
+        let materials = Arc::new(materials);
+        let mut cache = EmissionCache::prepare(None, scene.clone(), materials.clone());
+        let original = cache.distribution.clone();
+        assert_eq!(original.faces.len(), 6);
+        for material in [2, 3, AIR] {
+            let next = Arc::new(TransportScene::with_page_delta(
+                &cache.scene,
+                vec![(IVec3::X * 8, vec![material; volume_len(PAGE_SIZE)])],
+                &[],
+            ));
+            cache = EmissionCache::prepare(Some(cache), next.clone(), materials.clone());
+            assert!(Arc::ptr_eq(&cache.scene, &next));
+            assert!(Arc::ptr_eq(&cache.distribution, &original));
+        }
+        let next = Arc::new(TransportScene::with_page_delta(
+            &cache.scene,
+            vec![],
+            &[IVec3::X * 8],
+        ));
+        cache = EmissionCache::prepare(Some(cache), next, materials.clone());
+        assert!(Arc::ptr_eq(&cache.distribution, &original));
+        let next = Arc::new(TransportScene::with_page_delta(
+            &cache.scene,
+            vec![(IVec3::X * 8, voxels)],
+            &[],
+        ));
+        cache = EmissionCache::prepare(Some(cache), next, materials.clone());
+        assert_eq!(cache.distribution.faces.len(), 12);
+        assert!(!Arc::ptr_eq(&cache.distribution, &original));
+        let next = Arc::new(TransportScene::with_page_delta(
+            &cache.scene,
+            vec![],
+            &[IVec3::X * 8],
+        ));
+        cache = EmissionCache::prepare(Some(cache), next, materials);
+        assert_eq!(cache.distribution.faces.len(), 6);
+        assert!(!Arc::ptr_eq(&cache.distribution, &original));
+    }
+
+    #[test]
+    fn loading_and_unloading_an_adjacent_nonemitter_page_rebuilds_exposure() {
+        let mut voxels = vec![AIR; volume_len(PAGE_SIZE)];
+        voxels[linear_index(UVec3::new(31, 8, 8), PAGE_SIZE)] = 4;
+        let scene = Arc::new(TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, voxels)],
+            &[],
+        ));
+        let mut materials = VoxelMaterialTransportTable::default();
+        materials.set(
+            4,
+            MaterialTransport {
+                emission: EnergySpectrum::ONE,
+                ..default()
+            },
+        );
+        let materials = Arc::new(materials);
+        let mut cache = EmissionCache::prepare(None, scene, materials.clone());
+        assert_eq!(cache.distribution.faces.len(), 6);
+        let original = cache.distribution.clone();
+        let next = Arc::new(TransportScene::with_page_delta(
+            &cache.scene,
+            vec![(IVec3::X, vec![2; volume_len(PAGE_SIZE)])],
+            &[],
+        ));
+        cache = EmissionCache::prepare(Some(cache), next, materials.clone());
+        assert_eq!(cache.distribution.faces.len(), 5);
+        assert!(!Arc::ptr_eq(&cache.distribution, &original));
+        let next = Arc::new(TransportScene::with_page_delta(
+            &cache.scene,
+            vec![],
+            &[IVec3::X],
+        ));
+        cache = EmissionCache::prepare(Some(cache), next, materials);
+        assert_eq!(cache.distribution.faces.len(), 6);
+    }
 
     #[test]
     fn region_filter_tracks_material_table_changes_and_neighbor_occlusion() {
