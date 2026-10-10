@@ -315,9 +315,40 @@ corner measurements; indirect light interpolates reconstructed corners.
 ## Display-cache lifetime
 
 `display.rs` coordinates snapshots and sparse patches; `render.rs` owns buffer
-layouts and uploads. Snapshot packing is incremental, then encoding runs off
-thread. The existing cache stays usable during growth. Installation catches up
-measurements changed since the snapshot in the same frame.
+layouts and uploads. Snapshot packing is incremental, then encoding and initial
+buffer allocation run off thread. A replacement remains private while topology
+and measurements catch up in batches of 512 keys, at most 8,192 scanned keys per
+Update and a 1.5-ms soft target. The existing cache keeps receiving value updates;
+the replacement's topology, values and material become visible atomically only
+when its journal is empty. This trades replacement latency for bounded frame
+work, not transport starvation or a debounce. Ordinary sparse edits still use
+the live generation when capacity permits.
+
+One journal records actual presentation changes and topology membership changes
+through snapshot, worker build and private reconciliation. Snapshot capture
+cancels already-covered work; later changes re-enqueue fairly. An unflushed live
+upload is not a new change. Catch-up reads current membership and values rather
+than replaying stale event payloads, including remove/re-add of the same voxel.
+Capacity/hash exhaustion restarts from current residency; a scene revision alone
+does not. Worker-built lookup maps reserve growth capacity too, avoiding a
+main-thread rehash while catching up.
+
+Private buffers remain mapped until catch-up is complete. Each bounded patch
+updates their initial bytes directly, so installation cannot produce a giant
+deferred patch upload. On devices with `MAPPABLE_PRIMARY_BUFFERS` already enabled,
+the buffers include `MAP_WRITE`: this avoids wgpu's otherwise implicit full-size
+staging copy on unmap. Bevy normally enables this on supported integrated GPUs,
+not discrete GPUs. Other devices retain mapped-at-creation staging; CPU-only
+fixtures use byte arrays. The measured large-copy improvement is therefore
+specific to the supported integrated-device path, not a universal backend claim.
+
+Installation unmaps both buffers before extraction. Descriptor-only assets and
+their exact initialized native buffers are registered before Bevy's asset and
+material preparation; matching size, usage and label prevent duplicate allocation.
+Native tests cover buffer identity, initial/catch-up byte parity, GPU submission,
+generation changes and the CPU fallback. See the
+[publication measurements](streaming-performance.md#bounded-display-publication)
+for latency, throughput and remaining stalls.
 
 Each generation owns fresh hash/probe buffer identities and its own shared patch
 queue. Extracted older frames retain their generation. Hash and value patches

@@ -240,6 +240,15 @@ workload or nonblank image alone is not a quality/performance pass.
   names in `gi_main_stage_names`. Capture exclusions are explicit. Pipeline
   overlap means the remainder is not a BVW-only measurement. Use this when
   investigating stalls instead of inferring them from 250-ms averaged timings.
+  `previous_display_stage_ms` further splits display publication into poll,
+  install, topology, snapshot start/advance, values and ledger, with names in
+  `display_stage_names`. These are opt-in CPU body timings, not GPU timestamps.
+- `work_timeline` includes `display_preparing`, `display_catchup_keys` and
+  `display_topology_pending`. Check them alongside geometry, first-sample debt,
+  throughput and receiver age: small frame costs obtained by indefinitely
+  delaying the replacement cache are not a pass. Private catch-up must drain;
+  ordinary live lighting must continue while it does. Record replacement latency
+  as well as its per-frame cost.
 - `VOXEL_GI_VALIDATE_TEMPORAL=1` also supports `cave` and `structures`: 36 fixed
   exposed wall faces and their 144 reconstructed corners, with `site_faces` in
   schema 2. Both the isolated chamber and composed normal-world structures are

@@ -9,7 +9,11 @@
   paired benchmark is 3.3× faster; do not extrapolate that to whole frames.
 - Reusable sparse-upload staging, after testing it with the new default. The
   integrated streaming/cave pair brings offscreen p99 to about 30 ms from
-  38/47 ms, with continued lighting progress. The rare streaming stall remains.
+  38/47 ms, with continued lighting progress.
+- Bounded private display-cache catch-up and worker-built, directly mapped
+  buffers on supported integrated GPUs. On this M4, the measured 69–88 ms
+  main-world publication bursts fall below 8 ms. Repeated cave worst intervals
+  fall from 196 ms to 38–46 ms; a separate turn spike remains. Details below.
 
 The scene-history policy and preferred corner appearance are unchanged. These
 are **not** windowed FPS measurements or proof of convergence/60-FPS compliance.
@@ -19,7 +23,136 @@ on local branches, not in the production path.
 The [BVW branch comparison](#bvw-optimization-branch-comparison) below reduces
 observed worst intervals, but changes terrain residency and lighting freshness.
 Its voxel-write lock fix alone does not remove the remaining hitch. GI display
-publication is now a measured long-running main-world stage to investigate.
+publication is addressed by the retained experiment below without changing BVW.
+
+## Bounded display publication
+
+### Attribution and implementation
+
+The instrumented baseline `5e863bc` records a 68.98-ms display update: 66.34 ms
+is topology catch-up, not installation itself. A narrower diagnostic on that
+commit plus `target/topology-detail-instrumentation.diff` measures 75.16 ms:
+29.41 ms planning, **0.002 ms waiting for the mirror lock**, 10.83 ms committing
+108,108 additions/10,452 removals, and 34.91 ms updating 205,773 changed values.
+The async snapshot accumulated a world-scale delta that was applied in one frame.
+
+Retained checkpoints, in order:
+
+- `48c5d91`: reconcile a private generation in bounded batches before publishing
+  its material/buffers atomically. Reserve lookup-map growth on the worker too.
+- `658d520`: journal actual changes, not unchanged pending live-upload debt;
+  cancel catch-up work already captured by the incremental snapshot. The first
+  pilot's unnecessary tail extended streaming preparation to 23.8 seconds; this
+  correction ended it around 20.8 seconds.
+- `e9ee0d2`: worker-allocated buffers remain privately mapped through catch-up.
+  Publish the exact allocations, not duplicate Bevy initializations.
+- `4ce0984`: add `MAP_WRITE` when the device already enables
+  `MAPPABLE_PRIMARY_BUFFERS`. Local wgpu 29.0.4 source shows that without it,
+  unmap queues a full-size staging copy (`BufferMapState::Init`); Bevy 0.19.1
+  enables the primary-mapping feature on supported integrated GPUs, but normally
+  excludes discrete GPUs. This removes that deferred copy on the M4. Neither
+  renderer feature negotiation nor the fallback's memory policy is changed.
+
+The previously rejected worker-buffer experiment (`0dd5a03`) did not bound the
+CPU catch-up and still used full staging initialization. It remains a valid
+rejected result; simply moving allocation to a worker was not sufficient.
+
+No sampling, history, smoothing, transport/upload budgets, draw distance, BVW
+dependency or preferred-look setting changes are included. Catch-up has a
+1.5-ms soft CPU target, 512-key batches and an 8,192-key scanned-entry cap.
+Old lighting continues updating. Newly added topology can wait longer for the
+atomic replacement: the final streaming run prepared from about 16.83 to
+21.5 seconds, versus the baseline's large installation near 18.93 seconds.
+This is a documented latency tradeoff, not faster convergence. All final
+candidate runs drain private/topology and first-sample debt.
+
+### Controlled measurements
+
+Apple M4, 10-core GPU, 16 GiB; macOS 26.6.2; Rust 1.95; Bevy 0.19.1 and registry
+BVW 0.17. Development build (root opt-level 1, dependencies 3, dynamic Bevy),
+2560×1440 offscreen, corner sun/reconstructed indirect, textures on/AO off.
+Sixteen paths/selected face, 4-ms adaptive trace target, 8,192 receivers,
+three bounces, reach 768, 75-ms display response/50-ms upload. No concurrent
+build or profiler. This was a live desktop; the existing Chorio engine and OS
+services were not stopped. Offscreen intervals do not establish windowed FPS.
+
+`VOXEL_GI_VALIDATE=1`, `VOXEL_GI_VALIDATE_HEADLESS=1`,
+`VOXEL_GI_VALIDATE_FRAME_TIMINGS=1`, `VOXEL_GI_VALIDATE_EXIT=1`,
+`VOXEL_GI_VALIDATE_EXPECT_BUILD_ROOT="$PWD"`, `RUST_LOG=warn`, `cargo run --locked`.
+Use `PROFILE=streaming` via `VOXEL_GI_VALIDATE_PROFILE`; cave also uses
+`VOXEL_GI_VALIDATE_BACKGROUND=1` and `VOXEL_GI_VALIDATE_TEMPORAL=1`.
+Rows use 15 seconds onward, excluding capture-associated intervals, including
+the streaming turn. Reported system-body maxima are independent of app intervals.
+
+| Runtime | Profile | Interval p95 / p99 / max (ms) | Display max (ms) | Total paths (M) | Final pages / probes |
+| --- | --- | --- | --- | --- | --- |
+| `5e863bc` baseline | streaming | 26.75 / 31.07 / 162.70 | 68.98 | 86.78 | 604 / 452,561 |
+| `658d520` CPU catch-up | streaming | 26.43 / 28.80 / 72.75 | 6.49 | 92.41 | 600 / 440,933 |
+| `e9ee0d2` worker/staging | streaming | 26.25 / 29.37 / 89.95 | 7.36 | 91.17 | 603 / 432,860 |
+| `4ce0984` primary mapping | streaming | 26.23 / 28.71 / 52.75 | 6.90 | 90.78 | 611 / 442,792 |
+| `0ddc304` prior control | cave/background | 26.98 / 30.76 / 195.93 | 87.90 | 136.53 | 1,124 / 1,011,501 |
+| `e9ee0d2` worker/staging | cave/background | 26.69 / 30.11 / 103.44 | 6.81 | 127.84 | 1,091 / 1,023,462 |
+| `4ce0984` primary mapping | cave/background | 27.20 / 30.52 / 38.17 | 5.85 | 128.14 | 1,073 / 1,016,652 |
+| `4ce0984` repeat | cave/background | 26.30 / 30.40 / 45.99 | 7.50 | 125.59 | 1,098 / 976,668 |
+
+All runtimes above are clean commits. The prior cave control differs from
+`5e863bc` only by documentation and opt-in substage instrumentation; the solver,
+renderer and dependency baseline are unchanged. Geometry/async scheduling are
+not identical between runs: do not turn small throughput/percentile differences
+into a precise speedup claim. The targeted long publication bursts are gone in
+these runs, without reducing the workload to the optimized BVW branch's smaller
+resident set. Cave paths remain 6–8% below the prior control, not a demonstrated
+throughput win; near-age p95 is 980–986 ms versus 912 ms. Streaming near-age p95
+is 1,279 ms versus 2,025 ms and total paths are slightly higher.
+
+The final streaming maximum occurs at the turn (15.11 seconds), not display
+replacement; the remainder after 15.5 seconds peaks at 32.42 ms. The worker/staging
+pilot also peaks at 32.07 ms after the turn, but retained a 103-ms cave swap.
+Do not subtract CPU timings from pipelined intervals to attribute the turn to
+BVW. **Remaining turn/ordinary frame costs and 60-FPS compliance are not solved.**
+Other backends without primary mapping retain the staging-copy limitation.
+
+### Freshness, quality and verification
+
+Both final cave runs have all 144 corner traces present during 40–60 seconds,
+with at least 128/208 new paths per site. P95 excess variation is 0.0764/0.0840
+versus 0.0999 in the prior control. This is no evidence of a noise regression,
+not a new estimator or ground-truth accuracy win. Coverage/bootstrap finish at
+100%; a few ingestion pages remain from continuous background loading, while
+scene publication, private display catch-up and first-sample debt are empty.
+
+The background `response` run at `e9ee0d2` retains 14 valid captures, no final
+display backlog, and emitter-removal red residual below 10% after 2.39/2.61 s
+at the two fixed ceiling receivers; final residual is 2.85%/3.54%. The prior
+control was 2.38 s at both. Response evidence is reused for the unchanged
+estimator/publication logic in `4ce0984`; that commit only changes native buffer
+usage. It is not represented as a second response run.
+
+Focused verification: 16 render tests, three change-journal tests and 22 field/
+publication integration tests; native generation/material and out-of-bounds
+retry regressions; development build, strict all-target Clippy, format/diff
+checks. Native checks cover exact prepared-buffer reuse, byte parity after
+private catch-up, actual GPU submission after unmap, growth/shrink/equal-size
+generations and CPU fallback. No routine toggle stress or full suite was run.
+All cited candidate captures pass dimensions/assets/nonblank checks and logs are
+clean; streaming, early/final cave and recovered edit-room images were inspected.
+
+Exact ignored artifacts under `target/gi-validation/`:
+
+- `streaming-1791652631596739000-74333`: baseline `5e863bc`.
+- `streaming-1791652741257912000-74385`: diagnostic-only topology detail diff.
+- `streaming-1791653299637589000-74758`, `cave-1791653365515950000-74806`:
+  first bounded pilot `48c5d91` (superseded catch-up bookkeeping).
+- `streaming-1791653554514279000-74971`: `658d520`.
+- `streaming-1791653952312124000-75201`, `cave-1791654015710649000-75239`,
+  `response-1791654091313993000-75302`: `e9ee0d2`.
+- `streaming-1791654375936014000-75514`, `cave-1791654272299960000-75443`,
+  `cave-1791654449505670000-75550`: final `4ce0984`.
+- `cave-1791651580682425000-73424`: prior control `0ddc304` from the BVW comparison.
+
+Logs use `target/{streaming,cave,response}-display-*.log`; focused test/build logs
+use `target/display-*.log`. See [display-cache lifetime](architecture.md#display-cache-lifetime)
+for the maintained ownership and publication contracts.
 
 ## Follow-up experiments
 
@@ -207,10 +340,11 @@ repeats record 66.09 and 67.59 ms there; full-branch repeats record 7.55 and
 8.11 ms maxima. PreUpdate maxima in these streaming windows are respectively
 0.80 ms, 4.04/0.86 ms, and 2.51/2.17 ms. These are independent system/schedule
 observations, not a subtraction from the pipelined frame interval. The specific
-operation inside display publication (topology patch, cache installation,
-catch-up or allocation/lock wait) is not yet isolated. Instrument those paths
-before changing their architecture. A smaller loaded set avoiding a costly GI
-cache operation is a hypothesis, not an established cause.
+operation was not isolated at this checkpoint. The subsequent
+[display investigation](#bounded-display-publication) isolates the synchronous
+catch-up burst and retains its fix. A smaller loaded set avoiding a costly GI
+cache operation remains a hypothesis about the BVW comparison, not proof that
+every difference between its branches has been attributed.
 
 ### Controlled setup
 
