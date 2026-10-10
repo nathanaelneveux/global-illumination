@@ -10,6 +10,9 @@ use crate::voxel_gi::{
 };
 use serde_json::{Value, json};
 
+#[path = "history_audit.rs"]
+mod history_audit;
+
 struct Fixture {
     name: &'static str,
     scene: Arc<TransportScene>,
