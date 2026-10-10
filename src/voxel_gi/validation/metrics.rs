@@ -124,6 +124,9 @@ impl Metrics {
             "coverage": stats.interactive_coverage, "bootstrap": stats.bootstrap_coverage,
             "traced_paths": stats.traced_paths, "transport_batches": stats.transport_batches,
             "pending_probes": stats.pending_probes,
+            "display_preparing": runtime.gpu_snapshot.is_some() || runtime.gpu_task.is_some() || runtime.gpu_prepared.is_some(),
+            "display_catchup_keys": runtime.gpu_catchup_dirty.len(),
+            "display_topology_pending": runtime.gpu_topology_dirty,
         }));
     }
 

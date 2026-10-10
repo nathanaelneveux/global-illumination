@@ -58,7 +58,9 @@ pub(crate) use diagnostics::VoxelGiDiagnosticsPlugin;
 use dispatch::{apply_trace_task, start_trace_task};
 use display::upload_transport_cache;
 use publication::apply_scene_task;
-use render::{GpuCacheBuild, GpuSnapshot, GpuTransportCache, install_render_assets};
+use render::{
+    GpuCacheBuild, GpuSnapshot, GpuTransportCache, PreparedGpuCache, install_render_assets,
+};
 use sources::{TransportSources, synchronize_material_table, synchronize_transport_sources};
 use telemetry::GiWorkTimings;
 use tracer::BOOTSTRAP_SAMPLES;
@@ -269,8 +271,8 @@ struct VoxelGiRuntime {
     gpu_removed: Vec<IVec3>,
     gpu_task: Option<Task<GpuCacheBuild>>,
     gpu_snapshot: Option<GpuSnapshot>,
-    gpu_catchup_dirty: HashSet<IVec3>,
-    gpu_task_version: u64,
+    gpu_prepared: Option<PreparedGpuCache>,
+    gpu_catchup_dirty: display::DisplayDirtyQueue,
     gpu_value_dirty: HashSet<IVec3>,
     sky_upload_pending: bool,
     last_gpu_upload: Instant,
@@ -340,8 +342,8 @@ impl Default for VoxelGiRuntime {
             gpu_removed: Vec::new(),
             gpu_task: None,
             gpu_snapshot: None,
-            gpu_catchup_dirty: HashSet::new(),
-            gpu_task_version: 0,
+            gpu_prepared: None,
+            gpu_catchup_dirty: default(),
             gpu_value_dirty: HashSet::new(),
             sky_upload_pending: false,
             last_gpu_upload: now - GPU_UPLOAD_INTERVAL,

@@ -390,6 +390,84 @@ pub(crate) struct GpuCacheBuild {
     high_water: usize,
 }
 
+/// A replacement generation stays private until its topology and values have
+/// caught up. Its byte arrays can then be published without a stale first frame.
+pub(crate) struct PreparedGpuCache {
+    cache: GpuTransportCache,
+    patches: GpuProbePatchQueue,
+    hash_data: Vec<u8>,
+    probe_data: Vec<u8>,
+}
+
+impl PreparedGpuCache {
+    pub fn new(build: GpuCacheBuild) -> Self {
+        Self {
+            cache: GpuTransportCache {
+                slots: build.slots,
+                hash_slots: build.hash_slots,
+                hash_entries: build.hash_entries,
+                probe_capacity: build.probe_capacity,
+                high_water: build.high_water,
+                ready: true,
+                ..default()
+            },
+            patches: GpuProbePatchQueue {
+                probe_buffer: default(),
+                hash_buffer: default(),
+                state: Arc::new(Mutex::new(build.patch_state)),
+            },
+            hash_data: build.hash_data,
+            probe_data: build.probe_data,
+        }
+    }
+
+    /// Reconcile a bounded set of keys against current authoritative state.
+    /// Event order does not matter: remove/re-add, mask and material changes
+    /// all converge to the same latest probe. No renderer can see this cache.
+    pub fn synchronize(&mut self, keys: &[IVec3], probes: &impl super::field::ProbeLookup) -> bool {
+        let mut removed = Vec::new();
+        let mut added = Vec::new();
+        let mut changed = HashSet::new();
+        for &voxel in keys {
+            if probes.lookup(&voxel).is_none() {
+                removed.push(voxel);
+            } else if self.cache.slots.contains_key(&voxel) {
+                changed.insert(voxel);
+            } else {
+                added.push(voxel);
+            }
+        }
+        if !patch_gpu_topology(
+            &mut self.cache,
+            &self.patches,
+            probes,
+            &removed,
+            &added,
+            &changed,
+        ) {
+            return false;
+        }
+        // Fold private patches into the initial asset bytes in the same bounded
+        // batch. Installing must not stage a world-sized catch-up upload later.
+        let probe_bytes = self.probe_data.len() as u64;
+        let hash_bytes = self.hash_data.len() as u64;
+        self.patches
+            .state
+            .lock()
+            .unwrap()
+            .upload(probe_bytes, hash_bytes, |probe, offset, bytes| {
+                let data = if probe {
+                    &mut self.probe_data
+                } else {
+                    &mut self.hash_data
+                };
+                data[offset..offset + bytes.len()].copy_from_slice(bytes);
+            })
+            .expect("private cache bytes and mirrors have the same capacity");
+        true
+    }
+}
+
 /// Snapshot packing has a bounded game-thread cost. The key list is stable even
 /// if live order indices are compacted by removals; the caller records deltas
 /// from construction until installation to catch up both topology and values.
@@ -440,18 +518,29 @@ pub(crate) fn snapshot_gpu_probes(
 
 /// CPU encoding is deliberately run in an async task. `ShaderBuffer::set_data`
 /// on 250k probes was responsible for multi-frame stalls in ordinary builds.
+#[cfg(test)]
 pub(crate) fn build_gpu_cache(snapshot: Vec<(IVec3, GpuProbe)>) -> GpuCacheBuild {
+    let resident_count = snapshot.len();
+    build_gpu_cache_for_residency(snapshot, resident_count)
+}
+
+pub(crate) fn build_gpu_cache_for_residency(
+    snapshot: Vec<(IVec3, GpuProbe)>,
+    resident_count: usize,
+) -> GpuCacheBuild {
     // Geometric headroom avoids rebuilding the entire cache every 16k streamed
     // receivers. Keep hash occupancy <= 50% even after using that headroom.
-    let probe_capacity = snapshot
-        .len()
-        .saturating_add((snapshot.len() / 2).max(16_384))
+    let resident_count = resident_count.max(snapshot.len());
+    let probe_capacity = resident_count
+        .saturating_add((resident_count / 2).max(16_384))
         .max(1);
     let mut hash_capacity = probe_capacity.saturating_mul(2).next_power_of_two().max(1);
     loop {
         let mut entries = vec![GpuHashEntry::EMPTY; hash_capacity];
-        let mut slots = VoxelMap::with_capacity(snapshot.len());
-        let mut hash_slots = VoxelMap::with_capacity(snapshot.len());
+        // Reserve the same growth headroom as the GPU slots, on this worker.
+        // Catch-up must not rehash world-sized CPU indices on the game thread.
+        let mut slots = VoxelMap::with_capacity(probe_capacity);
+        let mut hash_slots = VoxelMap::with_capacity(probe_capacity);
         let mut longest_probe = 0;
         for (probe_index, (voxel, _)) in snapshot.iter().enumerate() {
             let mut slot = hash_voxel(*voxel) as usize & (hash_capacity - 1);
@@ -495,8 +584,29 @@ pub(crate) fn build_gpu_cache(snapshot: Vec<(IVec3, GpuProbe)>) -> GpuCacheBuild
     }
 }
 
+#[cfg(test)]
 pub(crate) fn install_gpu_cache(
     build: GpuCacheBuild,
+    cache: &mut GpuTransportCache,
+    patches: &mut GpuProbePatchQueue,
+    assets: &mut VoxelTransportAssets,
+    buffers: &mut Assets<ShaderBuffer>,
+    materials: &mut Assets<VoxelTransportMaterial>,
+    material_handle: &Handle<VoxelTransportMaterial>,
+) {
+    install_prepared_gpu_cache(
+        PreparedGpuCache::new(build),
+        cache,
+        patches,
+        assets,
+        buffers,
+        materials,
+        material_handle,
+    );
+}
+
+pub(crate) fn install_prepared_gpu_cache(
+    mut build: PreparedGpuCache,
     cache: &mut GpuTransportCache,
     patches: &mut GpuProbePatchQueue,
     assets: &mut VoxelTransportAssets,
@@ -523,18 +633,10 @@ pub(crate) fn install_gpu_cache(
         },
         ..default()
     });
-    *patches = GpuProbePatchQueue {
-        probe_buffer: assets.probes.clone(),
-        hash_buffer: assets.hash_entries.clone(),
-        state: Arc::new(Mutex::new(build.patch_state)),
-    };
-    cache.slots = build.slots;
-    cache.hash_slots = build.hash_slots;
-    cache.hash_entries = build.hash_entries;
-    cache.free_probe_slots.clear();
-    cache.probe_capacity = build.probe_capacity;
-    cache.high_water = build.high_water;
-    cache.ready = true;
+    build.patches.probe_buffer = assets.probes.clone();
+    build.patches.hash_buffer = assets.hash_entries.clone();
+    *patches = build.patches;
+    *cache = build.cache;
     if let Some(mut material) = materials.get_mut(material_handle) {
         material.extension.hash_entries = assets.hash_entries.clone();
         material.extension.probes = assets.probes.clone();
@@ -1327,6 +1429,136 @@ mod tests {
         let state = patches.state.lock().unwrap();
         for (voxel, probe) in &probes {
             let offset = cache.slots[voxel] * GPU_PROBE_BYTES;
+            let expected = ShaderBuffer::from(vec![gpu_probe(probe)]).data.unwrap();
+            assert_eq!(
+                &state.probe_mirror[offset..offset + GPU_PROBE_BYTES],
+                &expected
+            );
+        }
+    }
+
+    #[test]
+    fn replacement_catchup_is_bounded_and_publishes_latest_initial_bytes() {
+        use super::super::{
+            VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, upload_transport_cache,
+        };
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy_voxel_world::rendering::VoxelWorldMaterialHandle;
+        use std::time::{Duration, Instant};
+
+        let mut field = VoxelEnergyField::default();
+        for x in 0..12_000 {
+            let voxel = IVec3::new(x, 0, 0);
+            let mut probe = SurfaceProbe::new(voxel, 4);
+            probe.display[2].indirect = Vec3::ONE;
+            field.order.push(voxel);
+            field.probes.insert(voxel, probe);
+        }
+        let replacement = PreparedGpuCache::new(build_gpu_cache(snapshot_gpu_probes(
+            &field.probes,
+            &field.order,
+        )));
+        let mut buffers = Assets::<ShaderBuffer>::default();
+        let mut assets = VoxelTransportAssets {
+            texture: default(),
+            probes: default(),
+            hash_entries: default(),
+        };
+        let mut patches = GpuProbePatchQueue {
+            probe_buffer: default(),
+            hash_buffer: default(),
+            state: default(),
+        };
+        let mut cache = GpuTransportCache::default();
+        let mut materials = Assets::default();
+        let handle = materials.add(material_template(&assets));
+        install_gpu_cache(
+            build_gpu_cache(snapshot_gpu_probes(&field.probes, &[IVec3::ZERO])),
+            &mut cache,
+            &mut patches,
+            &mut assets,
+            &mut buffers,
+            &mut materials,
+            &handle,
+        );
+        let old_id = assets.probes.id();
+        for &voxel in &field.order {
+            field.probes.get_mut(&voxel).unwrap().display[2].indirect = Vec3::splat(2.0);
+        }
+        let mut world = World::new();
+        world.insert_resource(VoxelGiRuntime {
+            gpu_prepared: Some(replacement),
+            gpu_value_dirty: field.order.iter().copied().collect(),
+            last_gpu_upload: Instant::now() - Duration::from_secs(1),
+            ..default()
+        });
+        world.insert_resource(field);
+        world.insert_resource(assets);
+        world.insert_resource(patches);
+        world.insert_resource(cache);
+        world.insert_resource(buffers);
+        world.insert_resource(materials);
+        world.insert_resource(VoxelWorldMaterialHandle { handle });
+        world.insert_resource(VoxelGiSettings::default());
+        world.init_resource::<super::super::telemetry::GiWorkTimings>();
+
+        world.run_system_once(upload_transport_cache).unwrap();
+        assert_eq!(
+            world.resource::<VoxelTransportAssets>().probes.id(),
+            old_id,
+            "more than a frame's catch-up budget must not publish a partial generation"
+        );
+        assert!(world.resource::<VoxelGiRuntime>().gpu_prepared.is_some());
+        // Editing during preparation must requeue already-processed keys and
+        // reconcile final membership, including remove/re-add of the same key.
+        let added = IVec3::new(12_000, 0, 0);
+        {
+            let mut field = world.resource_mut::<VoxelEnergyField>();
+            field.probes.get_mut(&IVec3::ZERO).unwrap().display[2].indirect = Vec3::splat(3.0);
+            field.probes.remove(&IVec3::X);
+            field.probes.insert(added, SurfaceProbe::new(added, 4));
+        }
+        {
+            let mut runtime = world.resource_mut::<VoxelGiRuntime>();
+            runtime.gpu_value_dirty.insert(IVec3::ZERO);
+            runtime.gpu_removed.extend([IVec3::X, added]);
+            runtime.gpu_added.push(added);
+            runtime.gpu_topology_dirty = true;
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while world.resource::<VoxelGiRuntime>().gpu_prepared.is_some() {
+            world.run_system_once(upload_transport_cache).unwrap();
+            assert!(
+                Instant::now() < deadline,
+                "private catch-up made no progress"
+            );
+        }
+        let assets = world.resource::<VoxelTransportAssets>();
+        assert_ne!(assets.probes.id(), old_id);
+        let cache = world.resource::<GpuTransportCache>();
+        assert!(!cache.slots.contains_key(&IVec3::X));
+        assert!(cache.slots.contains_key(&added));
+        let state = world.resource::<GpuProbePatchQueue>().state.lock().unwrap();
+        let buffers = world.resource::<Assets<ShaderBuffer>>();
+        assert_eq!(
+            buffers.get(&assets.probes).unwrap().data.as_ref().unwrap(),
+            &state.probe_mirror
+        );
+        assert_eq!(
+            buffers
+                .get(&assets.hash_entries)
+                .unwrap()
+                .data
+                .as_ref()
+                .unwrap(),
+            &state.hash_mirror
+        );
+        assert!(
+            state.pending_probes.is_empty() && state.pending_hash.is_empty(),
+            "initial upload must already contain catch-up, not defer it to a massive render patch"
+        );
+        for probe in world.resource::<VoxelEnergyField>().probes.values() {
+            let offset = cache.slots[&probe.voxel] * GPU_PROBE_BYTES;
             let expected = ShaderBuffer::from(vec![gpu_probe(probe)]).data.unwrap();
             assert_eq!(
                 &state.probe_mirror[offset..offset + GPU_PROBE_BYTES],
