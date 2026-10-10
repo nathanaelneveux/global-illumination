@@ -26,6 +26,7 @@ impl ProbeStore {
     pub fn keys(&self) -> impl Iterator<Item = &IVec3> {
         self.0.keys()
     }
+    #[cfg(test)]
     pub fn values(&self) -> impl Iterator<Item = &SurfaceProbe> {
         self.0.values().map(Box::as_ref)
     }
