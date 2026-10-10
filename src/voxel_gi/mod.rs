@@ -194,10 +194,10 @@ pub struct VoxelGiStats {
     pub last_decode_ms: f32,
     pub packed_geometry_bytes: usize,
     pub fully_bootstrapped: bool,
-    /// Full-field summaries are populated only by opt-in terminal/validation
-    /// diagnostics, every five seconds. They are not convergence measures.
+    /// Approximate mean over at most 1,024 evenly spaced receivers, populated
+    /// by opt-in terminal/validation diagnostics every five seconds. Not convergence.
     pub mean_history_samples: f32,
-    /// See `mean_history_samples`; zero while full-field diagnostics are off.
+    /// Oldest among that sampled subset, not a certified world-wide maximum.
     pub oldest_sample_age_ms: f32,
     pub backend: &'static str,
 }

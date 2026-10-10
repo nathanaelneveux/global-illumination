@@ -581,7 +581,7 @@ pub(super) fn run_validation(
         "terrain": config.map(|c| json!({"seed": c.world_seed, "period": c.terrain_period, "ambient_occlusion": c.ambient_occlusion})),
         "captures": evidence.completed, "capture_windows": evidence.windows,
         "edits": run.edits, "edit_attempts": run.edit_attempts, "moves": run.moves, "mode_changes": run.mode_changes,
-        "max_loaded_pages": run.max_pages, "coverage": stats.interactive_coverage, "mean_history": stats.mean_history_samples,
+        "max_loaded_pages": run.max_pages, "coverage": stats.interactive_coverage, "sampled_mean_history": stats.mean_history_samples,
         "sky_rays_scheduled": stats.sky_rays_scheduled, "sky_cached_corners": stats.sky_cached_corners,
         "transport_batches": stats.transport_batches, "sky_only_batches": stats.sky_only_batches,
         "traced_paths": stats.traced_paths, "packed_geometry_bytes": stats.packed_geometry_bytes,
