@@ -4,6 +4,11 @@ Use the smallest check that answers the current question. The purpose is faster,
 stable gameplay and useful simulation measurements, not maximizing test minutes.
 The full suite is an integration checkpoint, not the default for every tweak.
 
+For adaptive-history research, the [DDGI/A-SVGF qualification study](adaptive-history-qualification.md)
+records the opt-in matched native sample tapes, isolated branches, first-gate
+failures and required runtime gate. Neither detector is a gameplay default;
+do not add those studies to ordinary throughput testing.
+
 ## Reproducible setup
 
 Use the checked-in lockfile. On a fresh machine, fetch dependencies normally;
