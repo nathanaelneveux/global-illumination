@@ -159,7 +159,7 @@ fn channels(energy: EnergySpectrum) -> [f32; 5] {
     ]
 }
 
-/// Compare the existing geometry-history policy with a forced restart. Every
+/// Compare spatial caps, a forced restart and full compatible-history retention. Every
 /// post-change path has an independent exact-zero reference in all five bands.
 /// Removal, replacement and occlusion must not need different energy policies.
 #[test]
@@ -212,29 +212,29 @@ fn scene_history_source_extinction_response() {
                 .unwrap(),
         );
         let emitters = Arc::new(EmissionDistribution::build(&dark, &fixture.materials));
-        for reset in [true, false] {
+        for (policy, cap, paths, batches) in [
+            ("reset", 0, 4, 256),
+            ("spatial", 16, 4, 256),
+            ("retain-all", u32::MAX, 128, 160),
+        ] {
             let start = Instant::now();
             let mut probes = fixture.probes.clone();
             for p in &mut probes {
-                p.samples[2] = if reset {
-                    0
-                } else {
-                    journal.history_limit(p.voxel, 0, 1)
-                };
-                assert_eq!(p.samples[2], if reset { 0 } else { 16 });
+                assert_eq!(journal.history_limit(p.voxel, 0, 1), 16);
+                p.samples[2] = p.samples[2].min(cap);
                 p.display[2].indirect = p.radiance[2].visible;
                 p.face_updated_at[2] = Some(start);
             }
             let mut last_raw_bad = 0;
             let mut last_display_bad = 0;
-            for batch in 1..=256 {
+            for batch in 1..=batches {
                 let before = probes.clone();
                 gpu.trace(
                     dark.clone(),
                     &fixture.sources,
                     &fixture.materials,
                     &mut probes,
-                    4,
+                    paths,
                     &emitters,
                 )
                 .unwrap();
@@ -244,7 +244,7 @@ fn scene_history_source_extinction_response() {
                         fixture.sources.clone(),
                         Arc::new(fixture.materials.clone()),
                         before.clone(),
-                        4,
+                        paths,
                     );
                     for (a, b) in probes.iter().zip(cpu) {
                         assert!((a.radiance[2] - b.radiance[2]).visible.abs().max_element() < 1e-6);
@@ -255,8 +255,8 @@ fn scene_history_source_extinction_response() {
                 let now = start + Duration::from_millis(batch * 50);
                 for ((p, previous), initial) in probes.iter_mut().zip(&before).zip(&fixture.probes)
                 {
-                    let retained = if reset { 0.0 } else { 16.0 };
-                    let expected = retained / (retained + (batch * 4) as f32);
+                    let retained = initial.samples[2].min(cap) as f32;
+                    let expected = retained / (retained + (batch * u64::from(paths)) as f32);
                     for (mean, lit) in channels(p.radiance[2])
                         .into_iter()
                         .zip(channels(initial.radiance[2]))
@@ -284,13 +284,13 @@ fn scene_history_source_extinction_response() {
                 }
             }
             assert!(
-                last_display_bad < 256,
+                last_display_bad < batches,
                 "response must settle inside the observed interval"
             );
             eprintln!(
-                "extinction {kind} reset={reset}: all-band raw <10% at {} fresh paths; worst RGB display <10% at {} fresh paths (virtual 50ms/4 paths, not gameplay latency)",
-                (last_raw_bad + 1) * 4,
-                (last_display_bad + 1) * 4
+                "extinction {kind} policy={policy}: all-band raw <10% at {} fresh paths; worst RGB display <10% at {} fresh paths (virtual 50ms/{paths} paths, not gameplay latency)",
+                (last_raw_bad + 1) * u64::from(paths),
+                (last_display_bad + 1) * u64::from(paths)
             );
         }
     }
