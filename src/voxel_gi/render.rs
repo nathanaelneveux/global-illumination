@@ -152,6 +152,34 @@ pub struct GpuTransportCache {
     pub ready: bool,
 }
 
+impl GpuTransportCache {
+    /// Bounded diagnostics read of the publication mirror. This does not wait
+    /// for GPU consumption; screenshots remain the end-to-end evidence.
+    pub(super) fn validation_mirror(
+        &self,
+        queue: &GpuProbePatchQueue,
+        sites: &[(IVec3, usize)],
+    ) -> Vec<[f32; 4]> {
+        let state = queue.state.lock().unwrap();
+        sites
+            .iter()
+            .map(|(voxel, face)| {
+                let Some(slot) = self.slots.get(voxel) else {
+                    return [0.0; 4];
+                };
+                let offset = slot * GPU_PROBE_BYTES + face * 16;
+                std::array::from_fn(|i| {
+                    f32::from_le_bytes(
+                        state.probe_mirror[offset + i * 4..offset + i * 4 + 4]
+                            .try_into()
+                            .unwrap(),
+                    )
+                })
+            })
+            .collect()
+    }
+}
+
 #[derive(Resource, Clone, ExtractResource)]
 pub(crate) struct GpuProbePatchQueue {
     probe_buffer: Handle<ShaderBuffer>,

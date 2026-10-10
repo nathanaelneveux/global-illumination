@@ -7,6 +7,7 @@ mod metrics;
 mod profiles;
 mod response;
 mod structures;
+mod temporal;
 
 use super::render::VoxelTransportMaterial;
 use super::world::FACE_OFFSETS;
@@ -99,6 +100,7 @@ pub(super) struct ValidationRun {
     emitter_started: bool,
     response: response::ResponseRun,
     house: house::HouseRun,
+    temporal: temporal::TemporalRun,
     cave_camera_initialized: bool,
     structures: structures::StructuresRun,
     background: background::BackgroundRun,
@@ -112,7 +114,12 @@ pub(super) fn run_validation(
     mut run: Local<ValidationRun>,
     mut evidence: ResMut<CaptureEvidence>,
     time: Res<Time<Real>>,
-    gi: (Res<VoxelGiStats>, Res<super::VoxelGiRuntime>),
+    gi: (
+        Res<VoxelGiStats>,
+        Res<super::VoxelGiRuntime>,
+        Res<super::render::GpuTransportCache>,
+        Res<super::render::GpuProbePatchQueue>,
+    ),
     settings: Res<VoxelGiSettings>,
     field: Res<VoxelEnergyField>,
     mut dirty: ResMut<VoxelGiDirty>,
@@ -133,7 +140,7 @@ pub(super) fn run_validation(
     if std::env::var_os("VOXEL_GI_VALIDATE").is_none() || run.done || evidence.failed {
         return;
     }
-    let (stats, runtime) = gi;
+    let (stats, runtime, cache, queue) = gi;
     let (assets, asset_server, configs) = asset_context;
     if run.startup.is_none() {
         let profile =
@@ -250,6 +257,8 @@ pub(super) fn run_validation(
         run.cave.record(elapsed, &field);
     }
     if matches!(profile, Profile::House | Profile::HouseEdits) {
+        run.temporal
+            .record(elapsed, &field, &runtime, &cache, &queue);
         run.house.tick(
             elapsed,
             profile == Profile::HouseEdits,
@@ -493,6 +502,11 @@ pub(super) fn run_validation(
         return;
     }
     let config = configs.get(&assets.prototype_config);
+    if let Err(error) = run.temporal.save(evidence.output.as_ref().unwrap()) {
+        evidence.fail(&format!("Could not save temporal sequence: {error}"));
+        commands.write_message(AppExit::error());
+        return;
+    }
     if matches!(profile, Profile::Cave | Profile::Structures)
         && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("cave.json"),
             json!({"samples": run.cave.samples, "note": "Fixed wall receivers; all five measured bands, RGB display, history and measurement age. No ground-truth/convergence claim."}).to_string()) {
