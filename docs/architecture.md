@@ -85,7 +85,7 @@ Top-level bounds include loaded regions, but do not allocate an arbitrarily larg
 box between disconnected islands: oversized domains fall back to region DDA.
 The top-level field depends only on region residency and empty/nonempty occupancy.
 Immutable snapshots share its allocation across edits that preserve that topology;
-changed voxel regions still trigger normal source and transport invalidation.
+changed voxel regions still trigger normal transport invalidation.
 Rays normalize direction, offset from surfaces, traverse at most 2,048 steps and
 768 voxel units per segment by default, and distinguish hits, escape and unknown traversal.
 These limits and the small-throughput cutoff are approximations, not an exact
@@ -101,13 +101,15 @@ streaming holes do not cast invented dark slabs. Neither policy sees unloaded
 geometry. These are explicit query semantics over the same traversal structure,
 not two unrelated voxel engines.
 
-`SceneChanges` computes changed material IDs and tight changed-voxel bounds in one
+`SceneChanges` compares material IDs and computes tight changed-voxel bounds in one
 worker comparison. Region load/unload uses full region bounds because residency
 changes knowledge of empty space too. Air-only changes outside previous occupied
 bounds need bookkeeping but do not invalidate existing indirect transport; holes
-inside those bounds remain conservative invalidations. Material IDs are retained
-until publication so the live material table can determine whether emission
-changed while the worker ran.
+inside those bounds remain conservative invalidations. Emitting, reflecting and
+occluding voxels use this same path. There is no emission classification or
+global source reset attached to a geometry delta. The worker's emitter
+distribution is keyed by immutable scene/material snapshots, independently of
+the analytic-source revision.
 
 ## Receiver and transport model
 
@@ -197,13 +199,14 @@ display, rewinding its sequence, or resetting the world sweep.
 | Change | Retained statistical weight on refresh |
 | --- | --- |
 | Unchanged transport | Accumulate up to 65,536 |
-| Geometry edit/load/unload within 48 voxels | At most 16 |
+| Scene edit/load/unload within 48 voxels, including voxel emission | At most 16 |
 | More distant tracked geometry change | At most 256 |
 | Incomplete geometry transition history | At most 64, or a stricter known local cap |
 | Nearby moving analytic source / global source change | At most 4 |
 | Tracked remote-only analytic changes | At most 64 |
 | Incomplete source transition history | At most 4 |
-| Discrete voxel-emitter or material-table change | Reset obsolete measurements to zero |
+| Global material-table or transport-model replacement | Restart measurements; retain display |
+| Existing receiver changes material ID | Restart that receiver; retain display |
 | New face | No measurements; optional display-only seed |
 
 Geometry and sources use the same eight-transition `ChangeHistory` mechanism,
@@ -213,10 +216,23 @@ Canonical source ordering prevents ECS order changes from causing relights;
 point-source deltas include both old and new influence volumes but exclude
 unchanged lights. Distance affects responsiveness, never visibility or eligibility.
 
-Material/emitter resets differ from ordinary visibility changes for a reason:
-otherwise an extinguished source survives as old energy diluted over subsequent
-batches. Both still preserve temporal display state. No rule tests a house,
-tunnel, skylight or gameplay material ID inside the estimator.
+Removing, replacing or covering an emitting voxel uses ordinary spatial history:
+old energy decays as new paths arrive, rather than restarting every receiver.
+This trades a bounded history tail for stability; the measured local removal
+response is documented in the [scene-history audit](scene-history-audit.md).
+It is not an instantaneous extinction guarantee, especially at distant receivers
+retaining 256 samples or during frequent streaming. All five bands retain the
+same statistical weight. Distance is a response heuristic, not proof of weak
+lighting influence: a very bright distant source can still matter greatly.
+
+`invalidate_model` is the explicit global restart operation. It advances both
+the source snapshot and model-reset watermark together, rejecting in-flight
+old-model jobs. Ordinary analytic light changes retain bounded history instead.
+Receiver material replacement is a separate conservative identity policy, not
+an emitter rule; its necessity has not been established by the global-reset
+ablation. No rule tests a house, tunnel, skylight or gameplay material ID inside
+the estimator. Remaining heuristics and follow-up experiments are inventoried
+in the audit rather than presented as physical requirements.
 
 Scene publication preserves compatible faces, introduces new faces without
 inventing measurements, and publishes at most four atomic pages within a nominal
@@ -256,7 +272,7 @@ world. Workers own scene/source snapshots and perform preparation, submission,
 waiting and decoding asynchronously. The CPU fallback pool is created lazily and
 limited to two threads. One outstanding trace batch bounds resource ownership.
 
-Publication rejects incompatible receiver geometry and obsolete discrete-source
+Publication rejects incompatible receiver geometry and obsolete global-model
 resets. Moving-light results can be accepted as stale to avoid perpetual starvation;
 their revision metadata still prevents simulations from treating them as current.
 Sky additionally requires matching scene and sun generations. Accepted selected
@@ -312,6 +328,12 @@ oldest contributing face age, and source/transport freshness. The query combines
 axis-aligned faces with squared normal weights. It returns `None` for unpublished,
 missing, buried or unmeasured required faces. Retained stale measurements can be
 returned with freshness false; they are not silently made current by display seeds.
+Check **both** `sources_current` and `transport_current`: voxel emission belongs
+to scene transport, not the analytic-source snapshot. Even when both are true,
+the estimate can contain bounded pre-change history. Fresh means refreshed, not
+unbiased after an edit or converged. An extinguished IR/radiation source can have
+a nonzero retained contribution; simulation must choose acceptable age/error and
+integrate exposure explicitly, not interpret these flags as a safety guarantee.
 
 Use `request_refresh(voxel)` for bounded asynchronous priority, then inspect the
 returned estimate later. `sample` is a convenience wrapper that discards metadata;
@@ -379,7 +401,7 @@ the active pipeline changes; unchanged buffer identities alone are insufficient.
 Sky has its own pipeline and is independent of these variants.
 
 The normalized model is captured on `TraceWork` for CPU/GPU parity. A model change
-uses the existing discrete source epoch: outstanding old-model results are
+calls `invalidate_model`: outstanding old-model results are
 rejected, new selections reset measured means/moments lazily, and old simulation
 estimates report stale until replaced. Sample sequences and display history
 survive; geometry, emissive distributions and direct-sun caches need no rebuild.

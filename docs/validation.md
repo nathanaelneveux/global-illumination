@@ -63,6 +63,18 @@ reference at equal path counts. Neither benchmark establishes gameplay FPS.
 unchanged transport and displayed sunlight. These remain opt-in, not a new
 mandatory suite for ordinary edits.
 
+For scene/source history changes, the focused native
+`scene_history_source_extinction_response` test uses an exact dark reference in
+RGB, infrared and ionizing bands after removing, replacing or covering emitters.
+It checks retained-weight decay and monotonic display at fixed fresh path counts;
+its virtual display cadence is not a gameplay latency measurement. Pair it with
+`response` and `VOXEL_GI_VALIDATE_BACKGROUND=1` when changing live removal policy.
+The response recorder observes every Update, including means/moments, display,
+sequence and revisions. Use the [temporal recorder](temporal-regressions.md) for
+the house-turn stability gate; keep background-loader and ordinary camera-only
+streaming results separate. A failed gate stays failed, even when a candidate
+improves relative to its control. See the [audit evidence](scene-history-audit.md).
+
 `many_light_tree_study` uses the old shader supplied by
 `VOXEL_GI_BASELINE_SHADER` and compares mixed/torch/lava cases at matched GPU
 budgets. Warm short batches after a long reference pass before measuring.

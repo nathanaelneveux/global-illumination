@@ -1,5 +1,11 @@
 # House-turn temporal regression: 2026-10-09
 
+Follow-up: the [October 10 audit](scene-history-audit.md) tests whether the reset
+is needed, rather than introducing the localized emitter-specific replacement
+proposed below. It adopts ordinary scene history after checking removal response
+in all five bands. This document preserves the original diagnostic chronology;
+its proposed next step and unvalidated-ablation warning are not current policy.
+
 ## Conclusion
 
 The recorder reproduces the reported regression. The nearby emissive cave

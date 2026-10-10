@@ -1,5 +1,10 @@
 # Architecture audit — October 8, 2026
 
+Historical checkpoint. The [October 10 scene-history audit](scene-history-audit.md)
+supersedes the emitter-reset rationale below with controlled removal/streaming
+evidence. The global voxel-emitter reset and its material-delta bookkeeping have
+been removed; analytic-source and model-replacement policies remain explicit.
+
 Baseline: `831931d`. Production cleanup and corner census: `8546ef3`. Final
 offscreen-harness correction: `ad6ba8e`. All commits are local. The estimator,
 four-path dispatch, temporal filter and preferred corner appearance are unchanged.

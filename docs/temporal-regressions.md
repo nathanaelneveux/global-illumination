@@ -70,6 +70,10 @@ interval is incomplete, or any receiver accepts fewer than 32 new paths. It
 rejects a frozen cache even if it looks temporally quiet. These thresholds are
 calibrated to this workload, not universal quality defaults; accuracy and
 rendered-image checks remain separate. See [the initial investigation](temporal-regression-investigation.md).
+Use `VOXEL_GI_VALIDATE_BACKGROUND=1` for the additional continuously moving loader
+and compare it only against the same configuration. The
+[scene-history audit](scene-history-audit.md) records improvement that still
+misses this strict threshold under background load; do not report it as a pass.
 
 ## Comparison discipline
 
