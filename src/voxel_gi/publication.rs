@@ -4,7 +4,6 @@ use super::{
     SceneBuildResult, VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats,
     advance_transport_revision, diagnostics, enqueue_many, enqueue_sky, enqueue_urgent, history,
     page_of, probe_metrics, request_global_refresh,
-    sources::invalidate_sources,
     telemetry::GiWorkTimings,
     update_stats_from_counters,
     world::{PAGE_EDGE, SurfaceProbe, SurfaceProbeDescriptor},
@@ -39,26 +38,9 @@ pub(super) fn apply_scene_task(
             stats.last_scene_build_ms = result.build_time.as_secs_f32() * 1000.0;
             return;
         }
-        if result
-            .changed_materials
-            .iter()
-            .enumerate()
-            .any(|(material, changed)| {
-                *changed
-                    && runtime
-                        .materials
-                        .get(material as u8)
-                        .emission
-                        .max_component()
-                        > 0.0
-            })
-        {
-            // Adding/removing an emitting voxel changes the source set, not
-            // merely visibility. Retaining lit samples after removal produces
-            // a long 16/(16+n) (or remote 64/(64+n)) ghost, before denoising.
-            invalidate_sources(&mut runtime, &mut field, &mut stats);
-            runtime.reset_source_revision = runtime.source_revision;
-        }
+        // Scene edits, including emitting voxels, share spatial history
+        // retention. Source/model resets belong to changes of the global
+        // material table or transport model, not residency of one source.
         runtime.scene = result.scene.clone();
         runtime.generation = runtime.generation.wrapping_add(1);
         if let Some(change) = result.geometry_change.take() {
