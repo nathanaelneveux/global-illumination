@@ -90,6 +90,11 @@ budgets. Warm short batches after a long reference pass before measuring.
 `native_light_tree_selection_pdf_matches_cpu` checks both selection and reverse
 MIS density. Sampler changes cannot pass an identical-path assertion by design;
 use distribution/PDF checks and independent high-sample field references.
+`terminal_mixture_native_study` compares terminal-emission estimators using an
+archived `VOXEL_GI_BASELINE_SHADER`, checks CPU/GPU parity and measures interleaved
+fixed-work GPU time. Pair sampler changes with the ordinary independent area-
+quadrature test and the relevant all-band source response test; do not routinely
+repeat the full study. See the [cave accuracy evidence](cave-history-retention.md).
 The edit-difference, resident-ownership and control-variate studies live only on
 their [recorded experiment branches](research-2026-10-09.md), not in the default
 test suite. Check out a branch only after stopping the app: shader hot reload
@@ -254,6 +259,15 @@ workload or nonblank image alone is not a quality/performance pass.
   schema 2. Both the isolated chamber and composed normal-world structures are
   checked for exposure. Missing sites are failures, not stable black samples.
   See the [streaming investigation](streaming-performance.md) for exact runs.
+- `VOXEL_GI_VALIDATE_REFERENCE=1` adds two offline 262,144-path references per
+  fixed face on the frozen final scene, **after** timings/captures. It requires
+  headless validation with exit enabled. Use `tools/reference_analysis.py` to
+  compare actual RGB error, replica disagreement and sustained accuracy, not
+  just history count. `VOXEL_GI_VALIDATE_CAVE_LONG=1` extends the cave workload
+  to 182 seconds; optional `VOXEL_GI_VALIDATE_PATH_DIAGNOSTIC=<receiver-index>`
+  replays individual CPU/GPU paths to diagnose outliers. These are opt-in
+  investigations, not a new routine validation requirement. Full protocol and
+  limitations: [history-retention study](cave-history-retention.md).
 - Coverage is at least one path sample per exposed face. Bootstrap targets eight.
   Record published/loaded geometry and pending ingestion alongside percentages;
   an early tiny field can be 100% covered while most terrain is not published.

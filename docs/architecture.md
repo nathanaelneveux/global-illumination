@@ -153,6 +153,16 @@ adds 64 bytes per node and rebuilds with the worker's emitter snapshot; there is
 no per-receiver allocation or incremental tree refit. See the
 [many-emitter results and tradeoffs](research-2026-10-09.md#spatial-light-hierarchy).
 
+The last diffuse hit has no continuing cosine path to balance an ordinary
+light-only estimate. Instead it draws one emission connection from a 50/50
+light/cosine mixture and evaluates the same balance density for either branch.
+This preserves the finite-bounce emission integral while bounding each terminal
+connection by twice the emitter's energy, without clipping or adding another
+connection ray. Sky escapes and nonemitting hits contribute zero to this terminal
+term; it does not extend the environment bounce count. CPU and GPU use the same
+unused terminal path dimensions. See the [cave accuracy study](cave-history-retention.md)
+for the outlier diagnosis, native cost and independent-reference checks.
+
 The core stores normalized energy. It does not attach physical watts, temperature
 or dose to those values. The environment gradient uses world Y; it must become a
 host-defined directional environment before a planet-local-up integration.
