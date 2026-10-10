@@ -55,6 +55,9 @@ impl Profile {
     }
 
     pub fn duration(self) -> f32 {
+        if self == Self::Cave && std::env::var_os("VOXEL_GI_VALIDATE_CAVE_LONG").is_some() {
+            return 182.0;
+        }
         match self {
             Self::Compare => 29.0,
             Self::Streaming => 35.0,
@@ -83,6 +86,15 @@ impl Profile {
                 (60.0, "cave-36s"),
             ]
         } else if self == Self::Cave {
+            if std::env::var_os("VOXEL_GI_VALIDATE_CAVE_LONG").is_some() {
+                return &[
+                    (15.0, "cave-15s"),
+                    (30.0, "cave-30s"),
+                    (60.0, "cave-60s"),
+                    (120.0, "cave-120s"),
+                    (180.0, "cave-180s"),
+                ];
+            }
             &[(15.0, "cave-15s"), (30.0, "cave-30s"), (60.0, "cave-60s")]
         } else if self == Self::HouseEdits {
             &[

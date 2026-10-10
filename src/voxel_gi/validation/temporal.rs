@@ -47,7 +47,7 @@ pub(super) struct TemporalRun {
     sites: Vec<(IVec3, usize)>,
 }
 
-fn sites(profile: Profile) -> Vec<(IVec3, usize)> {
+pub(super) fn sites(profile: Profile) -> Vec<(IVec3, usize)> {
     if matches!(profile, Profile::Cave | Profile::Structures) {
         let origin = if crate::cave_scene::enabled() {
             IVec3::ZERO

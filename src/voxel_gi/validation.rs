@@ -6,6 +6,7 @@ mod host_timing;
 mod house;
 mod metrics;
 mod profiles;
+mod reference;
 mod response;
 mod structures;
 mod temporal;
@@ -115,6 +116,7 @@ pub(super) struct ValidationRun {
     max_pages: usize,
     capture_pause_until: f32,
     done: bool,
+    reference: reference::ReferenceRun,
 }
 
 pub(super) fn run_validation(
@@ -127,6 +129,7 @@ pub(super) fn run_validation(
         Res<super::render::GpuTransportCache>,
         Res<super::render::GpuProbePatchQueue>,
         Option<Res<host_timing::HostTiming>>,
+        Option<Res<super::gpu::GpuTransportDevice>>,
     ),
     settings: Res<VoxelGiSettings>,
     field: Res<VoxelEnergyField>,
@@ -145,10 +148,14 @@ pub(super) fn run_validation(
         Res<Assets<PrototypeConfig>>,
     ),
 ) {
-    if std::env::var_os("VOXEL_GI_VALIDATE").is_none() || run.done || evidence.failed {
+    if run.done {
+        run.reference.poll(&mut commands, &mut evidence);
         return;
     }
-    let (stats, runtime, cache, queue, host_timing) = gi;
+    if std::env::var_os("VOXEL_GI_VALIDATE").is_none() || evidence.failed {
+        return;
+    }
+    let (stats, runtime, cache, queue, host_timing, device) = gi;
     let (assets, asset_server, configs) = asset_context;
     if run.startup.is_none() {
         // Shared Cargo build directories can reuse another worktree's package
@@ -618,7 +625,18 @@ pub(super) fn run_validation(
         commands.write_message(AppExit::error());
     } else {
         info!(output = %output.display(), "GI validation workload complete (review quality/performance separately)");
-        if std::env::var_os("VOXEL_GI_VALIDATE_EXIT").is_some() {
+        if reference::ReferenceRun::requested() {
+            if let Err(error) = run.reference.start(
+                &runtime,
+                device.as_deref(),
+                &settings,
+                profile,
+                output.clone(),
+            ) {
+                evidence.fail(&error);
+                commands.write_message(AppExit::error());
+            }
+        } else if std::env::var_os("VOXEL_GI_VALIDATE_EXIT").is_some() {
             commands.write_message(AppExit::Success);
         }
     }
