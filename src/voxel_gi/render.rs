@@ -12,7 +12,7 @@ use bevy::render::erased_render_asset::prepare_erased_assets;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_asset::{RenderAssets, prepare_assets};
 use bevy::render::render_resource::{
-    AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+    AsBindGroup, Buffer, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
     TextureViewDescriptor, TextureViewDimension,
 };
 use bevy::render::renderer::{RenderDevice, RenderQueue};
@@ -184,6 +184,9 @@ impl GpuTransportCache {
 pub(crate) struct GpuProbePatchQueue {
     probe_buffer: Handle<ShaderBuffer>,
     hash_buffer: Handle<ShaderBuffer>,
+    /// Fully initialized and unmapped before extraction. Bevy registers these
+    /// exact buffers instead of allocating another world-sized generation.
+    prepared: Option<Arc<[Buffer; 2]>>,
     // A generation owns its buffers AND its pending writes. Extraction clones
     // this Arc; replacing a generation must never mutate an older frame's Arc.
     state: Arc<Mutex<ProbePatchState>>,
@@ -342,6 +345,7 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
     app.insert_resource(GpuProbePatchQueue {
         probe_buffer: probes,
         hash_buffer: hash_entries,
+        prepared: None,
         state: default(),
     });
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
@@ -357,7 +361,12 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
         );
         render_app.add_systems(
             Render,
-            apply_probe_patches.in_set(RenderSystems::PrepareBindGroups),
+            (
+                install_prepared_buffers
+                    .in_set(RenderSystems::PrepareAssets)
+                    .before(prepare_assets::<GpuShaderBuffer>),
+                apply_probe_patches.in_set(RenderSystems::PrepareBindGroups),
+            ),
         );
     }
 }
@@ -380,6 +389,7 @@ pub fn material_template(assets: &VoxelTransportAssets) -> VoxelTransportMateria
 }
 
 pub(crate) struct GpuCacheBuild {
+    mapped: Option<[Buffer; 2]>,
     patch_state: ProbePatchState,
     hash_data: Vec<u8>,
     probe_data: Vec<u8>,
@@ -397,6 +407,9 @@ pub(crate) struct PreparedGpuCache {
     patches: GpuProbePatchQueue,
     hash_data: Vec<u8>,
     probe_data: Vec<u8>,
+    // Still mapped at creation: private CPU catch-up writes directly into the
+    // initial GPU allocation. No GPU submission may reference these yet.
+    mapped: Option<[Buffer; 2]>,
 }
 
 impl PreparedGpuCache {
@@ -414,10 +427,12 @@ impl PreparedGpuCache {
             patches: GpuProbePatchQueue {
                 probe_buffer: default(),
                 hash_buffer: default(),
+                prepared: None,
                 state: Arc::new(Mutex::new(build.patch_state)),
             },
             hash_data: build.hash_data,
             probe_data: build.probe_data,
+            mapped: build.mapped,
         }
     }
 
@@ -449,13 +464,20 @@ impl PreparedGpuCache {
         }
         // Fold private patches into the initial asset bytes in the same bounded
         // batch. Installing must not stage a world-sized catch-up upload later.
-        let probe_bytes = self.probe_data.len() as u64;
-        let hash_bytes = self.hash_data.len() as u64;
+        let probe_bytes = (self.cache.probe_capacity * GPU_PROBE_BYTES) as u64;
+        let hash_bytes = (self.cache.hash_entries.len() * 16) as u64;
         self.patches
             .state
             .lock()
             .unwrap()
             .upload(probe_bytes, hash_bytes, |probe, offset, bytes| {
+                if let Some(buffers) = &self.mapped {
+                    buffers[usize::from(!probe)]
+                        .slice(offset as u64..(offset + bytes.len()) as u64)
+                        .get_mapped_range_mut()
+                        .copy_from_slice(bytes);
+                    return;
+                }
                 let data = if probe {
                     &mut self.probe_data
                 } else {
@@ -575,6 +597,7 @@ pub(crate) fn build_gpu_cache_for_residency(
         let hash_data = ShaderBuffer::from(entries.clone()).data.unwrap();
         let probe_data = ShaderBuffer::from(gpu_probes).data.unwrap();
         return GpuCacheBuild {
+            mapped: None,
             patch_state: ProbePatchState {
                 probe_mirror: probe_data.clone(),
                 hash_mirror: hash_data.clone(),
@@ -589,6 +612,70 @@ pub(crate) fn build_gpu_cache_for_residency(
             high_water: snapshot.len(),
         };
     }
+}
+
+impl GpuCacheBuild {
+    /// Allocate and initialize on the worker, but leave buffers mapped until
+    /// bounded catch-up completes. The owning private generation is the only
+    /// writer; all mapped views are dropped before transfer to the renderer.
+    pub fn prepare_buffers(mut self, device: &RenderDevice) -> Self {
+        let make = |label, data: &[u8]| {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: data.len() as u64,
+                mapped_at_creation: true,
+                ..ShaderBuffer::default().buffer_description
+            });
+            buffer
+                .slice(..)
+                .get_mapped_range_mut()
+                .copy_from_slice(data);
+            buffer
+        };
+        self.mapped = Some([
+            make("Voxel GI display probes", &self.probe_data),
+            make("Voxel GI display hash", &self.hash_data),
+        ]);
+        // Mirrors retain authoritative bytes; no second initial asset payload.
+        self.probe_data = Vec::new();
+        self.hash_data = Vec::new();
+        self
+    }
+}
+
+fn install_prepared_buffers(
+    patches: Res<GpuProbePatchQueue>,
+    mut assets: ResMut<RenderAssets<GpuShaderBuffer>>,
+) {
+    let Some(buffers) = &patches.prepared else {
+        return;
+    };
+    for (handle, buffer, label) in [
+        (
+            &patches.probe_buffer,
+            &buffers[0],
+            "Voxel GI display probes",
+        ),
+        (&patches.hash_buffer, &buffers[1], "Voxel GI display hash"),
+    ] {
+        if assets.get(handle).is_some() {
+            continue;
+        }
+        assets.insert(
+            handle.id(),
+            GpuShaderBuffer {
+                buffer: buffer.clone(),
+                buffer_descriptor: wgpu::BufferDescriptor {
+                    label: Some(label),
+                    size: buffer.size(),
+                    ..ShaderBuffer::default().buffer_description
+                },
+                had_data: false,
+            },
+        );
+    }
+    // Descriptor-only preparation must reuse the exact existing RenderAsset.
+    // The native generation test guards this Bevy integration contract.
 }
 
 #[cfg(test)]
@@ -621,21 +708,29 @@ pub(crate) fn install_prepared_gpu_cache(
     materials: &mut Assets<VoxelTransportMaterial>,
     material_handle: &Handle<VoxelTransportMaterial>,
 ) {
+    if let Some(mapped) = build.mapped.take() {
+        for buffer in &mapped {
+            buffer.unmap();
+        }
+        build.patches.prepared = Some(Arc::new(mapped));
+    }
     // Fresh asset identities also handle equal-size rebuilds: a size check alone
     // cannot tell that hash indices have been reassigned. Old handles stay alive
     // for as long as the extracted frame/material needs them.
     assets.hash_entries = buffers.add(ShaderBuffer {
-        data: Some(build.hash_data),
+        data: build.patches.prepared.is_none().then_some(build.hash_data),
         buffer_description: bevy::render::render_resource::BufferDescriptor {
             label: Some("Voxel GI display hash"),
+            size: (build.cache.hash_entries.len() * 16) as u64,
             ..ShaderBuffer::default().buffer_description
         },
         ..default()
     });
     assets.probes = buffers.add(ShaderBuffer {
-        data: Some(build.probe_data),
+        data: build.patches.prepared.is_none().then_some(build.probe_data),
         buffer_description: bevy::render::render_resource::BufferDescriptor {
             label: Some("Voxel GI display probes"),
+            size: (build.cache.probe_capacity * GPU_PROBE_BYTES) as u64,
             ..ShaderBuffer::default().buffer_description
         },
         ..default()
@@ -1228,6 +1323,7 @@ mod tests {
         let patches = GpuProbePatchQueue {
             probe_buffer: Handle::default(),
             hash_buffer: Handle::default(),
+            prepared: None,
             state: Arc::new(Mutex::new(ProbePatchState {
                 probe_mirror: build.probe_data.clone(),
                 hash_mirror: build.hash_data.clone(),
@@ -1286,6 +1382,7 @@ mod tests {
             let patches = GpuProbePatchQueue {
                 probe_buffer: default(),
                 hash_buffer: default(),
+                prepared: None,
                 state: Arc::new(Mutex::new(ProbePatchState {
                     probe_mirror: build.probe_data.clone(),
                     hash_mirror: build.hash_data.clone(),
@@ -1412,6 +1509,7 @@ mod tests {
         let mut patches = GpuProbePatchQueue {
             probe_buffer: assets.probes.clone(),
             hash_buffer: assets.hash_entries.clone(),
+            prepared: None,
             state: default(),
         };
         let mut cache = GpuTransportCache::default();
@@ -1477,6 +1575,7 @@ mod tests {
         let mut patches = GpuProbePatchQueue {
             probe_buffer: default(),
             hash_buffer: default(),
+            prepared: None,
             state: default(),
         };
         let mut cache = GpuTransportCache::default();
@@ -1602,6 +1701,7 @@ mod tests {
         let mut patches = GpuProbePatchQueue {
             probe_buffer: default(),
             hash_buffer: default(),
+            prepared: None,
             state: default(),
         };
         let mut cache = GpuTransportCache::default();
@@ -1789,6 +1889,7 @@ mod tests {
         let mut patches = GpuProbePatchQueue {
             probe_buffer: assets.probes.clone(),
             hash_buffer: assets.hash_entries.clone(),
+            prepared: None,
             state: default(),
         };
         let mut cache = GpuTransportCache::default();
@@ -2023,17 +2124,45 @@ mod tests {
             app.update();
         }
         for (generation, count) in [1, 64, 3, 3, 128, 8].into_iter().enumerate() {
-            let probes: HashMap<_, _> = (0..count)
+            let mut probes: HashMap<_, _> = (0..count)
                 .map(|x| {
                     let voxel = IVec3::new(x, generation as i32, 0);
                     (voxel, SurfaceProbe::new(voxel, 4))
                 })
                 .collect();
             let order: Vec<_> = probes.keys().copied().collect();
+            let build = build_gpu_cache(snapshot_gpu_probes(&probes, &order));
+            // Growth, shrink and equal-size replacement all use the worker's
+            // private mapped buffers; the last generation covers CPU fallback.
+            let build = if generation < 5 {
+                build.prepare_buffers(&device)
+            } else {
+                build
+            };
+            let mut build = PreparedGpuCache::new(build);
+            for probe in probes.values_mut() {
+                probe.display[2].indirect = Vec3::splat(3.0);
+                probe.display[2].confidence = 0.75;
+            }
+            let added = IVec3::new(count, generation as i32, 0);
+            probes.insert(added, SurfaceProbe::new(added, 4));
+            let mut changed = order.clone();
+            changed.push(added);
+            assert!(build.synchronize(&changed, &probes));
+            let prepared = build.mapped.clone();
+            if let Some(mapped) = &prepared {
+                let state = build.patches.state.lock().unwrap();
+                assert_eq!(
+                    &*mapped[0].slice(..).get_mapped_range(),
+                    &state.probe_mirror
+                );
+                assert_eq!(&*mapped[1].slice(..).get_mapped_range(), &state.hash_mirror);
+                assert!(state.pending_probes.is_empty() && state.pending_hash.is_empty());
+            }
             app.world_mut()
                 .resource_scope(|world, mut buffers: Mut<Assets<ShaderBuffer>>| {
-                    install_gpu_cache(
-                        build_gpu_cache(snapshot_gpu_probes(&probes, &order)),
+                    install_prepared_gpu_cache(
+                        build,
                         &mut cache,
                         &mut patches,
                         &mut assets,
@@ -2058,6 +2187,30 @@ mod tests {
             app.update();
             let render_world = app.sub_app(RenderApp).world();
             let buffers = render_world.resource::<RenderAssets<GpuShaderBuffer>>();
+            if let Some(prepared) = prepared {
+                assert_eq!(
+                    buffers.get(&assets.probes).unwrap().buffer.id(),
+                    prepared[0].id()
+                );
+                assert_eq!(
+                    buffers.get(&assets.hash_entries).unwrap().buffer.id(),
+                    prepared[1].id()
+                );
+                // Actual submission validates that no mapped buffer escaped
+                // private preparation (bind-group creation alone does not).
+                let destination = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: 32,
+                    usage: wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                let mut encoder = device.create_command_encoder(&default());
+                encoder.copy_buffer_to_buffer(&prepared[0], 0, &destination, 0, 16);
+                encoder.copy_buffer_to_buffer(&prepared[1], 0, &destination, 16, 16);
+                render_world
+                    .resource::<RenderQueue>()
+                    .submit([encoder.finish()]);
+            }
             assert_eq!(
                 buffers.get(&assets.probes).unwrap().buffer.size(),
                 (cache.probe_capacity * GPU_PROBE_BYTES) as u64

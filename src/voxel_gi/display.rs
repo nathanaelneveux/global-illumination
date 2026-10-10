@@ -124,6 +124,7 @@ pub(super) fn upload_transport_cache(
     mut materials: ResMut<Assets<VoxelTransportMaterial>>,
     settings: Res<VoxelGiSettings>,
     mut timings: ResMut<GiWorkTimings>,
+    device: Option<Res<super::gpu::GpuTransportDevice>>,
 ) {
     let mut timing = timings.main_scope(MainStage::DisplayPublication);
     let Some(material_handle) = material_handle else {
@@ -235,10 +236,15 @@ pub(super) fn upload_transport_cache(
         // Reserve for current residency, not only the beginning-of-snapshot
         // key list. Newly loaded probes are reconciled privately above.
         let resident_count = field.probe_count();
-        runtime.gpu_task = Some(
-            AsyncComputeTaskPool::get()
-                .spawn(async move { build_gpu_cache_for_residency(snapshot, resident_count) }),
-        );
+        let device = device.map(|context| context.device.clone());
+        runtime.gpu_task = Some(AsyncComputeTaskPool::get().spawn(async move {
+            let build = build_gpu_cache_for_residency(snapshot, resident_count);
+            if let Some(device) = device {
+                build.prepare_buffers(&device)
+            } else {
+                build
+            }
+        }));
     }
     timing.display_checkpoint(DisplayStage::SnapshotAdvance);
 
