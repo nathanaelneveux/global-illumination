@@ -1,5 +1,6 @@
 /target/
 /imported_assets/
+__pycache__/
 
 # Rust applications should generally commit Cargo.lock.
 #!Cargo.lock

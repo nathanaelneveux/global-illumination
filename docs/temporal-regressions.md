@@ -10,6 +10,12 @@ Build first, then run the existing house workload with
 `VOXEL_GI_VALIDATE_TEMPORAL=1`, `VOXEL_GI_VALIDATE=1`,
 `VOXEL_GI_VALIDATE_HEADLESS=1`, `VOXEL_GI_VALIDATE_PROFILE=house`
 (or `house-edits`), and `VOXEL_GI_VALIDATE_EXIT=1`.
+Also set `VOXEL_GI_VALIDATE_EXPECT_BUILD_ROOT="$PWD"`: the compiled manifest
+directory must match, or the app exits before recording evidence. When switching
+worktrees sharing a Cargo build directory, invalidate the application artifact
+(for example `touch src/main.rs` before building). Confirm focused tests actually
+ran: zero matching tests is not verification. This root check does not certify
+the commit or dirty diff; record those separately with the experiment.
 `target/gi-validation/<run>/temporal.json` contains:
 
 - 25 fixed underside receivers, observed every Update after GI publication;
@@ -62,6 +68,8 @@ frame is never silently promoted to ground truth.
 - Validate assets, dimensions, nonblank captures and clean render logs first.
 - Compare identical scenes. `ad6ba8e` predates the nearby emissive cave, so a
   default-world revision comparison also changes geometry and source load.
+  Current code offers `VOXEL_GI_VALIDATE_HOUSE_ONLY=1` to omit cave/approach
+  structures only during validation. The report identifies this scene control.
 - Keep the preferred corner look, textures on, AO off. Record exact commits and
   dirty patches. Separate normal-world content changes from algorithm changes.
 - Offscreen app cadence is not interactive FPS. Recorder/capture overhead also

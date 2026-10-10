@@ -143,6 +143,22 @@ pub(super) fn run_validation(
     let (stats, runtime, cache, queue) = gi;
     let (assets, asset_server, configs) = asset_context;
     if run.startup.is_none() {
+        // Shared Cargo build directories can reuse another worktree's package
+        // artifact. The optional expected root is supplied by the run command;
+        // this compile-time identity must agree before accepting any evidence.
+        if let Some(expected) = std::env::var_os("VOXEL_GI_VALIDATE_EXPECT_BUILD_ROOT") {
+            let expected = std::fs::canonicalize(expected);
+            let compiled = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR"));
+            if expected.is_err() || expected.ok() != compiled.ok() {
+                error!(
+                    compiled_root = env!("CARGO_MANIFEST_DIR"),
+                    "Validation binary is from the wrong worktree; rebuild the application package."
+                );
+                run.done = true;
+                commands.write_message(AppExit::error());
+                return;
+            }
+        }
         let profile =
             std::env::var("VOXEL_GI_VALIDATE_PROFILE").unwrap_or_else(|_| "gameplay".into());
         let profile = match Profile::parse(&profile) {
@@ -536,6 +552,7 @@ pub(super) fn run_validation(
         "timing_domain": if evidence.render_target.is_some() { "offscreen app cadence; 60Hz ScheduleRunner; no swapchain/vsync" } else { "windowed frame pacing" },
         "performance_baseline": profile == Profile::Gameplay && evidence.render_target.is_none(),
         "build": "development", "backend": stats.backend,
+        "compiled_manifest_dir": env!("CARGO_MANIFEST_DIR"),
         "scene": if crate::cave_scene::enabled() { "many-emitter cave" } else { "terrain" },
         "house_only_control": crate::structures::showcase::validation_house_only(),
         "background_terrain": {"enabled": crate::cave_scene::background_terrain_requested(),
