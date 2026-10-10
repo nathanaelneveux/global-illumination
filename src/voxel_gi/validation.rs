@@ -537,6 +537,7 @@ pub(super) fn run_validation(
         "performance_baseline": profile == Profile::Gameplay && evidence.render_target.is_none(),
         "build": "development", "backend": stats.backend,
         "scene": if crate::cave_scene::enabled() { "many-emitter cave" } else { "terrain" },
+        "house_only_control": crate::structures::showcase::validation_house_only(),
         "background_terrain": {"enabled": crate::cave_scene::background_terrain_requested(),
             "moves": run.background.moves, "speed_voxels_per_second": 4.32,
             "note": "Inactive BVW loader walks from (-96,40,0) toward -Z. Does not render or alter GI view priority. Loaded terrain participates in transport."},

@@ -21,10 +21,19 @@ pub fn world_structures() -> Arc<StructureLayer> {
     static PLAN: OnceLock<Arc<StructureLayer>> = OnceLock::new();
     PLAN.get_or_init(|| {
         let mut instances = house();
-        instances.extend(cave());
+        // Diagnostic control for comparisons with revisions predating the cave.
+        // Normal play always uses the complete authored world.
+        if !validation_house_only() {
+            instances.extend(cave());
+        }
         Arc::new(StructureLayer::new(instances, 32))
     })
     .clone()
+}
+
+pub fn validation_house_only() -> bool {
+    std::env::var_os("VOXEL_GI_VALIDATE").is_some()
+        && std::env::var_os("VOXEL_GI_VALIDATE_HOUSE_ONLY").is_some()
 }
 
 fn cave() -> Vec<PlacedStructure> {
