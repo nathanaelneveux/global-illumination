@@ -63,6 +63,14 @@ settling *within the observed window*, not proof it stays settled indefinitely.
 Without an independent reference no settling time is claimed; the last noisy
 frame is never silently promoted to ground truth.
 
+For the reproduced house-turn regression, use `--field corners --interval 30:50
+--max-p95 0.10 --min-new-paths 32`. This explicitly requested stability/freshness
+gate exits nonzero if variation exceeds the limit, a receiver is missing, the
+interval is incomplete, or any receiver accepts fewer than 32 new paths. It
+rejects a frozen cache even if it looks temporally quiet. These thresholds are
+calibrated to this workload, not universal quality defaults; accuracy and
+rendered-image checks remain separate. See [the initial investigation](temporal-regression-investigation.md).
+
 ## Comparison discipline
 
 - Validate assets, dimensions, nonblank captures and clean render logs first.

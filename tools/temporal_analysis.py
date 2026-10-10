@@ -12,6 +12,7 @@ import json
 import math
 from pathlib import Path
 import statistics
+import sys
 import unittest
 
 
@@ -76,13 +77,25 @@ def series_metrics(series, start, end, reference=None, tolerance=0.02, dwell=2.0
 
 
 def summarize(document, start, end, key, references=None):
+    interval_complete = document["end_s"] >= end
     end = min(end, document["end_s"])
     by_site = [[] for _ in document["sites"]]
     for event in document["events"]:
         by_site[event["site"]].append(event)
     rows = []
+    progress = []
     for site, events in enumerate(by_site):
         voxel = document["sites"][site]
+        previous = None
+        new_paths = 0
+        for event in events:
+            if event["at_s"] >= end:
+                break
+            state = event["state"]
+            if event["at_s"] > start and state and previous and state["revisions"][0] == previous["revisions"][0]:
+                new_paths += max(0, state["sequence"] - previous["sequence"])
+            previous = state
+        progress.append(new_paths)
         channels = range(4) if key == "corners" else [None]
         for corner in channels:
             values = []
@@ -102,10 +115,18 @@ def summarize(document, start, end, key, references=None):
             rows.append(row)
     complete = [r for r in rows if r["missing_s"] == 0]
     ordered = sorted(r["excess_variation"] for r in complete)
-    return dict(interval_s=[start, end], field=key, complete_sites=len(complete), sites=len(rows),
+    return dict(interval_s=[start, end], interval_complete=interval_complete, field=key, complete_sites=len(complete), sites=len(rows),
+                min_new_paths=min(progress) if progress else 0,
                 median_excess=statistics.median(ordered) if ordered else None,
                 p95_excess=ordered[min(len(ordered)-1, math.ceil(len(ordered)*0.95)-1)] if ordered else None,
                 worst=sorted(rows, key=lambda r: r["excess_variation"], reverse=True)[:8])
+
+
+def stability_gate(summary, maximum_p95, minimum_paths):
+    """A stability/freshness gate, never an accuracy certificate."""
+    return (summary["interval_complete"] and summary["complete_sites"] == summary["sites"] and summary["sites"] > 0
+            and summary["p95_excess"] is not None and summary["p95_excess"] <= maximum_p95
+            and summary["min_new_paths"] >= minimum_paths)
 
 
 class MetricsTests(unittest.TestCase):
@@ -131,6 +152,12 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(result["missing_s"], 4)
         self.assertIsNone(result["sustained_settle_s"])
 
+    def test_stability_gate_rejects_frozen_or_missing_receivers(self):
+        summary = dict(interval_complete=True, complete_sites=25, sites=25, p95_excess=0.02, min_new_paths=40)
+        self.assertTrue(stability_gate(summary, 0.1, 32))
+        for field, value in [("min_new_paths", 0), ("complete_sites", 24), ("p95_excess", 0.2), ("interval_complete", False)]:
+            self.assertFalse(stability_gate(dict(summary, **{field: value}), 0.1, 32))
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
@@ -139,6 +166,8 @@ if __name__ == "__main__":
     parser.add_argument("--field", choices=["measured", "display", "mirror", "corners"], default="corners")
     parser.add_argument("--reference", type=Path, help='Independent RGB map: "x,y,z[:corner]": [r,g,b]')
     parser.add_argument("--test", action="store_true")
+    parser.add_argument("--max-p95", type=float, help="Opt-in stability gate; requires --min-new-paths")
+    parser.add_argument("--min-new-paths", type=int, help="Minimum accepted new paths at every receiver per interval")
     args = parser.parse_args()
     if args.test:
         unittest.main(argv=[__file__])
@@ -146,7 +175,16 @@ if __name__ == "__main__":
         data = json.loads(args.trace.read_text())
         refs = json.loads(args.reference.read_text()) if args.reference else None
         intervals = args.interval or ["10:30", "30:50", "50:70", "70:90"]
-        print(json.dumps([summarize(data, *map(float, span.split(":")), args.field, refs)
-                          for span in intervals], indent=2))
+        if (args.max_p95 is None) != (args.min_new_paths is None):
+            parser.error("stability gating requires both --max-p95 and --min-new-paths")
+        if args.min_new_paths is not None and (args.min_new_paths <= 0 or not math.isfinite(args.max_p95) or args.max_p95 < 0):
+            parser.error("gates require positive new paths and a finite nonnegative p95 limit")
+        summaries = [summarize(data, *map(float, span.split(":")), args.field, refs) for span in intervals]
+        if args.max_p95 is not None:
+            for summary in summaries:
+                summary["stability_freshness_pass"] = stability_gate(summary, args.max_p95, args.min_new_paths)
+        print(json.dumps(summaries, indent=2))
+        if args.max_p95 is not None and not all(s["stability_freshness_pass"] for s in summaries):
+            sys.exit(1)
     else:
         parser.error("provide a trace or --test")
