@@ -28,7 +28,7 @@ pub(super) fn collect_chunk_changes(
     mut despawned: MessageReader<ChunkWillDespawn<PrototypeWorld>>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
-    let _timing = timings.main_scope();
+    let _timing = timings.main_scope(super::telemetry::MainStage::Ingestion);
     let mut changed = false;
     for event in spawned.read() {
         runtime.loaded_pages.insert(event.chunk_key);
@@ -81,7 +81,7 @@ pub(super) fn start_scene_task(
     cameras: Query<&GlobalTransform, With<Camera3d>>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
-    let _timing = timings.main_scope();
+    let _timing = timings.main_scope(super::telemetry::MainStage::SceneDispatch);
     let pending = !runtime.dirty_pages.is_empty() || !runtime.removed_pages.is_empty();
     let debounce = if runtime.urgent_edit {
         EDIT_DEBOUNCE

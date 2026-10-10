@@ -167,6 +167,9 @@ pub struct VoxelGiStats {
     /// Mean GI main-world system-body time per app frame over a 250 ms window.
     /// Excludes background workers and render-world upload/draw work.
     pub main_thread_ms_per_frame: Option<f32>,
+    /// Last app frame's GI system-body times, in telemetry stage order.
+    /// Excludes workers/render work; unlike the overlay average, retains spikes.
+    pub last_main_stage_ms: [f32; 7],
     /// Completed transport/sky compute-pass timestamps per app frame over the
     /// same window. None until available, or on CPU/unsupported GPU backends.
     /// Excludes queue waits, transfers and graphics; do not add to main time.

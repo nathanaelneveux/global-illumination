@@ -26,7 +26,7 @@ pub(super) fn upload_transport_cache(
     settings: Res<VoxelGiSettings>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
-    let _timing = timings.main_scope();
+    let _timing = timings.main_scope(super::telemetry::MainStage::DisplayPublication);
     let Some(material_handle) = material_handle else {
         return;
     };

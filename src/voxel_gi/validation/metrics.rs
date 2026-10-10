@@ -46,6 +46,9 @@ pub(super) struct Metrics {
     last_work_sample: f32,
     last_batch: u64,
     last_transport_batch: u64,
+    frame_timeline: Vec<Value>,
+    previous_gi: [f32; 7],
+    frame_timing_enabled: Option<bool>,
 }
 
 struct EditWatch {
@@ -55,6 +58,29 @@ struct EditWatch {
 }
 
 impl Metrics {
+    pub fn record_frame(
+        &mut self,
+        elapsed: f32,
+        phase: &'static str,
+        frame_ms: f32,
+        capture_excluded: bool,
+        stats: &VoxelGiStats,
+    ) {
+        if !*self
+            .frame_timing_enabled
+            .get_or_insert_with(|| std::env::var_os("VOXEL_GI_VALIDATE_FRAME_TIMINGS").is_some())
+        {
+            return;
+        }
+        // Time<Real>'s interval ends at this frame's start. Associate the
+        // preceding frame's GI bodies, not this Update's work. Pipeline/render
+        // overlap still prevents treating the remainder as pure BVW cost.
+        self.frame_timeline
+            .push(json!({"at_s":elapsed,"phase":phase,
+            "interval_ms":frame_ms,"capture_excluded":capture_excluded,
+            "previous_gi_body_ms":self.previous_gi}));
+        self.previous_gi = stats.last_main_stage_ms;
+    }
     /// O(1) observations of publication and lighting progress. A small early
     /// page set can be fully covered while most terrain is still unpublished;
     /// keep its denominator and ingestion backlog, not a misleading first-100% time.
@@ -223,7 +249,9 @@ impl Metrics {
             "edits_superseded_before_refresh": self.superseded_edits,
             "edits_without_receivers": self.untargeted_edits,
             "edits_still_pending": usize::from(self.watch.is_some()),
-            "work_timeline": self.work_samples})
+            "work_timeline": self.work_samples,
+            "gi_main_stage_names": super::super::telemetry::MAIN_STAGE_NAMES,
+            "frame_timeline": self.frame_timeline})
     }
 }
 
@@ -231,6 +259,25 @@ impl Metrics {
 mod tests {
     use super::super::super::world::SurfaceProbe;
     use super::*;
+
+    #[test]
+    fn frame_intervals_use_previous_gi_work_not_current_update() {
+        let mut metrics = Metrics {
+            frame_timing_enabled: Some(true),
+            ..default()
+        };
+        let mut stats = VoxelGiStats {
+            last_main_stage_ms: [2.0; 7],
+            ..default()
+        };
+        metrics.record_frame(1.0, "startup", 20.0, false, &stats);
+        stats.last_main_stage_ms = [0.0; 7];
+        metrics.record_frame(1.02, "startup", 21.0, true, &stats);
+        let rows = metrics.report()["frame_timeline"].clone();
+        assert_eq!(rows[0]["previous_gi_body_ms"], json!(vec![0.0; 7]));
+        assert_eq!(rows[1]["previous_gi_body_ms"], json!(vec![2.0; 7]));
+        assert_eq!(rows[1]["capture_excluded"], true);
+    }
 
     #[test]
     fn work_timeline_keeps_denominators_and_does_not_resample_idle_batches() {

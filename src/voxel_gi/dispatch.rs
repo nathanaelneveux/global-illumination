@@ -71,7 +71,7 @@ pub(super) fn start_trace_task(
     settings: Res<VoxelGiSettings>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
-    let _timing = timings.main_scope();
+    let _timing = timings.main_scope(super::telemetry::MainStage::TraceDispatch);
     if runtime.trace_task.is_some() || field.order.is_empty() {
         return;
     }
@@ -369,7 +369,7 @@ pub(super) fn apply_trace_task(
     settings: Res<VoxelGiSettings>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
-    let mut timing = timings.main_scope();
+    let mut timing = timings.main_scope(super::telemetry::MainStage::TracePublication);
     let Some(task) = runtime.trace_task.as_mut() else {
         return;
     };

@@ -44,15 +44,37 @@ pub(super) struct TemporalRun {
     frames: usize,
     end_s: f32,
     overflow: bool,
+    sites: Vec<(IVec3, usize)>,
 }
 
-fn sites() -> Vec<IVec3> {
+fn sites(profile: Profile) -> Vec<(IVec3, usize)> {
+    if matches!(profile, Profile::Cave | Profile::Structures) {
+        let origin = if crate::cave_scene::enabled() {
+            IVec3::ZERO
+        } else {
+            crate::structures::showcase::CAVE_ORIGIN
+        };
+        return [8, 29, 50]
+            .into_iter()
+            .flat_map(|t| {
+                [9, 22, 37].into_iter().flat_map(move |y| {
+                    [
+                        (IVec3::new(4, y, t), 0),
+                        (IVec3::new(59, y, t), 1),
+                        (IVec3::new(t, y, 4), 4),
+                        (IVec3::new(t, y, 59), 5),
+                    ]
+                    .map(|(v, face)| (origin + v, face))
+                })
+            })
+            .collect();
+    }
     [-23, -22, -18, -14, -13]
         .into_iter()
         .flat_map(|z| {
             [-5, -4, 0, 4, 5]
                 .into_iter()
-                .map(move |x| IVec3::new(x, 17, z))
+                .map(move |x| (IVec3::new(x, 17, z), 3))
         })
         .collect()
 }
@@ -85,6 +107,7 @@ impl TemporalRun {
     pub fn record(
         &mut self,
         at_s: f32,
+        profile: Profile,
         field: &VoxelEnergyField,
         runtime: &super::super::VoxelGiRuntime,
         cache: &GpuTransportCache,
@@ -98,33 +121,46 @@ impl TemporalRun {
         }
         self.frames += 1;
         self.end_s = at_s;
-        let sites = sites();
+        if self.sites.is_empty() {
+            self.sites = sites(profile);
+        }
+        let sites = &self.sites;
         let patch: Vec<_> = sites
             .iter()
-            .flat_map(|&voxel| {
-                (-1..=1).flat_map(move |z| (-1..=1).map(move |x| (voxel + IVec3::new(x, 0, z), 3)))
+            .flat_map(|&(voxel, face)| {
+                (-1..=1).flat_map(move |v| {
+                    (-1..=1).map(move |u| {
+                        let offset = match face / 2 {
+                            0 => IVec3::new(0, u, v),
+                            1 => IVec3::new(u, 0, v),
+                            _ => IVec3::new(u, v, 0),
+                        };
+                        (voxel + offset, face)
+                    })
+                })
             })
             .collect();
         let mirror = cache.validation_mirror(queue, &patch);
         let first = self.previous.is_empty();
         self.previous.resize(sites.len(), None);
-        for (site, voxel) in sites.iter().enumerate() {
+        for (site, (voxel, face)) in sites.iter().enumerate() {
+            let face = *face;
             let patch = &mirror[site * 9..site * 9 + 9];
             let state = field
                 .probes
                 .get(voxel)
-                .filter(|p| p.face_mask & 8 != 0)
+                .filter(|p| p.face_mask & (1 << face) != 0)
                 .map(|p| State {
-                    samples: p.samples[3],
-                    sequence: p.sequence[3],
-                    measured: p.radiance[3].visible.to_array(),
-                    second_moment: p.second_moment[3].visible.to_array(),
-                    display: p.display[3].indirect.to_array(),
-                    confidence: p.display[3].confidence,
-                    sky: p.display[3].sky,
+                    samples: p.samples[face],
+                    sequence: p.sequence[face],
+                    measured: p.radiance[face].visible.to_array(),
+                    second_moment: p.second_moment[face].visible.to_array(),
+                    display: p.display[face].indirect.to_array(),
+                    confidence: p.display[face].confidence,
+                    sky: p.display[face].sky,
                     revisions: [p.revision, p.source_revision, p.transport_revision],
                     fresh_mask: p.fresh_mask,
-                    stable_batches: p.stable_batches[3],
+                    stable_batches: p.stable_batches[face],
                     mirror: (patch[4][3] != 0.0).then_some(patch[4]),
                     corners: corners(patch),
                 });
@@ -158,8 +194,9 @@ impl TemporalRun {
         serde_json::to_writer(
             std::io::BufWriter::new(file),
             &json!({
-                "schema_version": 1, "frames": self.frames, "end_s": self.end_s,
-                "sites": sites().iter().map(|v| v.to_array()).collect::<Vec<_>>(), "face": 3,
+                "schema_version": 2, "frames": self.frames, "end_s": self.end_s,
+                "sites": self.sites.iter().map(|(v,_)| v.to_array()).collect::<Vec<_>>(),
+                "site_faces": self.sites.iter().map(|(_,face)| face).collect::<Vec<_>>(),
                 "events": self.events,
                 "notes": "Every Update after GI systems. Event-compressed fixed receivers; hold each state until next event. Mirror is CPU render-publication state, not GPU readback; corners exclude unpublished-center fallback and material/tonemapping. No convergence claim without independent reference."
             }),
@@ -171,6 +208,30 @@ impl TemporalRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cave_sites_are_exposed_and_house_sites_keep_the_same_definition() {
+        let house = sites(Profile::House);
+        assert_eq!(house.len(), 25);
+        assert!(house.iter().all(|(v, face)| v.y == 17 && *face == 3));
+        let origin = if crate::cave_scene::enabled() {
+            IVec3::ZERO
+        } else {
+            crate::structures::showcase::CAVE_ORIGIN
+        };
+        let cave = sites(Profile::Cave);
+        assert_eq!(cave.len(), 36);
+        for (voxel, face) in cave {
+            let local = voxel - origin;
+            assert!(matches!(
+                crate::cave_scene::voxel(local),
+                WorldVoxel::Solid(_)
+            ));
+            assert_eq!(
+                crate::cave_scene::voxel(local + FACE_OFFSETS[face]),
+                WorldVoxel::Air
+            );
+        }
+    }
     #[test]
     fn mirrored_corners_preserve_constants_and_disconnect_diagonals() {
         assert_eq!(

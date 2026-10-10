@@ -272,9 +272,14 @@ pub(super) fn run_validation(
     if matches!(profile, Profile::Cave | Profile::Structures) {
         run.cave.record(elapsed, &field);
     }
-    if matches!(profile, Profile::House | Profile::HouseEdits) {
+    if matches!(
+        profile,
+        Profile::House | Profile::HouseEdits | Profile::Cave | Profile::Structures
+    ) {
         run.temporal
-            .record(elapsed, &field, &runtime, &cache, &queue);
+            .record(elapsed, profile, &field, &runtime, &cache, &queue);
+    }
+    if matches!(profile, Profile::House | Profile::HouseEdits) {
         run.house.tick(
             elapsed,
             profile == Profile::HouseEdits,
@@ -375,6 +380,13 @@ pub(super) fn run_validation(
     } else {
         phase_stats.frames_ms.push(time.delta_secs() * 1000.0);
     }
+    run.metrics.record_frame(
+        elapsed,
+        phase,
+        time.delta_secs() * 1000.0,
+        capture_in_flight,
+        &stats,
+    );
     run.metrics.poll_edit(&field);
     run.metrics
         .record_work(elapsed, phase, &stats, &runtime, &field);

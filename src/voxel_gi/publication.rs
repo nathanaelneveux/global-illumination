@@ -27,7 +27,7 @@ pub(super) fn apply_scene_task(
     settings: Res<VoxelGiSettings>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
-    let _timing = timings.main_scope();
+    let _timing = timings.main_scope(super::telemetry::MainStage::ScenePublication);
     let publish_started = Instant::now();
     if let Some(task) = runtime.scene_task.as_mut()
         && let Some(mut result) = block_on(poll_once(task))

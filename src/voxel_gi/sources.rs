@@ -94,7 +94,7 @@ pub(super) fn synchronize_transport_sources(
     mut timings: ResMut<GiWorkTimings>,
     mut next: Local<TransportSources>,
 ) {
-    let _timing = timings.main_scope();
+    let _timing = timings.main_scope(super::telemetry::MainStage::Sources);
     next.environment = environment.0.bounded(1e12);
     next.directional.clear();
     next.points.clear();
@@ -220,7 +220,7 @@ pub(super) fn synchronize_material_table(
     mut stats: ResMut<VoxelGiStats>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
-    let _timing = timings.main_scope();
+    let _timing = timings.main_scope(super::telemetry::MainStage::Sources);
     if !materials.is_changed() || materials.as_ref() == runtime.materials.as_ref() {
         return;
     }
