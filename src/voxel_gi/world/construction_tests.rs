@@ -344,7 +344,6 @@ fn occupied_region_edits_share_only_top_level_acceleration() {
     assert_eq!(edited.material_at(IVec3::new(5, 5, 6)), Some(2));
     let changes = super::super::geometry::SceneChanges::between(&initial, &edited);
     assert!(changes.changed && changes.transport.is_some());
-    assert!(changes.changed_materials[2]);
 
     page[point] = AIR;
     page[point + 1] = AIR;

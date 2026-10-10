@@ -512,9 +512,9 @@ impl SurfaceProbe {
         self.display_updated_at = Some(Instant::now());
     }
 
-    /// Discrete source changes discard obsolete energy, but keep the displayed
-    /// image for the evidence-weighted resolve. Called on a selected worker
-    /// copy: do not change geometry revision or the advancing sample sequence.
+    /// Incompatible receiver or global model replacements discard measurements,
+    /// but retain display history for the evidence-weighted resolve. This helper
+    /// does not change receiver identity or the advancing sample sequence.
     pub(crate) fn restart_measurements(&mut self) {
         self.samples = [0; 6];
         self.fresh_mask = 0;

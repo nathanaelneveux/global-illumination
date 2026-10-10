@@ -218,7 +218,8 @@ struct VoxelGiRuntime {
     geometry_history: geometry::GeometryHistory,
     source_revision: u64,
     batch_size: usize,
-    /// Last discrete source/model change: old energy must not survive as samples.
+    /// Last global material/model replacement. Scene edits use spatial history
+    /// instead; residency of an emitting voxel must not restart the world.
     reset_source_revision: u64,
     source_history: sources::SourceHistory,
     nearby: Vec<IVec3>,
@@ -347,7 +348,6 @@ struct SceneBuildResult {
     scene: Arc<TransportScene>,
     changed: bool,
     geometry_change: Option<geometry::GeometryChange>,
-    changed_materials: [bool; 256],
     pages: VecDeque<(IVec3, Vec<SurfaceProbeDescriptor>)>,
     exact_edits: Vec<IVec3>,
     build_time: Duration,

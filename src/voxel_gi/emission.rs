@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn material_delta_tracks_add_remove_unload_but_not_unchanged_emitters() {
+    fn scene_delta_tracks_add_remove_unload_and_unchanged_geometry() {
         let mut page = vec![AIR; volume_len(PAGE_SIZE)];
         let empty = TransportScene::with_page_delta(
             &TransportScene::default(),
@@ -248,24 +248,20 @@ mod tests {
         );
         page[linear_index(UVec3::splat(8), PAGE_SIZE)] = 4;
         let lit = TransportScene::with_page_delta(&empty, vec![(IVec3::ZERO, page.clone())], &[]);
-        for changed in [
-            super::super::geometry::SceneChanges::between(&empty, &lit).changed_materials,
-            super::super::geometry::SceneChanges::between(&lit, &empty).changed_materials,
-            super::super::geometry::SceneChanges::between(&lit, &TransportScene::default())
-                .changed_materials,
+        for change in [
+            super::super::geometry::SceneChanges::between(&empty, &lit),
+            super::super::geometry::SceneChanges::between(&lit, &empty),
+            super::super::geometry::SceneChanges::between(&lit, &TransportScene::default()),
         ] {
-            assert!(changed[4]);
-            assert_eq!(changed.iter().filter(|v| **v).count(), 1);
+            assert!(change.changed && change.transport.is_some());
         }
         page[linear_index(UVec3::splat(9), PAGE_SIZE)] = 2;
         let edited = TransportScene::with_page_delta(&lit, vec![(IVec3::ZERO, page)], &[]);
-        let changed =
-            super::super::geometry::SceneChanges::between(&lit, &edited).changed_materials;
-        assert!(changed[2]);
-        assert!(!changed[4], "ordinary nearby edits retain bounded history");
+        let changed = super::super::geometry::SceneChanges::between(&lit, &edited);
+        assert!(changed.changed && changed.transport.is_some());
         let unchanged = super::super::geometry::SceneChanges::between(&lit, &lit);
         assert!(!unchanged.changed);
-        assert!(!unchanged.changed_materials.into_iter().any(|v| v));
+        assert!(unchanged.transport.is_none());
     }
     #[test]
     fn distribution_contains_only_exposed_emitters_and_normalizes_power() {

@@ -183,7 +183,6 @@ pub(super) fn start_scene_task(
         SceneBuildResult {
             scene,
             changed: changes.changed,
-            changed_materials: changes.changed_materials,
             geometry_change: changes.transport,
             pages: pages.into(),
             exact_edits,

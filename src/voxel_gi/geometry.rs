@@ -13,12 +13,11 @@ pub(super) const NEAR_HISTORY: u32 = 16;
 const FAR_HISTORY: u32 = 256;
 pub(super) const UNTRACKED_HISTORY: u32 = 64;
 
-/// One worker-side comparison supplies scene publication, material/source
-/// invalidation and spatial history retention. Material IDs (not an emission
-/// boolean) survive material-table changes while the worker is in flight.
+/// One worker-side comparison supplies scene publication and spatial history
+/// retention. A voxel's optical identity is scene data, regardless of whether
+/// that material reflects, emits, or occludes energy.
 pub(super) struct SceneChanges {
     pub changed: bool,
-    pub changed_materials: [bool; 256],
     pub transport: Option<GeometryChange>,
 }
 
@@ -34,7 +33,6 @@ impl SceneChanges {
         }
         let mut result = Self {
             changed: false,
-            changed_materials: [false; 256],
             transport: None,
         };
         let mut bounds = Vec::new();
@@ -65,11 +63,6 @@ impl SceneChanges {
                 }
                 tight.min = tight.min.min(extent.min);
                 tight.max = tight.max.max(extent.max);
-                for material in [a, b] {
-                    if material != AIR {
-                        result.changed_materials[material as usize] = true;
-                    }
-                }
             };
             let uniform_before = before.map_or(Some(AIR), |r| r.uniform_material());
             let uniform_after = after.map_or(Some(AIR), |r| r.uniform_material());

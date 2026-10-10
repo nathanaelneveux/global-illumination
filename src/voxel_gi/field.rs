@@ -92,8 +92,12 @@ pub struct EnergyEstimate {
     pub variance: EnergySpectrum,
     pub effective_samples: u32,
     pub age: Duration,
+    /// Analytic-source/material-table snapshot is current. Scene-bound emission
+    /// changes are tracked by `transport_current`; consumers must check both.
     pub sources_current: bool,
-    /// Includes geometry/material invalidation, even for distant receivers.
+    /// Includes scene geometry, voxel material and emission changes, even for
+    /// distant receivers. Current means refreshed, not converged: bounded
+    /// pre-change statistical weight can remain in a fresh estimate.
     pub transport_current: bool,
 }
 

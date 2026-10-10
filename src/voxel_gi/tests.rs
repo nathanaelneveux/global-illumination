@@ -142,7 +142,6 @@ fn settled_counter_tracks_local_edits_global_revisions_and_page_removal() {
         scene: runtime.scene.clone(),
         changed: true,
         geometry_change: Some(default()),
-        changed_materials: [false; 256],
         pages: VecDeque::new(),
         exact_edits: vec![],
         build_time: Duration::ZERO,
@@ -202,7 +201,6 @@ fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
         scene: Arc::new(TransportScene::default()),
         changed: true,
         geometry_change: Some(default()),
-        changed_materials: [false; 256],
         pages: VecDeque::from([
             (
                 IVec3::ZERO,
@@ -277,6 +275,107 @@ fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
 }
 
 #[test]
+fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders() {
+    use bevy::ecs::system::RunSystemOnce;
+    use world::{AIR, MaterialTransport};
+    let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(1).build();
+    let near = IVec3::new(8, 4, 8);
+    let far = IVec3::new(136, 4, 8);
+    let edit = IVec3::new(8, 8, 8);
+    for material in [2, 4] {
+        let mut voxels = vec![AIR; 32 * 32 * 32];
+        let index = |p: IVec3| (p.x + 32 * (p.y + 32 * p.z)) as usize;
+        voxels[index(near)] = 2;
+        voxels[index(edit)] = material;
+        let mut remote = vec![AIR; voxels.len()];
+        remote[index(far - IVec3::X * 128)] = 2;
+        let previous = TransportScene::with_page_delta(
+            &default(),
+            vec![(IVec3::ZERO, voxels.clone()), (IVec3::X * 4, remote)],
+            &[],
+        );
+        voxels[index(edit)] = AIR;
+        let scene = Arc::new(TransportScene::with_page_delta(
+            &previous,
+            vec![(IVec3::ZERO, voxels)],
+            &[],
+        ));
+        let changes = geometry::SceneChanges::between(&previous, &scene);
+        let result = SceneBuildResult {
+            scene,
+            changed: changes.changed,
+            geometry_change: changes.transport,
+            // No receiver topology changed. This exercises scene acceptance,
+            // not the separate page-merge/seeding tests above.
+            pages: default(),
+            exact_edits: vec![],
+            build_time: Duration::ZERO,
+        };
+        let task = pool.spawn(async move { result });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !task.is_finished() {
+            assert!(Instant::now() < deadline, "test scene did not finish");
+            std::thread::yield_now();
+        }
+        let mut field = VoxelEnergyField::default();
+        for voxel in [near, far] {
+            let mut probe = SurfaceProbe::new(voxel, 4);
+            probe.samples = [4096; 6];
+            probe.radiance = [EnergySpectrum::ONE; 6];
+            probe.second_moment = [EnergySpectrum::ONE; 6];
+            probe.sequence = [4096; 6];
+            probe.display[2].indirect = Vec3::ONE;
+            probe.updated_at = Some(Instant::now());
+            probe.face_updated_at[2] = probe.updated_at;
+            field.probes.insert(voxel, probe);
+            field.pages.insert(page_of(voxel), vec![voxel]);
+        }
+        field.update_indices(&[near, far], &HashMap::new());
+        let mut materials = VoxelMaterialTransportTable::default();
+        materials.set(
+            4,
+            MaterialTransport {
+                emission: EnergySpectrum::ONE,
+                ..default()
+            },
+        );
+        let mut world = World::new();
+        world.insert_resource(field);
+        world.insert_resource(VoxelGiRuntime {
+            scene: Arc::new(previous),
+            scene_task: Some(task),
+            materials: Arc::new(materials),
+            ..default()
+        });
+        world.init_resource::<VoxelGiStats>();
+        world.init_resource::<VoxelGiSettings>();
+        world.init_resource::<GiWorkTimings>();
+        world.run_system_once(apply_scene_task).unwrap();
+        world.resource_scope(|world, mut runtime: Mut<VoxelGiRuntime>| {
+            let field = world.resource::<VoxelEnergyField>();
+            assert_eq!(runtime.source_revision, 0);
+            assert_eq!(runtime.reset_source_revision, 0);
+            assert_eq!(field.transport_revision, 1);
+            for voxel in [near, far] {
+                let estimate = field.estimate(voxel, Vec3::Y).unwrap();
+                assert!(estimate.sources_current);
+                assert!(!estimate.transport_current);
+                assert_eq!(estimate.effective_samples, 4096);
+            }
+            let selected = select_probes(&mut runtime, field);
+            assert_eq!(selected.len(), 2);
+            for probe in selected {
+                let retained = if probe.voxel == near { 16 } else { 256 };
+                assert_eq!(probe.samples[2], retained, "material {material}");
+                assert_eq!(probe.radiance[2], EnergySpectrum::ONE);
+                assert_eq!(probe.sequence[2], 4096);
+                assert_eq!(probe.display[2].indirect, Vec3::ONE);
+            }
+        });
+    }
+}
+
+#[test]
 fn publication_batches_cheap_pages_without_unbounded_display_work() {
     use bevy::ecs::system::RunSystemOnce;
     let pages: VecDeque<_> = (0..6)
@@ -303,7 +402,6 @@ fn publication_batches_cheap_pages_without_unbounded_display_work() {
             scene: Arc::new(TransportScene::default()),
             changed: true,
             geometry_change: Some(default()),
-            changed_materials: [false; 256],
             pages,
             exact_edits: vec![],
             build_time: Duration::ZERO,
@@ -439,7 +537,7 @@ fn moving_sources_preserve_history_and_work_queues() {
 }
 
 #[test]
-fn emitter_change_restarts_local_and_remote_measurements_not_presentation() {
+fn global_model_replacement_restarts_measurements_not_presentation() {
     let mut field = VoxelEnergyField::default();
     for voxel in [IVec3::ZERO, IVec3::new(10_000, 0, 0)] {
         let mut probe = SurfaceProbe::new(voxel, 5);
@@ -454,7 +552,7 @@ fn emitter_change_restarts_local_and_remote_measurements_not_presentation() {
     let mut runtime = VoxelGiRuntime::default();
     invalidate_sources(&mut runtime, &mut field, &mut VoxelGiStats::default());
     runtime.reset_source_revision = runtime.source_revision;
-    // A later moving-light revision must not hide the pending emitter reset.
+    // A later moving-light revision must not hide the pending model reset.
     invalidate_sources(&mut runtime, &mut field, &mut VoxelGiStats::default());
     let selected = select_probes(&mut runtime, &field);
     assert_eq!(selected.len(), 2);

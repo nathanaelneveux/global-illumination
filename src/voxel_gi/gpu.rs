@@ -1094,7 +1094,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires a native compute adapter"]
-    fn emitter_removal_replaces_energy_in_one_batch_and_fades_display() {
+    fn explicit_measurement_restart_clears_energy_and_fades_display() {
         use super::super::{
             naadf::{linear_index, volume_len},
             tracer::trace_probe_batch,
@@ -1204,7 +1204,7 @@ mod tests {
         }
         assert!(next.display[2].indirect.x < original.x * 0.01);
         eprintln!(
-            "Emitter removal: exact zero transport in first 4-path batch; display <10% after 8 batches, <1% after 12 (virtual 50ms cadence, not gameplay latency)."
+            "Explicit measurement restart: exact zero transport in first 4-path batch; display <10% after 8 batches, <1% after 12 (virtual 50ms cadence, not gameplay latency)."
         );
     }
 
