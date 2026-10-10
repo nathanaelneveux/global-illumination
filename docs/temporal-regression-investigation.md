@@ -108,3 +108,14 @@ Validate that policy against this stability gate **and** emitter on/off response
 including removals, streaming and all transported bands. Simply removing the
 global reset or making every display filter slower is not the accepted fix.
 No production transport/filter settings were changed by this investigation.
+
+## Final harness verification
+
+Five Python tests passed. The CLI gate (`corners`, 30–50 seconds, p95 ≤ 0.10,
+at least 32 new paths at every receiver) returned exit codes **0 / 1 / 0 / 0**
+for older / current / cave-omitted / reset-ablated runs respectively. This is
+a regression reproduction, not a production fix or an absolute-accuracy pass.
+The production-policy diagnostic branch was restored and rebuilt successfully.
+An intentional wrong-build-root launch exited with the expected validation error
+before gathering evidence (`target/temporal-build-guard.log`); no app processes
+were left running. The user's original detached `ad6ba8e` checkout is unchanged.
