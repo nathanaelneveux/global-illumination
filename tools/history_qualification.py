@@ -7,7 +7,6 @@ oracle telling them whether an edit matters. Audit queries are restricted to
 the last four batches that existed before each event, and every replay is billed.
 """
 import argparse
-import copy
 import json
 import math
 import unittest
@@ -104,6 +103,36 @@ def sustained(curve, key, threshold, steps):
     return curve[first]["total_paths_per_site"]
 
 
+def verify_individual_samples(tape):
+    """Single-path dispatches must reconstruct the existing native batch means.
+
+    Validate every recorded band and raw second moment, including both sides
+    of an event. Differences from parallel floating-point reduction are allowed;
+    a different path stream or a missing event bank is not.
+    """
+    if tape["schema"] < 2:
+        return
+    batch_paths = tape["batch_paths"]
+    for case in tape["cases"]:
+        events = {str(step) for step in range(tape["steps"])
+                  if step == 0 or (case["repeated"] and step % 8 == 0)}
+        for run in case["runs"]:
+            for side in ("before", "after"):
+                bank = run["individual_" + side]
+                assert set(bank) == events, (case["name"], side, "missing event")
+                for step, paths in bank.items():
+                    assert len(paths) == batch_paths
+                    batch = run[side][int(step) + 4]
+                    assert all(len(p) == len(batch) for p in paths)
+                    for site, moment in enumerate(batch):
+                        for key in ("mean", "second"):
+                            reconstructed = [sum(p[site][key][c] for p in paths) / batch_paths
+                                             for c in range(5)]
+                            assert all(math.isclose(a, b, rel_tol=2e-5, abs_tol=1e-7)
+                                       for a, b in zip(reconstructed, moment[key])), (
+                                           case["name"], run["seed"], side, step, site, key)
+
+
 def evaluate(case, run, policy, batch_paths, warm_paths, steps):
     histories = [History(v, warm_paths) for v in run["warm"]]
     before, after = [mean_reference(case[key]) for key in ("references_before", "references_after")]
@@ -118,13 +147,21 @@ def evaluate(case, run, policy, batch_paths, warm_paths, steps):
             audit = Audit(run, step, was_after, now_after, batch_paths)
             policy.event(histories, case["sites"], audit)
             replay_paths += audit.paths
-        fresh = run["after" if now_after else "before"][step + 4]
+        side = "after" if now_after else "before"
+        fresh = run[side][step + 4]
         target = after if now_after else before
-        weights = policy.weights(histories, fresh, batch_paths)
+        previous = [h.mean[:] for h in histories]
+        if hasattr(policy, "integrate"):
+            # Some policies require actual paths, not a batch mean. They must
+            # reject a missing bank while active, never silently approximate it.
+            individual = run.get("individual_" + side, {}).get(str(step))
+            policy.integrate(histories, fresh, batch_paths, individual)
+        else:
+            weights = policy.weights(histories, fresh, batch_paths)
+            for h, f, w in zip(histories, fresh, weights):
+                h.integrate(f, batch_paths, w)
         rgb, bands = [], []
-        for i, (h, f, w, reference, scale) in enumerate(zip(histories, fresh, weights, target, scales)):
-            old = h.mean[:]
-            h.integrate(f, batch_paths, w)
+        for i, (h, old, reference, scale) in enumerate(zip(histories, previous, target, scales)):
             r, b = error(h.mean, reference, scale)
             rgb.append(r)
             bands.append(b)
@@ -151,6 +188,7 @@ def evaluate(case, run, policy, batch_paths, warm_paths, steps):
 
 
 def analyze(tape):
+    verify_individual_samples(tape)
     results, uncertainty = [], []
     for case in tape["cases"]:
         for which in ("references_before", "references_after"):

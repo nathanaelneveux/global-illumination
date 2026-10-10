@@ -83,6 +83,33 @@ fn references(gpu: &mut GpuTracer, f: &Fixture, scene: Arc<TransportScene>) -> V
         .collect()
 }
 
+/// Expand only the first batch after each event into its individual paths.
+/// These are the same paths as the corresponding batch, not extra evidence.
+/// Keep the rest aggregated to avoid a large single-path tape/readback.
+fn individual_event_paths(
+    gpu: &mut GpuTracer,
+    f: &Fixture,
+    scene: Arc<TransportScene>,
+    seed: u32,
+    repeated: bool,
+) -> Value {
+    let events: Vec<_> = (0..STEPS)
+        .filter(|&step| step == 0 || (repeated && step % 8 == 0))
+        .collect();
+    let starts: Vec<_> = events
+        .iter()
+        .flat_map(|&step| (0..BATCH).map(move |path| seed + WARM + step * BATCH + path))
+        .collect();
+    let (samples, _) = trace(gpu, f, scene, &starts, 1);
+    Value::Object(
+        events
+            .into_iter()
+            .zip(samples.chunks(BATCH as usize))
+            .map(|(step, paths)| (step.to_string(), json!(paths)))
+            .collect(),
+    )
+}
+
 fn record_case(
     gpu: &mut GpuTracer,
     f: &Fixture,
@@ -114,7 +141,14 @@ fn record_case(
         } else {
             trace(gpu, f, after.clone(), &starts, BATCH)
         };
+        let individual_before = individual_event_paths(gpu, f, before.clone(), seed, repeated);
+        let individual_after = if Arc::ptr_eq(&before, &after) {
+            individual_before.clone()
+        } else {
+            individual_event_paths(gpu, f, after.clone(), seed, repeated)
+        };
         runs.push(json!({"seed":seed,"warm":warm[0],"before":old,"after":new,
+            "individual_before":individual_before,"individual_after":individual_after,
             "tape_gpu_ms":[old_ms,new_ms]}));
     }
     let sites: Vec<_> = f
@@ -235,8 +269,8 @@ fn record_history_qualification_tape() {
             case["sites"].as_array().unwrap().len()
         );
     }
-    let report = json!({"schema":1,"batch_paths":BATCH,"steps":STEPS,"warm_paths":WARM,
+    let report = json!({"schema":2,"batch_paths":BATCH,"steps":STEPS,"warm_paths":WARM,
         "reference_paths_per_replica":4*REFERENCE_BLOCK,"cases":cases,
-        "notes":"Frozen native scenes. Each run has four pre-edit replay batches plus 512 post-edit batches. Repeated null events every eight batches. No streaming scheduler or FPS claim. Pair every promotion with real streamed validation."});
+        "notes":"Frozen native scenes. Each run has four pre-edit replay batches plus 512 post-edit batches. Repeated null events every eight batches. Individual paths reproduce the first batch after each event, not extra samples. No streaming scheduler or FPS claim. Pair every promotion with real streamed validation."});
     std::fs::write(output, serde_json::to_vec(&report).unwrap()).unwrap();
 }
