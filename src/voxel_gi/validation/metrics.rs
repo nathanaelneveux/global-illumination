@@ -73,9 +73,10 @@ impl Metrics {
         {
             return;
         }
-        // Time<Real>'s interval ends at this frame's start. Associate the
-        // preceding frame's GI bodies, not this Update's work. Pipeline/render
-        // overlap still prevents treating the remainder as pure BVW cost.
+        // Associate preceding Main observations, not this Update's work.
+        // Time<Real> can use renderer-sent instants under pipelining: these
+        // arrays are not an exact partition of its interval. In particular,
+        // subtracting them cannot identify a BVW or GPU-only remainder.
         self.frame_timeline
             .push(json!({"at_s":elapsed,"phase":phase,
             "interval_ms":frame_ms,"capture_excluded":capture_excluded,

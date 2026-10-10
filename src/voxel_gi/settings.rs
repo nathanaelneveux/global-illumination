@@ -8,7 +8,7 @@ use std::time::Duration;
 pub struct VoxelGiSettings {
     pub transport: TransportSettings,
     /// New paths per selected face, not a lifetime sample limit. Smaller batches
-    /// trade per-face progress for scheduling/transfer overhead.
+    /// refresh more receivers sooner but pay more scheduling/transfer overhead.
     pub samples_per_dispatch: u32,
     /// Disable for a same-kernel continuous-sampling A/B baseline.
     pub adaptive_updates: bool,
@@ -35,7 +35,7 @@ impl Default for VoxelGiSettings {
     fn default() -> Self {
         Self {
             transport: TransportSettings::default(),
-            samples_per_dispatch: 4,
+            samples_per_dispatch: 16,
             adaptive_updates: true,
             trace_budget_ms: 4.0,
             max_probes_per_dispatch: 8192,

@@ -276,6 +276,12 @@ indices, temporal display and scheduler state stay authoritative on the main
 world. Workers own scene/source snapshots and perform preparation, submission,
 waiting and decoding asynchronously. The CPU fallback pool is created lazily and
 limited to two threads. One outstanding trace batch bounds resource ownership.
+The default dispatch adds 16 paths per selected face within the same adaptive
+4-ms transport target. This amortizes receiver scheduling, transfer and merge;
+it does not increase bounce depth, reach, retained history or the work target.
+Smaller batches remain available for more frequent individual-receiver refresh.
+The [paired cave and response evidence](streaming-performance.md#repeated-batch-size-result)
+supports the default, including its early-coverage/refresh-cadence tradeoff.
 
 Publication rejects incompatible receiver geometry and obsolete global-model
 resets. Moving-light results can be accepted as stale to avoid perpetual starvation;
@@ -315,8 +321,10 @@ measurements changed since the snapshot in the same frame.
 
 Each generation owns fresh hash/probe buffer identities and its own shared patch
 queue. Extracted older frames retain their generation. Hash and value patches
-preflight together and upload under one lock; a failed bounds check retains both
-for retry. Topology updates include values on existing newly exposed faces, so
+preflight together and snapshot under one lock; a failed bounds check retains both
+for retry. Driver writes happen after releasing the lock, using immutable paired
+scratch bytes; changes arriving meanwhile form the next transaction.
+Topology updates include values on existing newly exposed faces, so
 the value-upload timer cannot split the transaction. The shader's address bound
 is allocated capacity, not current occupancy.
 

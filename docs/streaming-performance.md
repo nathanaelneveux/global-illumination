@@ -82,6 +82,13 @@ pre-add/lit red reference at `(9,38,-9)` and `(10,38,-9)`, last excursions above
 10% after removal were 1.97/2.47 s versus 2.03/2.03 s. Final residuals were
 0.026/0.050 versus 0.033/0.034. All 14 captures valid in each; clean logs.
 
+Adopt 16 paths as the default, keeping the 4-ms controller target, range, depth,
+history and display response unchanged. It is not uniformly better at first-ray
+coverage: around five seconds the repeats covered 67%/43% of roughly 470k/459k
+already-published probes (4/16 paths); around ten seconds both were effectively
+covered, with no publication backlog. Lower batch sizes remain a quality/work
+knob for hosts that prefer faster individual refresh over refinement throughput.
+
 ## Trusted spatial-key hashing
 
 Use Bevy's existing fast maps consistently for scene regions, packed bricks,
@@ -93,6 +100,24 @@ The opt-in `scene_lookup_hash_benchmark` alternates ten measured pairs over
 6.132 ms, Bevy-map 1.860 ms, identical checksums. This is a **lookup** speedup,
 not a claim that the whole frame is 3.3× faster. Seven construction tests, five
 packed-scene tests and the integration contracts cover the changed indices.
+
+## Upload experiment not promoted
+
+`codex/display-upload-belt` at `a95ba97` reuses wgpu staging chunks for sparse
+display writes. Fifteen render tests, native generation/material and retry tests,
+build and strict Clippy passed. Four-path streaming on `6b914f3`, same settings:
+
+| Run suffix | Interval p95 / p99 / max (ms) | Frames >33.3 / >50 ms | Paths |
+| --- | ---: | ---: | ---: |
+| `1791648859087822000-71144` baseline | 29.49 / 38.35 / 142.95 | 18 / 4 | 34.48 M |
+| `1791648979960457000-71263` belt | 27.97 / 30.66 / 208.45 | 6 / 3 | 33.60 M |
+| `1791649032981354000-71291` belt repeat | 28.06 / 29.98 / 196.53 | 4 / 3 | 35.07 M |
+| `1791649165438900000-71422` baseline repeat | 29.14 / 41.07 / 179.35 | 18 / 4 | 33.79 M |
+
+All captures valid, logs clean, no publication backlog; 601–608 final pages.
+The frequent tail improves, but the largest stall worsens. Keep it separate
+rather than hiding the tradeoff behind p99. Main retains its existing upload path.
+The default-setting edits were not compiled into the baseline repeat.
 
 The accepted scene-history work through `b051274` is merged into the regular
 `voxel-global-illumination` branch. Keep its history and presentation policy fixed
@@ -120,7 +145,10 @@ With frame timings enabled, `previous_host_schedule_ms` also brackets all seven
 Main schedules, including their deferred commands and executor waits. Names are
 in `host_schedule_names`; these are the last completed iteration, not the current
 Update. Their sum excludes render extraction/pipeline waits after Main and the
-headless runner's sleep. The interval remainder is not automatically GPU time.
+headless runner's sleep. Bevy can feed `Time<Real>` from renderer timestamps
+under pipelining, so the preceding Main observations do not exactly partition
+the interval; even a negative remainder is possible. Compare their distributions
+within the workload, not a subtraction attributed to BVW or GPU time.
 The boundary schedules are absent from normal gameplay.
 
 An exploratory 12-second macOS `sample` trace found mirror-lock waits during GI
