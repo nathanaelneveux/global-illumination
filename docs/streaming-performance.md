@@ -1,5 +1,51 @@
 # Cave stability and streaming cost — October 10, 2026
 
+## Follow-up experiments
+
+Rejected dependency representation: `codex/path-footprint-retention` at
+`545244d` preserves the implementation and evidence. It stores a 14-plane union
+of retained paths and checks geometry changes against it. Early rays through
+incomplete residency permanently inflate the union, even after their measured
+weight becomes tiny. Per-region change bounds did not rescue it. Native energy
+and metadata parity passed, but cave p95 variation remained 0.1381 with 16
+history drops. Do not promote it or approximate away valid distant dependencies.
+
+`9b3aa9d` replaces the optional five-second full-world diagnostic scan with a
+bounded 1,024-receiver estimate. Exact coverage/freshness counters are unchanged.
+Validation enabled the old scan even with warning-only logs; several largest
+spikes coincided with it. Normal play already disabled it. This is a measurement
+overhead fix, not a claim that ordinary-play stalls are solved.
+
+Batch-size pilot on `9b3aa9d`, same cave/background/offscreen settings as below:
+
+| Metric | 4 paths/face | 16 paths/face |
+| --- | ---: | ---: |
+| Total paths | 83.97 M | 128.53 M |
+| Corner excess variation p95, 40–60 s | 0.1479 | 0.0939 |
+| Minimum new paths at measured sites, 40–60 s | 88 | 144 |
+| GI main-body sum p95 | 11.22 ms | 7.30 ms |
+| Offscreen app interval p50 / p95 / p99 | 20.81 / 29.64 / 45.22 ms | 21.62 / 26.97 / 46.61 ms |
+| Near measurement age p50 / p95 / p99 | 106 / 545 / 1,813 ms | 349 / 958 / 1,437 ms |
+
+Runs `cave-1791647202747113000-69643` and
+`cave-1791647269860800000-69758`; the latter uses launch JSON
+`{"samples_per_dispatch":16}`. The test-only accessor annotation in `02c3023`
+was edited during the latter run but not built. All 144 corners present and all
+three captures valid in each. No history, display, scene policy or work-budget
+change. Promising amortization, but individual refresh cadence slows and overall
+p99 does not improve: check response and repeat before choosing the default.
+
+BVW in-flight limit pilot: clean runtime `02c3023` versus only overriding
+`max_active_chunk_threads` to 8. Streaming runs
+`streaming-1791647431713115000-69830` and
+`streaming-1791647504446268000-69917`: streaming p95/p99/max intervals
+29.61/40.85/172.58 ms versus 29.48/38.44/198.13 ms; 33.85/33.99 M paths,
+605/621 final pages with no remaining publication backlog. Not a demonstrated
+stall fix. Same cap with `CARGO_PROFILE_DEV_OPT_LEVEL=3`,
+`streaming-1791647586359960000-70001`, gives 28.37/38.71/175.86 ms and 34.41 M
+paths: no useful overall win. Retain normal build settings and do not promote
+the arbitrary job limit. Captures valid and render logs clean in all three.
+
 The accepted scene-history work through `b051274` is merged into the regular
 `voxel-global-illumination` branch. Keep its history and presentation policy fixed
 while removing publication overhead. Neither the cave's residual noise nor the
