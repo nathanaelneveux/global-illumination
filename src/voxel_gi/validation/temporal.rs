@@ -54,7 +54,9 @@ fn sites(profile: Profile) -> Vec<(IVec3, usize)> {
         } else {
             crate::structures::showcase::CAVE_ORIGIN
         };
-        return [8, 29, 50]
+        // Keep the west-wall receivers clear of the normal world's staircase.
+        // The isolated chamber has no stairs, so checking it alone is insufficient.
+        return [8, 20, 50]
             .into_iter()
             .flat_map(|t| {
                 [9, 22, 37].into_iter().flat_map(move |y| {
@@ -219,6 +221,7 @@ mod tests {
             crate::structures::showcase::CAVE_ORIGIN
         };
         let cave = sites(Profile::Cave);
+        let structures = crate::structures::showcase::world_structures();
         assert_eq!(cave.len(), 36);
         for (voxel, face) in cave {
             let local = voxel - origin;
@@ -229,6 +232,15 @@ mod tests {
             assert_eq!(
                 crate::cave_scene::voxel(local + FACE_OFFSETS[face]),
                 WorldVoxel::Air
+            );
+            let world = local + crate::structures::showcase::CAVE_ORIGIN;
+            assert!(matches!(
+                structures.sample(world),
+                crate::structures::VoxelOp::Solid(_)
+            ));
+            assert_eq!(
+                structures.sample(world + FACE_OFFSETS[face]),
+                crate::structures::VoxelOp::Air
             );
         }
     }
