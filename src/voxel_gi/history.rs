@@ -303,10 +303,10 @@ mod tests {
         let sequence = probe.sequence;
         let weight = probe.display[2].confidence;
         let sky = probe.display[2].sky;
-        probe.invalidate();
+        probe.restart_measurements();
         assert_eq!(
             probe.display[2].confidence, weight,
-            "editing cannot change retained corner reconstruction weights"
+            "restarting measurements cannot change retained corner reconstruction weights"
         );
         assert_eq!(probe.display[2].sky, sky);
         assert_eq!(probe.display[2].indirect, Vec3::splat(4.0));
@@ -437,7 +437,7 @@ mod tests {
         let start = Instant::now();
         for (initial, target) in [(0.0, 1.0), (1.0, 0.0)] {
             let mut previous = measured(IVec3::ZERO, initial, start);
-            previous.invalidate();
+            previous.restart_measurements();
             previous.display_updated_at = Some(start);
             for batch in 1..=16 {
                 let mut next = previous.clone();
@@ -534,7 +534,7 @@ mod tests {
     fn isolated_hdr_estimate_does_not_flash_retained_dark_history() {
         let now = Instant::now();
         let mut previous = measured(IVec3::ZERO, 0.0, now);
-        previous.invalidate();
+        previous.restart_measurements();
         let mut next = previous.clone();
         next.samples[2] = 4;
         next.radiance[2] = EnergySpectrum::new(Vec3::splat(1000.0), 50.0, 80.0);

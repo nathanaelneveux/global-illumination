@@ -173,6 +173,9 @@ pub(super) fn publish_scene_page(
             added.push(descriptor.voxel);
             let mut probe = SurfaceProbe::new(descriptor.voxel, descriptor.face_mask);
             probe.revision = runtime.generation << 32;
+            // Timestamp the new display prior independently of material ID.
+            // This is not measurement evidence or a transport freshness stamp.
+            probe.display_updated_at = Some(now);
             Box::new(probe)
         });
         let old_mask = probe.face_mask;
@@ -181,7 +184,10 @@ pub(super) fn publish_scene_page(
             || probe.material != descriptor.material
             || probe.emission != runtime.materials.get(descriptor.material).emission;
         if probe.material != descriptor.material {
-            probe.invalidate();
+            // Incident energy is defined by position/orientation, not the
+            // receiver's material ID. Treat replacement as a local scene edit;
+            // retain bounded stale measurements and reject pre-edit jobs.
+            probe.request_relight();
             invalidated.insert(descriptor.voxel);
         }
         probe.material = descriptor.material;

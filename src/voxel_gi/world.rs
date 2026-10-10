@@ -496,7 +496,8 @@ impl SurfaceProbe {
     /// Changed geometry may affect a path, but does not make every nearby
     /// receiver a new surface. Retain bounded measured history, explicitly
     /// stale, while replacing it with fresh paths. No borrowed/display energy
-    /// enters these statistics. New faces/material changes still start empty.
+    /// enters these statistics. Material replacement uses the same rule;
+    /// only newly exposed faces start without compatible measurements.
     pub(crate) fn request_relight(&mut self) {
         self.revision = self.revision.wrapping_add(1);
         self.samples = self
@@ -506,15 +507,9 @@ impl SurfaceProbe {
         self.stable_batches = [0; 6];
     }
 
-    pub(crate) fn invalidate(&mut self) {
-        self.revision = self.revision.wrapping_add(1);
-        self.restart_measurements();
-        self.display_updated_at = Some(Instant::now());
-    }
-
-    /// Incompatible receiver or global model replacements discard measurements,
-    /// but retain display history for the evidence-weighted resolve. This helper
-    /// does not change receiver identity or the advancing sample sequence.
+    /// Full-probe reference for test fixtures. Production model replacement uses
+    /// compact `TraceWork`; keep the same measurement/display separation here.
+    #[cfg(test)]
     pub(crate) fn restart_measurements(&mut self) {
         self.samples = [0; 6];
         self.fresh_mask = 0;

@@ -275,6 +275,177 @@ fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
 }
 
 #[test]
+fn new_receiver_display_clock_does_not_depend_on_material_id() {
+    for material in [0, 2] {
+        let mut runtime = VoxelGiRuntime::default();
+        let mut field = VoxelEnergyField::default();
+        let mut stats = VoxelGiStats::default();
+        let mut result = SceneBuildResult {
+            scene: runtime.scene.clone(),
+            changed: true,
+            geometry_change: None,
+            pages: default(),
+            exact_edits: vec![],
+            build_time: Duration::ZERO,
+        };
+        publish_scene_page(
+            &mut runtime,
+            &mut field,
+            &mut stats,
+            &mut result,
+            IVec3::ZERO,
+            vec![SurfaceProbeDescriptor {
+                voxel: IVec3::ZERO,
+                face_mask: 4,
+                material,
+            }],
+        );
+        let probe = &field.probes[&IVec3::ZERO];
+        assert!(probe.display_updated_at.is_some());
+        assert!(probe.updated_at.is_none());
+        assert_eq!(probe.samples, [0; 6]);
+        assert!(field.estimate(IVec3::ZERO, Vec3::Y).is_none());
+    }
+}
+
+#[test]
+fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
+    use bevy::ecs::system::RunSystemOnce;
+    use world::{AIR, MaterialTransport};
+    let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(1).build();
+    let voxel = IVec3::splat(8);
+    for material in [2, 4] {
+        for face_mask in [4, 5] {
+            let now = Instant::now();
+            let mut probe = SurfaceProbe::new(voxel, 4);
+            probe.material = 3;
+            probe.samples = [1024; 6];
+            probe.sequence = [2048; 6];
+            probe.radiance = [EnergySpectrum::ONE; 6];
+            probe.second_moment = [EnergySpectrum::ONE * 2.0; 6];
+            probe.display[2].indirect = Vec3::splat(0.5);
+            probe.display[2].confidence = 0.75;
+            probe.updated_at = Some(now);
+            probe.face_updated_at = [Some(now); 6];
+            probe.display_updated_at = Some(now);
+            probe.revision = 7;
+            probe.stable_batches = [4; 6];
+            let mut late = probe.clone();
+            late.radiance = [EnergySpectrum::ONE * 100.0; 6];
+            let mut field = VoxelEnergyField::default();
+            field.probes.insert(voxel, probe);
+            field.pages.insert(IVec3::ZERO, vec![voxel]);
+            field.update_indices(&[voxel], &HashMap::new());
+            let mut materials = VoxelMaterialTransportTable::default();
+            materials.set(
+                4,
+                MaterialTransport {
+                    emission: EnergySpectrum::ONE * 8.0,
+                    ..default()
+                },
+            );
+            let mut voxels = vec![AIR; 32 * 32 * 32];
+            voxels[8 + 32 * (8 + 32 * 8)] = u16::from(material);
+            let scene = Arc::new(TransportScene::with_page_delta(
+                &default(),
+                vec![(IVec3::ZERO, voxels)],
+                &[],
+            ));
+            let (faces, samples, covered, settled) = probe_metrics(&field.probes[&voxel], 0);
+            let mut runtime = VoxelGiRuntime {
+                scene: scene.clone(),
+                materials: Arc::new(materials),
+                active_faces: faces,
+                completed_samples: samples,
+                covered_faces: covered,
+                settled_faces: settled,
+                ..default()
+            };
+            let mut stats = VoxelGiStats::default();
+            let mut result = SceneBuildResult {
+                scene,
+                changed: true,
+                geometry_change: None,
+                pages: default(),
+                exact_edits: vec![],
+                build_time: Duration::ZERO,
+            };
+            publish_scene_page(
+                &mut runtime,
+                &mut field,
+                &mut stats,
+                &mut result,
+                IVec3::ZERO,
+                vec![SurfaceProbeDescriptor {
+                    voxel,
+                    face_mask,
+                    material,
+                }],
+            );
+            let p = &field.probes[&voxel];
+            assert!(p.revision > late.revision);
+            assert_eq!(p.samples[2], geometry::NEAR_HISTORY);
+            assert_eq!(p.sequence[2], 2048);
+            assert_eq!(p.radiance[2], EnergySpectrum::ONE);
+            assert_eq!(p.second_moment[2], EnergySpectrum::ONE * 2.0);
+            assert_eq!(p.face_updated_at[2], Some(now));
+            assert_eq!(p.display_updated_at, Some(now));
+            assert_eq!(p.display[2].indirect, Vec3::splat(0.5));
+            assert_eq!(p.display[2].confidence, 0.75);
+            assert_eq!(p.emission, runtime.materials.get(material).emission);
+            assert_eq!(p.fresh_mask, 0);
+            assert_eq!(p.stable_batches, [0; 6]);
+            let estimate = field.estimate(voxel, Vec3::Y).unwrap();
+            assert!(!estimate.transport_current && !estimate.sources_current);
+            assert_eq!(
+                estimate.incident,
+                EnergySpectrum::ONE,
+                "self-emission is not incoming energy"
+            );
+            if face_mask == 5 {
+                assert_eq!(p.samples[0], 0);
+                assert_eq!(p.radiance[0], EnergySpectrum::ZERO);
+                assert!(field.estimate(voxel, Vec3::X).is_none());
+            }
+            let task = pool.spawn(async move {
+                TraceBatchResult {
+                    work: TraceWork::from_probes(&[late], false),
+                    paths: 4,
+                    trace_time: Duration::from_millis(1),
+                    gpu_tracer: None,
+                    emission_cache: None,
+                    cpu_sky_cache: default(),
+                    gpu_error: None,
+                    sky_only: false,
+                    transport_count: 1,
+                    sky_count: 0,
+                    scene_generation: 0,
+                    sky_revision: 0,
+                }
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !task.is_finished() {
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            runtime.trace_task = Some(task);
+            let mut world = World::new();
+            world.insert_resource(runtime);
+            world.insert_resource(field);
+            world.insert_resource(stats);
+            world.init_resource::<VoxelGiSettings>();
+            world.init_resource::<GiWorkTimings>();
+            world.run_system_once(apply_trace_task).unwrap();
+            assert_eq!(
+                world.resource::<VoxelEnergyField>().probes[&voxel].radiance[2],
+                EnergySpectrum::ONE,
+                "pre-replacement jobs must not overwrite retained incident energy"
+            );
+        }
+    }
+}
+
+#[test]
 fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders() {
     use bevy::ecs::system::RunSystemOnce;
     use world::{AIR, MaterialTransport};
@@ -789,7 +960,7 @@ fn simulation_rejects_unmeasured_or_buried_faces_and_reports_stale_sources() {
     assert!(!field.estimate(voxel, Vec3::Y).unwrap().sources_current);
     let probe = field.probes.get_mut(&voxel).unwrap();
     probe.sequence[2] = 100;
-    probe.invalidate();
+    probe.restart_measurements();
     assert_eq!(probe.sequence[2], 100);
     assert!(field.estimate(voxel, Vec3::Y).is_none());
 }
