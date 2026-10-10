@@ -15,9 +15,9 @@ use bevy::render::render_resource::{
     AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
     TextureViewDescriptor, TextureViewDimension,
 };
-use bevy::render::renderer::RenderQueue;
+use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::storage::{GpuShaderBuffer, ShaderBuffer};
-use bevy::render::{Render, RenderApp, RenderSystems};
+use bevy::render::{GpuResourceAppExt, Render, RenderApp, RenderSystems};
 use bevy::shader::ShaderRef;
 use bevy_voxel_world::rendering::vertex_layout;
 
@@ -234,6 +234,47 @@ impl ProbeUpload {
             write(*probe, *offset, &self.bytes[range.clone()]);
         }
     }
+
+    /// Suballocate sparse writes from reusable mapped staging chunks. The
+    /// complete hash/probe transaction is submitted before terrain rendering;
+    /// recall is asynchronous and never waits for the device on the game thread.
+    fn submit_staged(
+        &self,
+        belt: &mut wgpu::util::StagingBelt,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        probes: &wgpu::Buffer,
+        hash: &wgpu::Buffer,
+    ) {
+        if self.writes.is_empty() {
+            return;
+        }
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Voxel GI sparse display upload"),
+        });
+        self.submit(|probe, offset, bytes| {
+            belt.write_buffer(
+                &mut encoder,
+                if probe { probes } else { hash },
+                offset as u64,
+                wgpu::BufferSize::new(bytes.len() as u64).unwrap(),
+            )
+            .copy_from_slice(bytes);
+        });
+        belt.finish();
+        queue.submit([encoder.finish()]);
+        belt.recall();
+    }
+}
+
+#[derive(Resource)]
+struct ProbeStaging(wgpu::util::StagingBelt);
+
+impl FromWorld for ProbeStaging {
+    fn from_world(world: &mut World) -> Self {
+        let device = world.resource::<RenderDevice>().wgpu_device().clone();
+        Self(wgpu::util::StagingBelt::new(device, 2 * 1024 * 1024))
+    }
 }
 
 impl ProbePatchState {
@@ -304,6 +345,8 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
         state: default(),
     });
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+        // Recreate device-owned staging on renderer recovery as well as startup.
+        render_app.init_gpu_resource::<ProbeStaging>();
         // Both new storage assets must exist before the terrain material binds
         // its generation. Otherwise preparation order can hide it for a frame.
         render_app.configure_sets(
@@ -642,6 +685,8 @@ fn apply_probe_patches(
     patches: Res<GpuProbePatchQueue>,
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
     queue: Res<RenderQueue>,
+    device: Res<RenderDevice>,
+    mut staging: ResMut<ProbeStaging>,
     mut failed: Local<bool>,
     mut upload: Local<ProbeUpload>,
 ) {
@@ -668,14 +713,13 @@ fn apply_probe_patches(
         }
         *failed = true;
     } else {
-        upload.submit(|probe, offset, bytes| {
-            let buffer = if probe {
-                &probe_buffer.buffer
-            } else {
-                &hash_buffer.buffer
-            };
-            queue.write_buffer(buffer, offset as u64, bytes);
-        });
+        upload.submit_staged(
+            &mut staging.0,
+            device.wgpu_device(),
+            &queue,
+            &probe_buffer.buffer,
+            &hash_buffer.buffer,
+        );
         *failed = false;
     }
 }
@@ -1824,27 +1868,20 @@ mod tests {
             ..default()
         };
         write_hash_entry(&mut state.hash_mirror, OFFSET / 16, expected);
+        let state = Mutex::new(state);
+        let mut upload = ProbeUpload::default();
         assert!(
-            state
-                .upload(probe_buffer.size(), old_hash.size(), |_, _, _| panic!(
-                    "stale allocation used"
-                ))
+            upload
+                .stage(&state, probe_buffer.size(), old_hash.size())
                 .is_err()
         );
-        assert_eq!(state.pending_hash.len(), 1);
-        state
-            .upload(
-                probe_buffer.size(),
-                new_hash.size(),
-                |probe, offset, bytes| {
-                    queue.write_buffer(
-                        if probe { &probe_buffer } else { &new_hash },
-                        offset as u64,
-                        bytes,
-                    );
-                },
-            )
+        assert!(upload.writes.is_empty());
+        assert_eq!(state.lock().unwrap().pending_hash.len(), 1);
+        upload
+            .stage(&state, probe_buffer.size(), new_hash.size())
             .unwrap();
+        let mut belt = wgpu::util::StagingBelt::new(device.clone(), 2 * 1024 * 1024);
+        upload.submit_staged(&mut belt, &device, &queue, &probe_buffer, &new_hash);
         let readback = create(
             16,
             wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
@@ -1870,7 +1907,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             &*readback.slice(..).get_mapped_range(),
-            &state.hash_mirror[OFFSET..OFFSET + 16]
+            &state.lock().unwrap().hash_mirror[OFFSET..OFFSET + 16]
         );
         readback.unmap();
         assert!(block_on(scope.pop()).is_none());

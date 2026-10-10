@@ -1,5 +1,21 @@
 # Cave stability and streaming cost — October 10, 2026
 
+## Retained changes
+
+- Sixteen paths per selected face, still a 4-ms adaptive transport target. Two
+  controlled cave pairs show 53–57% more paths and 33–36% less corner variation,
+  with lower GI CPU cost. Initial coverage/individual refresh can be slower.
+- Fast trusted-key hashing in scene construction and publication. A lookup-only
+  paired benchmark is 3.3× faster; do not extrapolate that to whole frames.
+- Reusable sparse-upload staging, after testing it with the new default. The
+  integrated streaming/cave pair brings offscreen p99 to about 30 ms from
+  38/47 ms, with continued lighting progress. The rare streaming stall remains.
+
+The scene-history policy and preferred corner appearance are unchanged. These
+are **not** windowed FPS measurements or proof of convergence/60-FPS compliance.
+Each experiment and its tradeoffs are recorded below; failed alternatives stay
+on local branches, not in the production path.
+
 ## Follow-up experiments
 
 Rejected dependency representation: `codex/path-footprint-retention` at
@@ -101,7 +117,7 @@ The opt-in `scene_lookup_hash_benchmark` alternates ten measured pairs over
 not a claim that the whole frame is 3.3× faster. Seven construction tests, five
 packed-scene tests and the integration contracts cover the changed indices.
 
-## Upload experiment not promoted
+## Upload experiment and interaction with batching
 
 `codex/display-upload-belt` at `a95ba97` reuses wgpu staging chunks for sparse
 display writes. Fifteen render tests, native generation/material and retry tests,
@@ -115,9 +131,50 @@ build and strict Clippy passed. Four-path streaming on `6b914f3`, same settings:
 | `1791649165438900000-71422` baseline repeat | 29.14 / 41.07 / 179.35 | 18 / 4 | 33.79 M |
 
 All captures valid, logs clean, no publication backlog; 601–608 final pages.
-The frequent tail improves, but the largest stall worsens. Keep it separate
-rather than hiding the tradeoff behind p99. Main retains its existing upload path.
+The frequent tail improves, but the largest stall worsens. This four-path pilot
+was kept separate rather than hiding the tradeoff behind p99.
 The default-setting edits were not compiled into the baseline repeat.
+
+### Integrated 16-path baseline
+
+Runtime `c7f3e85`, normal offscreen settings and background loading, no launch
+override. Clean render logs and valid assets/captures in all three:
+
+- `response-1791649304852133000-71571`: 67.70 M paths, 14 valid captures;
+  last red-residual excursions above 10% at 2.375 s for both floor receivers,
+  final residuals 0.0441/0.0419. Recovered image inspected. Within the observed
+  four-path response range, not an extinction speedup claim.
+- `streaming-1791649353580803000-71613`: 94.71 M paths, 607 pages and no
+  publication backlog. Interval p95/p99/max 27.33/38.13/192.35 ms; GI body
+  p95/p99 8.55/11.79 ms. Near age p50/p95/p99 236/2,080/2,814 ms.
+- `cave-1791649402838945000-71654`: 133.74 M paths; 144/144 corners, minimum
+  160 new paths, p95 excess variation 0.0956. GI body p95/p99 7.49/9.84 ms;
+  interval p95/p99 26.78/46.71 ms. A 244.77-ms outlier at 36.45 s remains;
+  **the rare stall is not solved**. Final 1,132 pages with no publication backlog.
+
+The staging implementation is byte-for-byte the previously verified `a95ba97`
+render file, now tested with the 16-path default (`c7f3e85` plus only that file).
+`streaming-1791649547119667000-71790`: 94.77 M paths, 604 pages, no backlog;
+interval p95/p99/max 26.65/29.75/162.49 ms and 4 frames over 33.3 ms versus 17.
+Near age p50/p95/p99 245/2,081/2,969 ms: comparable, not improved freshness.
+Frequent-tail reduction now repeats across both batch sizes without reducing
+transport throughput. Worst-case timing remains variable; do not claim a hard
+latency bound or windowed 60 FPS from this evidence.
+
+The combined cave check, `cave-1791649650795561000-71840`, has 129.89 M paths,
+144/144 corners and minimum 192 fresh paths at the sites. Corner p95 variation
+is 0.08535, GI body p95/p99 7.02/8.94 ms, and interval p95/p99/max
+26.61/29.76/44.43 ms. Final 1,136 pages / 1.015 M probes, no publication backlog;
+all captures valid, final image inspected, render log clean. Its slightly lower
+total paths than the 133.74 M control is within the observed run variability;
+no fresh-site starvation or added history/filtering produced the lower tail.
+
+Retain staging with the new default: frequent-tail improvement is consistent
+across the four-path repeats and both integrated workloads. The earlier
+worst-frame tradeoff remains documented; a single cave run without a huge
+outlier does not establish a bound. The render file is identical to `a95ba97`,
+so its focused/native lifetime tests remain valid; the integration build and
+strict all-target Clippy were checked again. No toggle stress was needed.
 
 The accepted scene-history work through `b051274` is merged into the regular
 `voxel-global-illumination` branch. Keep its history and presentation policy fixed

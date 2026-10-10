@@ -324,6 +324,10 @@ queue. Extracted older frames retain their generation. Hash and value patches
 preflight together and snapshot under one lock; a failed bounds check retains both
 for retry. Driver writes happen after releasing the lock, using immutable paired
 scratch bytes; changes arriving meanwhile form the next transaction.
+Sparse writes use wgpu's reusable mapped staging chunks instead of allocating
+one temporary driver buffer per range. One copy submission publishes both
+buffers before drawing. Recall is asynchronous, with no device wait in the main
+world; renderer recovery recreates the device-owned pool.
 Topology updates include values on existing newly exposed faces, so
 the value-upload timer cannot split the transaction. The shader's address bound
 is allocated capacity, not current occupancy.

@@ -25,8 +25,8 @@ depends on greedy-mesh vertices or screen resolution.
 - [October 10 scene-history audit](docs/scene-history-audit.md): removal of the
   emitter-triggered global reset and receiver material-swap reset, completed
   policy controls, response tradeoffs and next performance targets.
-- [Streaming and cave performance](docs/streaming-performance.md): publication
-  and emitter-cache wins, per-frame attribution, and unresolved cave noise/FPS.
+- [Streaming and cave performance](docs/streaming-performance.md): batching,
+  publication and upload wins, attribution, and remaining cave noise/frame tails.
 - [Current performance experiments](docs/experiments.md): measured winners,
   isolated alternatives, and the limits of each result.
 - [Many-emitter research decisions](docs/research-2026-10-09.md): light-tree win,
