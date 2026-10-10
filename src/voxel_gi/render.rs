@@ -200,6 +200,42 @@ struct ProbePatchState {
     hash_mirror: Vec<u8>,
 }
 
+/// Render-local, sparse transaction snapshot. Copy both buffers under the
+/// mirror lock, then release it before calling the graphics driver. Retaining
+/// the scratch allocation avoids allocator churn; capacity follows dirty
+/// ranges, not the size of the world-sized mirrors.
+#[derive(Default)]
+struct ProbeUpload {
+    bytes: Vec<u8>,
+    writes: Vec<(bool, usize, std::ops::Range<usize>)>,
+}
+
+impl ProbeUpload {
+    fn stage(
+        &mut self,
+        state: &Mutex<ProbePatchState>,
+        probe_bytes: u64,
+        hash_bytes: u64,
+    ) -> Result<(), &'static str> {
+        self.bytes.clear();
+        self.writes.clear();
+        state
+            .lock()
+            .unwrap()
+            .upload(probe_bytes, hash_bytes, |probe, offset, bytes| {
+                let start = self.bytes.len();
+                self.bytes.extend_from_slice(bytes);
+                self.writes.push((probe, offset, start..self.bytes.len()));
+            })
+    }
+
+    fn submit(&self, mut write: impl FnMut(bool, usize, &[u8])) {
+        for (probe, offset, range) in &self.writes {
+            write(*probe, *offset, &self.bytes[range.clone()]);
+        }
+    }
+}
+
 impl ProbePatchState {
     /// Validate the entire transaction before submitting either buffer. On a
     /// missing/undersized destination the caller retries without losing writes.
@@ -607,6 +643,7 @@ fn apply_probe_patches(
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
     queue: Res<RenderQueue>,
     mut failed: Local<bool>,
+    mut upload: Local<ProbeUpload>,
 ) {
     let (Some(probe_buffer), Some(hash_buffer)) = (
         buffers.get(&patches.probe_buffer),
@@ -614,19 +651,13 @@ fn apply_probe_patches(
     ) else {
         return;
     };
-    // One lock covers both mirrors and both dirty sets: never publish a hash
-    // entry before its probe, even while next-frame topology changes arrive.
-    let result = patches.state.lock().unwrap().upload(
+    // Capture hash and probe bytes atomically, including coalesced gaps. Later
+    // topology changes cannot alter this transaction, and remain queued for
+    // the next frame. Driver staging/submission never holds the shared lock.
+    let result = upload.stage(
+        &patches.state,
         probe_buffer.buffer.size(),
         hash_buffer.buffer.size(),
-        |probe, offset, bytes| {
-            let buffer = if probe {
-                &probe_buffer.buffer
-            } else {
-                &hash_buffer.buffer
-            };
-            queue.write_buffer(buffer, offset as u64, bytes);
-        },
     );
     if let Err(reason) = result {
         if !*failed {
@@ -637,6 +668,14 @@ fn apply_probe_patches(
         }
         *failed = true;
     } else {
+        upload.submit(|probe, offset, bytes| {
+            let buffer = if probe {
+                &probe_buffer.buffer
+            } else {
+                &hash_buffer.buffer
+            };
+            queue.write_buffer(buffer, offset as u64, bytes);
+        });
         *failed = false;
     }
 }
@@ -659,28 +698,26 @@ fn patch_ranges(mut slots: Vec<usize>, stride: usize) -> Vec<std::ops::Range<usi
 
 fn encode_gpu_probe(probe: GpuProbe, bytes: &mut [u8]) {
     assert_eq!(bytes.len(), GPU_PROBE_BYTES);
-    let mut words = bytes.chunks_exact_mut(4);
-    for value in [
-        probe.positive_x,
-        probe.negative_x,
-        probe.positive_y,
-        probe.negative_y,
-        probe.positive_z,
-        probe.negative_z,
-        probe.emission,
-    ] {
-        for component in value.to_array() {
-            words
-                .next()
-                .unwrap()
-                .copy_from_slice(&component.to_le_bytes());
-        }
-    }
-    for corners in probe.direct_sky {
-        for value in corners.to_array() {
-            words.next().unwrap().copy_from_slice(&value.to_le_bytes());
-        }
-    }
+    // Pack on the stack and copy once. Fifty-two tiny slice copies per dirty
+    // receiver are costly in ordinary development builds. Keep explicit little
+    // endian encoding, without assuming Rust/glam layout matches WGSL.
+    let words = [
+        probe.positive_x.to_array().map(f32::to_bits),
+        probe.negative_x.to_array().map(f32::to_bits),
+        probe.positive_y.to_array().map(f32::to_bits),
+        probe.negative_y.to_array().map(f32::to_bits),
+        probe.positive_z.to_array().map(f32::to_bits),
+        probe.negative_z.to_array().map(f32::to_bits),
+        probe.emission.to_array().map(f32::to_bits),
+        probe.direct_sky[0].to_array(),
+        probe.direct_sky[1].to_array(),
+        probe.direct_sky[2].to_array(),
+        probe.direct_sky[3].to_array(),
+        probe.direct_sky[4].to_array(),
+        probe.direct_sky[5].to_array(),
+    ];
+    let encoded = words.map(|group| group.map(u32::to_le_bytes));
+    bytes.copy_from_slice(encoded.as_flattened().as_flattened());
 }
 
 fn write_probe(mirror: &mut [u8], slot: usize, probe: GpuProbe) {
@@ -1594,6 +1631,51 @@ mod tests {
         let ranges = patch_ranges(vec![0, 1, 10, 100_000, 100_001], 96);
         assert_eq!(ranges, vec![0..1056, 9_600_000..9_600_192]);
         assert_eq!(ranges.iter().map(|r| r.len()).sum::<usize>(), 1248);
+    }
+
+    #[test]
+    fn staged_upload_releases_mirror_lock_and_preserves_next_transaction() {
+        let state = Mutex::new(ProbePatchState {
+            probe_mirror: vec![7; GPU_PROBE_BYTES * 2],
+            hash_mirror: vec![3; 64],
+            pending_probes: HashSet::from([1]),
+            pending_hash: HashSet::from([3]),
+        });
+        let mut upload = ProbeUpload::default();
+        upload
+            .stage(&state, (GPU_PROBE_BYTES * 2) as u64, 64)
+            .unwrap();
+        assert_eq!(upload.bytes.len(), GPU_PROBE_BYTES + 16);
+        // Simulate the main world publishing a new transaction while the
+        // graphics driver consumes the immutable previous one.
+        upload.submit(|probe, _, bytes| {
+            let mut next = state
+                .try_lock()
+                .expect("driver must not own the mirror lock");
+            if probe {
+                assert_eq!(bytes, vec![7; GPU_PROBE_BYTES]);
+                next.probe_mirror.fill(9);
+                next.pending_probes.insert(1);
+            } else {
+                assert_eq!(bytes, [3; 16]);
+                next.hash_mirror.fill(5);
+                next.pending_hash.insert(3);
+            }
+        });
+        assert!(
+            upload
+                .stage(&state, (GPU_PROBE_BYTES * 2) as u64, 32)
+                .is_err()
+        );
+        assert!(upload.bytes.is_empty() && upload.writes.is_empty());
+        upload
+            .stage(&state, (GPU_PROBE_BYTES * 2) as u64, 64)
+            .unwrap();
+        upload.submit(|probe, _, bytes| {
+            assert!(bytes.iter().all(|&b| b == if probe { 9 } else { 5 }));
+        });
+        let next = state.lock().unwrap();
+        assert!(next.pending_hash.is_empty() && next.pending_probes.is_empty());
     }
 
     #[test]

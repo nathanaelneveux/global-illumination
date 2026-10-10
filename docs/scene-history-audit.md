@@ -15,8 +15,10 @@ found that removing the reset returned variation to the older stable range with
 fresh transport still running. The extinction test below shows that the general
 history path reaches the exact dark answer, but not in one batch.
 
-Work is local on `codex/unified-scene-history` in the `temporal-regression` worktree.
-The user's original detached `ad6ba8e` checkout is preserved for comparison.
+Accepted by the user's visual test and fast-forwarded into the regular
+`voxel-global-illumination` branch on October 10, 2026. The experiment branch
+`codex/unified-scene-history` remains as a checkpoint; use the regular branch
+for current play/testing. Nothing has been pushed.
 The [policy closeout](#policy-closeout) finishes the remaining analysis, removes
 the redundant material-ID reset, and records which other policies stay unchanged.
 
