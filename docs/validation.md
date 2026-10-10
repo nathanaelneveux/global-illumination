@@ -235,6 +235,16 @@ workload or nonblank image alone is not a quality/performance pass.
 
 ## Interpret the measurements
 
+- `VOXEL_GI_VALIDATE_FRAME_TIMINGS=1` adds per-frame intervals and the previous
+  Update's seven GI system-body times to `measurements.frame_timeline`, with
+  names in `gi_main_stage_names`. Capture exclusions are explicit. Pipeline
+  overlap means the remainder is not a BVW-only measurement. Use this when
+  investigating stalls instead of inferring them from 250-ms averaged timings.
+- `VOXEL_GI_VALIDATE_TEMPORAL=1` also supports `cave` and `structures`: 36 fixed
+  exposed wall faces and their 144 reconstructed corners, with `site_faces` in
+  schema 2. Both the isolated chamber and composed normal-world structures are
+  checked for exposure. Missing sites are failures, not stable black samples.
+  See the [streaming investigation](streaming-performance.md) for exact runs.
 - Coverage is at least one path sample per exposed face. Bootstrap targets eight.
   Record published/loaded geometry and pending ingestion alongside percentages;
   an early tiny field can be 100% covered while most terrain is not published.

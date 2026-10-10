@@ -125,3 +125,41 @@ Corner p95 variation 0.1440, all 144 present, minimum 80 fresh paths. This keeps
 the publication improvement and transport progress; the small timing differences
 against the preceding run are not evidence for an additional gameplay speedup.
 Persistent cave noise and the residual frame tail remain open.
+
+### Steady-scene diagnostic control
+
+Run `cave-1791644600829123000-68163` used the same binary as the preceding
+integration (subsequently committed as `02babc2`), with only
+`VOXEL_GI_VALIDATE_BACKGROUND=0`. The existing isolated-cave fixture is then
+selected: 76 loaded pages / 15,232 receivers, instead of normal-world terrain.
+This is **not** a matched frame-performance comparison; the fixture also differs
+in camera placement, exterior geometry, and host lighting. No gameplay behavior
+was disabled or changed to produce a claimed winner.
+
+At 40–60 seconds the transport revision remained 3, history drops were zero,
+all 144 corners were present and each receiver accepted at least 36 new paths.
+Corner excess-variation median/p95 was **0.00762 / 0.01124**, versus roughly
+0.106 / 0.144 in the streaming cave. Worst listed receivers ended with 508–912
+history weight, instead of repeatedly returning near 256. Three valid nonblank
+captures and a clean log (`target/cave-static-control.log`); final image inspected.
+
+The sampler can become substantially quieter in a steady chamber while still
+accepting new paths. Repeated streaming invalidation and scheduling contention
+are therefore priority targets, ahead of adding another smoothing layer. This
+control does not isolate their individual contributions or prove an identical
+normal-world cave would have the same variation without streaming.
+
+### Windowed limitation and final checks
+
+An ordinary `streaming` workload was attempted at clean `02babc2`, with frame
+timings enabled, `VOXEL_GI_VALIDATE_HEADLESS=0`, preferred defaults, and no
+background-loader override. It produced a black 2560×1440 first capture and the
+validator stopped it: `streaming-1791644707468869000-68246`,
+`target/streaming-windowed-check.log`. **Discard this run as gameplay evidence.**
+No screensaver/security setting was changed and no interactive FPS claim follows.
+A valid foreground windowed run is still required to assess the 60-FPS target.
+
+Final `cargo clippy --locked --all-targets -- -D warnings` passed at `02babc2`
+plus documentation-only changes (`target/streaming-perf-final-clippy.log`).
+Focused tests/native checks above remain the verification for unchanged code;
+the full suite and optional toggle-stress workload were not rerun.
