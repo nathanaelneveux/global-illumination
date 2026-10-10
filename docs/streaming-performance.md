@@ -68,6 +68,12 @@ RUST_LOG=warn cargo run --locked
 `measurements.frame_timeline` records the ending frame interval and the **previous**
 Update's seven GI system-body times. The mapping is in `gi_main_stage_names`.
 Pipeline overlap means interval minus GI time is **not** a BVW-only measurement.
+With frame timings enabled, `previous_host_schedule_ms` also brackets all seven
+Main schedules, including their deferred commands and executor waits. Names are
+in `host_schedule_names`; these are the last completed iteration, not the current
+Update. Their sum excludes render extraction/pipeline waits after Main and the
+headless runner's sleep. The interval remainder is not automatically GPU time.
+The boundary schedules are absent from normal gameplay.
 
 An exploratory 12-second macOS `sample` trace found mirror-lock waits during GI
 display publication and substantial per-word probe encoding. The render thread

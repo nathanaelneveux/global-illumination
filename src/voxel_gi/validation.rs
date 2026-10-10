@@ -2,6 +2,7 @@
 //! comparisons and toggle stress have distinct report identities.
 mod background;
 mod cave;
+mod host_timing;
 mod house;
 mod metrics;
 mod profiles;
@@ -41,6 +42,12 @@ pub(super) struct CaptureEvidence {
 
 const OFFSCREEN_WIDTH: u32 = 2560;
 const OFFSCREEN_HEIGHT: u32 = 1440;
+
+pub(super) fn install_frame_timing(app: &mut App) {
+    if std::env::var_os("VOXEL_GI_VALIDATE_FRAME_TIMINGS").is_some() {
+        host_timing::install(app);
+    }
+}
 
 pub(super) fn setup_capture_target(
     mut commands: Commands,
@@ -119,6 +126,7 @@ pub(super) fn run_validation(
         Res<super::VoxelGiRuntime>,
         Res<super::render::GpuTransportCache>,
         Res<super::render::GpuProbePatchQueue>,
+        Option<Res<host_timing::HostTiming>>,
     ),
     settings: Res<VoxelGiSettings>,
     field: Res<VoxelEnergyField>,
@@ -140,7 +148,7 @@ pub(super) fn run_validation(
     if std::env::var_os("VOXEL_GI_VALIDATE").is_none() || run.done || evidence.failed {
         return;
     }
-    let (stats, runtime, cache, queue) = gi;
+    let (stats, runtime, cache, queue, host_timing) = gi;
     let (assets, asset_server, configs) = asset_context;
     if run.startup.is_none() {
         // Shared Cargo build directories can reuse another worktree's package
@@ -386,6 +394,7 @@ pub(super) fn run_validation(
         time.delta_secs() * 1000.0,
         capture_in_flight,
         &stats,
+        host_timing.as_ref().map(|timing| timing.completed_ms),
     );
     run.metrics.poll_edit(&field);
     run.metrics

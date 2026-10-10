@@ -65,6 +65,7 @@ impl Metrics {
         frame_ms: f32,
         capture_excluded: bool,
         stats: &VoxelGiStats,
+        previous_host_ms: Option<[f32; 7]>,
     ) {
         if !*self
             .frame_timing_enabled
@@ -78,7 +79,8 @@ impl Metrics {
         self.frame_timeline
             .push(json!({"at_s":elapsed,"phase":phase,
             "interval_ms":frame_ms,"capture_excluded":capture_excluded,
-            "previous_gi_body_ms":self.previous_gi}));
+            "previous_gi_body_ms":self.previous_gi,
+            "previous_host_schedule_ms":previous_host_ms}));
         self.previous_gi = stats.last_main_stage_ms;
     }
     /// O(1) observations of publication and lighting progress. A small early
@@ -251,6 +253,7 @@ impl Metrics {
             "edits_still_pending": usize::from(self.watch.is_some()),
             "work_timeline": self.work_samples,
             "gi_main_stage_names": super::super::telemetry::MAIN_STAGE_NAMES,
+            "host_schedule_names": super::host_timing::STAGES,
             "frame_timeline": self.frame_timeline})
     }
 }
@@ -270,13 +273,14 @@ mod tests {
             last_main_stage_ms: [2.0; 7],
             ..default()
         };
-        metrics.record_frame(1.0, "startup", 20.0, false, &stats);
+        metrics.record_frame(1.0, "startup", 20.0, false, &stats, Some([3.0; 7]));
         stats.last_main_stage_ms = [0.0; 7];
-        metrics.record_frame(1.02, "startup", 21.0, true, &stats);
+        metrics.record_frame(1.02, "startup", 21.0, true, &stats, Some([4.0; 7]));
         let rows = metrics.report()["frame_timeline"].clone();
         assert_eq!(rows[0]["previous_gi_body_ms"], json!(vec![0.0; 7]));
         assert_eq!(rows[1]["previous_gi_body_ms"], json!(vec![2.0; 7]));
         assert_eq!(rows[1]["capture_excluded"], true);
+        assert_eq!(rows[1]["previous_host_schedule_ms"], json!(vec![4.0; 7]));
     }
 
     #[test]
