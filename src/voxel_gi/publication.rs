@@ -9,14 +9,11 @@ use super::{
     world::{PAGE_EDGE, SurfaceProbe, SurfaceProbeDescriptor},
 };
 use bevy::{
-    platform::collections::HashSet,
+    platform::collections::{HashMap, HashSet},
     prelude::*,
     tasks::{block_on, poll_once},
 };
-use std::{
-    collections::HashMap,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 const EDIT_RELIGHT_RADIUS: i32 = super::geometry::RELIGHT_RADIUS;
 

@@ -7,8 +7,8 @@ use super::{
     render::{VoxelTransportAssets, VoxelTransportMaterial},
     sources::{SourceChange, invalidate_model, invalidate_source_change},
 };
+use bevy::platform::collections::HashMap;
 use bevy_voxel_world::rendering::VoxelWorldMaterialHandle;
-use std::collections::HashMap;
 
 #[test]
 fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches() {

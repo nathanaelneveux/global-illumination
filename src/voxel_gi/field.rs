@@ -1,8 +1,7 @@
 use super::spectrum::EnergySpectrum;
 use super::world::SurfaceProbe;
-use bevy::platform::collections::HashSet;
+use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
-use std::collections::HashMap;
 use std::time::Duration;
 
 /// Keep the world-sized index small. Growing a flat HashMap of large ambient

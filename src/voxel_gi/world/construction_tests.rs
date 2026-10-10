@@ -4,6 +4,52 @@
 use super::*;
 use std::hint::black_box;
 
+#[test]
+#[ignore = "paired trusted-coordinate lookup benchmark; no concurrent workloads"]
+fn scene_lookup_hash_benchmark() {
+    let (scene, _) = terrain_scene();
+    let standard: std::collections::HashMap<_, _> = scene
+        .regions
+        .iter()
+        .map(|(&key, value)| (key, Arc::clone(value)))
+        .collect();
+    // Hits and misses, negative coordinates and nonuniform neighboring cells.
+    let keys: Vec<_> = (0..65_536)
+        .map(|i| IVec3::new(i % 128 - 64, (i / 128) % 8 - 4, i / 1024 - 32))
+        .collect();
+    let mut timings = [Vec::new(), Vec::new()];
+    for pair in 0..12 {
+        let mut checksums = [0u64; 2];
+        for variant in [pair % 2, 1 - pair % 2] {
+            let start = Instant::now();
+            for _ in 0..8 {
+                for &key in black_box(&keys) {
+                    let region = if variant == 0 {
+                        standard.get(&key)
+                    } else {
+                        scene.regions.get(&key)
+                    };
+                    checksums[variant] +=
+                        region.map_or(0, |r| u64::from(r.material(UVec3::splat(7))));
+                }
+            }
+            if pair >= 2 {
+                timings[variant].push(start.elapsed().as_secs_f64() * 1e3);
+            }
+            black_box(checksums[variant]);
+        }
+        assert_eq!(checksums[0], checksums[1]);
+        assert!(checksums[0] > 0);
+    }
+    for times in &mut timings {
+        times.sort_by(f64::total_cmp);
+    }
+    println!(
+        "SCENE_LOOKUP queries=524288 pairs=10 std_ms_p50={:.3} bevy_ms_p50={:.3} exact=true",
+        timings[0][5], timings[1][5]
+    );
+}
+
 // Frozen 28585a0 constructor: neither reuse bookkeeping nor its new branches
 // are charged to the full-build control, including cold construction.
 fn full_region_reference(coordinate: IVec3, materials: Vec<u16>) -> NaadfRegion {

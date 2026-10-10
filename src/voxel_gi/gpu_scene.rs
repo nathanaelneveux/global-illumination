@@ -1,6 +1,6 @@
 //! Persistent sparse GPU geometry. Uniform/empty regions have no dense payload;
 //! ordinary edits replace only changed 16³ regions. No camera-relative volume.
-use std::collections::HashMap;
+use bevy::platform::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -55,7 +55,7 @@ impl PackedScene {
         let removed: Vec<_> = self
             .regions
             .keys()
-            .filter(|key| !scene.regions.contains_key(key))
+            .filter(|key| !scene.regions.contains_key(*key))
             .copied()
             .collect();
         let mut delta = SceneDelta {

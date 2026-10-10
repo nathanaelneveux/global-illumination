@@ -8,10 +8,10 @@ use super::world::{
 };
 use super::{SceneBuildResult, VoxelGiDirty, VoxelGiRuntime, naadf, page_of};
 use crate::terrain::PrototypeWorld;
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
 use bevy_voxel_world::prelude::*;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

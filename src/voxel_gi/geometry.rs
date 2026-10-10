@@ -40,7 +40,7 @@ impl SceneChanges {
             previous
                 .regions
                 .keys()
-                .filter(|p| !next.regions.contains_key(p)),
+                .filter(|p| !next.regions.contains_key(*p)),
         ) {
             let before = previous.regions.get(coordinate);
             let after = next.regions.get(coordinate);

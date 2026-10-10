@@ -1,4 +1,6 @@
-use std::collections::{HashMap, HashSet};
+// Spatial keys are trusted engine data. Match the field's fast Bevy maps rather
+// than paying the standard library's adversarial-string hashing cost per cell.
+use bevy::platform::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 

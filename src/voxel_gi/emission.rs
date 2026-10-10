@@ -78,7 +78,7 @@ fn emission_geometry_changed(
             previous
                 .regions
                 .keys()
-                .filter(|p| !next.regions.contains_key(p)),
+                .filter(|p| !next.regions.contains_key(*p)),
         )
         .any(|coordinate| {
             if previous

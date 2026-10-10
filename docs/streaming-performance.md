@@ -46,6 +46,54 @@ stall fix. Same cap with `CARGO_PROFILE_DEV_OPT_LEVEL=3`,
 paths: no useful overall win. Retain normal build settings and do not promote
 the arbitrary job limit. Captures valid and render logs clean in all three.
 
+Worker-prepared display buffers remain only on `codex/worker-display-buffers`
+(`0dd5a03`). Native identity/lifetime tests passed, but its streaming pilot still
+had a 153-ms interval; it does not justify extra renderer integration on main.
+
+## Repeated batch-size result
+
+Runtime `1208e0f`, same settings/hardware as the pilot: 16-path repeat
+`cave-1791648562239088000-70820` and 4-path repeat
+`cave-1791648681119103000-70924`. Source-only hashing edits were made while these
+ran but were not built into either binary. The 4-path binary was launched directly
+with explicit asset/library roots. An earlier missing-asset launch was rejected
+by the guard and is **not** evidence. Both valid runs have 144/144 corner traces,
+three valid captures and clean logs. The 16-path final image was inspected.
+
+| Metric | 4 paths | 16 paths |
+| --- | ---: | ---: |
+| Paths | 81.76 M | 128.29 M |
+| Corner excess variation p95, 40–60 s | 0.1331 | 0.0891 |
+| Minimum fresh corner paths | 80 | 176 |
+| GI main-body p95 / p99 | 10.85 / 13.56 ms | 7.25 / 9.69 ms |
+| Complete Main schedules p95 / p99 | 12.90 / 15.72 ms | 9.51 / 12.03 ms |
+| Offscreen interval p95 / p99 | 29.51 / 47.86 ms | 26.74 / 46.26 ms |
+
+The larger batch gives 53–57% more total paths and 33–36% less corner variation
+across the two pairs, with about one third less GI CPU-tail cost. It does not
+eliminate noise or the renderer/runner tail. Geometry streaming is stochastic;
+repeat endpoints were 1,110/1,144 pages, with no publication backlog.
+
+Response countercheck: 4-path runtime `dc7b3bd`,
+`response-1791648380639395000-70616`, versus 16-path runtime on the experimental
+worker-buffer branch, `response-1791647864864104000-70278`. This is a countercheck,
+not a controlled renderer-speed comparison. Using the scene-history audit's
+pre-add/lit red reference at `(9,38,-9)` and `(10,38,-9)`, last excursions above
+10% after removal were 1.97/2.47 s versus 2.03/2.03 s. Final residuals were
+0.026/0.050 versus 0.033/0.034. All 14 captures valid in each; clean logs.
+
+## Trusted spatial-key hashing
+
+Use Bevy's existing fast maps consistently for scene regions, packed bricks,
+receiver-page indices and publication scratch. The field's receiver and sky
+indices already use them. Keys are engine-owned coordinates/material words, not
+untrusted strings; no traversal, history or allocation representation changes.
+The opt-in `scene_lookup_hash_benchmark` alternates ten measured pairs over
+524,288 identical hit/miss lookups (including negative keys): standard-map median
+6.132 ms, Bevy-map 1.860 ms, identical checksums. This is a **lookup** speedup,
+not a claim that the whole frame is 3.3× faster. Seven construction tests, five
+packed-scene tests and the integration contracts cover the changed indices.
+
 The accepted scene-history work through `b051274` is merged into the regular
 `voxel-global-illumination` branch. Keep its history and presentation policy fixed
 while removing publication overhead. Neither the cave's residual noise nor the

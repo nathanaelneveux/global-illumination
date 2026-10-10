@@ -1,5 +1,5 @@
 #[cfg(test)]
-use std::collections::HashMap;
+use bevy::platform::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use bevy::image::{ImageAddressMode, ImageSampler, TextureReinterpretationError};
