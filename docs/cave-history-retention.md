@@ -8,11 +8,15 @@ improve it? Keep the estimator, presentation and work budget fixed first.
 
 `VOXEL_GI_VALIDATE_REFERENCE=1` adds an offline reference **after** a headless,
 exiting validation workload has saved its timings and captures. It freezes the
-actual loaded scene, materials and sources and independently traces 32,768 paths
+actual loaded scene, materials and sources and independently traces 262,144 paths
 per fixed receiver, twice, using disjoint sample sequences. It writes
 `reference.json`; absence/failure is not an accuracy pass. Reference work does
 not belong to the reported timing interval. The ordinary application continues
 running while that asynchronous worker finishes.
+Eight independent 32,768-path blocks per replica avoid the production history
+ceiling. The first preliminary runs at `c0bf1ec`/`200eed9` used one block instead;
+their replica disagreement reached 5% at p95, so finer accuracy conclusions need
+the stronger reference.
 
 Use with `VOXEL_GI_VALIDATE_TEMPORAL=1`, then run
 `python3 tools/reference_analysis.py target/gi-validation/<run>`.
