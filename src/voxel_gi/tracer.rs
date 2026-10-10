@@ -394,7 +394,6 @@ fn trace_face(
             stream,
             sequence,
             0,
-            true,
             transport.reach,
         );
         let sample = sample.finite_or_zero();
@@ -478,19 +477,36 @@ fn trace_path(
         };
         result += throughput * material.emission * emission_weight;
         let direct = direct_radiance(scene, sources, hit).0;
-        let emissive_direct = sample_emitter(
-            scene,
-            materials,
-            emitters,
-            hit.position,
-            hit.normal,
-            stream,
-            sequence,
-            bounce + 1,
-            bounce + 1 < transport.bounces,
-            transport.reach,
-        );
+        let terminal = bounce + 1 == transport.bounces;
+        let emissive_direct = if terminal {
+            sample_terminal_emission(
+                scene,
+                materials,
+                emitters,
+                hit.position,
+                hit.normal,
+                stream,
+                sequence,
+                bounce,
+                transport.reach,
+            )
+        } else {
+            sample_emitter(
+                scene,
+                materials,
+                emitters,
+                hit.position,
+                hit.normal,
+                stream,
+                sequence,
+                bounce + 1,
+                transport.reach,
+            )
+        };
         result += throughput * material.diffuse * (direct + emissive_direct);
+        if terminal {
+            break;
+        }
         throughput = throughput * material.diffuse;
 
         if throughput.max_component() < 0.002 {
@@ -526,7 +542,6 @@ fn sample_emitter(
     stream: u32,
     sequence: u32,
     bounce: u32,
-    has_cosine_path: bool,
     reach: f32,
 ) -> EnergySpectrum {
     let stream = stream ^ pcg(bounce.wrapping_add(0xa341_316c));
@@ -556,17 +571,72 @@ fn sample_emitter(
     }
     let light_pdf = emitter.probability * distance_squared / emitter_cosine;
     let cosine_pdf = receiver_cosine / std::f32::consts::PI;
-    let weight = if has_cosine_path {
-        light_pdf / (light_pdf + cosine_pdf)
-    } else {
-        1.0
-    };
     if scene.trace_ray_result(position + normal * 0.002, direction, distance - 0.008)
         != TraceResult::Escaped
     {
         return EnergySpectrum::ZERO;
     }
-    materials.get(emitter.material).emission * (cosine_pdf * weight / light_pdf)
+    materials.get(emitter.material).emission * (cosine_pdf / (light_pdf + cosine_pdf))
+}
+
+/// The terminal surface has no continuing path to balance light-only NEE.
+/// Choose one light/cosine sample with equal probability, then divide by the
+/// mixture PDF (single-sample balance MIS). Same emission integral and at most
+/// one connection ray, without arbitrarily clamping rare high-energy samples.
+/// Each connection contributes at most twice the hit emitter's per-band energy.
+fn sample_terminal_emission(
+    scene: &TransportScene,
+    materials: &VoxelMaterialTransportTable,
+    emitters: &EmissionDistribution,
+    position: Vec3,
+    normal: Vec3,
+    stream: u32,
+    sequence: u32,
+    bounce: u32,
+    reach: f32,
+) -> EnergySpectrum {
+    if emitters.faces.is_empty() {
+        return EnergySpectrum::ZERO;
+    }
+    // These are the final surface's otherwise unused roulette/continuation
+    // dimensions. Earlier path directions and emission samples are unchanged.
+    if sample_1d(stream, sequence, 8 + bounce) < 0.5 {
+        return sample_emitter(
+            scene,
+            materials,
+            emitters,
+            position,
+            normal,
+            stream,
+            sequence,
+            bounce + 1,
+            reach,
+        ) * 2.0;
+    }
+    let direction = hemisphere(
+        normal,
+        sample_1d(stream, sequence, 2 + bounce * 2),
+        sample_1d(stream, sequence, 3 + bounce * 2),
+    );
+    let TraceResult::Hit(hit) = scene.trace_ray_result(position + normal * 0.002, direction, reach)
+    else {
+        return EnergySpectrum::ZERO;
+    };
+    let emission = materials.get(hit.material).emission;
+    let distance_squared = (hit.position - position).length_squared();
+    if emission.max_component() == 0.0 || !(0.0001..=reach * reach).contains(&distance_squared) {
+        return EnergySpectrum::ZERO;
+    }
+    let face = FACE_OFFSETS
+        .iter()
+        .position(|n| n.as_vec3() == hit.normal)
+        .unwrap() as u32;
+    let light_pdf =
+        emitters.probability_at(position, normal, hit.voxel, face, hit.material, materials)
+            * distance_squared
+            / hit.normal.dot(-direction).max(1e-8);
+    let cosine_pdf = normal.dot(direction).max(0.0) / std::f32::consts::PI;
+    emission * (2.0 * cosine_pdf / (cosine_pdf + light_pdf))
 }
 
 fn direct_radiance(
@@ -752,6 +822,77 @@ fn random_f32(seed: &mut u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_mixture_matches_area_integral_and_bounds_each_band() {
+        let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+        let lamp = UVec3::new(16, 12, 16);
+        page[linear_index(lamp, PAGE_SIZE)] = 4;
+        let scene = TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, page)],
+            &[],
+        );
+        let mut materials = VoxelMaterialTransportTable::default();
+        let energy = EnergySpectrum::new(Vec3::new(14.0, 4.0, 0.8), 5.0, 15.0);
+        materials.set(
+            4,
+            super::super::MaterialTransport {
+                emission: energy,
+                ..default()
+            },
+        );
+        let emitters = EmissionDistribution::build(&scene, &materials);
+        // Looking straight up sees only the lower square of the emitting voxel.
+        let position = Vec3::new(16.5, 10.0, 16.5);
+        let mut integral = 0.0_f64;
+        for z in 0..128 {
+            for x in 0..128 {
+                let dx = (x as f64 + 0.5) / 128.0 - 0.5;
+                let dz = (z as f64 + 0.5) / 128.0 - 0.5;
+                let d2 = 4.0 + dx * dx + dz * dz;
+                integral += 4.0 / (std::f64::consts::PI * d2 * d2 * 128.0 * 128.0);
+            }
+        }
+        for bounce in 0..3 {
+            let mut mean = EnergySpectrum::ZERO;
+            for sequence in 0..65_536 {
+                let value = sample_terminal_emission(
+                    &scene,
+                    &materials,
+                    &emitters,
+                    position,
+                    Vec3::Y,
+                    123,
+                    sequence,
+                    bounce,
+                    768.0,
+                );
+                let normalized = [
+                    value.visible.x / energy.visible.x,
+                    value.visible.y / energy.visible.y,
+                    value.visible.z / energy.visible.z,
+                    value.infrared / energy.infrared,
+                    value.ionizing / energy.ionizing,
+                ];
+                assert!(
+                    normalized
+                        .iter()
+                        .all(|v| v.is_finite() && (0.0..=2.00001).contains(v))
+                );
+                mean += value * (1.0 / 65_536.0);
+            }
+            for (measured, power) in super::super::research::channels(mean)
+                .into_iter()
+                .zip(super::super::research::channels(energy))
+            {
+                assert!(
+                    (measured as f64 / power as f64 / integral - 1.0).abs() < 0.015,
+                    "terminal bounce {bounce}: {measured}/{power} vs {integral}"
+                );
+            }
+        }
+    }
     use crate::voxel_gi::naadf::{linear_index, volume_len};
     use crate::voxel_gi::world::{PAGE_SIZE, TransportScene};
 

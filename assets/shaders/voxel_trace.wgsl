@@ -438,7 +438,7 @@ fn trace_sky_corners(@builtin(global_invocation_id) id: vec3<u32>) {
     results[offset] = select(vec4(0u), vec4(pack_sky(values[0]), pack_sky(values[1]), pack_sky(values[2]), pack_sky(values[3])), valid);
     results[offset + 1u] = select(vec4(0u), vec4(pack_sky(values[4]), pack_sky(values[5]), 0u, 0u), valid);
 }
-fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, sequence: u32, bounce: u32, has_cosine_path: bool) -> Energy {
+fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, sequence: u32, bounce: u32) -> Energy {
     var result: Energy;
     let count = u32(params.extra.w);
     if count == 0u { return result; }
@@ -472,10 +472,40 @@ fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, se
     if receiver_cosine <= 0.0 || emitter_cosine <= 0.0 || emitter.sampling.y <= 0.0 { return result; }
     let light_pdf = emitter.sampling.y * d2 / emitter_cosine;
     let cosine_pdf = receiver_cosine / 3.14159265359;
-    let weight = select(1.0, light_pdf / (light_pdf + cosine_pdf), has_cosine_path);
     if trace(position + normal * 0.002, direction, distance - 0.008).status != 0u { return result; }
     let material = materials[u32(emitter.sampling.z)];
-    let factor = cosine_pdf * weight / light_pdf;
+    let factor = cosine_pdf / (light_pdf + cosine_pdf);
+    result.value = material.emission * factor;
+    result.radiation = material.emission_extra.x * factor;
+    return result;
+}
+// One terminal emission connection drawn from a 50/50 light/cosine mixture.
+// The finite-bounce integrand is unchanged: escaping sky and nonemitting hits
+// contribute zero here. No brightness clamp or extra connection ray is added.
+fn sample_terminal_emission(position: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, bounce: u32) -> Energy {
+    var result: Energy;
+    if params.extra.w == 0.0 { return result; }
+    if sample_1d(stream, sequence, 8u + bounce) < 0.5 {
+        result = sample_emitter(position, normal, stream, sequence, bounce + 1u);
+        result.value *= 2.0;
+        result.radiation *= 2.0;
+        return result;
+    }
+    let direction = hemisphere(normal, sample_1d(stream, sequence, 2u + bounce * 2u), sample_1d(stream, sequence, 3u + bounce * 2u));
+    let hit = trace(position + normal * 0.002, direction, connection_reach());
+    if hit.status != 1u { return result; }
+    let material = materials[hit.material];
+    let power = max(max(max(material.emission.x, material.emission.y), max(material.emission.z, material.emission.w)), material.emission_extra.x);
+    let delta = hit.position - position;
+    let d2 = dot(delta, delta);
+    if power == 0.0 || d2 < 0.0001 || d2 > connection_reach() * connection_reach() { return result; }
+    var selection_pdf = power / max(params.extra.z, 1e-20);
+    if load_emitter(0u).sampling.w > 0.0 {
+        selection_pdf = tree_probability(position, normal, hit.voxel, hit.normal);
+    }
+    let light_pdf = selection_pdf * d2 / max(dot(hit.normal, -direction), 1e-8);
+    let cosine_pdf = max(dot(normal, direction), 0.0) / 3.14159265359;
+    let factor = 2.0 * cosine_pdf / (cosine_pdf + light_pdf);
     result.value = material.emission * factor;
     result.radiation = material.emission_extra.x * factor;
     return result;
@@ -508,9 +538,15 @@ fn trace_path(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3
         let light_pdf = selection_pdf * dot(delta, delta) / max(dot(hit.normal, -direction), 1e-8);
         var mis = 1.0;
         if light_pdf > 0.0 { mis = cosine_pdf / (cosine_pdf + light_pdf); }
-        let nee = sample_emitter(hit.position, hit.normal, stream, sequence, bounce + 1u, bounce + 1u < DIFFUSE_HITS);
+        var nee: Energy;
+        if bounce + 1u == DIFFUSE_HITS {
+            nee = sample_terminal_emission(hit.position, hit.normal, stream, sequence, bounce);
+        } else {
+            nee = sample_emitter(hit.position, hit.normal, stream, sequence, bounce + 1u);
+        }
         result.value += throughput.value * (material.emission * mis + material.diffuse * (direct.value + nee.value));
         result.radiation += throughput.radiation * (material.emission_extra.x * mis + material.diffuse_extra.x * (direct.radiation + nee.radiation));
+        if bounce + 1u == DIFFUSE_HITS { break; }
         throughput.value *= material.diffuse;
         throughput.radiation *= material.diffuse_extra.x;
         let maximum = max(max(max(throughput.value.x, throughput.value.y), max(throughput.value.z, throughput.value.w)), throughput.radiation);
@@ -547,7 +583,7 @@ fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
         let sequence = task.sequence + i;
         let direction = hemisphere(normal, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
         let sample = trace_path(origin, direction, normal, stream, sequence);
-        let nee = sample_emitter(center + normal * 0.5, normal, stream, sequence, 0u, true);
+        let nee = sample_emitter(center + normal * 0.5, normal, stream, sequence, 0u);
         let value = sample.value + nee.value;
         let radiation = sample.radiation + nee.radiation;
         result.mean += value;
@@ -595,7 +631,7 @@ fn trace_faces_parallel(@builtin(global_invocation_id) id: vec3<u32>,
             let sequence = task.sequence + i;
             let direction = hemisphere(normal, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
             let sample = trace_path(origin, direction, normal, stream, sequence);
-            let nee = sample_emitter(center + normal * 0.5, normal, stream, sequence, 0u, true);
+            let nee = sample_emitter(center + normal * 0.5, normal, stream, sequence, 0u);
             let value = sample.value + nee.value;
             let radiation = sample.radiation + nee.radiation;
             moment.mean += value;

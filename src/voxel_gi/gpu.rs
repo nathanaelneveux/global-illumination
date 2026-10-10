@@ -901,6 +901,10 @@ fn encode_words(words: &[u32]) -> Vec<u8> {
 mod refinement;
 
 #[cfg(test)]
+#[path = "gpu/terminal_mixture.rs"]
+mod terminal_mixture;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

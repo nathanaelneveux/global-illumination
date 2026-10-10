@@ -64,3 +64,37 @@ while keeping the same dispatch budget. Thus the comparison is (a) current caps,
 (b) retained history with normal wake/audit eligibility, and (c) retained history
 with continuous sampling. Turning off refresh entirely would make a frozen wrong
 answer look stable and is not a useful convergence experiment.
+
+## Terminal-emission variance experiment
+
+The extended retention run exposed a separate variance source. At receiver
+`(99,-18,-56)`, face 1, sample 726 produced RGB `(477.54,136.41,27.27)` on GPU;
+exact-scene CPU replay gave `(477.61,136.43,27.27)`. The culprit was **terminal
+light-only NEE**, at the third diffuse hit: its red estimate was 867.57 before
+0.55 surface reflectance. The emitter proposal can undersample an important
+connection and compensate with an enormous weight. Earlier bounces have a
+competing cosine path and MIS; the terminal connection did not.
+
+Candidate: draw that one terminal connection from an equal-probability mixture
+of the light and cosine proposals. Evaluate `L * p_cos / (0.5*p_light+0.5*p_cos)`
+for either proposal. This is the standard [single-sample balance MIS model in
+PBRT](https://pbr-book.org/4ed/Monte_Carlo_Integration/Improving_Efficiency#MultipleImportanceSampling),
+not a radiance clamp. It estimates the same terminal emission integral and
+bounds an individual connection to twice the emitter's energy in each band.
+Escaping sky/nonemitting hits still contribute zero to this terminal term; no
+extra diffuse bounce, new history policy, spatial filter or per-face storage is
+introduced. There is still at most one connection ray, but more proposals can
+actually trace rather than reject cheaply, so equal ray *opportunities* do not
+imply identical execution cost.
+
+Initial M4/Metal isolated results: two 32,768-path estimates (old/new estimator,
+distinct sequences below the path period) differ by 1.86% at all-band p95.
+At 64/256/1024 paths, all-band p95 error falls from .4425/.1982/.0912 to
+.4192/.1858/.0872. Median compute pass for 1,024 faces ×16 paths rises from
+1.1795 to 1.2558 ms (~6.5%); 32 interleaved measured rounds after eight warmups.
+These are preliminary fixed-work results, not a gameplay speed claim.
+
+Verification: 13 tracer tests, including an independent area quadrature at all
+three terminal depths and a per-band contribution bound; WGSL validation;
+native 8,192-path CPU/GPU parity; native exact-dark removal/replacement/occlusion
+response remains unchanged. Full streamed-cave evidence follows separately.
