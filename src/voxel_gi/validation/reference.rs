@@ -12,6 +12,9 @@ use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 
 const BLOCKS: u32 = 8;
 const PATHS_PER_BLOCK: u32 = 32_768;
+// Path dimensions wrap at 2^24. Stay below that period and away from the live
+// sequence prefix; 2^24 itself would alias its primary/bounce directions.
+const REFERENCE_SEQUENCE_START: u32 = 4_194_304;
 
 #[derive(Default)]
 pub(super) struct ReferenceRun {
@@ -60,7 +63,7 @@ impl ReferenceRun {
                         return Err(format!("Reference receiver is not exposed: {voxel:?}/{face}"));
                     }
                     let mut probe = SurfaceProbe::new(voxel, 1 << face);
-                    probe.sequence[face] = 16_777_216 + replicate * 1_048_576;
+                    probe.sequence[face] = REFERENCE_SEQUENCE_START + replicate * 1_048_576;
                     work.push(&probe, 1 << face, 0, 0, false, u32::MAX, u32::MAX);
                     work.probes.last_mut().unwrap().sky_requested = false;
                 }
@@ -95,6 +98,7 @@ impl ReferenceRun {
             }
             let data = json!({"schema_version":1,"scene_generation":revision,
                 "regions":scene.regions.len(),"paths_per_replicate":PATHS_PER_BLOCK * BLOCKS,
+                "sequence_start":REFERENCE_SEQUENCE_START,"replicate_stride":1_048_576,
                 "transport":transport,"sites":sites.iter().map(|(v,f)|json!({"voxel":v.to_array(),"face":f})).collect::<Vec<_>>(),
                 "references":references,
                 "note":"Exact frozen end-of-workload scene; two disjoint high-sample sequence blocks. Computed after timing/captures. Early error is relative to the final scene, not a time-varying ground truth."});

@@ -17,6 +17,11 @@ Eight independent 32,768-path blocks per replica avoid the production history
 ceiling. The first preliminary runs at `c0bf1ec`/`200eed9` used one block instead;
 their replica disagreement reached 5% at p95, so finer accuracy conclusions need
 the stronger reference.
+The corrected reference also begins at sequence 4,194,304, below the path
+sampler's 2^24 period. The preliminary 16,777,216 offset aliased early path
+directions (though emitter samples differed), so those runs are diagnostic,
+not fully independent accuracy evidence. Subsequent references record their
+sequence start and stride explicitly.
 
 Use with `VOXEL_GI_VALIDATE_TEMPORAL=1`, then run
 `python3 tools/reference_analysis.py target/gi-validation/<run>`.
