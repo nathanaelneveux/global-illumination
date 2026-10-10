@@ -155,6 +155,143 @@ fn channels(energy: EnergySpectrum) -> [f32; 5] {
     ]
 }
 
+/// Compare the existing geometry-history policy with a forced restart. Every
+/// post-change path has an independent exact-zero reference in all five bands.
+/// Removal, replacement and occlusion must not need different energy policies.
+#[test]
+#[ignore = "native five-band history response diagnostic"]
+fn scene_history_source_extinction_response() {
+    use crate::voxel_gi::geometry::{GeometryHistory, SceneChanges};
+    let mut gpu = super::tests::native_tracer();
+    let mut fixture = fixture(1);
+    fixture.sources.environment = EnergySpectrum::ZERO;
+    let emitters = Arc::new(EmissionDistribution::build(
+        &fixture.scene,
+        &fixture.materials,
+    ));
+    gpu.trace(
+        fixture.scene.clone(),
+        &fixture.sources,
+        &fixture.materials,
+        &mut fixture.probes,
+        2048,
+        &emitters,
+    )
+    .unwrap();
+    let lamps = [IVec3::new(8, 20, 10), IVec3::new(22, 20, 21)];
+    for kind in ["remove", "replace", "occlude"] {
+        let mut page: Vec<_> = (0..32)
+            .flat_map(|z| (0..32).flat_map(move |y| (0..32).map(move |x| IVec3::new(x, y, z))))
+            .map(|v| fixture.scene.material_at(v).unwrap())
+            .collect();
+        for lamp in lamps {
+            if kind == "occlude" {
+                for normal in crate::voxel_gi::world::FACE_OFFSETS {
+                    page[linear_index((lamp + normal).as_uvec3(), PAGE_SIZE)] = 2;
+                }
+            } else {
+                page[linear_index(lamp.as_uvec3(), PAGE_SIZE)] =
+                    if kind == "remove" { AIR } else { 2 };
+            }
+        }
+        let dark = Arc::new(TransportScene::with_page_delta(
+            &fixture.scene,
+            vec![(IVec3::ZERO, page)],
+            &[],
+        ));
+        let mut journal = GeometryHistory::default();
+        journal.record(
+            0,
+            1,
+            SceneChanges::between(&fixture.scene, &dark)
+                .transport
+                .unwrap(),
+        );
+        let emitters = Arc::new(EmissionDistribution::build(&dark, &fixture.materials));
+        for reset in [true, false] {
+            let start = Instant::now();
+            let mut probes = fixture.probes.clone();
+            for p in &mut probes {
+                p.samples[2] = if reset {
+                    0
+                } else {
+                    journal.history_limit(p.voxel, 0, 1)
+                };
+                assert_eq!(p.samples[2], if reset { 0 } else { 16 });
+                p.display[2].indirect = p.radiance[2].visible;
+                p.face_updated_at[2] = Some(start);
+            }
+            let mut last_raw_bad = 0;
+            let mut last_display_bad = 0;
+            for batch in 1..=256 {
+                let before = probes.clone();
+                gpu.trace(
+                    dark.clone(),
+                    &fixture.sources,
+                    &fixture.materials,
+                    &mut probes,
+                    4,
+                    &emitters,
+                )
+                .unwrap();
+                if batch == 1 {
+                    let cpu = crate::voxel_gi::tracer::trace_probe_batch(
+                        dark.clone(),
+                        fixture.sources.clone(),
+                        Arc::new(fixture.materials.clone()),
+                        before.clone(),
+                        4,
+                    );
+                    for (a, b) in probes.iter().zip(cpu) {
+                        assert!((a.radiance[2] - b.radiance[2]).visible.abs().max_element() < 1e-6);
+                        assert!((a.radiance[2].infrared - b.radiance[2].infrared).abs() < 1e-6);
+                        assert!((a.radiance[2].ionizing - b.radiance[2].ionizing).abs() < 1e-6);
+                    }
+                }
+                let now = start + Duration::from_millis(batch * 50);
+                for ((p, previous), initial) in probes.iter_mut().zip(&before).zip(&fixture.probes)
+                {
+                    let retained = if reset { 0.0 } else { 16.0 };
+                    let expected = retained / (retained + (batch * 4) as f32);
+                    for (mean, lit) in channels(p.radiance[2])
+                        .into_iter()
+                        .zip(channels(initial.radiance[2]))
+                    {
+                        assert!(lit > 0.0);
+                        assert!(
+                            (mean / lit - expected).abs() < 1e-5,
+                            "{kind}: obsolete energy follows only the generic retained weight"
+                        );
+                        if mean / lit > 0.1 {
+                            last_raw_bad = batch;
+                        }
+                    }
+                    p.resolve_display(previous, now, 0.075);
+                    assert!(
+                        p.display[2]
+                            .indirect
+                            .cmple(previous.display[2].indirect + Vec3::splat(1e-7))
+                            .all()
+                    );
+                    if ((p.display[2].indirect / initial.radiance[2].visible).max_element()) > 0.1 {
+                        last_display_bad = batch;
+                    }
+                    p.face_updated_at[2] = Some(now);
+                }
+            }
+            assert!(
+                last_display_bad < 256,
+                "response must settle inside the observed interval"
+            );
+            eprintln!(
+                "extinction {kind} reset={reset}: all-band raw <10% at {} fresh paths; worst RGB display <10% at {} fresh paths (virtual 50ms/4 paths, not gameplay latency)",
+                (last_raw_bad + 1) * 4,
+                (last_display_bad + 1) * 4
+            );
+        }
+    }
+}
+
 fn errors(values: &[EnergySpectrum], reference: &[EnergySpectrum]) -> Value {
     let mut squares = [0.0; 5];
     let mut normalized = Vec::new();
