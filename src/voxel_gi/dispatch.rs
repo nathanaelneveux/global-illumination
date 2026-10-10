@@ -460,7 +460,7 @@ pub(super) fn apply_trace_task(
                 }
             }
             if changed {
-                runtime.gpu_value_dirty.insert(voxel);
+                runtime.mark_display_dirty(voxel);
                 runtime.sky_upload_pending = true;
             }
         }
@@ -483,7 +483,7 @@ pub(super) fn apply_trace_task(
         runtime.covered_faces = runtime.covered_faces.saturating_sub(old_covered) + new_covered;
         runtime.settled_faces = runtime.settled_faces.saturating_sub(old_settled) + new_settled;
         let pending = probe_has_pending_samples(old);
-        runtime.gpu_value_dirty.insert(voxel);
+        runtime.mark_display_dirty(voxel);
         if pending {
             requeue.push(voxel);
         }

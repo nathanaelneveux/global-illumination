@@ -485,7 +485,11 @@ impl GpuSnapshot {
             probes: Vec::with_capacity(order.len()),
         }
     }
-    pub fn advance(&mut self, probes: &impl super::field::ProbeLookup) -> bool {
+    pub fn advance(
+        &mut self,
+        probes: &impl super::field::ProbeLookup,
+        mut captured: impl FnMut(IVec3),
+    ) -> bool {
         let started = std::time::Instant::now();
         let end = (self.cursor + 8192).min(self.order.len());
         while self.cursor < end {
@@ -493,6 +497,9 @@ impl GpuSnapshot {
             if let Some(probe) = probes.lookup(&voxel) {
                 self.probes.push((voxel, gpu_probe(probe)));
             }
+            // The snapshot now includes this key's latest membership/value.
+            // Only changes after this point require catch-up.
+            captured(voxel);
             self.cursor += 1;
             if self.cursor.is_multiple_of(128) && started.elapsed().as_micros() >= 1500 {
                 break;
@@ -1184,11 +1191,14 @@ mod tests {
             .collect();
         let mut order: Vec<_> = (0..9000).map(|x| IVec3::new(x, 0, 0)).collect();
         let mut snapshot = GpuSnapshot::new(&order);
-        assert!(!snapshot.advance(&probes), "snapshot work is bounded");
+        assert!(
+            !snapshot.advance(&probes, |_| {}),
+            "snapshot work is bounded"
+        );
         let removed = order.swap_remove(8999);
         probes.remove(&removed);
         order.swap(0, 8000);
-        while !snapshot.advance(&probes) {}
+        while !snapshot.advance(&probes, |_| {}) {}
         let result = snapshot.finish();
         assert_eq!(result.len(), 8999);
         assert!(!result.iter().any(|(voxel, _)| *voxel == removed));
@@ -1488,6 +1498,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(VoxelGiRuntime {
             gpu_prepared: Some(replacement),
+            gpu_catchup_dirty: field.order.iter().copied().collect(),
             gpu_value_dirty: field.order.iter().copied().collect(),
             last_gpu_upload: Instant::now() - Duration::from_secs(1),
             ..default()
@@ -1520,7 +1531,7 @@ mod tests {
         }
         {
             let mut runtime = world.resource_mut::<VoxelGiRuntime>();
-            runtime.gpu_value_dirty.insert(IVec3::ZERO);
+            runtime.mark_display_dirty(IVec3::ZERO);
             runtime.gpu_removed.extend([IVec3::X, added]);
             runtime.gpu_added.push(added);
             runtime.gpu_topology_dirty = true;
@@ -1613,6 +1624,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(VoxelGiRuntime {
             gpu_task: Some(pool.spawn(std::future::pending())),
+            gpu_catchup_dirty: [voxel].into_iter().collect(),
             gpu_value_dirty: HashSet::from([voxel]),
             last_gpu_upload: Instant::now() - Duration::from_secs(1),
             ..default()
@@ -1681,7 +1693,7 @@ mod tests {
         {
             let mut runtime = world.resource_mut::<VoxelGiRuntime>();
             runtime.sky_upload_pending = true;
-            runtime.gpu_value_dirty.insert(voxel);
+            runtime.mark_display_dirty(voxel);
             runtime.last_gpu_upload = Instant::now();
         }
         world.run_system_once(upload_transport_cache).unwrap();
@@ -1702,7 +1714,7 @@ mod tests {
         {
             let mut runtime = world.resource_mut::<VoxelGiRuntime>();
             runtime.gpu_topology_dirty = true;
-            runtime.gpu_value_dirty.insert(voxel);
+            runtime.mark_display_dirty(voxel);
         }
         world.run_system_once(upload_transport_cache).unwrap();
         let expected_faces = ShaderBuffer::from(vec![gpu_probe(

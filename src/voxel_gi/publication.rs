@@ -212,7 +212,7 @@ pub(super) fn publish_scene_page(
             .or_default()
             .push(descriptor.voxel);
         if display_changed {
-            runtime.gpu_value_dirty.insert(descriptor.voxel);
+            runtime.mark_display_dirty(descriptor.voxel);
         }
         field.probes.insert_box(descriptor.voxel, probe);
     }

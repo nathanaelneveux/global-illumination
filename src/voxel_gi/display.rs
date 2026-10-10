@@ -46,24 +46,50 @@ impl DisplayDirtyQueue {
         self.queued.clear();
     }
     fn is_empty(&self) -> bool {
-        self.order.is_empty()
+        self.queued.is_empty()
     }
     pub(super) fn len(&self) -> usize {
-        self.order.len()
+        self.queued.len()
     }
-    fn take_batch(&mut self, batch: &mut Vec<IVec3>) {
+    fn captured(&mut self, key: &IVec3) {
+        self.queued.remove(key);
+    }
+    fn take_batch(&mut self, batch: &mut Vec<IVec3>) -> usize {
         batch.clear();
-        while batch.len() < CATCHUP_BATCH {
+        let mut scanned = 0;
+        while scanned < CATCHUP_BATCH {
             let Some(key) = self.order.pop_front() else {
                 break;
             };
-            self.queued.remove(&key);
-            batch.push(key);
+            scanned += 1;
+            if self.queued.remove(&key) {
+                batch.push(key);
+            }
         }
+        scanned
     }
     #[cfg(test)]
     pub fn contains(&self, voxel: &IVec3) -> bool {
         self.queued.contains(voxel)
+    }
+}
+
+impl FromIterator<IVec3> for DisplayDirtyQueue {
+    fn from_iter<T: IntoIterator<Item = IVec3>>(keys: T) -> Self {
+        let mut queue = Self::default();
+        queue.extend(keys);
+        queue
+    }
+}
+
+impl VoxelGiRuntime {
+    /// One actual presentation change feeds both consumers. Pending live
+    /// uploads are not new changes and must not restart private catch-up.
+    pub(super) fn mark_display_dirty(&mut self, voxel: IVec3) {
+        self.gpu_value_dirty.insert(voxel);
+        if preparing(self) {
+            self.gpu_catchup_dirty.extend([voxel]);
+        }
     }
 }
 
@@ -80,9 +106,6 @@ fn record_changes(runtime: &mut VoxelGiRuntime, live: bool) {
     runtime
         .gpu_catchup_dirty
         .extend(runtime.gpu_removed.drain(..));
-    runtime
-        .gpu_catchup_dirty
-        .extend(runtime.gpu_value_dirty.iter().copied());
     if !live {
         // Before the first publication there is no old generation to update.
         // Retaining this set would re-enqueue unchanged keys every frame forever.
@@ -125,8 +148,7 @@ pub(super) fn upload_transport_cache(
         let mut processed = 0;
         let mut fits = true;
         while !runtime.gpu_catchup_dirty.is_empty() && processed < CATCHUP_MAX_PROBES {
-            runtime.gpu_catchup_dirty.take_batch(&mut batch);
-            processed += batch.len();
+            processed += runtime.gpu_catchup_dirty.take_batch(&mut batch);
             if !prepared.synchronize(&batch, &field.probes) {
                 fits = false;
                 break;
@@ -192,13 +214,23 @@ pub(super) fn upload_transport_cache(
         runtime.gpu_added.clear();
         runtime.gpu_removed.clear();
         runtime.gpu_catchup_dirty.clear();
-        record_changes(&mut runtime, cache.ready);
+        let runtime = runtime.as_mut();
+        runtime
+            .gpu_catchup_dirty
+            .extend(runtime.gpu_value_dirty.iter().copied());
+        record_changes(runtime, cache.ready);
     }
     timing.display_checkpoint(DisplayStage::SnapshotStart);
 
-    if let Some(snapshot) = runtime.gpu_snapshot.as_mut()
-        && snapshot.advance(&field.probes)
-    {
+    let snapshot_done = {
+        let runtime = runtime.as_mut();
+        runtime.gpu_snapshot.as_mut().is_some_and(|snapshot| {
+            snapshot.advance(&field.probes, |voxel| {
+                runtime.gpu_catchup_dirty.captured(&voxel)
+            })
+        })
+    };
+    if snapshot_done {
         let snapshot = runtime.gpu_snapshot.take().unwrap().finish();
         // Reserve for current residency, not only the beginning-of-snapshot
         // key list. Newly loaded probes are reconciled privately above.
@@ -247,5 +279,44 @@ mod tests {
         }
         assert_eq!(batch, [IVec3::ZERO]);
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn snapshot_capture_cancels_obsolete_work_without_unbounded_tombstone_scan() {
+        let mut queue: DisplayDirtyQueue = (0..2048).map(|x| IVec3::new(x, 0, 0)).collect();
+        for x in 0..2048 {
+            queue.captured(&IVec3::new(x, 0, 0));
+        }
+        assert!(queue.is_empty());
+        queue.extend([IVec3::ZERO, IVec3::new(2048, 0, 0)]);
+        let mut batch = Vec::new();
+        assert_eq!(queue.take_batch(&mut batch), CATCHUP_BATCH);
+        assert_eq!(batch, [IVec3::ZERO]);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.take_batch(&mut batch), CATCHUP_BATCH);
+        assert!(
+            batch.is_empty(),
+            "dead queue entries still count toward the frame limit"
+        );
+        while !queue.is_empty() {
+            queue.take_batch(&mut batch);
+        }
+        assert_eq!(batch, [IVec3::new(2048, 0, 0)]);
+    }
+
+    #[test]
+    fn unchanged_live_upload_debt_is_not_new_private_work() {
+        let mut runtime = VoxelGiRuntime {
+            gpu_snapshot: Some(GpuSnapshot::new(&[])),
+            ..default()
+        };
+        runtime.mark_display_dirty(IVec3::ZERO);
+        let mut batch = Vec::new();
+        runtime.gpu_catchup_dirty.take_batch(&mut batch);
+        record_changes(&mut runtime, true);
+        assert!(runtime.gpu_value_dirty.contains(&IVec3::ZERO));
+        assert!(runtime.gpu_catchup_dirty.is_empty());
+        runtime.mark_display_dirty(IVec3::ZERO);
+        assert!(runtime.gpu_catchup_dirty.contains(&IVec3::ZERO));
     }
 }
