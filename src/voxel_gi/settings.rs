@@ -134,8 +134,7 @@ pub(super) fn synchronize_transport_settings(
         return;
     }
     runtime.transport = transport;
-    super::sources::invalidate_sources(&mut runtime, &mut field, &mut stats);
-    runtime.reset_source_revision = runtime.source_revision;
+    super::sources::invalidate_model(&mut runtime, &mut field, &mut stats);
 }
 
 #[cfg(test)]
@@ -207,7 +206,7 @@ mod tests {
         app.update();
         let runtime = app.world().resource::<super::super::VoxelGiRuntime>();
         assert_eq!(runtime.source_revision, 1);
-        assert_eq!(runtime.reset_source_revision, 1);
+        assert_eq!(runtime.model_reset_source_revision, 1);
         assert_eq!(runtime.generation, 0);
         assert_eq!(runtime.sky_revision, 0);
         app.update();

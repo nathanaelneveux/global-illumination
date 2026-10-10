@@ -332,7 +332,7 @@ pub(super) fn select_transport(
         let mut restart = false;
         let mut history_limit = u32::MAX;
         if probe.source_revision != runtime.source_revision {
-            restart = probe.source_revision < runtime.reset_source_revision;
+            restart = probe.source_revision < runtime.model_reset_source_revision;
             history_limit = runtime.source_history.history_limit(
                 probe.voxel,
                 probe.source_revision,
@@ -443,7 +443,7 @@ pub(super) fn apply_trace_task(
             continue;
         };
         if old.revision != job.revision
-            || (job.trace_mask != 0 && job.source_revision < runtime.reset_source_revision)
+            || (job.trace_mask != 0 && job.source_revision < runtime.model_reset_source_revision)
         {
             if probe_has_pending_samples(old) {
                 requeue.push(voxel);

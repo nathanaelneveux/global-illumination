@@ -220,7 +220,7 @@ struct VoxelGiRuntime {
     batch_size: usize,
     /// Last global material/model replacement. Scene edits use spatial history
     /// instead; residency of an emitting voxel must not restart the world.
-    reset_source_revision: u64,
+    model_reset_source_revision: u64,
     source_history: sources::SourceHistory,
     nearby: Vec<IVec3>,
     regional: Vec<IVec3>,
@@ -292,7 +292,7 @@ impl Default for VoxelGiRuntime {
             geometry_history: default(),
             source_revision: 0,
             batch_size: 256,
-            reset_source_revision: 0,
+            model_reset_source_revision: 0,
             source_history: default(),
             nearby: Vec::new(),
             regional: Vec::new(),

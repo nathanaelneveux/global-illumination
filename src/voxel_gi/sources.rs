@@ -225,16 +225,19 @@ pub(super) fn synchronize_material_table(
         return;
     }
     runtime.materials = Arc::new(materials.clone());
-    invalidate_sources(&mut runtime, &mut field, &mut stats);
-    runtime.reset_source_revision = runtime.source_revision;
+    invalidate_model(&mut runtime, &mut field, &mut stats);
 }
 
-pub(super) fn invalidate_sources(
+/// Replace the global optical/transport model, not the residency of a light.
+/// Keep the revision advance and restart watermark inseparable: late jobs from
+/// the old model must be rejected even after another analytic source moves.
+pub(super) fn invalidate_model(
     runtime: &mut VoxelGiRuntime,
     field: &mut VoxelEnergyField,
     stats: &mut VoxelGiStats,
 ) {
     invalidate_source_change(runtime, field, stats, SourceChange::Global);
+    runtime.model_reset_source_revision = runtime.source_revision;
 }
 
 pub(super) fn invalidate_source_change(

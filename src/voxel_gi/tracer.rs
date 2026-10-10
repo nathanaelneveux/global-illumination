@@ -27,8 +27,8 @@ pub(crate) const MAX_PATH_DISTANCE: f32 = 768.0;
 pub const BOOTSTRAP_SAMPLES: u32 = 8;
 /// Accumulate evidence while the integrand is unchanged. A short rolling
 /// history imposes a permanent noise floor on static refinement. Scene/source
-/// geometry/source policies independently cap retained weight or reset it to zero;
-/// a long static history therefore does not delay tracked lighting changes.
+/// policies cap retained weight; global model replacements reset it to zero.
+/// Change response depends on that cap, not how long the world was static.
 pub const HISTORY_LIMIT: u32 = 65_536;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -5,7 +5,7 @@ use super::{
     dispatch::{append_sky_work, select_probes, select_transport},
     publication::{invalidate_near_voxel, publish_scene_page},
     render::{VoxelTransportAssets, VoxelTransportMaterial},
-    sources::invalidate_sources,
+    sources::{SourceChange, invalidate_model, invalidate_source_change},
 };
 use bevy_voxel_world::rendering::VoxelWorldMaterialHandle;
 use std::collections::HashMap;
@@ -125,7 +125,7 @@ fn settled_counter_tracks_local_edits_global_revisions_and_page_removal() {
 
     // O(1) invalidation must not scan/clear histories. Old contributions no
     // longer count, including late worker results from that old revision.
-    invalidate_sources(&mut runtime, &mut field, &mut stats);
+    invalidate_source_change(&mut runtime, &mut field, &mut stats, SourceChange::Global);
     assert_eq!(stats.settled_coverage, 0.0);
     assert_eq!(field.probes[&far].samples[0], 128);
     assert_eq!(
@@ -354,7 +354,7 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
         world.resource_scope(|world, mut runtime: Mut<VoxelGiRuntime>| {
             let field = world.resource::<VoxelEnergyField>();
             assert_eq!(runtime.source_revision, 0);
-            assert_eq!(runtime.reset_source_revision, 0);
+            assert_eq!(runtime.model_reset_source_revision, 0);
             assert_eq!(field.transport_revision, 1);
             for voxel in [near, far] {
                 let estimate = field.estimate(voxel, Vec3::Y).unwrap();
@@ -528,7 +528,12 @@ fn moving_sources_preserve_history_and_work_queues() {
     field.order.push(voxel);
     let mut runtime = VoxelGiRuntime::default();
     enqueue_many(&mut runtime, [voxel]);
-    invalidate_sources(&mut runtime, &mut field, &mut VoxelGiStats::default());
+    invalidate_source_change(
+        &mut runtime,
+        &mut field,
+        &mut VoxelGiStats::default(),
+        SourceChange::Global,
+    );
     assert_eq!(field.probes[&voxel].samples[2], 64);
     assert_eq!(runtime.pending.len(), 1);
     let selected = select_probes(&mut runtime, &field);
@@ -550,10 +555,14 @@ fn global_model_replacement_restarts_measurements_not_presentation() {
         field.order.push(voxel);
     }
     let mut runtime = VoxelGiRuntime::default();
-    invalidate_sources(&mut runtime, &mut field, &mut VoxelGiStats::default());
-    runtime.reset_source_revision = runtime.source_revision;
+    invalidate_model(&mut runtime, &mut field, &mut VoxelGiStats::default());
     // A later moving-light revision must not hide the pending model reset.
-    invalidate_sources(&mut runtime, &mut field, &mut VoxelGiStats::default());
+    invalidate_source_change(
+        &mut runtime,
+        &mut field,
+        &mut VoxelGiStats::default(),
+        SourceChange::Global,
+    );
     let selected = select_probes(&mut runtime, &field);
     assert_eq!(selected.len(), 2);
     for probe in selected {
