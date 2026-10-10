@@ -5,6 +5,10 @@ experiments qualify **world-space temporal-history mechanisms**, not complete
 DDGI or A-SVGF renderers. The preferred corner presentation, transport model and
 display smoothing remain fixed. No candidate is a production default yet.
 
+The subsequent [finite suspect-window study](history-suspect-halving.md) tests
+the user's distinct compare/merge/**then**-halve rule on actual individual paths,
+not the DDGI branch's variance-gated, pre-merge batch adaptation.
+
 ## Research selection (2026-10-10)
 
 - [Production DDGI, section 4.3](https://jcgt.org/published/0010/02/01/paper-lowres.pdf):

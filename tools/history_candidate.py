@@ -161,6 +161,13 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.history.weight, 4016)
         self.assertEqual(self.history.reductions, 0)
 
+    def test_unmarked_streaming_keeps_normal_history(self):
+        policy = SuspectHalving()
+        policy.integrate([self.history], [moment(0)], 16, None)
+        self.assertEqual(self.history.weight, 4016)
+        self.assertAlmostEqual(self.history.mean[0], 4000 / 4016)
+        self.assertEqual(self.history.reductions, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

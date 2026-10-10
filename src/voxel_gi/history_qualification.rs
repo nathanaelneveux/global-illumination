@@ -201,6 +201,19 @@ fn record_history_qualification_tape() {
     ] {
         cases.push(record_case(&mut gpu, &f, a, b, name, false, false));
     }
+    // A local lamp edit need not extinguish the entire room. Keep the other
+    // source intact so disagreement is tested against a nonzero new target.
+    let mut one_lamp = page(&before);
+    one_lamp[linear_index(UVec3::new(8, 20, 10), PAGE_SIZE)] = AIR;
+    cases.push(record_case(
+        &mut gpu,
+        &f,
+        before.clone(),
+        changed(&before, one_lamp),
+        "one-emitter-remove",
+        false,
+        false,
+    ));
     let mut covered = page(&before);
     for lamp in [IVec3::new(8, 20, 10), IVec3::new(22, 20, 21)] {
         for offset in crate::voxel_gi::world::FACE_OFFSETS {
