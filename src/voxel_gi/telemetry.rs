@@ -28,12 +28,35 @@ pub(super) enum MainStage {
     DisplayPublication,
 }
 
+pub(super) const DISPLAY_STAGE_NAMES: [&str; 7] = [
+    "poll",
+    "install",
+    "topology",
+    "snapshot_start",
+    "snapshot_advance",
+    "values",
+    "ledger",
+];
+
+#[derive(Clone, Copy)]
+pub(super) enum DisplayStage {
+    Poll,
+    Install,
+    Topology,
+    SnapshotStart,
+    SnapshotAdvance,
+    Values,
+    Ledger,
+}
+
 #[derive(Resource)]
 pub(super) struct GiWorkTimings {
     started: Instant,
     frames: u32,
     main: Duration,
     frame_main: [Duration; 7],
+    display_enabled: bool,
+    frame_display: [Duration; 7],
     gpu_ms: f64,
     gpu_available: bool,
     missing_gpu_timing: bool,
@@ -46,6 +69,8 @@ impl Default for GiWorkTimings {
             frames: 0,
             main: Duration::ZERO,
             frame_main: [Duration::ZERO; 7],
+            display_enabled: std::env::var_os("VOXEL_GI_VALIDATE_FRAME_TIMINGS").is_some(),
+            frame_display: [Duration::ZERO; 7],
             gpu_ms: 0.0,
             gpu_available: false,
             missing_gpu_timing: false,
@@ -57,8 +82,10 @@ impl GiWorkTimings {
     /// Time only the system body, including early returns, not gaps between
     /// systems or asynchronous work. This does not add any GPU synchronization.
     pub(super) fn main_scope(&mut self, stage: MainStage) -> MainThreadScope<'_> {
+        let started = Instant::now();
         MainThreadScope {
-            started: Instant::now(),
+            started,
+            checkpoint: started,
             timings: self,
             stage,
         }
@@ -79,6 +106,8 @@ impl GiWorkTimings {
     fn finish_frame_at(&mut self, now: Instant, stats: &mut VoxelGiStats) {
         stats.last_main_stage_ms = self.frame_main.map(|d| d.as_secs_f32() * 1000.0);
         self.frame_main = [Duration::ZERO; 7];
+        stats.last_display_stage_ms = self.frame_display.map(|d| d.as_secs_f32() * 1000.0);
+        self.frame_display = [Duration::ZERO; 7];
         self.frames += 1;
         if now.saturating_duration_since(self.started) < REPORT_INTERVAL {
             return;
@@ -97,11 +126,22 @@ impl GiWorkTimings {
 
 pub(super) struct MainThreadScope<'a> {
     started: Instant,
+    checkpoint: Instant,
     timings: &'a mut GiWorkTimings,
     stage: MainStage,
 }
 
 impl MainThreadScope<'_> {
+    /// Consecutive checkpoints partition display publication without changing
+    /// its scheduling. Detailed clocks are opt-in and allocate no per-frame data.
+    pub(super) fn display_checkpoint(&mut self, stage: DisplayStage) {
+        if self.timings.display_enabled {
+            let now = Instant::now();
+            self.timings.frame_display[stage as usize] += now.duration_since(self.checkpoint);
+            self.checkpoint = now;
+        }
+    }
+
     pub(super) fn record_gpu_batch(&mut self, milliseconds: Option<f32>) {
         self.timings.record_gpu_batch(milliseconds);
     }
@@ -129,11 +169,14 @@ mod tests {
         let now = timings.started;
         let mut stats = VoxelGiStats::default();
         timings.frame_main[MainStage::ScenePublication as usize] = Duration::from_millis(20);
+        timings.frame_display[DisplayStage::Topology as usize] = Duration::from_millis(12);
         timings.finish_frame_at(now, &mut stats);
         assert_eq!(stats.last_main_stage_ms[2], 20.0);
+        assert_eq!(stats.last_display_stage_ms[2], 12.0);
         assert!(stats.main_thread_ms_per_frame.is_none());
         timings.finish_frame_at(now, &mut stats);
         assert_eq!(stats.last_main_stage_ms, [0.0; 7]);
+        assert_eq!(stats.last_display_stage_ms, [0.0; 7]);
     }
 
     #[test]

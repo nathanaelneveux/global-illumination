@@ -5,6 +5,7 @@ use super::render::{
     VoxelTransportMaterial, build_gpu_cache, install_gpu_cache, patch_gpu_topology,
     patch_probe_values,
 };
+use super::telemetry::DisplayStage;
 use super::{VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, telemetry::GiWorkTimings};
 use bevy::{
     prelude::*,
@@ -26,15 +27,18 @@ pub(super) fn upload_transport_cache(
     settings: Res<VoxelGiSettings>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
-    let _timing = timings.main_scope(super::telemetry::MainStage::DisplayPublication);
+    let mut timing = timings.main_scope(super::telemetry::MainStage::DisplayPublication);
     let Some(material_handle) = material_handle else {
         return;
     };
 
     let mut installed = false;
-    if let Some(task) = runtime.gpu_task.as_mut()
-        && let Some(build) = block_on(poll_once(task))
-    {
+    let build = runtime
+        .gpu_task
+        .as_mut()
+        .and_then(|task| block_on(poll_once(task)));
+    timing.display_checkpoint(DisplayStage::Poll);
+    if let Some(build) = build {
         runtime.gpu_task = None;
         let catchup = std::mem::take(&mut runtime.gpu_catchup_dirty);
         runtime.gpu_value_dirty.extend(catchup);
@@ -59,6 +63,7 @@ pub(super) fn upload_transport_cache(
             "world-space voxel GPU cache installed"
         );
     }
+    timing.display_checkpoint(DisplayStage::Install);
 
     if runtime.gpu_topology_dirty
         && cache.ready
@@ -85,6 +90,7 @@ pub(super) fn upload_transport_cache(
             runtime.gpu_rebuild_required = true;
         }
     }
+    timing.display_checkpoint(DisplayStage::Topology);
 
     if runtime.gpu_topology_dirty
         && (!cache.ready || runtime.gpu_rebuild_required)
@@ -96,6 +102,7 @@ pub(super) fn upload_transport_cache(
         runtime.gpu_removed.clear();
         runtime.gpu_task_version = runtime.gpu_topology_version;
     }
+    timing.display_checkpoint(DisplayStage::SnapshotStart);
 
     if let Some(snapshot) = runtime.gpu_snapshot.as_mut()
         && snapshot.advance(&field.probes)
@@ -104,6 +111,7 @@ pub(super) fn upload_transport_cache(
         runtime.gpu_task =
             Some(AsyncComputeTaskPool::get().spawn(async move { build_gpu_cache(snapshot) }));
     }
+    timing.display_checkpoint(DisplayStage::SnapshotAdvance);
 
     // Never expose a worker's stale snapshot for the normal upload interval.
     // Merge every value changed since that snapshot in its installation frame.
@@ -116,6 +124,7 @@ pub(super) fn upload_transport_cache(
     }
     let dirty = std::mem::take(&mut runtime.gpu_value_dirty);
     patch_probe_values(&cache, &patch_queue, &field.probes, &dirty);
+    timing.display_checkpoint(DisplayStage::Values);
     if runtime.gpu_task.is_some() || runtime.gpu_snapshot.is_some() {
         // Catch-up and live publication are separate ledgers. Re-uploading the
         // entire growing catch-up set every 50ms was itself a streaming spike.
@@ -127,4 +136,5 @@ pub(super) fn upload_transport_cache(
     runtime.gpu_value_dirty.clear();
     runtime.last_gpu_upload = Instant::now();
     runtime.sky_upload_pending = false;
+    timing.display_checkpoint(DisplayStage::Ledger);
 }

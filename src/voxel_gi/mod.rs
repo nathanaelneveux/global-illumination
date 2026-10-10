@@ -170,6 +170,9 @@ pub struct VoxelGiStats {
     /// Last app frame's GI system-body times, in telemetry stage order.
     /// Excludes workers/render work; unlike the overlay average, retains spikes.
     pub last_main_stage_ms: [f32; 7],
+    /// Opt-in display-publication substage costs, in telemetry stage order.
+    /// Zero unless frame-timing validation is enabled; included in main time.
+    pub last_display_stage_ms: [f32; 7],
     /// Completed transport/sky compute-pass timestamps per app frame over the
     /// same window. None until available, or on CPU/unsupported GPU backends.
     /// Excludes queue waits, transfers and graphics; do not add to main time.
