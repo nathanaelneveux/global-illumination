@@ -9,7 +9,6 @@ const EMITTER: IVec3 = IVec3::new(10, 41, -9);
 pub(super) struct ResponseRun {
     initialized: bool,
     stage: u8,
-    last_sample: f32,
     pub samples: Vec<serde_json::Value>,
     pub captures: Vec<serde_json::Value>,
 }
@@ -111,8 +110,9 @@ impl ResponseRun {
             self.stage = stage;
             self.samples.push(json!({"event": stage, "at_s": elapsed}));
         }
-        if elapsed - self.last_sample >= 0.05 {
-            self.last_sample = elapsed;
+        // Observe each Update so short source responses are not lost between
+        // samples. This fixture is opt-in and its receiver set is bounded.
+        {
             let faces: Vec<_> = FACE_OFFSETS
                 .into_iter()
                 .enumerate()
@@ -128,14 +128,21 @@ impl ResponseRun {
                     json!({"voxel": voxel.to_array(), "face": face,
                         "display": probe.map(|p| p.display[face].indirect.to_array()),
                         "measured": probe.map(|p| p.radiance[face].visible.to_array()),
+                        "infrared": probe.map(|p| p.radiance[face].infrared),
+                        "ionizing": probe.map(|p| p.radiance[face].ionizing),
+                        "second_moment": probe.map(|p| [p.second_moment[face].visible.x, p.second_moment[face].visible.y,
+                            p.second_moment[face].visible.z, p.second_moment[face].infrared, p.second_moment[face].ionizing]),
                         "samples": probe.map(|p| p.samples[face]),
+                        "sequence": probe.map(|p| p.sequence[face]),
+                        "transport_revision": probe.map(|p| p.transport_revision),
                         "sky": probe.map(|p| p.display[face].sky),
                         "source_revision": probe.map(|p| p.source_revision),
                         "confidence": probe.map(|p| p.display[face].confidence)})
                 })
                 .collect();
             self.samples.push(
-                json!({"at_s": elapsed, "source_revision": field.source_revision, "faces": faces}),
+                json!({"at_s": elapsed, "source_revision": field.source_revision,
+                    "transport_revision": field.transport_revision, "faces": faces}),
             );
         }
     }
