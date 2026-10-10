@@ -44,6 +44,12 @@ adds 120/180-second captures. Headless app cadence is not interactive FPS.
 
 No history or scheduling policy is changed by this measurement infrastructure.
 
+`VOXEL_GI_VALIDATE_PATH_DIAGNOSTIC=<receiver-index>` additionally replays the
+first 2,048 individual paths for one fixed receiver on both CPU and GPU, after
+timing, on the same frozen scene. `reference-paths.json` records all five bands.
+This distinguishes an estimator outlier from a backend/scene mismatch; it is not
+independent accuracy evidence.
+
 ## Opt-in ablations
 
 Debug builds accept `VOXEL_GI_EXPERIMENT_RETAIN_HISTORY=1`. This removes

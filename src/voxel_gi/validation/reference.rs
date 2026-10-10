@@ -16,6 +16,16 @@ const PATHS_PER_BLOCK: u32 = 32_768;
 // sequence prefix; 2^24 itself would alias its primary/bounce directions.
 const REFERENCE_SEQUENCE_START: u32 = 4_194_304;
 
+fn channels(energy: EnergySpectrum) -> [f32; 5] {
+    [
+        energy.visible.x,
+        energy.visible.y,
+        energy.visible.z,
+        energy.infrared,
+        energy.ionizing,
+    ]
+}
+
 #[derive(Default)]
 pub(super) struct ReferenceRun {
     task: Option<Task<Result<(), String>>>,
@@ -49,6 +59,28 @@ impl ReferenceRun {
         self.task = Some(AsyncComputeTaskPool::get().spawn(async move {
             let mut gpu = GpuTracer::new(device)?;
             let emitters = std::sync::Arc::new(EmissionDistribution::build(&scene, &materials));
+            if let Ok(site) = std::env::var("VOXEL_GI_VALIDATE_PATH_DIAGNOSTIC") {
+                let site: usize = site.parse().map_err(|_| "PATH_DIAGNOSTIC must name a receiver index")?;
+                let &(voxel, face) = sites.get(site).ok_or("PATH_DIAGNOSTIC receiver index out of range")?;
+                let mut work = TraceWork { transport, ..default() };
+                let mut cpu = TraceWork { transport, ..default() };
+                for sequence in 0..2048 {
+                    let mut probe = SurfaceProbe::new(voxel, 1 << face);
+                    probe.sequence[face] = sequence;
+                    work.push(&probe, 1 << face, 0, 0, false, u32::MAX, u32::MAX);
+                    work.probes.last_mut().unwrap().sky_requested = false;
+                    cpu.push(&probe, 1 << face, 0, 0, false, u32::MAX, u32::MAX);
+                    cpu.probes.last_mut().unwrap().sky_requested = false;
+                }
+                super::super::tracer::trace_work_batch(&scene, &sources, &materials, &mut cpu, 1, &emitters, &mut default());
+                gpu.trace_compact(scene.clone(), &sources, &materials, &mut work, 1, &emitters, false)?;
+                let paths: Vec<_> = cpu.faces.iter().zip(&work.faces).enumerate().map(|(sequence,(a,b))| {
+                    json!({"sequence":sequence,"cpu":channels(a.radiance),"gpu":channels(b.radiance)})
+                }).collect();
+                let data = json!({"voxel":voxel.to_array(),"face":face,"paths":paths,
+                    "note":"Individual fresh paths on the frozen final scene, all five bands. CPU/GPU comparison, not independent accuracy evidence."});
+                std::fs::write(output.join("reference-paths.json"), serde_json::to_vec(&data).unwrap()).map_err(|e|e.to_string())?;
+            }
             let mut references = Vec::new();
             for replicate in 0..2 {
                 let mut work = TraceWork {
@@ -84,12 +116,7 @@ impl ReferenceRun {
                         )?;
                     }
                     for (mean, face) in estimate.iter_mut().zip(&work.faces) {
-                        let channels = [
-                            face.radiance.visible.x, face.radiance.visible.y,
-                            face.radiance.visible.z, face.radiance.infrared,
-                            face.radiance.ionizing,
-                        ];
-                        for (mean, sample) in mean.iter_mut().zip(channels) {
+                        for (mean, sample) in mean.iter_mut().zip(channels(face.radiance)) {
                             *mean += f64::from(sample) / f64::from(BLOCKS);
                         }
                     }
