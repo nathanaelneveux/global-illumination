@@ -34,3 +34,18 @@ optional `VOXEL_GI_VALIDATE_CAVE_LONG=1` extends it from 62 to 182 seconds and
 adds 120/180-second captures. Headless app cadence is not interactive FPS.
 
 No history or scheduling policy is changed by this measurement infrastructure.
+
+## Opt-in ablations
+
+Debug builds accept `VOXEL_GI_EXPERIMENT_RETAIN_HISTORY=1`. This removes
+scene/local/source-change statistical caps on compatible faces. It still wakes
+stale receivers, rejects obsolete worker geometry, initializes genuinely new
+faces, and restarts incompatible transport/material-table models. The ordinary
+65,536-sample accumulator ceiling remains. This is not a production default:
+old bright history can be stale after a real occlusion/removal.
+
+Combine it with the existing `VOXEL_GI_CONTINUOUS=1` to disable adaptive sleeping
+while keeping the same dispatch budget. Thus the comparison is (a) current caps,
+(b) retained history with normal wake/audit eligibility, and (c) retained history
+with continuous sampling. Turning off refresh entirely would make a frozen wrong
+answer look stable and is not a useful convergence experiment.

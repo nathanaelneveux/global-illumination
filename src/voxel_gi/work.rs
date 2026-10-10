@@ -343,9 +343,17 @@ mod tests {
             (1, 64, u32::MAX, false, 64),
             (1, 16, u32::MAX, false, 16),
             (1, 256, u32::MAX, false, 256),
+            (
+                1,
+                u32::MAX,
+                u32::MAX,
+                false,
+                super::super::tracer::HISTORY_LIMIT,
+            ),
             (1, 256, 4, false, 4),
             (0, 64, 4, false, 4),
             (1, 256, u32::MAX, true, 0),
+            (1, u32::MAX, u32::MAX, true, 0),
         ] {
             work.clear();
             work.push(
@@ -363,6 +371,26 @@ mod tests {
                 assert_eq!(work.faces[0].radiance, EnergySpectrum::ZERO);
             }
         }
+    }
+
+    #[test]
+    fn retaining_history_still_publishes_freshness_and_wakes_stable_faces() {
+        let mut probe = SurfaceProbe::new(IVec3::ZERO, 5);
+        probe.samples = [4096; 6];
+        probe.sequence = [8000; 6];
+        probe.radiance = [EnergySpectrum::ONE; 6];
+        probe.stable_batches = [4; 6];
+        let mut work = TraceWork::default();
+        work.push(&probe, 4, 1, 1, false, u32::MAX, u32::MAX);
+        assert_eq!(work.faces[0].samples, 4096);
+        assert_eq!(work.faces[0].sequence, 8000);
+        work.probes[0].publish(&work.faces, &mut probe, Instant::now(), &Default::default());
+        assert_eq!(probe.transport_revision, 1);
+        assert_eq!(probe.source_revision, 1);
+        assert_eq!(probe.fresh_mask, 4);
+        assert_eq!(probe.stable_batches[0], 0);
+        assert_eq!(probe.samples[0], 4096);
+        assert_eq!(probe.samples[2], 4096);
     }
 
     #[test]

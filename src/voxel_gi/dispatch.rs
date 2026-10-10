@@ -339,17 +339,23 @@ pub(super) fn select_transport(
                 runtime.source_revision,
             );
         }
+        let geometry_limit = runtime.geometry_history.history_limit(
+            voxel,
+            probe.transport_revision,
+            field.transport_revision,
+        );
+        #[cfg(debug_assertions)]
+        let (geometry_limit, history_limit) = (
+            super::validation::retained_history_limit(geometry_limit),
+            super::validation::retained_history_limit(history_limit),
+        );
         selected.push(
             probe,
             mask,
             field.transport_revision,
             runtime.source_revision,
             restart,
-            runtime.geometry_history.history_limit(
-                voxel,
-                probe.transport_revision,
-                field.transport_revision,
-            ),
+            geometry_limit,
             history_limit,
         );
     }

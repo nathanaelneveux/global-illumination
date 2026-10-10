@@ -11,6 +11,21 @@ mod response;
 mod structures;
 mod temporal;
 
+/// Debug-only ablation of statistical history truncation. Revision checks,
+/// geometry identity, genuinely new faces and explicit model replacement keep
+/// their production semantics. Combine with VOXEL_GI_CONTINUOUS=1 to measure
+/// sampling continuously instead of the normal adaptive wake/audit policy.
+pub(super) fn retained_history_limit(normal: u32) -> u32 {
+    static RETAIN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *RETAIN
+        .get_or_init(|| std::env::var("VOXEL_GI_EXPERIMENT_RETAIN_HISTORY").is_ok_and(|v| v == "1"))
+    {
+        u32::MAX
+    } else {
+        normal
+    }
+}
+
 use super::render::VoxelTransportMaterial;
 use super::world::FACE_OFFSETS;
 use super::{
@@ -587,6 +602,7 @@ pub(super) fn run_validation(
             "moves": run.background.moves, "speed_voxels_per_second": 4.32,
             "note": "Inactive BVW loader walks from (-96,40,0) toward -Z. Does not render or alter GI view priority. Loaded terrain participates in transport."},
         "presentation": "shared-corner sun + corner-reconstructed indirect; preferred modes except compare/stress",
+        "history_experiment": if retained_history_limit(0) == u32::MAX { "retain-compatible-history" } else { "production" },
         "settings": {"transport": settings.transport, "samples_per_dispatch": settings.batch_samples(),
             "trace_budget_ms": settings.trace_budget_ms, "max_probes_per_dispatch": settings.max_probes_per_dispatch,
             "scene_publish_budget_ms": settings.scene_publish_budget.as_secs_f32() * 1000.0,

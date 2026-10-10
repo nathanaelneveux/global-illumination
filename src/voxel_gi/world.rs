@@ -502,9 +502,10 @@ impl SurfaceProbe {
     /// only newly exposed faces start without compatible measurements.
     pub(crate) fn request_relight(&mut self) {
         self.revision = self.revision.wrapping_add(1);
-        self.samples = self
-            .samples
-            .map(|count| count.min(super::geometry::NEAR_HISTORY));
+        let limit = super::geometry::NEAR_HISTORY;
+        #[cfg(debug_assertions)]
+        let limit = super::validation::retained_history_limit(limit);
+        self.samples = self.samples.map(|count| count.min(limit));
         self.fresh_mask = 0;
         self.stable_batches = [0; 6];
     }
