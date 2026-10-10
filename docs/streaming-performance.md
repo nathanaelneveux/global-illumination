@@ -16,6 +16,11 @@ are **not** windowed FPS measurements or proof of convergence/60-FPS compliance.
 Each experiment and its tradeoffs are recorded below; failed alternatives stay
 on local branches, not in the production path.
 
+The [BVW branch comparison](#bvw-optimization-branch-comparison) below reduces
+observed worst intervals, but changes terrain residency and lighting freshness.
+Its voxel-write lock fix alone does not remove the remaining hitch. GI display
+publication is now a measured long-running main-world stage to investigate.
+
 ## Follow-up experiments
 
 Rejected dependency representation: `codex/path-footprint-retention` at
@@ -180,6 +185,139 @@ The accepted scene-history work through `b051274` is merged into the regular
 `voxel-global-illumination` branch. Keep its history and presentation policy fixed
 while removing publication overhead. Neither the cave's residual noise nor the
 always-above-60-FPS target is solved by this checkpoint.
+
+## BVW optimization branch comparison
+
+### Decision and attribution
+
+The complete optimization branch is promising for streaming tails, but is not
+promoted as an equivalent-work stall fix. Leave the default dependency and GI
+code unchanged while investigating display publication and the residency tradeoff.
+The optimized checkout's uncommitted work was neither modified nor benchmarked.
+
+Stock BVW 0.17 acquires the modified-voxel write lock every PreUpdate, even with
+an empty edit buffer, while generation workers retain read guards. The optimized
+branch skips empty buffers and defers contended writes without dropping edits.
+However, porting **only** that guard and nonblocking write onto stock BVW still
+produces a 169-ms streaming interval. This rules out that particular wait as the
+sole cause in this workload; it does not rule out every BVW lock or workload.
+
+The same lock-only run records **88.66 ms in GI display publication**. Stock
+repeats record 66.09 and 67.59 ms there; full-branch repeats record 7.55 and
+8.11 ms maxima. PreUpdate maxima in these streaming windows are respectively
+0.80 ms, 4.04/0.86 ms, and 2.51/2.17 ms. These are independent system/schedule
+observations, not a subtraction from the pipelined frame interval. The specific
+operation inside display publication (topology patch, cache installation,
+catch-up or allocation/lock wait) is not yet isolated. Instrument those paths
+before changing their architecture. A smaller loaded set avoiding a costly GI
+cache operation is a hypothesis, not an established cause.
+
+### Controlled setup
+
+Application runtime `0ddc304a94c827264333baf1a1038d60218f1385`, no GI/harness
+source changes. Apple M4 / 10-core GPU / 16 GiB, macOS 26.6.2, Rust 1.95.0,
+Bevy 0.19.1 / Metal. Same development profile, shared intermediates, offscreen
+2560×1440 / 60-Hz runner, preferred corner look, textures on, AO off, 16 paths,
+4-ms target, 8,192 receivers, 3 bounces, reach 768, display response/upload
+75/50 ms. No concurrent builds/profilers during measurements.
+
+Variants:
+
+- Registry `bevy_voxel_world = "0.17"`, lockfile unchanged from `0ddc304`.
+- Full local BVW `perf/integration-bevy-0.19` at
+  `5aefb4f2615fa67251d083e5b1fec5cec95f3148`, selected with Cargo's CLI patch
+  override; only Cargo.lock differs in the application checkout during a run.
+- Lock-only BVW `codex/gi-write-lock-ablation` at
+  `a7e694c63c170216a84a21fc3dc7e682dfe93666`, based on release `919a9bd`, via
+  path override `target/bvw-write-lock-ablation`. Only the empty-buffer guard
+  and `ModifiedVoxels::try_write` change. Discovery, generation and other locks
+  remain stock. This is an attribution experiment, not a production fork.
+
+The full-branch command uses the committed Git snapshot, not a path dependency
+on the user's dirty working tree:
+
+```sh
+VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_HEADLESS=1 \
+VOXEL_GI_VALIDATE_PROFILE=streaming VOXEL_GI_VALIDATE_FRAME_TIMINGS=1 \
+VOXEL_GI_VALIDATE_EXPECT_BUILD_ROOT="$PWD" VOXEL_GI_VALIDATE_EXIT=1 \
+RUST_LOG=warn cargo run \
+  --config 'patch.crates-io.bevy_voxel_world.git="file:///Users/nathanaelneveux/Developer/bevy_voxel_world"' \
+  --config 'patch.crates-io.bevy_voxel_world.rev="5aefb4f2615fa67251d083e5b1fec5cec95f3148"'
+```
+
+This updates Cargo.lock for the experimental source. Subsequent runs with that
+override use `--locked`; removing the override and running `cargo build --offline`
+restores the registry source. At the end both manifest/lockfile match `0ddc304`
+and the default build succeeds. The exact tested BVW commit could not be fetched
+from GitHub into a fresh Cargo cache; do not substitute the published preview
+branch silently or introduce an unresolvable default dependency. Nothing pushed.
+
+### Streaming repeats
+
+Turn at 15 s, walk until 30 s, finish at 35 s. Intervals below cover 15–35 s,
+excluding screenshot/readback cooldowns. They are **not interactive FPS**.
+
+| Variant | Interval p95 / p99 / max (ms) | Frames >33.3 / >50 ms | Total paths | Final pages / probes |
+| --- | ---: | ---: | ---: | ---: |
+| Registry A | 26.58 / 29.21 / 142.90 | 5 / 4 | 89.36 M | 606 / 450,483 |
+| Full branch A | 27.01 / 28.97 / 75.53 | 2 / 1 | 89.79 M | 401 / 279,955 |
+| Full branch B | 27.31 / 29.50 / 64.01 | 1 / 1 | 89.49 M | 398 / 277,262 |
+| Write-lock-only | 26.59 / 29.53 / 169.36 | 3 / 3 | 91.25 M | 607 / 450,514 |
+| Registry B | 26.61 / 29.62 / 140.37 | 3 / 3 | 90.42 M | 602 / 442,792 |
+
+Final coverage/bootstrap are 100% with no publication/first-sample backlog in
+all five. This is not a convergence claim. Residency is redistributed, not
+simply uniformly reduced: just before the turn, registry A has 272 pages and
+full A has 394; after the turn full A retains fewer pages. Near measurement-age
+p50/p95 are 290/2,217 and 174/1,851 ms in the registry repeats versus 402/2,097
+and 506/2,662 ms in the full repeats. The lower worst interval is not a uniform
+freshness or p99 gain. Recovered images show intact nearby terrain; different
+distant residency means this is not a matched-geometry comparison.
+
+Run IDs under `target/gi-validation/`, in table order:
+
+- `streaming-1791651528149466000-73326`
+- `streaming-1791651691347756000-73547`
+- `streaming-1791651811082409000-73628`
+- `streaming-1791651901956730000-73722`
+- `streaming-1791651956366522000-73766`
+
+### Cave and edit counterchecks
+
+Cave runs with background terrain and temporal capture enabled: registry
+`cave-1791651580682425000-73424`, full branch
+`cave-1791651737009569000-73583`. Intervals use 15–62 s excluding captures;
+temporal measurements use 40–60 s at the same 144 corners.
+
+| Metric | Registry | Full branch |
+| --- | ---: | ---: |
+| Interval p95 / p99 / max (ms) | 26.98 / 30.76 / 195.93 | 27.03 / 30.93 / 40.60 |
+| Paths | 136.53 M | 113.85 M |
+| Final pages / probes | 1,124 / 1,011,501 | 831 / 813,141 |
+| Near age p50 / p95 (ms) | 332 / 912 | 401 / 1,777 |
+| Corner excess variation p95 | 0.09988 | 0.08980 |
+| Minimum fresh paths at corners | 128 | 160 |
+
+All 144 sites are present throughout. The full branch finishes at 98.63%
+coverage/bootstrap with 14,253 first-sample probes pending, versus 100% / zero
+in this registry run. Both have continuing background work (1/7 dirty pages
+respectively). No broader noise/convergence speedup is established by this pair.
+
+Full-branch response run `response-1791652077041707000-73921` has background
+loading, all three scheduled edits, 14 valid captures and 65.49 M paths. Using
+the scene-history audit's independent pre-add/lit red reference, both floor
+receivers' last >10% excursions after removal occur at 2.101 s, with final
+residuals 0.0361/0.0388. This is within previous response measurements, not an
+emitter-response speedup claim. The cavity and emitter removals reach the scene;
+the report's generic edit counters do not track this fixture, so use its
+`response.json` events/receiver histories, not the zero generic edit counts.
+
+All eight workload logs are clean, assets/target dimensions valid and captures
+nonblank (three each except response's fourteen). Recovered streaming, final
+candidate cave, baseline cave and recovered room images were inspected. Logs
+are `target/{streaming,cave,response}-bvw-*.log`. Only relevant workload builds
+and these checks were run; no broad unit/native/toggle rerun is claimed for this
+dependency experiment. The documentation checkpoint needs only diff review.
 
 ## Attribution and display publication
 
