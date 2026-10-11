@@ -19,6 +19,10 @@ use super::world::{
     VoxelMaterialTransportTable,
 };
 
+#[cfg(test)]
+#[path = "edit_guided.rs"]
+pub(crate) mod edit_guided;
+
 const RAY_EPSILON: f32 = 0.001;
 const MAX_TRACE_STEPS: usize = 2_048;
 pub(crate) const MAX_PATH_DISTANCE: f32 = 768.0;

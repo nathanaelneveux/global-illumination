@@ -119,6 +119,13 @@ fn record_case(
     is_null: bool,
     repeated: bool,
 ) -> Value {
+    let guided = crate::voxel_gi::tracer::edit_guided::record(
+        &before,
+        &after,
+        &f.sources,
+        &f.materials,
+        &f.probes,
+    );
     let reference_before = references(gpu, f, before.clone());
     let reference_after = if Arc::ptr_eq(&before, &after) {
         reference_before.clone()
@@ -156,7 +163,7 @@ fn record_case(
         .iter()
         .map(|p| json!({"voxel":p.voxel.to_array(),"face":p.face_mask.trailing_zeros()}))
         .collect();
-    json!({"name":name,"null_change":is_null,"repeated":repeated,"sites":sites,
+    json!({"name":name,"null_change":is_null,"repeated":repeated,"sites":sites,"guided":guided,
         "references_before":reference_before,"references_after":reference_after,"runs":runs})
 }
 
@@ -243,9 +250,22 @@ fn record_history_qualification_tape() {
     cases.push(record_case(
         &mut gpu,
         &f,
-        before,
+        before.clone(),
         hidden,
         "hidden-emitter-null",
+        true,
+        true,
+    ));
+    // A real nearby edit that changes the light proposal but is hidden behind
+    // the sealed wall. Unlike a synthetic marker, this invokes today's cap16.
+    let mut nearby_hidden = page(&before);
+    nearby_hidden[linear_index(UVec3::new(2, 10, 10), PAGE_SIZE)] = 4;
+    cases.push(record_case(
+        &mut gpu,
+        &f,
+        before.clone(),
+        changed(&before, nearby_hidden),
+        "near-hidden-emitter",
         true,
         true,
     ));
@@ -271,7 +291,16 @@ fn record_history_qualification_tape() {
         .collect();
     for (name, a, b) in [
         ("skylight-open", closed.clone(), open.clone()),
-        ("skylight-close", open, closed),
+        ("skylight-close", open.clone(), closed.clone()),
+    ] {
+        cases.push(record_case(&mut gpu, &f, a, b, name, false, false));
+    }
+    // The same rare opening without a sun signal: targeting edited geometry
+    // must stand on its own, including receivers that see it only by a bounce.
+    f.sources.directional.clear();
+    for (name, a, b) in [
+        ("diffuse-skylight-open", closed.clone(), open.clone()),
+        ("diffuse-skylight-close", open, closed),
     ] {
         cases.push(record_case(&mut gpu, &f, a, b, name, false, false));
     }
@@ -282,7 +311,7 @@ fn record_history_qualification_tape() {
             case["sites"].as_array().unwrap().len()
         );
     }
-    let report = json!({"schema":2,"batch_paths":BATCH,"steps":STEPS,"warm_paths":WARM,
+    let report = json!({"schema":3,"batch_paths":BATCH,"steps":STEPS,"warm_paths":WARM,
         "reference_paths_per_replica":4*REFERENCE_BLOCK,"cases":cases,
         "notes":"Frozen native scenes. Each run has four pre-edit replay batches plus 512 post-edit batches. Repeated null events every eight batches. Individual paths reproduce the first batch after each event, not extra samples. No streaming scheduler or FPS claim. Pair every promotion with real streamed validation."});
     std::fs::write(output, serde_json::to_vec(&report).unwrap()).unwrap();
