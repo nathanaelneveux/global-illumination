@@ -9,6 +9,11 @@ The subsequent [finite suspect-window study](history-suspect-halving.md) tests
 the user's distinct compare/merge/**then**-halve rule on actual individual paths,
 not the DDGI branch's variance-gated, pre-merge batch adaptation.
 
+The later [edit-directed paired study](history-edit-guided.md) uses changed
+voxels and actual sunlight-cache changes as diagnostic targets. It tests the
+16/256 history choice against real geometry invalidations, including a nearby
+occluded edit, and separates successful change detection from rare-path noise.
+
 ## Research selection (2026-10-10)
 
 - [Production DDGI, section 4.3](https://jcgt.org/published/0010/02/01/paper-lowres.pdf):

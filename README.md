@@ -29,6 +29,9 @@ depends on greedy-mesh vertices or screen resolution.
   publication and upload wins, attribution, and remaining cave noise/frame tails.
 - [Current performance experiments](docs/experiments.md): measured winners,
   isolated alternatives, and the limits of each result.
+- [Edit-directed history experiment](docs/history-edit-guided.md): paired edit
+  and sunlight-change diagnostics, measured benefits, and why they are not yet
+  a gameplay policy replacement.
 - [Many-emitter research decisions](docs/research-2026-10-09.md): light-tree win,
   cave workload, residency contract, and rejected/deferred correction strategies.
 - [Historical experiments](docs/experiments-2026-10.md): previous measurements,
