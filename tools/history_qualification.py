@@ -40,6 +40,11 @@ def excursion_bounds(initial, before, after):
     return min(values), max(values)
 
 
+def relative_luminance_error(value, reference, brighter_endpoint):
+    """Brightness accuracy without the RGB metric's display-oriented 0.02 floor."""
+    return abs(luminance(value) - luminance(reference)) / max(brighter_endpoint, 1e-12)
+
+
 def brightness_excursion(value, bounds):
     """Signed excursion outside the transition interval, not ordinary lag.
 
@@ -162,6 +167,7 @@ def evaluate(case, run, policy, batch_paths, warm_paths, steps):
     before, after = [mean_reference(case[key]) for key in ("references_before", "references_after")]
     scales = [[max(a, b) for a, b in zip(x, y)] for x, y in zip(before, after)]
     bounds = [excursion_bounds(h.mean, a, b) for h, a, b in zip(histories, before, after)]
+    brightness_scales = [max(luminance(a), luminance(b)) for a, b in zip(before, after)]
     bright_peaks, dark_peaks = [0.0] * len(histories), [0.0] * len(histories)
     variation = [0.0] * len(histories)
     curves, replay_paths = [], 0
@@ -186,11 +192,12 @@ def evaluate(case, run, policy, batch_paths, warm_paths, steps):
             weights = policy.weights(histories, fresh, batch_paths)
             for h, f, w in zip(histories, fresh, weights):
                 h.integrate(f, batch_paths, w)
-        rgb, bands = [], []
+        rgb, bands, brightness = [], [], []
         for i, (h, old, reference, scale) in enumerate(zip(histories, previous, target, scales)):
             r, b = error(h.mean, reference, scale)
             rgb.append(r)
             bands.append(b)
+            brightness.append(relative_luminance_error(h.mean, reference, brightness_scales[i]))
             bright, dark = brightness_excursion(h.mean, bounds[i])
             bright_peaks[i] = max(bright_peaks[i], bright)
             dark_peaks[i] = max(dark_peaks[i], dark)
@@ -202,6 +209,7 @@ def evaluate(case, run, policy, batch_paths, warm_paths, steps):
         curves.append({"fresh_paths":(step + 1) * batch_paths,
                        "total_paths_per_site":(step + 1) * batch_paths + replay_paths / len(histories),
                        "rgb_p95":percentile(rgb), "rgb_max":max(rgb),
+                       "relative_luminance_p95":percentile(brightness),
                        "all_band_p95":percentile(bands), "all_band_max":max(bands)})
     result = {"policy":policy.name, "seed":run["seed"], "case":case["name"],
               "final":curves[-1], "history_reductions":sum(h.reductions for h in histories),
@@ -213,6 +221,7 @@ def evaluate(case, run, policy, batch_paths, warm_paths, steps):
               "dark_excursion_p95":percentile(dark_peaks),
               "dark_excursion_max":max(dark_peaks),
               "sustained_rgb_p95_10":sustained(curves,"rgb_p95",0.1,steps),
+              "sustained_luminance_p95_10":sustained(curves,"relative_luminance_p95",0.1,steps),
               "sustained_all_band_p95_10":sustained(curves,"all_band_p95",0.1,steps),
               "sustained_all_band_max_20":sustained(curves,"all_band_max",0.2,steps),
               "checkpoints":[c for c in curves if c["fresh_paths"] in (64,128,256,512,1024,2048,4096,8192)],
@@ -242,6 +251,11 @@ def analyze(tape):
 
 
 class Tests(unittest.TestCase):
+    def test_dim_lighting_accuracy_does_not_disappear_below_display_floor(self):
+        value, target = [0]*5, [1e-5]*5
+        self.assertLess(error(value, target, target)[0], 0.001)
+        self.assertAlmostEqual(relative_luminance_error(value, target, 1e-5), 1)
+
     def test_overshoot_is_not_lag_or_preexisting_warm_error(self):
         bounds = excursion_bounds([1]*5, [1]*5, [0]*5)
         self.assertEqual(brightness_excursion([0.5]*5, bounds), (0, 0))
