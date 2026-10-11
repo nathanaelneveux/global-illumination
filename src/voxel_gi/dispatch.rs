@@ -198,19 +198,32 @@ pub(super) fn start_trace_task(
     }));
 }
 
+/// Only receiver membership inside the local sampling window invalidates its
+/// index. Face/material changes still refresh transport, but do not change this
+/// voxel list. Distant streaming must not restart a player's refinement sweep.
+pub(super) fn invalidate_focus_page(runtime: &mut VoxelGiRuntime, page: IVec3) {
+    if runtime
+        .focus_page
+        .is_some_and(|focus| (page.as_i64vec3() - focus.as_i64vec3()).abs().max_element() <= 2)
+    {
+        runtime.focus_dirty = true;
+    }
+}
+
 pub(super) fn update_focus(runtime: &mut VoxelGiRuntime, field: &VoxelEnergyField, focus: IVec3) {
-    if runtime.focus_page == Some(focus) && runtime.focus_topology == runtime.gpu_topology_version {
+    let moved = runtime.focus_page != Some(focus);
+    if !moved && !runtime.focus_dirty {
         return;
     }
     runtime.focus_page = Some(focus);
-    runtime.focus_topology = runtime.gpu_topology_version;
+    runtime.focus_dirty = false;
     runtime.nearby.clear();
     runtime.regional.clear();
-    let mut pages: Vec<_> = field
-        .pages
-        .keys()
-        .copied()
-        .filter(|page| (*page - focus).abs().max_element() <= 2)
+    // Constant-size page lookup, independent of total loaded-world size.
+    let mut pages: Vec<_> = (-2..=2)
+        .flat_map(|z| (-2..=2).flat_map(move |y| (-2..=2).map(move |x| IVec3::new(x, y, z))))
+        .map(|offset| focus + offset)
+        .filter(|page| field.pages.contains_key(page))
         .collect();
     pages.sort_unstable_by_key(|page| ((*page - focus).length_squared(), page.z, page.y, page.x));
     for page in pages {
@@ -220,7 +233,9 @@ pub(super) fn update_focus(runtime: &mut VoxelGiRuntime, field: &VoxelEnergyFiel
             runtime.regional.extend_from_slice(&field.pages[&page]);
         }
     }
-    runtime.nearby_cursor = 0;
+    if moved {
+        runtime.nearby_cursor = 0;
+    }
 }
 
 /// At least one quarter of dispatch slots belongs to a fair loaded-world

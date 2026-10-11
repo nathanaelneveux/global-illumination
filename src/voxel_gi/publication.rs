@@ -219,6 +219,7 @@ pub(super) fn publish_scene_page(
     let topology_changed =
         old_count != field.probes.len() || !old_affected.is_empty() || !added.is_empty();
     if topology_changed {
+        super::dispatch::invalidate_focus_page(runtime, page);
         runtime.gpu_removed.extend(old_affected.keys().copied());
         runtime.gpu_added.extend(added.iter().copied());
         field.update_indices(&added, &old_affected);

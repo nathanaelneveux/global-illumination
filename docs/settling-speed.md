@@ -61,3 +61,16 @@ Ignored evidence: `target/settling-{layout,roulette}-study.log`,
 captures/JSON in `target/gi-validation/`. Reproduce isolated studies with
 `cargo test --locked --offline settling_lane_layout_study -- --ignored --nocapture`
 and `settling_roulette_study` respectively. Both passed; neither changes runtime.
+
+## Local refinement-index invalidation
+
+The nearby/regional index previously followed the renderer's global topology
+generation. Any distant streaming change recopied the local receiver lists and
+reset their fallback cursor. It now follows receiver-membership changes within
+the two-page focus window only. Rebuilds look up at most 125 page coordinates,
+instead of scanning every loaded page, and preserve the cursor unless the
+player changes focus page. Face/material changes still invalidate lighting as
+before; all-world fairness, history, rays and GPU display lifetime are unchanged.
+All 23 runtime policy/publication tests passed, including new distant/local
+addition/removal/movement coverage. This eliminates work by construction; an
+end-to-end speed claim requires the streamed comparison below.

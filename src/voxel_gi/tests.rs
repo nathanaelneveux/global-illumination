@@ -660,6 +660,39 @@ fn refinement_regions_keep_close_window_and_global_sweep() {
 }
 
 #[test]
+fn distant_streaming_preserves_focus_indices_and_sweep_progress() {
+    let mut field = VoxelEnergyField::default();
+    let mut runtime = VoxelGiRuntime::default();
+    let focus = IVec3::new(-2, 1, 3);
+    field.pages.insert(focus, vec![focus * 32]);
+    dispatch::update_focus(&mut runtime, &field, focus);
+    runtime.nearby_cursor = 127;
+    for page in [focus + IVec3::X * 3, focus - IVec3::Z * 50] {
+        field.pages.insert(page, vec![page * 32]);
+        runtime.gpu_topology_version += 1;
+        dispatch::invalidate_focus_page(&mut runtime, page);
+        assert!(!runtime.focus_dirty);
+        dispatch::update_focus(&mut runtime, &field, focus);
+        assert_eq!(runtime.nearby, [focus * 32]);
+        assert_eq!(runtime.nearby_cursor, 127);
+    }
+    let ring = focus + IVec3::X * 2;
+    field.pages.insert(ring, vec![ring * 32]);
+    dispatch::invalidate_focus_page(&mut runtime, ring);
+    assert!(runtime.focus_dirty);
+    dispatch::update_focus(&mut runtime, &field, focus);
+    assert_eq!(runtime.regional, [ring * 32]);
+    assert_eq!(runtime.nearby_cursor, 127);
+    field.pages.remove(&focus);
+    dispatch::invalidate_focus_page(&mut runtime, focus);
+    dispatch::update_focus(&mut runtime, &field, focus);
+    assert!(runtime.nearby.is_empty());
+    dispatch::update_focus(&mut runtime, &field, ring);
+    assert_eq!(runtime.nearby_cursor, 0);
+    assert!(runtime.nearby.contains(&(ring * 32)));
+}
+
+#[test]
 fn in_flight_lighting_cannot_restore_indices_moved_by_streaming() {
     let mut field = VoxelEnergyField::default();
     let voxels = [IVec3::ZERO, IVec3::X, IVec3::Y, IVec3::Z];
