@@ -30,6 +30,30 @@ def error(estimate, target, scale):
     return rgb, bands
 
 
+def luminance(value):
+    return sum(a * b for a, b in zip(value, (0.2126, 0.7152, 0.0722)))
+
+
+def excursion_bounds(initial, before, after):
+    """Include the initial cache error: pre-existing error is not new overshoot."""
+    values = [luminance(v) for v in (initial, before, after)]
+    return min(values), max(values)
+
+
+def brightness_excursion(value, bounds):
+    """Signed excursion outside the transition interval, not ordinary lag.
+
+    Relative to the brighter endpoint, without the accuracy metric's brightness
+    floor. Very dark references can produce large relative percentages; report
+    reference uncertainty separately. This measures linear face-cache values,
+    not tone-mapped pixels or corner/display smoothing.
+    """
+    low, high = bounds
+    brightness = luminance(value)
+    scale = max(high, 1e-12)
+    return max(0.0, brightness - high) / scale, max(0.0, low - brightness) / scale
+
+
 class History:
     def __init__(self, moment, weight):
         self.mean = moment["mean"][:]
@@ -137,6 +161,8 @@ def evaluate(case, run, policy, batch_paths, warm_paths, steps):
     histories = [History(v, warm_paths) for v in run["warm"]]
     before, after = [mean_reference(case[key]) for key in ("references_before", "references_after")]
     scales = [[max(a, b) for a, b in zip(x, y)] for x, y in zip(before, after)]
+    bounds = [excursion_bounds(h.mean, a, b) for h, a, b in zip(histories, before, after)]
+    bright_peaks, dark_peaks = [0.0] * len(histories), [0.0] * len(histories)
     variation = [0.0] * len(histories)
     curves, replay_paths = [], 0
     now_after = False
@@ -165,6 +191,9 @@ def evaluate(case, run, policy, batch_paths, warm_paths, steps):
             r, b = error(h.mean, reference, scale)
             rgb.append(r)
             bands.append(b)
+            bright, dark = brightness_excursion(h.mean, bounds[i])
+            bright_peaks[i] = max(bright_peaks[i], bright)
+            dark_peaks[i] = max(dark_peaks[i], dark)
             if step >= steps // 2:
                 # Same fixed compression for every policy; variation is not
                 # reference accuracy and not rendered/corner variation.
@@ -179,6 +208,10 @@ def evaluate(case, run, policy, batch_paths, warm_paths, steps):
               "weight_p50":percentile([h.weight for h in histories], 0.5),
               "late_face_variation_p95":percentile(variation),
               "replay_paths_per_site":replay_paths / len(histories),
+              "bright_excursion_p95":percentile(bright_peaks),
+              "bright_excursion_max":max(bright_peaks),
+              "dark_excursion_p95":percentile(dark_peaks),
+              "dark_excursion_max":max(dark_peaks),
               "sustained_rgb_p95_10":sustained(curves,"rgb_p95",0.1,steps),
               "sustained_all_band_p95_10":sustained(curves,"all_band_p95",0.1,steps),
               "sustained_all_band_max_20":sustained(curves,"all_band_max",0.2,steps),
@@ -209,6 +242,15 @@ def analyze(tape):
 
 
 class Tests(unittest.TestCase):
+    def test_overshoot_is_not_lag_or_preexisting_warm_error(self):
+        bounds = excursion_bounds([1]*5, [1]*5, [0]*5)
+        self.assertEqual(brightness_excursion([0.5]*5, bounds), (0, 0))
+        self.assertAlmostEqual(brightness_excursion([1.5]*5, bounds)[0], 0.5)
+        bounds = excursion_bounds([1]*5, [1]*5, [0.5]*5)
+        self.assertAlmostEqual(brightness_excursion([0.25]*5, bounds)[1], 0.25)
+        bounds = excursion_bounds([2.4]*5, [1]*5, [0]*5)
+        self.assertEqual(brightness_excursion([1.2]*5, bounds), (0, 0))
+
     def test_extinction_and_reweighting(self):
         h = History({"mean":[1]*5,"second":[1]*5},4096)
         zero = {"mean":[0]*5,"second":[0]*5}
