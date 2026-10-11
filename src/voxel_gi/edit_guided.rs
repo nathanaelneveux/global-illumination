@@ -30,10 +30,10 @@ impl Queries {
         origin: Vec3,
         direction: Vec3,
         reach: f32,
+        policy: UnloadedPolicy,
     ) -> TraceResult {
         self.segments += 1;
-        let result =
-            scene.trace_ray_with_policy(origin, direction, reach, UnloadedPolicy::BoundedTransport);
+        let result = scene.trace_ray_with_policy(origin, direction, reach, policy);
         if result == TraceResult::Unknown {
             self.unknown += 1;
         }
@@ -54,7 +54,13 @@ impl Queries {
             let direction = light.direction.normalize_or_zero();
             let cosine = hit.normal.dot(direction).max(0.0);
             if cosine > 0.0
-                && self.trace(scene, origin, direction, MAX_PATH_DISTANCE) == TraceResult::Escaped
+                && self.trace(
+                    scene,
+                    origin,
+                    direction,
+                    MAX_PATH_DISTANCE,
+                    UnloadedPolicy::Conservative,
+                ) == TraceResult::Escaped
             {
                 result += light.radiance * cosine;
             }
@@ -68,8 +74,13 @@ impl Queries {
             let direction = delta / d2.sqrt();
             let cosine = hit.normal.dot(direction).max(0.0);
             if cosine > 0.0
-                && self.trace(scene, origin, direction, d2.sqrt() - 4.0 * RAY_EPSILON)
-                    == TraceResult::Escaped
+                && self.trace(
+                    scene,
+                    origin,
+                    direction,
+                    d2.sqrt() - 4.0 * RAY_EPSILON,
+                    UnloadedPolicy::Conservative,
+                ) == TraceResult::Escaped
             {
                 result += light.intensity * (cosine / d2.max(1.0));
             }
@@ -88,7 +99,13 @@ impl Queries {
         origin: Vec3,
         direction: Vec3,
     ) -> EnergySpectrum {
-        match self.trace(scene, origin, direction, TransportSettings::default().reach) {
+        match self.trace(
+            scene,
+            origin,
+            direction,
+            TransportSettings::default().reach,
+            UnloadedPolicy::BoundedTransport,
+        ) {
             TraceResult::Hit(hit) => {
                 let material = materials.get(hit.material);
                 material.emission + material.diffuse * self.direct(scene, sources, hit)
@@ -449,4 +466,40 @@ fn missing_interior_space_is_not_evidence_of_unchanged_darkness() {
     );
     assert_eq!(result["pairs"][0]["known"], false);
     assert_eq!(result["unknown"], 2);
+}
+
+#[test]
+fn geometry_beyond_a_point_light_does_not_make_its_connection_unknown() {
+    use crate::voxel_gi::{
+        naadf::{linear_index, volume_len},
+        world::PAGE_SIZE,
+    };
+    let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+    for z in 0..32 {
+        for x in 0..32 {
+            page[linear_index(UVec3::new(x, 24, z), PAGE_SIZE)] = 2;
+        }
+    }
+    let scene =
+        TransportScene::with_page_delta(&TransportScene::default(), vec![(IVec3::ZERO, page)], &[]);
+    let sources = TransportSources {
+        points: vec![PointTransportLight {
+            position: Vec3::new(16.5, 12.5, 16.5),
+            intensity: EnergySpectrum::ONE * 4.0,
+            range: 10.0,
+            custom_visible: Vec3::ZERO,
+        }],
+        ..default()
+    };
+    let hit = RayHit {
+        voxel: IVec3::new(16, 8, 16),
+        position: Vec3::new(16.5, 8.5, 16.5),
+        normal: Vec3::Y,
+        material: 0,
+        distance: 0.0,
+    };
+    let mut query = Queries::default();
+    assert_eq!(bands(query.direct(&scene, &sources, hit)), [0.25; 5]);
+    assert_eq!(query.segments, 1);
+    assert_eq!(query.unknown, 0);
 }
