@@ -231,14 +231,11 @@ fn select_targets(probe: &SurfaceProbe, targets: &[Vec3], budget: usize) -> Vec<
             .then_with(|| x.y.total_cmp(&y.y))
             .then_with(|| x.z.total_cmp(&y.z))
     });
-    let mut selected: Vec<Vec3> = Vec::new();
+    let mut selected = Vec::new();
     for (_, target) in ranked {
-        // Avoid spending a multi-target budget on near-identical shared corners.
-        let direction = (target - origin).normalize();
-        if selected
-            .iter()
-            .any(|p| (*p - origin).normalize().dot(direction) > 0.99999)
-        {
+        // Distinct sub-face points can straddle a hard visibility boundary even
+        // with almost identical directions. Only exact duplicates are redundant.
+        if selected.contains(&target) {
             continue;
         }
         selected.push(target);
@@ -327,6 +324,14 @@ fn directed_targets_respect_the_receiving_hemisphere() {
     let p = SurfaceProbe::new(IVec3::ZERO, 4);
     let targets = [Vec3::new(0.5, 5.0, 0.5), Vec3::new(0.5, -5.0, 0.5)];
     assert_eq!(select_targets(&p, &targets, 1), vec![targets[0]]);
+}
+
+#[test]
+fn nearby_targets_across_a_shadow_boundary_are_not_collapsed() {
+    let p = SurfaceProbe::new(IVec3::ZERO, 4);
+    let a = Vec3::new(0.5, 16.0, 0.5);
+    let b = a + Vec3::X * 0.01;
+    assert_eq!(select_targets(&p, &[a, a, b], 4), vec![a, b]);
 }
 
 #[test]
