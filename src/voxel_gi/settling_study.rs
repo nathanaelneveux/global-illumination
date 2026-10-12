@@ -64,27 +64,26 @@ fn values(work: &TraceWork) -> Vec<EnergySpectrum> {
     work.faces.iter().map(|f| f.radiance).collect()
 }
 
-fn lane_shader(lanes: u32) -> String {
-    assert!([1, 2, 4, 8, 16].contains(&lanes));
-    let (prefix, parallel) = SHADER.split_once("// Cooperative layout:").unwrap();
-    let parallel = parallel
-        .replace("/ 4u", &format!("/ {lanes}u"))
-        .replace("% 4u", &format!("% {lanes}u"))
-        .replace("+= 4u", &format!("+= {lanes}u"))
-        .replace("< 4u", &format!("< {lanes}u"));
-    format!("{prefix}// Cooperative layout:{parallel}")
-}
-
 #[test]
 #[ignore = "native execution layout study; same paths and five-band moments"]
 fn settling_lane_layout_study() {
+    lane_layout_study(&[4, 1, 2, 8, 16]);
+}
+
+#[test]
+#[ignore = "native paired four/eight-lane confirmation"]
+fn settling_lane_pair() {
+    lane_layout_study(&[4, 8]);
+}
+
+fn lane_layout_study(lanes: &[u32]) {
     let context = super::super::tests::native_tracer().context;
-    let lanes = [4, 1, 2, 8, 16];
+    let mut automatic = GpuTracer::new(context.clone()).unwrap();
     let mut tracers: Vec<_> = lanes
         .iter()
         .map(|&n| {
-            let mut gpu = GpuTracer::with_shader(context.clone(), true, &lane_shader(n)).unwrap();
-            gpu.faces_per_workgroup = 64 / n;
+            let mut gpu = GpuTracer::new(context.clone()).unwrap();
+            gpu.fixed_path_lanes = Some(n);
             gpu
         })
         .collect();
@@ -95,7 +94,7 @@ fn settling_lane_layout_study() {
         for paths in [1, 7, 16, 64] {
             let mut expected = work(&f.probes[..17], 65536);
             trace(&mut tracers[0], &f, &emitters, &mut expected, paths);
-            for gpu in tracers.iter_mut().skip(1) {
+            for gpu in tracers.iter_mut().skip(1).chain([&mut automatic]) {
                 let mut actual = work(&f.probes[..17], 65536);
                 trace(gpu, &f, &emitters, &mut actual, paths);
                 for (a, b) in expected.faces.iter().zip(&actual.faces) {
@@ -115,6 +114,7 @@ fn settling_lane_layout_study() {
                     }
                 }
             }
+            assert_eq!(automatic.pipeline_key.2, if paths < 16 { 4 } else { 8 });
         }
         f.probes = f.probes.iter().cycle().take(2048).cloned().collect();
         for paths in [4, 16] {

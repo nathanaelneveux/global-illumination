@@ -214,11 +214,15 @@ pub(crate) struct GpuTracer {
     pipeline: ComputePipeline,
     module: wgpu::ShaderModule,
     entry: &'static str,
-    pipeline_key: (u32, bool),
-    /// Three depths × finite/default horizon. Reach itself stays a uniform;
-    /// changing 16 to 32 never compiles another variant. Owned by the worker.
-    quality_pipelines: bevy::platform::collections::HashMap<(u32, bool), ComputePipeline>,
+    pipeline_key: (u32, bool, u32),
+    /// Three depths × finite/default horizon × two cooperative lane layouts.
+    /// Reach itself stays a uniform; changing 16 to 32 never compiles another
+    /// variant. Pipelines and compilation stay on the transport worker.
+    quality_pipelines: bevy::platform::collections::HashMap<(u32, bool, u32), ComputePipeline>,
     faces_per_workgroup: u32,
+    adaptive_lanes: bool,
+    #[cfg(test)]
+    fixed_path_lanes: Option<u32>,
     sky_pipeline: ComputePipeline,
     pub sky_cache: super::sky_cache::SkyCache,
     #[cfg(test)]
@@ -320,12 +324,18 @@ impl GpuTracer {
                     })
             });
         Ok(Self {
-            quality_pipelines: [((3, false), pipeline.clone())].into_iter().collect(),
-            pipeline_key: (3, false),
+            quality_pipelines: [((3, false, 64 / faces_per_workgroup), pipeline.clone())]
+                .into_iter()
+                .collect(),
+            pipeline_key: (3, false, 64 / faces_per_workgroup),
             module,
             entry,
             pipeline,
             faces_per_workgroup,
+            // Legacy test/reference shaders keep their original fixed layout.
+            adaptive_lanes: cooperative && shader.contains("override PATH_LANES"),
+            #[cfg(test)]
+            fixed_path_lanes: None,
             sky_pipeline,
             sky_cache: default(),
             #[cfg(test)]
@@ -429,7 +439,7 @@ impl GpuTracer {
     ) -> Result<(), String> {
         let work_started = Instant::now();
         if !sky_only {
-            self.select_quality_pipeline(work.transport.normalized())?;
+            self.select_quality_pipeline(work.transport.normalized(), samples)?;
         }
         let sky_pending = self.sky_cache.prepare(&scene, sources, &work.probes);
         #[cfg(test)]
@@ -835,10 +845,21 @@ impl GpuTracer {
     fn select_quality_pipeline(
         &mut self,
         transport: super::TransportSettings,
+        samples: u32,
     ) -> Result<(), String> {
+        // Larger batches benefit from more independent path lanes. Keep small
+        // batches compact instead of allocating lanes with no samples to trace.
+        let lanes = if self.adaptive_lanes {
+            if samples >= 16 { 8 } else { 4 }
+        } else {
+            self.pipeline_key.2
+        };
+        #[cfg(test)]
+        let lanes = self.fixed_path_lanes.unwrap_or(lanes);
         let key = (
             transport.bounces,
             transport.reach < super::tracer::MAX_PATH_DISTANCE,
+            lanes,
         );
         if key == self.pipeline_key {
             return Ok(());
@@ -850,16 +871,20 @@ impl GpuTracer {
             let error_scope = device
                 .wgpu_device()
                 .push_error_scope(wgpu::ErrorFilter::Validation);
+            let mut constants = vec![
+                ("DIFFUSE_HITS", key.0 as f64),
+                ("LIMITED_REACH", f64::from(key.1)),
+            ];
+            if self.adaptive_lanes {
+                constants.push(("PATH_LANES", f64::from(lanes)));
+            }
             let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("Voxel transport quality variant"),
                 layout: None,
                 module: &self.module,
                 entry_point: Some(self.entry),
                 compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[
-                        ("DIFFUSE_HITS", key.0 as f64),
-                        ("LIMITED_REACH", f64::from(key.1)),
-                    ],
+                    constants: &constants,
                     ..default()
                 },
                 cache: None,
@@ -872,6 +897,7 @@ impl GpuTracer {
         };
         self.pipeline = pipeline;
         self.pipeline_key = key;
+        self.faces_per_workgroup = 64 / lanes;
         // Auto-layout bind groups belong to their pipeline, even when every
         // buffer ID and binding type is unchanged. Sky has its own pipeline.
         self.bindings = None;

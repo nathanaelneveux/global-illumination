@@ -182,8 +182,8 @@ fn tuning_reach_depth_and_batch_size_match_cpu_without_sky_leaks() {
     materials.set(2, materials.get(1));
     assert_eq!(
         gpu.quality_pipelines.len(),
-        6,
-        "reach values reuse the finite-horizon variants"
+        12,
+        "reach values reuse three depths × two horizon modes × two lane layouts"
     );
     let emitters = Arc::new(EmissionDistribution::default());
     for reach in [1.0, 16.0, 768.0] {

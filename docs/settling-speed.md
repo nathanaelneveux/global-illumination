@@ -116,3 +116,45 @@ deviation is only .051% p95, but its cave improvement is small and worst early
 64-path error increases .193→.208. No filter cost or temporal startup is included
 in this pilot; there is no 2× result and neither candidate is promoted.
 Evidence: `target/settling-spatial-study.log`. Production remains unchanged.
+
+## Fair refinement reservation
+
+Experimental commit `0aba755` prevents a full streaming-coverage queue from
+excluding adaptive refinement. A quarter of opportunities stays with the global
+sweep, a quarter with initial coverage, and half with refinement; empty queues
+lend their slots. Explicit edits still preempt all non-global slots. All 24
+focused runtime/publication tests and the dev build passed.
+
+Run `cave-1791846614020288000-29475`, same M4/profile/viewport/settings as baseline,
+clean code at launch. Layout source edits made after the timed workload finished
+were not compiled into this process. Five valid captures, native post-timing
+reference. At 15 s, display p95 error improves .681→.283 and 28/36 receivers are
+within 10% versus 13/36. Sustained raw settling median improves 27.53→12.80 s
+(2.15×), but display median improves only 20.86→15.02 s and its p95 worsens
+119.26→137.93 s. **Not yet a 2× visual-settling result.** At 60 s display p95
+error is 9.38%; at 180 s 8.48%. Corner variation p95 at 40–60 s is .05670,
+minimum 128 new paths; at 160–180 s .03772, minimum 64. No hidden pause in work.
+
+306.34 M paths, final coverage 99.22%. After 15 s excluding captures: offscreen
+interval p50/p95/p99/max 20.99/26.85/29.89/127.96 ms; GI body sum
+1.98/6.16/8.45/24.11 ms. Large maxima remain; this is not a frame-pacing win.
+Evidence: `target/settling-reservation-{tests,build,cave}.log` and
+`target/settling-reservation-{reference,temporal}-analysis.json`.
+
+## Batch-aware cooperative lanes
+
+The execution-only candidate uses eight lanes for batches of at least 16 paths,
+four for smaller batches. Quality/layout pipelines are bounded (3 depths × 2
+reach modes × 2 layouts) and compiled on the worker. Samples, spectra, history,
+ray lengths, bounce depth, scheduling budget and output buffer formats are
+unchanged. Legacy test shaders retain their original layout. Automatic layout
+switches invalidate auto-layout bindings correctly.
+
+Confirmation at the same native fixture/work settings as the initial sweep:
+cave four/eight-lane GPU p50 4.655/4.275 ms, worker 6.859/6.797 ms. Gains varied
+between runs (roughly 4–17% kernel time), not a 17% guaranteed whole-engine gain.
+Native automatic/fixed layout parity covers 17-face tails at 1/7/16/64 paths,
+all five means/moments/direct values and continuing sequences. Standard and
+emissive native CPU/GPU references report RMS 0.000000; resource reuse/growth
+tests, formatting and strict all-target Clippy pass. End-to-end qualification
+follows separately. Logs: `target/settling-layout-{confirm,pair,parity,lifetime,clippy}.log`.

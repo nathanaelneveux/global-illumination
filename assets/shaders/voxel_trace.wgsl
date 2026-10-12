@@ -1,8 +1,9 @@
 // World-space face transport. No camera, framebuffer or screen-space history.
 // Layouts and sampling dimensions are mirrored by gpu.rs and sampling.rs.
-// Six lazily cached pipeline variants, not per-face runtime loop controls.
+// Bounded, lazily cached quality/layout variants, not per-face loop controls.
 override DIFFUSE_HITS: u32 = 3u;
 override LIMITED_REACH: bool = false;
+override PATH_LANES: u32 = 4u;
 struct Params {
     counts: vec4<u32>, // tasks, samples per face, directory mask, light count
     minimum: vec4<i32>, // xyz: scene bounds, w: shared corner task count
@@ -605,7 +606,7 @@ fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     results[offset + 5u] = bitcast<vec4<u32>>(result.direct_extra);
 }
 
-// Cooperative layout: four lanes share a receiver, each tracing
+// Cooperative layout: four or eight lanes share a receiver, each tracing
 // an independent subsequence. Identical paths and moments, not sample reuse.
 // The serial entry point remains the paired throughput/correctness reference.
 struct PathMoments {
@@ -618,8 +619,8 @@ var<workgroup> path_moments: array<PathMoments, 64>;
 @compute @workgroup_size(64)
 fn trace_faces_parallel(@builtin(global_invocation_id) id: vec3<u32>,
     @builtin(local_invocation_index) local: u32) {
-    let face_index = id.x / 4u;
-    let lane = local % 4u;
+    let face_index = id.x / PATH_LANES;
+    let lane = local % PATH_LANES;
     var moment: PathMoments;
     if face_index < params.counts.x {
         let task = tasks[face_index];
@@ -627,7 +628,7 @@ fn trace_faces_parallel(@builtin(global_invocation_id) id: vec3<u32>,
         let center = vec3<f32>(task.voxel) + vec3(0.5);
         let origin = center + normal * 0.501;
         let stream = hash_voxel(task.voxel) ^ pcg(task.face + 1u);
-        for (var i = lane; i < params.counts.y; i += 4u) {
+        for (var i = lane; i < params.counts.y; i += PATH_LANES) {
             let sequence = task.sequence + i;
             let direction = hemisphere(normal, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
             let sample = trace_path(origin, direction, normal, stream, sequence);
@@ -644,7 +645,7 @@ fn trace_faces_parallel(@builtin(global_invocation_id) id: vec3<u32>,
     workgroupBarrier();
     if lane != 0u || face_index >= params.counts.x { return; }
     var total: PathMoments;
-    for (var i = 0u; i < 4u; i += 1u) {
+    for (var i = 0u; i < PATH_LANES; i += 1u) {
         total.mean += path_moments[local + i].mean;
         total.second += path_moments[local + i].second;
         total.radiation += path_moments[local + i].radiation;
