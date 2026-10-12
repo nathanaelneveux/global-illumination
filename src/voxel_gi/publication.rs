@@ -327,6 +327,47 @@ pub(super) fn publish_scene_page(
     }
 }
 
+pub(super) fn invalidate_near_voxel(
+    runtime: &mut VoxelGiRuntime,
+    field: &mut VoxelEnergyField,
+    center: IVec3,
+    radius: i32,
+    invalidated: &mut HashSet<IVec3>,
+) {
+    let page_radius = (radius + PAGE_EDGE as i32 - 1) / PAGE_EDGE as i32;
+    let center_page = page_of(center);
+    let radius_squared = i64::from(radius) * i64::from(radius);
+    let mut candidates = Vec::new();
+    for z in -page_radius..=page_radius {
+        for y in -page_radius..=page_radius {
+            for x in -page_radius..=page_radius {
+                if let Some(voxels) = field.pages.get(&(center_page + IVec3::new(x, y, z))) {
+                    candidates.extend(voxels.iter().copied());
+                }
+            }
+        }
+    }
+    for voxel in candidates {
+        let delta = voxel.as_i64vec3() - center.as_i64vec3();
+        if delta.length_squared() > radius_squared {
+            continue;
+        }
+        if let Some(probe) = field.probes.get_mut(&voxel) {
+            let (_, samples, covered, settled) = probe_metrics(probe, field.transport_revision);
+            probe.request_relight();
+            let (_, next_samples, next_covered, next_settled) =
+                probe_metrics(probe, field.transport_revision);
+            runtime.completed_samples =
+                runtime.completed_samples.saturating_sub(samples) + next_samples;
+            runtime.covered_faces = runtime.covered_faces.saturating_sub(covered) + next_covered;
+            runtime.settled_faces = runtime.settled_faces.saturating_sub(settled) + next_settled;
+            // Nothing visible changed yet: do not upload every receiver in the
+            // edit radius merely because its measurements now need refreshing.
+            invalidated.insert(voxel);
+        }
+    }
+}
+
 #[cfg(test)]
 mod donor_tests {
     use super::*;
@@ -434,46 +475,5 @@ mod donor_tests {
             counts, times[0][16], times[1][16]
         );
         assert!(counts[1] * 4 < counts[0]);
-    }
-}
-
-pub(super) fn invalidate_near_voxel(
-    runtime: &mut VoxelGiRuntime,
-    field: &mut VoxelEnergyField,
-    center: IVec3,
-    radius: i32,
-    invalidated: &mut HashSet<IVec3>,
-) {
-    let page_radius = (radius + PAGE_EDGE as i32 - 1) / PAGE_EDGE as i32;
-    let center_page = page_of(center);
-    let radius_squared = i64::from(radius) * i64::from(radius);
-    let mut candidates = Vec::new();
-    for z in -page_radius..=page_radius {
-        for y in -page_radius..=page_radius {
-            for x in -page_radius..=page_radius {
-                if let Some(voxels) = field.pages.get(&(center_page + IVec3::new(x, y, z))) {
-                    candidates.extend(voxels.iter().copied());
-                }
-            }
-        }
-    }
-    for voxel in candidates {
-        let delta = voxel.as_i64vec3() - center.as_i64vec3();
-        if delta.length_squared() > radius_squared {
-            continue;
-        }
-        if let Some(probe) = field.probes.get_mut(&voxel) {
-            let (_, samples, covered, settled) = probe_metrics(probe, field.transport_revision);
-            probe.request_relight();
-            let (_, next_samples, next_covered, next_settled) =
-                probe_metrics(probe, field.transport_revision);
-            runtime.completed_samples =
-                runtime.completed_samples.saturating_sub(samples) + next_samples;
-            runtime.covered_faces = runtime.covered_faces.saturating_sub(covered) + next_covered;
-            runtime.settled_faces = runtime.settled_faces.saturating_sub(settled) + next_settled;
-            // Nothing visible changed yet: do not upload every receiver in the
-            // edit radius merely because its measurements now need refreshing.
-            invalidated.insert(voxel);
-        }
     }
 }
