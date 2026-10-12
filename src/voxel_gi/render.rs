@@ -439,7 +439,100 @@ impl PreparedGpuCache {
     /// Reconcile a bounded set of keys against current authoritative state.
     /// Event order does not matter: remove/re-add, mask and material changes
     /// all converge to the same latest probe. No renderer can see this cache.
+    /// On exhaustion the private generation is invalid and must be discarded.
     pub fn synchronize(&mut self, keys: &[IVec3], probes: &impl super::field::ProbeLookup) -> bool {
+        if !self.cache.ready {
+            return false;
+        }
+        let mut mapped = self.mapped.as_ref().map(|buffers| {
+            [
+                buffers[0].slice(..).get_mapped_range_mut(),
+                buffers[1].slice(..).get_mapped_range_mut(),
+            ]
+        });
+        let mut state = self.patches.state.lock().unwrap();
+        // Retire first, so additions in a full private cache can reuse the
+        // released slots. Unlike the live cache, private state needs no delta
+        // preflight/rollback or pending-upload sets and range sorting.
+        for voxel in keys {
+            if probes.lookup(voxel).is_some() {
+                continue;
+            }
+            if let Some(slot) = self.cache.slots.remove(voxel) {
+                self.cache.free_probe_slots.push(slot);
+            }
+            if let Some(slot) = self.cache.hash_slots.remove(voxel) {
+                self.cache.hash_entries[slot] = GpuHashEntry::TOMBSTONE;
+                write_hash_entry(&mut state.hash_mirror, slot, GpuHashEntry::TOMBSTONE);
+                copy_private_range(
+                    mapped.as_mut().map(|m| &mut m[1]),
+                    &mut self.hash_data,
+                    &state.hash_mirror,
+                    slot * 16..(slot + 1) * 16,
+                );
+            }
+        }
+        for voxel in keys {
+            let Some(probe) = probes.lookup(voxel) else {
+                continue;
+            };
+            let slot = if let Some(&slot) = self.cache.slots.get(voxel) {
+                slot
+            } else {
+                let slot = self
+                    .cache
+                    .free_probe_slots
+                    .pop()
+                    .unwrap_or(self.cache.high_water);
+                if slot >= self.cache.probe_capacity {
+                    self.cache.ready = false;
+                    return false;
+                }
+                let start = hash_voxel(*voxel) as usize;
+                let mask = self.cache.hash_entries.len() - 1;
+                let Some(hash_slot) = (0..MAX_SHADER_HASH_PROBES)
+                    .map(|i| (start + i) & mask)
+                    .find(|&i| self.cache.hash_entries[i].probe_index >= u32::MAX - 1)
+                else {
+                    self.cache.ready = false;
+                    return false;
+                };
+                self.cache.high_water = self.cache.high_water.max(slot + 1);
+                let entry = GpuHashEntry {
+                    voxel: *voxel,
+                    probe_index: slot as u32,
+                };
+                self.cache.hash_entries[hash_slot] = entry;
+                self.cache.slots.insert(*voxel, slot);
+                self.cache.hash_slots.insert(*voxel, hash_slot);
+                write_hash_entry(&mut state.hash_mirror, hash_slot, entry);
+                copy_private_range(
+                    mapped.as_mut().map(|m| &mut m[1]),
+                    &mut self.hash_data,
+                    &state.hash_mirror,
+                    hash_slot * 16..(hash_slot + 1) * 16,
+                );
+                slot
+            };
+            write_probe(&mut state.probe_mirror, slot, gpu_probe(probe));
+            copy_private_range(
+                mapped.as_mut().map(|m| &mut m[0]),
+                &mut self.probe_data,
+                &state.probe_mirror,
+                slot * GPU_PROBE_BYTES..(slot + 1) * GPU_PROBE_BYTES,
+            );
+        }
+        true
+    }
+
+    /// Previous live-transaction route, retained only as an independent parity
+    /// and cost reference for private synchronization.
+    #[cfg(test)]
+    fn synchronize_transactional(
+        &mut self,
+        keys: &[IVec3],
+        probes: &impl super::field::ProbeLookup,
+    ) -> bool {
         let mut removed = Vec::new();
         let mut added = Vec::new();
         let mut changed = HashSet::new();
@@ -495,6 +588,19 @@ impl PreparedGpuCache {
             })
             .expect("private cache bytes and mirrors have the same capacity");
         true
+    }
+}
+
+fn copy_private_range(
+    mapped: Option<&mut wgpu::BufferViewMut>,
+    fallback: &mut [u8],
+    mirror: &[u8],
+    range: std::ops::Range<usize>,
+) {
+    if let Some(mapped) = mapped {
+        mapped.slice(range.clone()).copy_from_slice(&mirror[range]);
+    } else {
+        fallback[range.clone()].copy_from_slice(&mirror[range]);
     }
 }
 
@@ -728,6 +834,10 @@ pub(crate) fn install_prepared_gpu_cache(
     materials: &mut Assets<VoxelTransportMaterial>,
     material_handle: &Handle<VoxelTransportMaterial>,
 ) {
+    assert!(
+        build.cache.ready,
+        "cannot install an exhausted private generation"
+    );
     if let Some(mapped) = build.mapped.take() {
         for buffer in &mapped {
             buffer.unmap();
@@ -2093,6 +2203,127 @@ mod tests {
         });
         let next = state.lock().unwrap();
         assert!(next.pending_hash.is_empty() && next.pending_probes.is_empty());
+    }
+
+    fn assert_private_parity(a: &PreparedGpuCache, b: &PreparedGpuCache) {
+        assert_eq!(a.cache.slots, b.cache.slots);
+        assert_eq!(a.cache.hash_slots, b.cache.hash_slots);
+        assert_eq!(a.cache.high_water, b.cache.high_water);
+        assert_eq!(a.cache.free_probe_slots, b.cache.free_probe_slots);
+        let a_state = a.patches.state.lock().unwrap();
+        let b_state = b.patches.state.lock().unwrap();
+        assert_eq!(a_state.probe_mirror, b_state.probe_mirror);
+        assert_eq!(a_state.hash_mirror, b_state.hash_mirror);
+        for (cache, state) in [(a, &*a_state), (b, &*b_state)] {
+            assert!(state.pending_probes.is_empty() && state.pending_hash.is_empty());
+            if let Some(mapped) = &cache.mapped {
+                assert_eq!(
+                    &*mapped[0].slice(..).get_mapped_range(),
+                    &state.probe_mirror
+                );
+                assert_eq!(&*mapped[1].slice(..).get_mapped_range(), &state.hash_mirror);
+            } else {
+                assert_eq!(cache.probe_data, state.probe_mirror);
+                assert_eq!(cache.hash_data, state.hash_mirror);
+            }
+        }
+    }
+
+    #[test]
+    fn private_in_place_sync_matches_transactional_edits_and_rejects_exhaustion() {
+        let order: Vec<_> = (0..64).map(|x| IVec3::new(x, -1, 2)).collect();
+        let mut probes: HashMap<_, _> = order
+            .iter()
+            .map(|&v| (v, SurfaceProbe::new(v, 4)))
+            .collect();
+        let build = || PreparedGpuCache::new(build_gpu_cache(snapshot_gpu_probes(&probes, &order)));
+        let (mut a, mut b) = (build(), build());
+        for round in 0..16 {
+            let removed = IVec3::new(round, -1, 2);
+            probes.remove(&removed);
+            let added = IVec3::new(100 + round, -1, 2);
+            probes.insert(added, SurfaceProbe::new(added, 63));
+            let changed = order[40];
+            let probe = probes.get_mut(&changed).unwrap();
+            probe.face_mask = 1 + round as u8;
+            probe.display[2].indirect = Vec3::splat(round as f32);
+            probe.display[2].sky = [round as u32; 4];
+            probe.emission.visible = Vec3::splat(0.3);
+            let keys = [added, removed, changed, added, removed];
+            assert!(a.synchronize_transactional(&keys, &probes));
+            assert!(b.synchronize(&keys, &probes));
+            assert_private_parity(&a, &b);
+        }
+        b.cache.probe_capacity = b.cache.high_water;
+        b.cache.free_probe_slots.clear();
+        let new = IVec3::splat(1000);
+        probes.insert(new, SurfaceProbe::new(new, 4));
+        assert!(!b.synchronize(&[new], &probes));
+        assert!(!b.cache.ready);
+        assert!(
+            !b.synchronize(&[], &probes),
+            "failed private generations cannot become installable again"
+        );
+    }
+
+    #[test]
+    #[ignore = "native paired private catch-up; exact byte and topology parity"]
+    fn private_catchup_in_place_study() {
+        use bevy::tasks::block_on;
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+        let (device, _) =
+            block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let device = RenderDevice::from(device);
+        let order: Vec<_> = (0..8192).map(|x| IVec3::new(x, -1, 2)).collect();
+        let mut probes: HashMap<_, _> = order
+            .iter()
+            .map(|&v| (v, SurfaceProbe::new(v, 4)))
+            .collect();
+        let build = || {
+            PreparedGpuCache::new(
+                build_gpu_cache(snapshot_gpu_probes(&probes, &order)).prepare_buffers(&device),
+            )
+        };
+        let mut builds = [build(), build()];
+        let mut times: [Vec<std::time::Duration>; 2] = default();
+        for round in 0..48 {
+            let mut keys: Vec<_> = (0..512)
+                .map(|i| order[(i * 13 + round * 127) % order.len()])
+                .collect();
+            for v in &keys {
+                let p = probes.entry(*v).or_insert_with(|| SurfaceProbe::new(*v, 4));
+                p.display[2].indirect = Vec3::splat(round as f32);
+            }
+            for x in 0..32 {
+                let added = IVec3::new(9000 + round as i32 * 32 + x, 0, 0);
+                probes.insert(added, SurfaceProbe::new(added, 63));
+                keys.push(added);
+                let removed = order[(round * 32 + x as usize) % order.len()];
+                probes.remove(&removed);
+                keys.push(removed);
+            }
+            for mode in [round % 2, 1 - round % 2] {
+                let start = std::time::Instant::now();
+                assert!(if mode == 0 {
+                    builds[mode].synchronize_transactional(&keys, &probes)
+                } else {
+                    builds[mode].synchronize(&keys, &probes)
+                });
+                if round >= 8 {
+                    times[mode].push(start.elapsed());
+                }
+            }
+            assert_private_parity(&builds[0], &builds[1]);
+        }
+        for values in &mut times {
+            values.sort_unstable();
+        }
+        eprintln!(
+            "PRIVATE_CATCHUP 512 values + 32 adds/removes; transactional/in-place p50 {:?}/{:?}",
+            times[0][20], times[1][20]
+        );
     }
 
     #[test]

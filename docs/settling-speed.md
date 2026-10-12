@@ -245,3 +245,20 @@ per-batch median 30.750→1.875 µs. This is a **view-management microbenchmark*
 not a 16× engine claim. The native generation/material test passes with mapped
 byte parity, growth/shrink/equal-size replacement, actual post-unmap submission
 and CPU fallback. Logs `target/settling-private-{views,native}.log`.
+
+Private catch-up now updates its own indices, mirrors and initial allocation
+in place. Unlike live publication, it needs no rollback-safe preflight maps,
+dirty upload sets or sorted/coalesced driver transactions. Removals precede
+additions, so released slots remain reusable. Capacity/hash exhaustion poisons
+the private generation; installation rejects it and the caller retains the
+live generation while rebuilding. Live transactions are unchanged.
+
+M4/dev, `c3be7bf` plus in-place change: paired native 512 changed values plus
+32 additions/removals, 48 alternating rounds/eight warmup, 8,192 initial probes.
+Previous transactional route (already using one mapped view per batch) versus
+in-place: 79.500→42.958 µs median (1.85×). Every round compares slot/hash maps,
+free slots, high water, all mirror and mapped bytes. Regular edit/duplicate/
+exhaustion parity, all 17 regular render tests, native generation/material
+lifetime, strict Clippy and dev build pass. Logs
+`target/settling-private-inplace-{tests,study,render-tests,native,clippy,build}.log`.
+End-to-end timing remains separate; the 1.5-ms catch-up budget is unchanged.
