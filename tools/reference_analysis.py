@@ -26,7 +26,7 @@ def percentiles(values):
                 p95=ordered[math.ceil(len(ordered) * 0.95) - 1], max=ordered[-1])
 
 
-def analyze(trace, reference, times, tolerance=0.1, dwell=10.0):
+def analyze(trace, reference, times, tolerance=0.1, dwell=10.0, corners=False):
     if len(trace["sites"]) != len(trace["site_faces"]):
         raise ValueError("incomplete receiver identities")
     sites = [(tuple(v), f) for v, f in zip(trace["sites"], trace["site_faces"])]
@@ -36,45 +36,88 @@ def analyze(trace, reference, times, tolerance=0.1, dwell=10.0):
     a, b = reference["references"]
     if len(a) != len(sites) or len(b) != len(sites):
         raise ValueError("incomplete reference")
-    refs = [[(x + y) * 0.5 for x, y in zip(aa[:3], bb[:3])]
-            for aa, bb in zip(a, b)]
     events = [[] for _ in sites]
     for event in trace["events"]:
         events[event["site"]].append(event)
+    fields = ("measured", "display")
+    if corners:
+        if "corner_references" not in reference:
+            raise ValueError("corner analysis requires independent corner references")
+        a, b = [[value for patch in replica for value in patch]
+                for replica in reference["corner_references"]]
+        if len(a) != 4 * len(sites) or len(b) != 4 * len(sites):
+            raise ValueError("incomplete corner reference")
+        expanded = []
+        for es in events:
+            for corner in range(4):
+                expanded.append([dict(at_s=e["at_s"], state=(
+                    dict(display=e["state"]["corners"][corner], samples=e["state"]["samples"])
+                    if e["state"] and e["state"].get("corners") is not None else None)) for e in es])
+        events = expanded
+        sites = [(v, f, c) for v, f in sites for c in range(4)]
+        fields = ("display",)
+    refs = [[(x + y) * 0.5 for x, y in zip(aa[:3], bb[:3])]
+            for aa, bb in zip(a, b)]
     snapshots = []
     for at in times:
         if at > trace["end_s"]:
             continue
         states = [next((e["state"] for e in reversed(es) if e["at_s"] <= at), None) for es in events]
         row = dict(at_s=at, present=sum(s is not None for s in states), sites=len(sites))
-        for field in ["measured", "display"]:
+        for field in fields:
             errors = [relative_error(s[field], ref) for s, ref in zip(states, refs) if s]
             row[field] = dict(relative_error=percentiles(errors),
                               within_tolerance=sum(e <= tolerance for e in errors))
         row["samples"] = percentiles([s["samples"] for s in states if s])
         snapshots.append(row)
     settling = {}
-    for field in ["measured", "display"]:
+    overshoot = {}
+    for field in fields:
         times_settled = []
+        peaks = []
         for es, ref in zip(events, refs):
             last_bad = 0.0
+            peak = 0.0
+            luma = lambda rgb: sum(x * w for x, w in zip(rgb, (0.2126, 0.7152, 0.0722)))
             for e, until in zip(es, [e["at_s"] for e in es[1:]] + [trace["end_s"]]):
                 state = e["state"]
                 if state is None or relative_error(state[field], ref) > tolerance:
                     last_bad = until
+                if state:
+                    peak = max(peak, (luma(state[field]) - luma(ref)) / max(luma(ref), 1e-12))
             if not es or es[0]["at_s"] > 0.0:
                 last_bad = max(last_bad, es[0]["at_s"] if es else trace["end_s"])
             times_settled.append(last_bad if trace["end_s"] - last_bad >= dwell else None)
+            peaks.append(peak)
         settling[field] = dict(settled=sum(t is not None for t in times_settled),
                                sites=len(sites), seconds=percentiles([t for t in times_settled if t is not None]))
+        overshoot[field] = percentiles(peaks)
     return dict(reference_paths_each=reference["paths_per_replicate"],
                 reference_pair_disagreement=percentiles([relative_error(aa, bb) for aa, bb in zip(a, b)]),
                 end_s=trace["end_s"], relative_tolerance=tolerance, minimum_final_dwell_s=dwell,
                 snapshots=snapshots, sustained_until_end=settling,
+                field="corners" if corners else "face_centers",
+                bright_peak_relative_to_final_reference=overshoot,
                 caveat="Final-scene target, not time-varying ground truth; same-estimator reference, not a physical unbiasedness certificate.")
 
 
 class Tests(unittest.TestCase):
+    def test_corner_identity_missing_intervals_and_overshoot(self):
+        trace = dict(sites=[[0, 0, 0]], site_faces=[2], end_s=30, events=[
+            dict(site=0, at_s=0, state=dict(samples=16, corners=None)),
+            dict(site=0, at_s=2, state=dict(samples=32, corners=[[1.2]*3]*4)),
+            dict(site=0, at_s=5, state=dict(samples=64, corners=[[1]*3]*4))])
+        ref = dict(sites=[dict(voxel=[0, 0, 0], face=2)], references=[[[99]*5]]*2,
+                   corner_references=[[[[1]*5]*4]]*2, paths_per_replicate=100)
+        result = analyze(trace, ref, [0, 2, 29], corners=True)
+        self.assertEqual(result["snapshots"][0]["present"], 0)
+        self.assertEqual(result["snapshots"][2]["display"]["within_tolerance"], 4)
+        self.assertEqual(result["sustained_until_end"]["display"]["seconds"]["max"], 5)
+        self.assertAlmostEqual(result["bright_peak_relative_to_final_reference"]["display"]["p95"], 0.2)
+        del ref["corner_references"]
+        with self.assertRaises(ValueError):
+            analyze(trace, ref, [], corners=True)
+
     def test_floor_and_rgb_norm(self):
         self.assertEqual(relative_error([0, 0, 0], [0, 0, 0]), 0)
         self.assertAlmostEqual(relative_error([0.001, 0, 0], [0, 0, 0]), 0.05)
@@ -101,12 +144,13 @@ if __name__ == "__main__":
     parser.add_argument("run", nargs="?", type=Path, help="directory with temporal.json and reference.json")
     parser.add_argument("--times", default="15,30,45,60,90,120,150,180")
     parser.add_argument("--test", action="store_true")
+    parser.add_argument("--corners", action="store_true", help="use connected-corner presentation and independent corner references")
     args = parser.parse_args()
     if args.test:
         unittest.main(argv=[__file__])
     elif args.run:
         print(json.dumps(analyze(json.loads((args.run / "temporal.json").read_text()),
                                  json.loads((args.run / "reference.json").read_text()),
-                                 list(map(float, args.times.split(",")))), indent=2))
+                                 list(map(float, args.times.split(","))), corners=args.corners), indent=2))
     else:
         parser.error("provide a run directory or --test")

@@ -158,3 +158,24 @@ all five means/moments/direct values and continuing sequences. Standard and
 emissive native CPU/GPU references report RMS 0.000000; resource reuse/growth
 tests, formatting and strict all-target Clippy pass. End-to-end qualification
 follows separately. Logs: `target/settling-layout-{confirm,pair,parity,lifetime,clippy}.log`.
+
+## Corner-accuracy oracle
+
+The offline reference now traces exposed coplanar neighbors as well as the fixed
+center faces and records their connected-corner reconstruction at converged
+equal confidence. This matches the preferred display's spatial definition;
+face-center accuracy alone is not visual-corner accuracy. Unknown/missing
+corners remain missing in the analysis, not a black measurement or a pass.
+
+Schema 2 uses two disjoint **65,536-path** replicas per member face (previous
+center-only reports used 262,144). Reference-replica disagreement is reported
+for corners separately. The extra neighborhoods run only after timing/capture
+completion. `python3 tools/reference_analysis.py RUN --corners` reports error,
+sustained settling and positive luminance peaks relative to that independent
+final-scene target. This is a presentation-space proxy, not tone-mapped pixel
+error; early frames can have different residency from the final scene. No
+last-frame or blurred-candidate target is substituted for truth.
+
+Verification: native-independent reconstruction test (shared corners and
+disconnected diagonals), three Python analysis tests (including missing spans
+and known overshoot), fmt, strict all-target Clippy and dev build passed.

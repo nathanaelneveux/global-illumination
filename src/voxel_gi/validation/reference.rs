@@ -10,7 +10,9 @@ use super::super::{
 use super::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 
-const BLOCKS: u32 = 8;
+// Dense corner neighborhoods reduce reconstruction noise spatially. Two
+// disjoint 65k-path replicas also expose the remaining oracle uncertainty.
+const BLOCKS: u32 = 2;
 const PATHS_PER_BLOCK: u32 = 32_768;
 // Path dimensions wrap at 2^24. Stay below that period and away from the live
 // sequence prefix; 2^24 itself would alias its primary/bounce directions.
@@ -24,6 +26,69 @@ fn channels(energy: EnergySpectrum) -> [f32; 5] {
         energy.infrared,
         energy.ionizing,
     ]
+}
+
+/// Converged, equal-confidence counterpart of the renderer's connected
+/// coplanar reconstruction. Face-center references alone cannot measure the
+/// preferred corner appearance; a blurred target would conceal gradient bias.
+struct ReferencePatch {
+    sites: Vec<(IVec3, usize)>,
+    corners: Vec<[Vec<usize>; 4]>,
+}
+
+impl ReferencePatch {
+    fn new(centers: &[(IVec3, usize)], exposed: impl Fn(IVec3, usize) -> bool) -> Self {
+        let mut sites = centers.to_vec();
+        let mut indices: std::collections::HashMap<_, _> = centers
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(i, p)| (p, i))
+            .collect();
+        let mut corners = Vec::new();
+        for &(voxel, face) in centers {
+            let (u, v) = match face / 2 {
+                0 => (IVec3::Y, IVec3::Z),
+                1 => (IVec3::X, IVec3::Z),
+                _ => (IVec3::X, IVec3::Y),
+            };
+            let mut neighbor = |offset| {
+                let p = voxel + offset;
+                exposed(p, face).then(|| {
+                    *indices.entry((p, face)).or_insert_with(|| {
+                        sites.push((p, face));
+                        sites.len() - 1
+                    })
+                })
+            };
+            let patch = [(-1, -1), (1, -1), (-1, 1), (1, 1)].map(|(x, y)| {
+                let mut members = vec![centers.iter().position(|p| *p == (voxel, face)).unwrap()];
+                let a = neighbor(u * x);
+                let b = neighbor(v * y);
+                members.extend(a);
+                members.extend(b);
+                if a.is_some() || b.is_some() {
+                    members.extend(neighbor(u * x + v * y));
+                }
+                members
+            });
+            corners.push(patch);
+        }
+        Self { sites, corners }
+    }
+
+    fn reconstruct(&self, values: &[[f64; 5]]) -> Vec<[[f64; 5]; 4]> {
+        self.corners
+            .iter()
+            .map(|patch| {
+                patch.each_ref().map(|members| {
+                    std::array::from_fn(|band| {
+                        members.iter().map(|&i| values[i][band]).sum::<f64>() / members.len() as f64
+                    })
+                })
+            })
+            .collect()
+    }
 }
 
 #[derive(Default)]
@@ -59,6 +124,10 @@ impl ReferenceRun {
         self.task = Some(AsyncComputeTaskPool::get().spawn(async move {
             let mut gpu = GpuTracer::new(device)?;
             let emitters = std::sync::Arc::new(EmissionDistribution::build(&scene, &materials));
+            let patch = ReferencePatch::new(&sites, |voxel, face| {
+                scene.material_at(voxel).is_some_and(|m| m != super::super::world::AIR)
+                    && scene.material_at(voxel + FACE_OFFSETS[face]) == Some(super::super::world::AIR)
+            });
             if let Ok(site) = std::env::var("VOXEL_GI_VALIDATE_PATH_DIAGNOSTIC") {
                 let site: usize = site.parse().map_err(|_| "PATH_DIAGNOSTIC must name a receiver index")?;
                 let &(voxel, face) = sites.get(site).ok_or("PATH_DIAGNOSTIC receiver index out of range")?;
@@ -87,7 +156,7 @@ impl ReferenceRun {
                     transport,
                     ..default()
                 };
-                for &(voxel, face) in &sites {
+                for &(voxel, face) in &patch.sites {
                     if scene.material_at(voxel).is_none_or(|m| m == super::super::world::AIR)
                         || scene.material_at(voxel + FACE_OFFSETS[face])
                             != Some(super::super::world::AIR)
@@ -99,7 +168,7 @@ impl ReferenceRun {
                     work.push(&probe, 1 << face, 0, 0, false, u32::MAX, u32::MAX);
                     work.probes.last_mut().unwrap().sky_requested = false;
                 }
-                let mut estimate = vec![[0.0_f64; 5]; sites.len()];
+                let mut estimate = vec![[0.0_f64; 5]; patch.sites.len()];
                 // Each block stays below the production accumulator ceiling.
                 // Average blocks independently; running one long history would
                 // turn into an EMA and not provide this many effective paths.
@@ -123,12 +192,16 @@ impl ReferenceRun {
                 }
                 references.push(estimate);
             }
-            let data = json!({"schema_version":1,"scene_generation":revision,
+            let corners: Vec<_> = references.iter().map(|r| patch.reconstruct(r)).collect();
+            let faces: Vec<_> = references.iter().map(|r| &r[..sites.len()]).collect();
+            let data = json!({"schema_version":2,"scene_generation":revision,
                 "regions":scene.regions.len(),"paths_per_replicate":PATHS_PER_BLOCK * BLOCKS,
                 "sequence_start":REFERENCE_SEQUENCE_START,"replicate_stride":1_048_576,
                 "transport":transport,"sites":sites.iter().map(|(v,f)|json!({"voxel":v.to_array(),"face":f})).collect::<Vec<_>>(),
-                "references":references,
-                "note":"Exact frozen end-of-workload scene; two disjoint high-sample sequence blocks. Computed after timing/captures. Early error is relative to the final scene, not a time-varying ground truth."});
+                "references":faces,"corner_references":corners,
+                "patch_sites":patch.sites.iter().map(|(v,f)|json!({"voxel":v.to_array(),"face":f})).collect::<Vec<_>>(),
+                "corner_members":patch.corners,"patch_references":references,
+                "note":"Exact frozen end-of-workload scene; two disjoint high-sample sequence blocks. Corners use the renderer's connected coplanar reconstruction at converged equal confidence. Computed after timing/captures. Early error is relative to the final scene, not time-varying ground truth or tone-mapped pixel error."});
             std::fs::write(output.join("reference.json"), serde_json::to_vec(&data).unwrap())
                 .map_err(|error| error.to_string())
         }));
@@ -152,5 +225,32 @@ impl ReferenceRun {
                 commands.write_message(AppExit::error());
             }
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reference_patch_matches_shared_corners_and_excludes_disconnected_diagonals() {
+        let centers = [
+            (IVec3::ZERO, 2),
+            (IVec3::X, 2),
+            (IVec3::Z, 2),
+            (IVec3::X + IVec3::Z, 2),
+        ];
+        let patch = ReferencePatch::new(&centers, |p, f| centers.contains(&(p, f)));
+        let values = [[1.0; 5], [3.0; 5], [5.0; 5], [7.0; 5]];
+        let corners = patch.reconstruct(&values);
+        assert_eq!(patch.sites.len(), 4);
+        for (site, corner) in [(0, 3), (1, 2), (2, 1), (3, 0)] {
+            assert_eq!(corners[site][corner], [4.0; 5]);
+        }
+        let diagonal = ReferencePatch::new(&centers[..1], |p, _| {
+            p == IVec3::ZERO || p == IVec3::X + IVec3::Z
+        });
+        assert_eq!(diagonal.sites.len(), 1);
+        assert_eq!(diagonal.reconstruct(&values[..1]), vec![[[1.0; 5]; 4]]);
     }
 }
