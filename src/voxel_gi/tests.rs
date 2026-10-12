@@ -669,7 +669,6 @@ fn distant_streaming_preserves_focus_indices_and_sweep_progress() {
     runtime.nearby_cursor = 127;
     for page in [focus + IVec3::X * 3, focus - IVec3::Z * 50] {
         field.pages.insert(page, vec![page * 32]);
-        runtime.gpu_topology_version += 1;
         dispatch::invalidate_focus_page(&mut runtime, page);
         assert!(!runtime.focus_dirty);
         dispatch::update_focus(&mut runtime, &field, focus);

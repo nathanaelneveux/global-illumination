@@ -74,3 +74,20 @@ before; all-world fairness, history, rays and GPU display lifetime are unchanged
 All 23 runtime policy/publication tests passed, including new distant/local
 addition/removal/movement coverage. This eliminates work by construction; an
 end-to-end speed claim requires the streamed comparison below.
+
+Streamed follow-up `cave-1791681993393562000-87849`, runtime `1088081` (only
+test-only spatial-study edits made during the run), identical launch settings:
+292.81 M paths versus 288.72 M baseline. All five captures valid, clean logs,
+reference p95 disagreement .413%. Display p95 relative error at 30/60/180 s:
+13.11%/12.73%/8.50%, versus baseline 12.51%/9.80%/6.66%. Sustained display
+settling median is essentially unchanged (20.96 versus 20.86 s); p95 is worse
+(166.15 versus 119.26 s). Corner variation p95 at 40–60 s falls .08230→.05785,
+but streaming revisions differ, so this does not establish a general accuracy
+gain. Both runs finish with 35/36 receivers sustaining 10% error.
+
+Offscreen interval p50/p95/p99/max: 21.88/26.72/30.23/36.83 ms; GI body sum
+2.11/6.16/7.86/15.63 ms. Maximum trace-dispatch body falls 14.37→9.42 ms,
+but medians/tails do not support a broad speedup claim. Keep the local
+invalidation for its bounded work and cursor-correctness improvement, **not as
+the 2× settling result**. Remove the now-unused global topology counter; the
+renderer already uses its independent dirty/lifetime bookkeeping.

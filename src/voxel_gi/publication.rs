@@ -226,7 +226,6 @@ pub(super) fn publish_scene_page(
     }
     if topology_changed || face_topology_changed {
         runtime.gpu_topology_dirty = true;
-        runtime.gpu_topology_version = runtime.gpu_topology_version.wrapping_add(1);
     }
 
     let mut urgent = HashSet::new();
