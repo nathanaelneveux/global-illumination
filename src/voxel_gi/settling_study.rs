@@ -76,6 +76,51 @@ fn settling_lane_pair() {
     lane_layout_study(&[4, 8]);
 }
 
+#[test]
+#[ignore = "native equal-path batch amortization study; no runtime change"]
+fn settling_batch_amortization_study() {
+    let context = super::super::tests::native_tracer().context;
+    let modes = [(16, 8), (32, 8), (64, 8), (32, 16), (64, 16)];
+    let mut tracers: Vec<_> = modes
+        .iter()
+        .map(|&(_, lanes)| {
+            let mut gpu = GpuTracer::new(context.clone()).unwrap();
+            gpu.fixed_path_lanes = Some(lanes);
+            gpu
+        })
+        .collect();
+    for mut f in [fixture(0), cave_fixture(), ceiling_fixture()] {
+        let emitters = Arc::new(EmissionDistribution::build(&f.scene, &f.materials));
+        f.probes = f.probes.iter().cycle().take(2048).cloned().collect();
+        let mut times = vec![Vec::new(); modes.len()];
+        let mut workers = times.clone();
+        for round in 0..48 {
+            for mode in (0..modes.len()).map(|i| (i + round) % modes.len()) {
+                let (paths, _) = modes[mode];
+                let mut work = work(
+                    &f.probes[..32768 / paths as usize],
+                    65536 + round as u32 * 64,
+                );
+                let start = Instant::now();
+                trace(&mut tracers[mode], &f, &emitters, &mut work, paths);
+                if round >= 8 {
+                    times[mode].push(tracers[mode].last_gpu_ms.unwrap());
+                    workers[mode].push(start.elapsed().as_secs_f32() * 1000.0);
+                }
+            }
+        }
+        for (i, (paths, lanes)) in modes.iter().enumerate() {
+            eprintln!(
+                "SETTLING_BATCH {}",
+                json!({"fixture": f.name,
+                "paths_per_face": paths, "lanes": lanes, "total_paths": 32768,
+                "gpu_p50_ms": percentile(times[i].clone(),50),
+                "worker_p50_ms": percentile(workers[i].clone(),50)})
+            );
+        }
+    }
+}
+
 fn lane_layout_study(lanes: &[u32]) {
     let context = super::super::tests::native_tracer().context;
     let mut automatic = GpuTracer::new(context.clone()).unwrap();

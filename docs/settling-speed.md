@@ -207,3 +207,13 @@ sky and confidence parity; hash lookups 41,292→2,856; seed-stage median
 233.625→33.000 µs (7.08×). This is **not a whole-frame or settling speedup**.
 Both new regular tests, all history tests and the ignored parity/benchmark
 passed. Evidence: `target/settling-donor-{tests,history,bench}.log`.
+
+## Larger batches — not promoted
+
+Equal 32,768-path native batches, M4/dev, five rotating modes, 48 rounds/eight
+warmup (`12f887a` plus test-only study): cave GPU medians for 16/8, 32/8,
+64/8, 32/16, 64/16 paths/lanes are 4.241/4.503/4.836/4.172/4.495 ms;
+worker medians 6.670/6.606/6.627/6.500/6.578 ms. Ceiling and open sky are
+also approximately tied. Larger batches sacrifice receiver refresh frequency
+without a compelling throughput gain. Keep the 16-path default and limit.
+The native study passed; log `target/settling-batch-study.log`.
