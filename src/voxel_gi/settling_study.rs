@@ -1,6 +1,7 @@
 //! Isolated execution/variance studies against the unchanged production kernel.
 //! Candidate shader transformations are test-only and never runtime toggles.
 use super::*;
+use crate::voxel_gi::world::FACE_OFFSETS;
 
 fn cave_fixture() -> Fixture {
     let cave = crate::voxel_gi::research::cave();
@@ -216,6 +217,176 @@ fn settling_roulette_study() {
                 json!({"fixture":f.name,"mode":mode,"gpu_batch_p50_ms":percentile(times[mode].clone(),50),
                 "bright_peak_p95":percentile(peaks[mode].clone(),95),"bright_peak_max":percentile(peaks[mode].clone(),100),
                 "checkpoints":checkpoints.iter().zip(&estimates[mode]).map(|(n,v)| json!({"paths":n,"error":errors(v,&expected)})).collect::<Vec<_>>()})
+            );
+        }
+    }
+}
+
+/// Fixed-work spatial reconstruction pilot. Compare against the *unfiltered*
+/// high-sample corner field, so blurring the target cannot hide approximation
+/// error. Missing coplanar neighbors are hard edges, not black samples.
+#[test]
+#[ignore = "native spatial reconstruction study; no production filtering"]
+fn settling_spatial_study() {
+    use std::collections::HashMap;
+    let mut gpu = super::super::tests::native_tracer();
+    for mut f in [fixture(2), ceiling_fixture(), cave_fixture()] {
+        let centers: Vec<_> = f.probes.iter().step_by(3).cloned().collect();
+        let mut indices = HashMap::new();
+        f.probes.clear();
+        let axes = |face: usize| match face / 2 {
+            0 => [IVec3::Y, IVec3::Z],
+            1 => [IVec3::X, IVec3::Z],
+            _ => [IVec3::X, IVec3::Y],
+        };
+        for center in &centers {
+            let face = center.face_mask.trailing_zeros() as usize;
+            let [u, v] = axes(face);
+            for y in -2..=2 {
+                for x in -2..=2 {
+                    let voxel = center.voxel + u * x + v * y;
+                    if f.scene.material_at(voxel).is_none_or(|m| m == AIR)
+                        || f.scene.material_at(voxel + FACE_OFFSETS[face]) != Some(AIR)
+                    {
+                        continue;
+                    }
+                    indices.entry((voxel, face)).or_insert_with(|| {
+                        f.probes.push(SurfaceProbe::new(voxel, 1 << face));
+                        f.probes.len() - 1
+                    });
+                }
+            }
+        }
+        let neighbors: Vec<Vec<_>> = f
+            .probes
+            .iter()
+            .map(|p| {
+                let face = p.face_mask.trailing_zeros() as usize;
+                let [u, v] = axes(face);
+                [u, -u, v, -v]
+                    .into_iter()
+                    .filter_map(|d| indices.get(&(p.voxel + d, face)).copied())
+                    .collect()
+            })
+            .collect();
+        let corners: Vec<Vec<_>> = centers
+            .iter()
+            .flat_map(|p| {
+                let face = p.face_mask.trailing_zeros() as usize;
+                let [u, v] = axes(face);
+                let indices = &indices;
+                [-1, 1].into_iter().flat_map(move |y| {
+                    [-1, 1].into_iter().map(move |x| {
+                        let mut sites = vec![indices[&(p.voxel, face)]];
+                        for delta in [u * x, v * y] {
+                            if let Some(&i) = indices.get(&(p.voxel + delta, face)) {
+                                sites.push(i);
+                            }
+                        }
+                        if sites.len() > 1
+                            && let Some(&i) = indices.get(&(p.voxel + u * x + v * y, face))
+                        {
+                            sites.push(i);
+                        }
+                        sites
+                    })
+                })
+            })
+            .collect();
+        let reconstruct = |values: &[Vec3]| -> Vec<Vec3> {
+            corners
+                .iter()
+                .map(|sites| sites.iter().map(|&i| values[i]).sum::<Vec3>() / sites.len() as f32)
+                .collect()
+        };
+        let filter = |live: &TraceWork, mode: usize| -> Vec<Vec3> {
+            live.faces
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    let mean = a.radiance.visible;
+                    if mode == 0 {
+                        return mean;
+                    }
+                    let mut sum = mean * 4.0;
+                    let mut weight = 4.0;
+                    let variance = (a.second_moment.visible - mean * mean).max(Vec3::ZERO)
+                        / a.samples.max(1) as f32;
+                    for &j in &neighbors[i] {
+                        let b = &live.faces[j];
+                        let other = b.radiance.visible;
+                        let other_variance = (b.second_moment.visible - other * other)
+                            .max(Vec3::ZERO)
+                            / b.samples.max(1) as f32;
+                        let w = if mode == 1 {
+                            1.0
+                        } else {
+                            let delta = mean - other;
+                            let v = (variance + other_variance).element_sum();
+                            v / (v + delta.length_squared() + 1e-12)
+                        };
+                        sum += other * w;
+                        weight += w;
+                    }
+                    sum / weight
+                })
+                .collect()
+        };
+        let emitters = Arc::new(EmissionDistribution::build(&f.scene, &f.materials));
+        let mut high = work(&f.probes, 4_194_304);
+        // Keep the offline oracle in bounded submissions as well. A dense
+        // neighborhood at 65k paths must not become one long GPU dispatch.
+        for _ in 0..64 {
+            trace(&mut gpu, &f, &emitters, &mut high, 1024);
+        }
+        let reference = reconstruct(&filter(&high, 0));
+        let error = |actual: &[Vec3]| -> (f32, f32) {
+            let errors: Vec<_> = actual
+                .iter()
+                .zip(&reference)
+                .map(|(a, b)| (*a - *b).length() / b.length().max(1e-12))
+                .collect();
+            (percentile(errors.clone(), 95), percentile(errors, 100))
+        };
+        eprintln!(
+            "SETTLING_SPATIAL_BIAS {}",
+            json!({"fixture":f.name,"faces":f.probes.len(),"corners":corners.len(),"fixed":error(&reconstruct(&filter(&high,1))),"guided":error(&reconstruct(&filter(&high,2)))})
+        );
+        let checkpoints = [64, 128, 256, 512, 1024, 2048];
+        let mut errors: [[Vec<f32>; 6]; 3] = default();
+        let mut peaks: [Vec<f32>; 3] = default();
+        let mut gpu_ms = Vec::new();
+        for seed in [0, 65536, 131072, 196608] {
+            let mut live = work(&f.probes, seed);
+            let mut peak: [Vec<f32>; 3] = std::array::from_fn(|_| vec![0.0; corners.len()]);
+            for batch in 1..=128 {
+                trace(&mut gpu, &f, &emitters, &mut live, 16);
+                gpu_ms.push(gpu.last_gpu_ms.unwrap());
+                for mode in 0..3 {
+                    let actual = reconstruct(&filter(&live, mode));
+                    let luma = |v: Vec3| v.dot(Vec3::new(0.2126, 0.7152, 0.0722));
+                    for (i, (a, b)) in actual.iter().zip(&reference).enumerate() {
+                        peak[mode][i] =
+                            peak[mode][i].max((luma(*a) - luma(*b)).max(0.0) / luma(*b).max(1e-12));
+                    }
+                    if let Some(k) = checkpoints.iter().position(|&n| n == batch * 16) {
+                        errors[mode][k].extend(
+                            actual
+                                .iter()
+                                .zip(&reference)
+                                .map(|(a, b)| (*a - *b).length() / b.length().max(1e-12)),
+                        );
+                    }
+                }
+            }
+            for mode in 0..3 {
+                peaks[mode].extend_from_slice(&peak[mode]);
+            }
+        }
+        for mode in 0..3 {
+            eprintln!(
+                "SETTLING_SPATIAL {}",
+                json!({"fixture":f.name,"mode":mode,"gpu_p50_ms":percentile(gpu_ms.clone(),50),"peak_p95":percentile(peaks[mode].clone(),95),"peak_max":percentile(peaks[mode].clone(),100),"error_p95":errors[mode].iter().map(|e|percentile(e.clone(),95)).collect::<Vec<_>>(),"error_max":errors[mode].iter().map(|e|percentile(e.clone(),100)).collect::<Vec<_>>()})
             );
         }
     }

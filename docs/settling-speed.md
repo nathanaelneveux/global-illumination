@@ -91,3 +91,28 @@ but medians/tails do not support a broad speedup claim. Keep the local
 invalidation for its bounded work and cursor-correctness improvement, **not as
 the 2× settling result**. Remove the now-unused global topology counter; the
 renderer already uses its independent dirty/lifetime bookkeeping.
+
+## Spatial reconstruction pilot — not promoted
+
+Test-only `settling_spatial_study` compares the existing connected four-face
+corner reconstruction with an additional coplanar five-tap filter (center
+weight four, edge neighbors one), both fixed and guided by per-channel sample
+variance. Hard geometric boundaries exclude neighbors. This draws on the
+variance/edge-stopping principle of [SVGF](https://cg.ivd.kit.edu/publications/2017/svgf/svgf_preprint.pdf),
+not its screen-space implementation. Simulation values remain untouched.
+
+M4/Metal/dev profile; four disjoint live sequence prefixes, 16-path batches
+through 2,048 paths. Dense one-voxel neighborhoods around every third receiver
+of the floor, ceiling and cave fixtures. Reference: 65,536 disjoint paths per
+face, **unfiltered** connected corners. Reference submissions are bounded to
+1,024 paths after the initial monolithic cave submission timed out; that failed
+attempt is not accepted evidence. The complete bounded run passed.
+
+At 256 paths, RGB relative corner-error p95 baseline/fixed/guided:
+floor .369/.282/.320, ceiling .279/.216/.242, cave .0525/.1035/.0470.
+The fixed filter's cave high-sample approximation error is 10.54% p95 (13.39%
+worst): lower noise conceals real gradients near sources. Guided high-sample
+deviation is only .051% p95, but its cave improvement is small and worst early
+64-path error increases .193→.208. No filter cost or temporal startup is included
+in this pilot; there is no 2× result and neither candidate is promoted.
+Evidence: `target/settling-spatial-study.log`. Production remains unchanged.
