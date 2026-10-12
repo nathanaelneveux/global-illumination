@@ -635,6 +635,36 @@ fn urgent_work_cannot_starve_loaded_world_sweep() {
 }
 
 #[test]
+fn streaming_coverage_cannot_exclude_refinement_candidates() {
+    let mut field = VoxelEnergyField::default();
+    let far: Vec<_> = (0..1024).map(|x| IVec3::new(x, 0, 1024)).collect();
+    let near: Vec<_> = (0..64).map(|x| IVec3::new(x, 0, 0)).collect();
+    for &voxel in far.iter().chain(&near) {
+        let mut p = SurfaceProbe::new(voxel, 4);
+        // Refinement still needed, but initial coverage already exists.
+        p.samples[2] = 256;
+        field.order.push(voxel);
+        field.probes.insert(voxel, p);
+    }
+    let mut runtime = VoxelGiRuntime {
+        batch_size: 64,
+        nearby: near.clone(),
+        regional: near.clone(),
+        ..default()
+    };
+    enqueue_many(&mut runtime, far.iter().copied());
+    let chosen = select_probes(&mut runtime, &field);
+    assert_eq!(chosen.len(), 64);
+    assert!(chosen.iter().filter(|p| p.voxel.z == 0).count() >= 32);
+    assert!(chosen.iter().filter(|p| p.voxel.z == 1024).count() >= 16);
+    assert!(
+        runtime.refresh_cursor >= 16,
+        "all-world sweep still advances"
+    );
+    assert!(runtime.pending.len() < far.len(), "coverage still advances");
+}
+
+#[test]
 fn refinement_regions_keep_close_window_and_global_sweep() {
     let mut field = VoxelEnergyField::default();
     let focus = IVec3::new(1, -1, -1);

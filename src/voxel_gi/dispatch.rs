@@ -239,7 +239,8 @@ pub(super) fn update_focus(runtime: &mut VoxelGiRuntime, field: &VoxelEnergyFiel
 }
 
 /// At least one quarter of dispatch slots belongs to a fair loaded-world
-/// sweep. Edits, initial coverage and the camera cannot starve distant pages.
+/// sweep. Coverage and refinement also have reserved opportunities, so streamed
+/// bootstrap work cannot indefinitely preempt refinement near the player.
 #[cfg(test)]
 pub(super) fn select_probes(
     runtime: &mut VoxelGiRuntime,
@@ -285,7 +286,7 @@ pub(super) fn select_transport(
     seen.reserve(runtime.batch_size);
     let mut adaptive = std::mem::take(&mut runtime.ranked_candidates);
     adaptive.clear();
-    if runtime.urgent_pending.len() + runtime.pending.len() < runtime.batch_size {
+    if runtime.urgent_pending.len() < runtime.batch_size {
         adaptive.refresh(
             field,
             &runtime.nearby,
@@ -308,19 +309,34 @@ pub(super) fn select_transport(
                 runtime.urgent_queued.remove(&next);
                 voxel = Some(next);
                 force = true;
-            } else if let Some(next) = runtime.pending.pop_front() {
-                runtime.queued.remove(&next);
-                voxel = Some(next);
             } else {
-                while let Some(candidate) = adaptive.pop() {
-                    if !seen.contains(&candidate) {
-                        voxel = Some(candidate);
-                        break;
+                // One quarter coverage, one quarter global, and half adaptive
+                // refinement. Empty queues lend their slots; explicit edits
+                // still take priority in all three non-global slots. Keeping a
+                // refinement reservation is essential while terrain streams.
+                if index % 4 == 1
+                    && let Some(next) = runtime.pending.pop_front()
+                {
+                    runtime.queued.remove(&next);
+                    voxel = Some(next);
+                }
+                if voxel.is_none() {
+                    while let Some(candidate) = adaptive.pop() {
+                        if !seen.contains(&candidate) {
+                            voxel = Some(candidate);
+                            break;
+                        }
                     }
                 }
                 if voxel.is_none() && !runtime.nearby.is_empty() {
                     voxel = Some(runtime.nearby[runtime.nearby_cursor % runtime.nearby.len()]);
                     runtime.nearby_cursor = (runtime.nearby_cursor + 1) % runtime.nearby.len();
+                }
+                if voxel.is_none()
+                    && let Some(next) = runtime.pending.pop_front()
+                {
+                    runtime.queued.remove(&next);
+                    voxel = Some(next);
                 }
             }
         }
