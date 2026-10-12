@@ -179,3 +179,31 @@ last-frame or blurred-candidate target is substituted for truth.
 Verification: native-independent reconstruction test (shared corners and
 disconnected diagonals), three Python analysis tests (including missing spans
 and known overshoot), fmt, strict all-target Clippy and dev build passed.
+
+Combined runtime `c18380b`, run `cave-1791847590335826000-30282`: independent
+corner replica disagreement p95 .472%; 140/144 corners sustain 10% error to
+the end, median 11.68 s, p95 17.26 s. At 15 s 119/144 are within tolerance;
+at 30 s all 144 are. Positive luminance peak p95 .1027, maximum .3045.
+The diagnostic-only baseline backport `5c2d333` (runtime `febcaf4`) ran as
+`cave-1791847874844864000-30513` in the temporal-baseline worktree. Its
+143/144 sustained corners give median 15.89 s, p95 21.99 s and peak p95 .1021,
+maximum .3045. However, its 15 s capture is effectively black and every
+measured corner is absent then. **Reject that startup visual comparison**;
+the later data alone does not establish a 2× improvement. Do not turn missing
+lighting into a favorable baseline. Candidate 15 s capture is valid.
+
+## Exact empty-donor culling
+
+Page publication now skips display-prior searches when no receiver page can
+exist within the donor algorithm's maximum three-cell coordinate reach.
+Existing local receivers and all reachable border pages use the original
+connectivity/measurement checks. This does not change history, seeds, rays or
+work budgets. The search-bound test enumerates all six donor searches; page
+tests cover boundaries, negative coordinates and existing local data.
+
+Paired CPU test, M4/dev, `c18380b` plus this change, 1,024 newly loaded floor
+faces beside a measured page, 40 alternating rounds (eight warmup): exact RGB,
+sky and confidence parity; hash lookups 41,292→2,856; seed-stage median
+233.625→33.000 µs (7.08×). This is **not a whole-frame or settling speedup**.
+Both new regular tests, all history tests and the ignored parity/benchmark
+passed. Evidence: `target/settling-donor-{tests,history,bench}.log`.

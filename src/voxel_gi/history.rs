@@ -7,6 +7,10 @@ use super::spectrum::EnergySpectrum;
 use super::statistics::{relative_error, relative_error_with_floor};
 use super::world::{AIR, FACE_OFFSETS, SurfaceProbe, TransportScene};
 
+/// Maximum coordinate reach of the display-prior donor search. Publication
+/// can reject empty donor-page neighborhoods before doing per-face lookups.
+pub(super) const DONOR_REACH: i32 = 3;
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct FaceDisplay {
     pub indirect: Vec3,
@@ -244,6 +248,27 @@ mod tests {
             confidence: 0.9,
         };
         probe
+    }
+
+    #[test]
+    fn donor_search_stays_inside_its_declared_page_culling_reach() {
+        let voxel = IVec3::splat(16);
+        let scene = scene_with(&[voxel]);
+        let visited = std::cell::RefCell::new(Vec::new());
+        for face in 0..6 {
+            seed_face(&scene, voxel, face, 0, Instant::now(), |p| {
+                visited.borrow_mut().push(p);
+                None
+            });
+        }
+        assert_eq!(
+            visited
+                .borrow()
+                .iter()
+                .map(|p| (*p - voxel).abs().max_element())
+                .max(),
+            Some(DONOR_REACH)
+        );
     }
 
     #[test]

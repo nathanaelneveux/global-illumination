@@ -17,6 +17,50 @@ use std::time::{Duration, Instant};
 
 const EDIT_RELIGHT_RADIUS: i32 = super::geometry::RELIGHT_RADIUS;
 
+/// Page-level conservative donor availability. New streamed page interiors
+/// cannot inherit from another page three or more cells away; skip their empty
+/// hash searches. Existing local receivers and reachable border pages retain
+/// the exact same donor/connectivity tests in `seed_face`.
+struct DonorPages([bool; 27]);
+
+impl DonorPages {
+    fn new(page: IVec3, local: bool, pages: &HashMap<IVec3, Vec<IVec3>>) -> Self {
+        Self(std::array::from_fn(|i| {
+            let offset = IVec3::new(i as i32 % 3 - 1, i as i32 / 3 % 3 - 1, i as i32 / 9 - 1);
+            if offset == IVec3::ZERO {
+                local
+            } else {
+                pages.contains_key(&(page + offset))
+            }
+        }))
+    }
+
+    fn can_seed(&self, voxel: IVec3) -> bool {
+        if self.0[13] {
+            return true;
+        }
+        let local = voxel.rem_euclid(IVec3::splat(PAGE_EDGE as i32));
+        let lo = |v| if v < history::DONOR_REACH { -1 } else { 0 };
+        let hi = |v| {
+            if v >= PAGE_EDGE as i32 - history::DONOR_REACH {
+                1
+            } else {
+                0
+            }
+        };
+        for z in lo(local.z)..=hi(local.z) {
+            for y in lo(local.y)..=hi(local.y) {
+                for x in lo(local.x)..=hi(local.x) {
+                    if self.0[((z + 1) * 9 + (y + 1) * 3 + x + 1) as usize] {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+}
+
 pub(super) fn apply_scene_task(
     mut runtime: ResMut<VoxelGiRuntime>,
     mut field: ResMut<VoxelEnergyField>,
@@ -132,7 +176,11 @@ pub(super) fn publish_scene_page(
     let now = Instant::now();
     let mut seeds = HashMap::new();
     if old_count > 0 {
+        let donors = DonorPages::new(page, !old_affected.is_empty(), &field.pages);
         for descriptor in &descriptors {
+            if !donors.can_seed(descriptor.voxel) {
+                continue;
+            }
             let old_mask = old_affected
                 .get(&descriptor.voxel)
                 .map_or(0, |probe| probe.face_mask);
@@ -276,6 +324,116 @@ pub(super) fn publish_scene_page(
             publish_ms = format_args!("{:.1}", publish_started.elapsed().as_secs_f64() * 1000.0),
             "incremental world-space voxel transport scene rebuilt"
         );
+    }
+}
+
+#[cfg(test)]
+mod donor_tests {
+    use super::*;
+
+    #[test]
+    fn donor_page_bounds_include_borders_and_exclude_empty_interiors() {
+        let page = IVec3::new(-2, 0, 3);
+        let mut pages = HashMap::new();
+        for offset in [IVec3::X, IVec3::NEG_Y, IVec3::ONE] {
+            pages.insert(page + offset, vec![(page + offset) * PAGE_EDGE as i32]);
+        }
+        let donors = DonorPages::new(page, false, &pages);
+        let origin = page * PAGE_EDGE as i32;
+        for local in [IVec3::splat(3), IVec3::splat(16), IVec3::splat(28)] {
+            assert!(!donors.can_seed(origin + local));
+        }
+        for local in [
+            IVec3::new(29, 16, 16),
+            IVec3::new(16, 2, 16),
+            IVec3::splat(31),
+        ] {
+            assert!(donors.can_seed(origin + local));
+        }
+        assert!(!donors.can_seed(origin + IVec3::new(0, 16, 16)));
+        let local = DonorPages::new(page, true, &pages);
+        assert!(local.can_seed(origin + IVec3::splat(16)));
+        assert!(!DonorPages::new(page, false, &HashMap::new()).can_seed(origin));
+    }
+
+    #[test]
+    #[ignore = "paired CPU donor-culling benchmark; no GPU/frame timing"]
+    fn streamed_page_seed_culling_matches_unculled_priors() {
+        use super::super::naadf::{linear_index, volume_len};
+        use super::super::world::{AIR, PAGE_SIZE, TransportScene};
+        let mut floor = vec![AIR; volume_len(PAGE_SIZE)];
+        for z in 0..32 {
+            for x in 0..32 {
+                floor[linear_index(UVec3::new(x, 0, z), PAGE_SIZE)] = 2;
+            }
+        }
+        let scene = TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::NEG_X, floor.clone()), (IVec3::ZERO, floor)],
+            &[],
+        );
+        let now = Instant::now();
+        let mut measured = HashMap::new();
+        for z in 0..32 {
+            for x in -32..0 {
+                let p = IVec3::new(x, 0, z);
+                let mut probe = SurfaceProbe::new(p, 4);
+                probe.samples[2] = 64;
+                probe.face_updated_at[2] = Some(now);
+                probe.display[2].indirect = Vec3::new(1.0, z as f32 / 32.0, 0.25);
+                probe.display[2].confidence = 0.9;
+                measured.insert(p, probe);
+            }
+        }
+        let pages = [(IVec3::NEG_X, measured.keys().copied().collect())]
+            .into_iter()
+            .collect();
+        let donors = DonorPages::new(IVec3::ZERO, false, &pages);
+        let receivers: Vec<_> = (0..32)
+            .flat_map(|z| (0..32).map(move |x| IVec3::new(x, 0, z)))
+            .collect();
+        let lookups = std::cell::Cell::new(0);
+        let seed = |p, cull: bool| {
+            if cull && !donors.can_seed(p) {
+                return history::FaceDisplay::default();
+            }
+            history::seed_face(&scene, p, 2, 0, now, |v| {
+                lookups.set(lookups.get() + 1);
+                measured.get(&v)
+            })
+        };
+        for &p in &receivers {
+            let a = seed(p, false);
+            let b = seed(p, true);
+            assert_eq!(
+                (a.indirect, a.sky, a.confidence),
+                (b.indirect, b.sky, b.confidence)
+            );
+        }
+        let mut times: [Vec<Duration>; 2] = default();
+        let mut counts = [0; 2];
+        for round in 0..40 {
+            for mode in [round % 2, 1 - round % 2] {
+                lookups.set(0);
+                let start = Instant::now();
+                for &p in &receivers {
+                    std::hint::black_box(seed(p, mode == 1));
+                }
+                let elapsed = start.elapsed();
+                if round >= 8 {
+                    times[mode].push(elapsed);
+                }
+                counts[mode] = lookups.get();
+            }
+        }
+        for values in &mut times {
+            values.sort_unstable();
+        }
+        eprintln!(
+            "SEED_CULL 1024 new faces, exact priors; lookups {:?}; unculled/culled p50 {:?}/{:?}",
+            counts, times[0][16], times[1][16]
+        );
+        assert!(counts[1] * 4 < counts[0]);
     }
 }
 
