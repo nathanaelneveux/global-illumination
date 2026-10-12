@@ -217,3 +217,31 @@ worker medians 6.670/6.606/6.627/6.500/6.578 ms. Ceiling and open sky are
 also approximately tied. Larger batches sacrifice receiver refresh frequency
 without a compelling throughput gain. Keep the 16-path default and limit.
 The native study passed; log `target/settling-batch-study.log`.
+
+## Continuous-distance ranking pilot — not promoted
+
+Isolated branch `codex/gi-distance-refinement`, `e982427`, applies soft inverse
+square distance to opportunistic refinement only; reserved global/coverage and
+urgent work stay unchanged. Eleven scheduling and 24 runtime tests, strict
+Clippy and dev build pass. Streamed long cave
+`cave-1791848585119270000-31043` has valid 15 s imagery, 141/144 corners
+sustained, median 11.31 s and p95 22.36 s. At 15 s error p95 .359 versus .178
+for `c18380b`; positive peak p95 .1021/max .3045 is essentially unchanged.
+40–60 s corner variation .07327 versus .06831. This pilot also includes exact
+donor culling, so it is not a clean isolation of that change. There is no
+compelling settling win: keep the distance policy off the retained branch.
+
+## Private mapped-view batching
+
+Opening a native mapped view for each sparse write is unnecessary: replacement
+buffers are private and remain mapped through catch-up. Open each whole-buffer
+view once per bounded synchronization batch instead. All views still end before
+installation/unmapping. The CPU fallback, atomic publication, buffer generation
+and exact bytes are unchanged.
+
+M4/dev, `4398697` plus this change: 512 scattered 208-byte writes, 48 alternating
+rounds/eight warmup, exact byte checks after each mode. Per-range versus
+per-batch median 30.750→1.875 µs. This is a **view-management microbenchmark**,
+not a 16× engine claim. The native generation/material test passes with mapped
+byte parity, growth/shrink/equal-size replacement, actual post-unmap submission
+and CPU fallback. Logs `target/settling-private-{views,native}.log`.

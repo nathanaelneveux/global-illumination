@@ -466,15 +466,23 @@ impl PreparedGpuCache {
         // batch. Installing must not stage a world-sized catch-up upload later.
         let probe_bytes = (self.cache.probe_capacity * GPU_PROBE_BYTES) as u64;
         let hash_bytes = (self.cache.hash_entries.len() * 16) as u64;
+        // These allocations are private and already mapped. Acquire each view
+        // once per batch, not once for every sparse range (often hundreds of
+        // tiny hash writes). Views end here, before installation can unmap.
+        let mut mapped = self.mapped.as_ref().map(|buffers| {
+            [
+                buffers[0].slice(..).get_mapped_range_mut(),
+                buffers[1].slice(..).get_mapped_range_mut(),
+            ]
+        });
         self.patches
             .state
             .lock()
             .unwrap()
             .upload(probe_bytes, hash_bytes, |probe, offset, bytes| {
-                if let Some(buffers) = &self.mapped {
+                if let Some(buffers) = &mut mapped {
                     buffers[usize::from(!probe)]
-                        .slice(offset as u64..(offset + bytes.len()) as u64)
-                        .get_mapped_range_mut()
+                        .slice(offset..offset + bytes.len())
                         .copy_from_slice(bytes);
                     return;
                 }
@@ -2085,6 +2093,63 @@ mod tests {
         });
         let next = state.lock().unwrap();
         assert!(next.pending_hash.is_empty() && next.pending_probes.is_empty());
+    }
+
+    #[test]
+    #[ignore = "native paired private mapped-view overhead; no gameplay timing"]
+    fn private_mapped_view_batch_study() {
+        use bevy::tasks::block_on;
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+        let (device, _) =
+            block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("private view study"),
+            size: (65536 * GPU_PROBE_BYTES) as u64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        });
+        let offsets: Vec<_> = (0..512)
+            .map(|i| ((i * 12347) % 65536) * GPU_PROBE_BYTES)
+            .collect();
+        let mut times: [Vec<std::time::Duration>; 2] = default();
+        for round in 0..48 {
+            for mode in [round % 2, 1 - round % 2] {
+                let data = [round as u8 + mode as u8; GPU_PROBE_BYTES];
+                let start = std::time::Instant::now();
+                if mode == 0 {
+                    for &offset in &offsets {
+                        buffer
+                            .slice(offset as u64..(offset + GPU_PROBE_BYTES) as u64)
+                            .get_mapped_range_mut()
+                            .copy_from_slice(&data);
+                    }
+                } else {
+                    let mut view = buffer.slice(..).get_mapped_range_mut();
+                    for &offset in &offsets {
+                        view.slice(offset..offset + GPU_PROBE_BYTES)
+                            .copy_from_slice(&data);
+                    }
+                }
+                let elapsed = start.elapsed();
+                if round >= 8 {
+                    times[mode].push(elapsed);
+                }
+                let view = buffer.slice(..).get_mapped_range();
+                for &offset in &offsets {
+                    assert_eq!(&view[offset..offset + GPU_PROBE_BYTES], &data);
+                }
+            }
+        }
+        for values in &mut times {
+            values.sort_unstable();
+        }
+        eprintln!(
+            "PRIVATE_VIEWS 512 exact sparse writes; per-range/per-batch p50 {:?}/{:?}",
+            times[0][20], times[1][20]
+        );
+        buffer.unmap();
     }
 
     #[test]
