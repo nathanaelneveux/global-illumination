@@ -72,14 +72,16 @@ impl SummaryMode {
 #[derive(Clone)]
 enum Summary {
     Floors([u64; 2]),
-    DistanceBands(Box<[[u64; BAND_COUNT]; 2]>),
+    /// Pages with no evictions need no band allocation. None has the same
+    /// meaning as all-zero revisions, including in immutable worker snapshots.
+    DistanceBands(Option<Box<[[u64; BAND_COUNT]; 2]>>),
 }
 
 impl Summary {
     fn new(mode: SummaryMode) -> Self {
         match mode {
             SummaryMode::Floors => Self::Floors([0; 2]),
-            SummaryMode::DistanceBands => Self::DistanceBands(Box::new([[0; BAND_COUNT]; 2])),
+            SummaryMode::DistanceBands => Self::DistanceBands(None),
         }
     }
 
@@ -93,6 +95,7 @@ impl Summary {
             }
             Self::DistanceBands(stamps) => {
                 let band = BAND_STARTS.partition_point(|start| *start <= distance) - 1;
+                let stamps = stamps.get_or_insert_with(|| Box::new([[0; BAND_COUNT]; 2]));
                 &mut stamps[event.origin as usize][band]
             }
         };
@@ -113,13 +116,14 @@ impl Summary {
                     }
                 }
             }
-            Self::DistanceBands(stamps) => {
+            Self::DistanceBands(Some(stamps)) => {
                 for (i, origin) in [Origin::Geometry, Origin::Sunlight].into_iter().enumerate() {
                     if let Some(band) = stamps[i].iter().position(|revision| *revision > since) {
                         caps[i] = limit(origin, BAND_STARTS[band]);
                     }
                 }
             }
+            Self::DistanceBands(None) => {}
         }
         caps
     }
@@ -227,8 +231,9 @@ impl SpatialHistory {
             .expect("retention revision exhausted");
         for (page, changes) in change.nearby {
             // A worker holds immutable page snapshots, never this world map.
-            // Copy-on-write clones at most eight production event headers, not
-            // bounds. Opt-in attribution has a larger diagnostic-only sidecar.
+            // Copy-on-write clones at most eight production event headers and
+            // an allocated summary, not bounds. Opt-in attribution has a larger
+            // diagnostic-only sidecar.
             let history = Arc::make_mut(
                 self.pages
                     .entry(page)
@@ -568,6 +573,86 @@ mod tests {
             Ok(SummaryMode::DistanceBands)
         );
         assert!(SummaryMode::launch(Some("typo")).is_err());
+    }
+
+    #[test]
+    fn bands_allocate_only_on_overflow_and_match_the_control_before_it() {
+        let voxel = IVec3::ZERO;
+        let mut control = SpatialHistory::new(SummaryMode::Floors);
+        let mut candidate = SpatialHistory::new(SummaryMode::DistanceBands);
+        for i in 0..PAGE_EVENTS {
+            let point = IVec3::new(287 + i as i32, 0, 0);
+            control.record(event(voxel, point), Origin::Geometry);
+            candidate.record(event(voxel, point), Origin::Geometry);
+            assert!(matches!(
+                candidate.pages[&voxel].summary,
+                Summary::DistanceBands(None)
+            ));
+            for since in 0..=candidate.revision {
+                assert_eq!(candidate.query(voxel, since), control.query(voxel, since));
+            }
+        }
+        let snapshot = candidate.snapshot(voxel);
+        candidate.record(event(voxel, IVec3::splat(1000)), Origin::Geometry);
+        assert!(matches!(
+            candidate.pages[&voxel].summary,
+            Summary::DistanceBands(Some(_))
+        ));
+        assert_eq!(snapshot.limit(voxel, 0), u32::MAX);
+        assert_eq!(candidate.query(voxel, 0).1, 1986);
+        assert_eq!(candidate.query(voxel, 1).1, u32::MAX);
+    }
+
+    #[test]
+    fn replacing_the_eighth_exact_event_with_its_summary_can_lower_retention() {
+        // Page [0,31] is 48 voxels from the change, but this receiver is 79
+        // away. Folding one event earlier changes its near/far classification.
+        let voxel = IVec3::ZERO;
+        let mut history = SpatialHistory::new(SummaryMode::DistanceBands);
+        history.record(event(voxel, IVec3::new(79, 0, 0)), Origin::Geometry);
+        for _ in 1..PAGE_EVENTS {
+            history.record(event(voxel, IVec3::splat(1000)), Origin::Geometry);
+        }
+        assert_eq!(history.query(voxel, 0).1, 256);
+        let eight = history.snapshot(voxel);
+        let page = Arc::make_mut(history.pages.get_mut(&voxel).unwrap());
+        let oldest = page.events.pop_front().unwrap();
+        page.summary.fold(&oldest);
+        assert_eq!(page.events.len(), PAGE_EVENTS - 1);
+        assert_eq!(history.query(voxel, 0).1, 16);
+        assert_eq!(eight.limit(voxel, 0), 256);
+    }
+
+    #[test]
+    fn one_less_event_is_not_a_fixed_summary_memory_offset() {
+        let mut events = VecDeque::new();
+        let empty = Event {
+            revision: 1,
+            origin: Origin::Geometry,
+            bounds: Arc::new(Vec::new()),
+            page_distance_squared: 0,
+            audit_sun: None,
+        };
+        for _ in 0..PAGE_EVENTS {
+            events.push_back(empty.clone());
+        }
+        let allocated = events.capacity();
+        events.pop_front();
+        assert_eq!(
+            events.capacity(),
+            allocated,
+            "removal does not shrink the ring allocation"
+        );
+        assert!(std::mem::size_of::<Event>() < std::mem::size_of::<[[u64; BAND_COUNT]; 2]>());
+        println!(
+            "RETENTION_MEMORY event_header={} bounds_element={} vec_header={} band_payload={} capacity_after_eight={} capacity_after_pop={}",
+            std::mem::size_of::<Event>(),
+            std::mem::size_of::<Bounds>(),
+            std::mem::size_of::<Vec<Bounds>>(),
+            std::mem::size_of::<[[u64; BAND_COUNT]; 2]>(),
+            allocated,
+            events.capacity()
+        );
     }
 
     #[test]
