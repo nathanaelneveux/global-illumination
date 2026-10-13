@@ -197,8 +197,7 @@ mod tests {
                 face,
                 32768,
             );
-            let expected =
-                sources.environment * (0.65 + 0.35 * normal.y as f32 * 2.0 / 3.0);
+            let expected = sources.environment * (0.65 + 0.35 * normal.y as f32 * 2.0 / 3.0);
             for b in 0..5 {
                 assert!(
                     (estimate.mean[b] - f64::from(channels(expected)[b])).abs()

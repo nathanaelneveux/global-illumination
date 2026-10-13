@@ -272,7 +272,7 @@ workload or nonblank image alone is not a quality/performance pass.
   schema 2. Both the isolated chamber and composed normal-world structures are
   checked for exposure. Missing sites are failures, not stable black samples.
   See the [streaming investigation](streaming-performance.md) for exact runs.
-- `VOXEL_GI_VALIDATE_REFERENCE=1` adds two offline 262,144-path references per
+- `VOXEL_GI_VALIDATE_REFERENCE=1` adds two offline 65,536-path references per
   fixed face on the frozen final scene, **after** timings/captures. It requires
   headless validation with exit enabled. Use `tools/reference_analysis.py` to
   compare actual RGB error, replica disagreement and sustained accuracy, not
@@ -281,6 +281,12 @@ workload or nonblank image alone is not a quality/performance pass.
   replays individual CPU/GPU paths to diagnose outliers. These are opt-in
   investigations, not a new routine validation requirement. Full protocol and
   limitations: [history-retention study](cave-history-retention.md).
+- `VOXEL_GI_VALIDATE_REFERENCE_IMAGE=1` on headless `cave` freezes the final
+  scene/publication and bakes all chamber surfaces into two reference images
+  and their average, with independent CPU estimator checks. This is the
+  [whole-cave reference protocol](cave-reference.md), rather than the sparse
+  wall-receiver timing oracle above. Require its separate qualification and
+  capture status before treating it as a reference.
 - Coverage is at least one path sample per exposed face. Bootstrap targets eight.
   Record published/loaded geometry and pending ingestion alongside percentages;
   an early tiny field can be 100% covered while most terrain is not published.

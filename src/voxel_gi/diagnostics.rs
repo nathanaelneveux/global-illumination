@@ -37,6 +37,7 @@ impl Plugin for VoxelGiDiagnosticsPlugin {
         #[cfg(debug_assertions)]
         if scripted {
             super::validation::install_frame_timing(app);
+            super::validation::install_reference_image(app);
             app.init_resource::<super::validation::CaptureEvidence>()
                 .add_systems(PostStartup, super::validation::setup_capture_target)
                 .add_systems(

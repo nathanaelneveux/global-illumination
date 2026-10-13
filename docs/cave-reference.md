@@ -29,3 +29,47 @@ The independent open-sky analytic check also passes for all six orientations.
 Evidence: `target/cave-oracle-{analytic,native}.log`. Tested on the `12a6866`
 baseline plus the oracle patch committed with this document. No lighting
 algorithm, budget or history policy changed.
+
+## Whole-chamber rendered reference
+
+Run from the repository root in a development build:
+
+```sh
+RUST_LOG=info VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_HEADLESS=1 \
+VOXEL_GI_VALIDATE_PROFILE=cave VOXEL_GI_VALIDATE_BACKGROUND=1 \
+VOXEL_GI_VALIDATE_REFERENCE_IMAGE=1 VOXEL_GI_VALIDATE_EXIT=1 \
+VOXEL_GI_VALIDATE_EXPECT_BUILD_ROOT="$PWD" cargo run --locked --offline
+```
+
+After the ordinary 62-second workload, the diagnostic freezes GI system
+publication and holds the camera and transport scene. The background loading
+camera stops moving. It captures the frozen live image, then computes every
+chamber-facing exposed surface, including floor, ceiling, spire and emitters,
+with a coplanar halo for the actual corner renderer. Terrain outside this
+reference region retains its frozen live values. The rasterizer, textures,
+camera, exposure, emission and shared-corner sun remain the regular game path.
+
+Two disjoint sequence ranges each provide 262,144 paths per face. Each estimate
+averages independent 32,768-path blocks in f64, below the production history
+ceiling. The bake bypasses adaptive scheduling, invalidation, history retention
+and temporal display filtering. Equal reconstruction confidence represents the
+settled target. Eight independent cosine-only CPU integrals also check the exact
+composed scene's floor, ceiling, walls, spire and source surfaces.
+
+The output directory contains `live-frozen.png`, `reference-replica-a.png`,
+`reference-replica-b.png`, `cave-reference.png` (their mean) and
+`cave-reference-held.png` (the same mean captured again). Compare replicas to
+check reference uncertainty, and the held captures to check publication/render
+stability. `cave-reference.json` records every reference face, original live
+display/history, both estimates, the exact scene generation and oracle checks.
+`cave-reference-status.json` is written after all five capture guards complete.
+The earlier `report.json` completion describes only the real-time workload.
+
+An empirical qualification requires eight passing independent estimator checks,
+replica RGB difference p99 <=1%, and maximum <=5%, with a .02 RGB norm floor.
+These are agreement checks, not mathematical confidence guarantees. A failed
+qualification must be reported even if all captures completed. Increase
+`VOXEL_GI_REFERENCE_PATHS` (multiples of 32,768 through 1,048,576 per replica)
+if replica disagreement is too large. A 32,768-path pilot exercises the capture
+workflow cheaply. This offline bake has no real-time performance claim and does
+not change normal gameplay resources when its flag is absent.
