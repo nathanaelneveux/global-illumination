@@ -2,6 +2,18 @@
 
 ## Quiet validation comparison (October 12)
 
+Deadline-only snapshot capture `2f1ed03`, quiet long cave
+`cave-1791856916784508000-39560`: median/p95 settling 7.075/18.294 s,
+141/144 sustain; 15-second error .16298, peak .10724/.30448, variation
+.06836/.04781 (192/96 minimum fresh paths). Near/far age p95 1.350/37.065 s;
+369.53 M paths, 98.51% coverage. GI CPU body 2.529/5.902/8.631/16.567 ms.
+Five valid captures, 15-second image inspected. Removing the extra count cap
+did **not** establish faster replacement: preparation 139.253–144.449 s versus
+138.706–143.412 s before. Most large capture slices already spent their time
+allowance. Retain this as a time-budget consistency cleanup, not a measured
+speedup or a reason to raise that allowance. Later batch-control source edits
+were not compiled into this run.
+
 Receiver-index partitioning `c49d86a`, quiet long cave
 `cave-1791856639492812000-39306`: median/p95 corner settling 6.927/13.217 s,
 141/144 sustain, 15-second p95 error .06840 (141/144 in tolerance), peak
