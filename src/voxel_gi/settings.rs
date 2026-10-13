@@ -51,7 +51,7 @@ impl Default for VoxelGiSettings {
 
 impl VoxelGiSettings {
     pub(super) fn batch_samples(&self) -> u32 {
-        self.samples_per_dispatch.clamp(1, 16)
+        self.samples_per_dispatch.clamp(1, 64)
     }
     pub(super) fn audit_interval(&self) -> Duration {
         self.stable_audit_interval

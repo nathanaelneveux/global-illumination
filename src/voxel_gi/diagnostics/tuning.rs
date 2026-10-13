@@ -195,8 +195,8 @@ fn contents(
         .default_open(true).show(ui, |ui| {
             ui.add(egui::Slider::new(&mut settings.trace_budget_ms, 0.25..=16.0).logarithmic(true).text("Batch target (ms)"))
                 .on_hover_text("Adaptive compute target per completed batch, not a hard per-frame GPU cap. Includes sky work; asynchronous queue timing varies.");
-            ui.add(egui::Slider::new(&mut settings.samples_per_dispatch, 1..=16).text("Paths / face / batch"))
-                .on_hover_text("Four GPU lanes cooperate per face. 1–3 underuse lanes; more paths may reduce how many faces fit the budget. Measure both FPS and lighting freshness.");
+            ui.add(egui::Slider::new(&mut settings.samples_per_dispatch, 1..=64).text("Paths / face / batch"))
+                .on_hover_text("Four GPU lanes cooperate below 16 paths, eight otherwise. Larger batches refresh fewer faces per dispatch. Measure settling, frame time and data age together.");
             ui.checkbox(&mut settings.adaptive_updates, "Let settled faces sleep between audits");
             ui.add(egui::Slider::new(&mut settings.stable_relative_error, 0.01..=0.5).logarithmic(true).text("Settle error tolerance"))
                 .on_hover_text("All-band heuristic, not guaranteed convergence. Lower is stricter; already settled faces reassess on their next audit.");
@@ -375,7 +375,12 @@ mod tests {
                 bounces: 1
             }
         );
-        assert_eq!(imported.samples_per_dispatch, 16);
+        assert_eq!(imported.samples_per_dispatch, 64);
+        for paths in [1, 8, 16, 32, 64] {
+            let imported =
+                parse_settings(&format!("{{\"samples_per_dispatch\":{paths}}}")).unwrap();
+            assert_eq!(imported.batch_samples(), paths);
+        }
         assert!(parse_settings("broken").is_err());
         let defaults = VoxelGiSettings::default();
         assert_eq!(
