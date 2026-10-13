@@ -648,10 +648,13 @@ impl GpuSnapshot {
         &mut self,
         probes: &impl super::field::ProbeLookup,
         mut captured: impl FnMut(IVec3),
+        budget: std::time::Duration,
     ) -> bool {
         let started = std::time::Instant::now();
-        let end = (self.cursor + 8192).min(self.order.len());
-        while self.cursor < end {
+        // Spend the bounded slice, not a fixed number of frames. A second
+        // record ceiling delayed publication even when most of the slice was
+        // unused. Empty/missing records count toward the deadline too.
+        while self.cursor < self.order.len() {
             let voxel = self.order[self.cursor];
             if let Some(probe) = probes.lookup(&voxel) {
                 self.probes.push((voxel, gpu_probe(probe)));
@@ -660,7 +663,7 @@ impl GpuSnapshot {
             // Only changes after this point require catch-up.
             captured(voxel);
             self.cursor += 1;
-            if self.cursor.is_multiple_of(128) && started.elapsed().as_micros() >= 1500 {
+            if self.cursor.is_multiple_of(128) && started.elapsed() >= budget {
                 break;
             }
         }
@@ -1645,13 +1648,13 @@ mod tests {
         let mut order: Vec<_> = (0..9000).map(|x| IVec3::new(x, 0, 0)).collect();
         let mut snapshot = GpuSnapshot::new(&order);
         assert!(
-            !snapshot.advance(&probes, |_| {}),
+            !snapshot.advance(&probes, |_| {}, std::time::Duration::ZERO),
             "snapshot work is bounded"
         );
         let removed = order.swap_remove(8999);
         probes.remove(&removed);
         order.swap(0, 8000);
-        while !snapshot.advance(&probes, |_| {}) {}
+        while !snapshot.advance(&probes, |_| {}, std::time::Duration::from_millis(1)) {}
         let result = snapshot.finish();
         assert_eq!(result.len(), 8999);
         assert!(!result.iter().any(|(voxel, _)| *voxel == removed));
@@ -1659,6 +1662,23 @@ mod tests {
             result.iter().map(|(v, _)| *v).collect::<HashSet<_>>().len(),
             8999
         );
+    }
+
+    #[test]
+    fn snapshot_budget_counts_missing_keys_without_an_extra_record_ceiling() {
+        let probes = HashMap::<IVec3, SurfaceProbe>::new();
+        let order: Vec<_> = (0..20000).map(|x| IVec3::new(x, -4, 8)).collect();
+        let mut snapshot = GpuSnapshot::new(&order);
+        let mut captured = Vec::new();
+        assert!(!snapshot.advance(&probes, |v| captured.push(v), std::time::Duration::ZERO));
+        assert_eq!(captured.len(), 128);
+        assert!(snapshot.advance(
+            &probes,
+            |v| captured.push(v),
+            std::time::Duration::from_secs(10)
+        ));
+        assert_eq!(captured, order);
+        assert!(snapshot.finish().is_empty());
     }
 
     #[test]

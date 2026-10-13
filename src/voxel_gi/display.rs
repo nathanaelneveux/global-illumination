@@ -310,9 +310,11 @@ pub(super) fn upload_transport_cache(
     let snapshot_done = {
         let runtime = runtime.as_mut();
         runtime.gpu_snapshot.as_mut().is_some_and(|snapshot| {
-            snapshot.advance(&field.probes, |voxel| {
-                runtime.gpu_catchup_dirty.captured(&voxel)
-            })
+            snapshot.advance(
+                &field.probes,
+                |voxel| runtime.gpu_catchup_dirty.captured(&voxel),
+                CATCHUP_BUDGET,
+            )
         })
     };
     if snapshot_done {
