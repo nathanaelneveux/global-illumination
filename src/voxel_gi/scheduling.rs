@@ -207,7 +207,7 @@ fn priority(probe: &SurfaceProbe, source_revision: u64, now: Instant) -> f32 {
 #[derive(Default)]
 pub(crate) struct RankedCandidates {
     seen: HashSet<IVec3>,
-    ranked: Vec<(f32, IVec3)>,
+    ranked: Vec<(bool, f32, IVec3)>,
 }
 
 impl RankedCandidates {
@@ -217,7 +217,7 @@ impl RankedCandidates {
     }
 
     pub fn pop(&mut self) -> Option<IVec3> {
-        self.ranked.pop().map(|(_, voxel)| voxel)
+        self.ranked.pop().map(|(_, _, voxel)| voxel)
     }
 
     pub fn refresh(
@@ -248,13 +248,24 @@ impl RankedCandidates {
                 if seen.insert(voxel)
                     && let Some(probe) = field.probes.get(&voxel)
                 {
-                    candidates.push((priority(probe, field.source_revision, now) + bonus, voxel));
+                    // Coverage has its own reservation. An unknown receiver's
+                    // deliberately high uncertainty must not consume the entire
+                    // refinement share as well. Keep unknown candidates as
+                    // fallback when this bounded window has no measured work.
+                    let measured = (0..6)
+                        .any(|face| probe.face_mask & (1 << face) != 0 && probe.samples[face] > 0);
+                    candidates.push((
+                        measured,
+                        priority(probe, field.source_revision, now) + bonus,
+                        voxel,
+                    ));
                 }
             }
         }
         *cursor = cursor.wrapping_add(window);
-        candidates.sort_unstable_by(|(a, va), (b, vb)| {
-            a.total_cmp(b)
+        candidates.sort_unstable_by(|(ma, a, va), (mb, b, vb)| {
+            ma.cmp(mb)
+                .then_with(|| a.total_cmp(b))
                 .then_with(|| (va.x, va.y, va.z).cmp(&(vb.x, vb.y, vb.z)))
         });
     }
@@ -270,7 +281,11 @@ fn ranked_candidates(
 ) -> Vec<IVec3> {
     let mut scratch = RankedCandidates::default();
     scratch.refresh(field, nearby, &[], cursor, now, budget);
-    scratch.ranked.into_iter().map(|(_, voxel)| voxel).collect()
+    scratch
+        .ranked
+        .into_iter()
+        .map(|(_, _, voxel)| voxel)
+        .collect()
 }
 
 #[cfg(test)]

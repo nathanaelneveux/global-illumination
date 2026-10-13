@@ -665,6 +665,40 @@ fn streaming_coverage_cannot_exclude_refinement_candidates() {
 }
 
 #[test]
+fn nearby_bootstrap_cannot_consume_both_coverage_and_refinement_shares() {
+    let mut field = VoxelEnergyField::default();
+    let far: Vec<_> = (0..1024).map(|x| IVec3::new(x, 0, 1024)).collect();
+    let near: Vec<_> = (0..64).map(|x| IVec3::new(x, 0, 0)).collect();
+    for &voxel in far.iter().chain(&near) {
+        let mut p = SurfaceProbe::new(voxel, 4);
+        if voxel.z == 0 && voxel.x < 32 {
+            p.samples[2] = 256;
+        }
+        field.order.push(voxel);
+        field.probes.insert(voxel, p);
+    }
+    let mut runtime = VoxelGiRuntime {
+        batch_size: 64,
+        nearby: near.clone(),
+        regional: near,
+        ..default()
+    };
+    enqueue_many(&mut runtime, far.iter().copied());
+    let chosen = select_probes(&mut runtime, &field);
+    assert_eq!(chosen.len(), 64);
+    assert!(
+        chosen
+            .iter()
+            .filter(|p| p.voxel.z == 0 && p.voxel.x < 32)
+            .count()
+            >= 32
+    );
+    assert!(chosen.iter().filter(|p| p.voxel.z == 1024).count() >= 16);
+    assert!(runtime.refresh_cursor >= 16);
+    assert!(runtime.pending.len() < far.len());
+}
+
+#[test]
 fn refinement_regions_keep_close_window_and_global_sweep() {
     let mut field = VoxelEnergyField::default();
     let focus = IVec3::new(1, -1, -1);
