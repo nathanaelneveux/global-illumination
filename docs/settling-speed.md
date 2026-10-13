@@ -2,6 +2,18 @@
 
 ## Quiet validation comparison (October 12)
 
+Receiver-index partitioning `c49d86a`, quiet long cave
+`cave-1791856639492812000-39306`: median/p95 corner settling 6.927/13.217 s,
+141/144 sustain, 15-second p95 error .06840 (141/144 in tolerance), peak
+.10198/.30433. Variation .07299/.05380, min fresh paths 160/128; near/far age
+p95 1.248/36.511 s. 383.39 M paths, 98.83% final coverage. GI CPU body
+p50/p95/p99/max 2.404/5.777/8.402/22.619 ms; worst body is trace publication,
+not index growth. Five valid captures, 15-second image inspected. It supports
+retaining smaller index growth, **not** attributing the full settling difference
+to sharding or claiming stall elimination. Later source-only snapshot edits
+were not compiled into this run. The isolated index study in the commit shows
+12.65× smaller worst growth batches but 10.7% slower lookups.
+
 Validation used to enable synchronous terminal statistics automatically, unlike
 normal gameplay. `13db971` makes those explicitly opt-in and leaves the JSON
 timelines enabled. Do not credit this harness correction as a gameplay speedup.
