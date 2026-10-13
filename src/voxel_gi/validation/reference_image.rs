@@ -22,6 +22,9 @@ const BLOCK_PATHS: u32 = 32_768;
 const DISPATCH_PATHS: u32 = 1024;
 const CHUNK_FACES: usize = 512;
 
+#[path = "model_comparison.rs"]
+mod model_comparison;
+
 type ProbeMap = HashMap<IVec3, SurfaceProbe>;
 type Means = Vec<[f64; 5]>;
 
@@ -50,6 +53,8 @@ pub(super) struct ReferenceImage {
     base: ProbeMap,
     sites: Vec<(IVec3, usize)>,
     expected_captures: usize,
+    comparison: bool,
+    accepted: bool,
 }
 
 struct ReferenceFrame {
@@ -63,10 +68,12 @@ struct Bake {
     qualification: serde_json::Value,
     base: ProbeMap,
     sites: Vec<(IVec3, usize)>,
+    accepted: bool,
 }
 
 pub(super) fn requested() -> bool {
     std::env::var("VOXEL_GI_VALIDATE_REFERENCE_IMAGE").is_ok_and(|v| v == "1")
+        || model_comparison::requested()
 }
 
 pub(super) fn install(app: &mut App) {
@@ -258,6 +265,9 @@ impl ReferenceImage {
                 })?;
             base.entry(voxel).or_insert_with(|| probe.clone());
         }
+        if model_comparison::requested() {
+            return model_comparison::start(runtime, device, output, origin, sites, base);
+        }
         let progress = Arc::new(AtomicU64::new(0));
         let sweep_requested = super::sample_sweep::requested();
         let total_paths = sites.len() as u64 * u64::from(paths) * 2
@@ -400,7 +410,8 @@ impl ReferenceImage {
                     });
                 }
             }
-            Ok(Bake { frames, qualification, base, sites })
+            let accepted = qualification["qualified"].as_bool().unwrap_or(false);
+            Ok(Bake { frames, qualification, base, sites, accepted })
         });
         Ok(Self {
             frozen: true,
@@ -443,7 +454,7 @@ fn tick(
         info!(
             percent = 100.0 * reference.progress.load(Ordering::Relaxed) as f64
                 / reference.total_paths as f64,
-            "Offline cave reference progress"
+            "Offline transport image progress"
         );
         reference.next_log = time.elapsed_secs_f64() + 10.0;
     }
@@ -469,6 +480,7 @@ fn tick(
                 reference.qualification = Some(bake.qualification);
                 reference.base = bake.base;
                 reference.sites = bake.sites;
+                reference.accepted = bake.accepted;
                 reference.task = None;
             }
             Some(Err(error)) => {
@@ -500,8 +512,13 @@ fn tick(
         }
         if reference.current.is_none() {
             reference.complete = true;
+            let status_name = if reference.comparison {
+                "cave-model-comparison-status.json"
+            } else {
+                "cave-reference-status.json"
+            };
             let saved = std::fs::write(
-                reference.output.join("cave-reference-status.json"),
+                reference.output.join(status_name),
                 json!({"status":"completed","captures":reference.expected_captures,"frozen":true,"geometry_audit_passed":true,
                     "qualification":reference.qualification})
                 .to_string(),
@@ -510,12 +527,7 @@ fn tick(
                 evidence.fail(&format!("Reference status publication failed: {error}"));
                 commands.write_message(AppExit::error());
             } else {
-                let qualified = reference
-                    .qualification
-                    .as_ref()
-                    .and_then(|q| q["qualified"].as_bool())
-                    .unwrap_or(false);
-                commands.write_message(if qualified {
+                commands.write_message(if reference.accepted {
                     AppExit::Success
                 } else {
                     AppExit::error()
