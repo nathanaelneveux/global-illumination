@@ -94,5 +94,6 @@ candidate/boundary confirmation. Outputs include all five-band means, sites,
 paired errors and baseline replica disagreement. Linear transport uses a
 symmetric relative norm with a .02 floor. It is not a perceptual metric or
 proof that every unmeasured voxel looks unchanged. Native GPU timestamp sums
-are isolated compute work, **not interactive frame pacing**. Candidate images
+are isolated compute work, **not interactive frame pacing**; a missing/invalid
+timestamp makes the aggregate null, not zero. Candidate images
 and whole-field checks remain necessary before changing defaults.

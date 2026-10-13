@@ -65,9 +65,9 @@ fn integrate(
     model: TransportSettings,
     sequence: u32,
     paths: u32,
-) -> (Vec<[f64; 5]>, f64) {
+) -> (Vec<[f64; 5]>, Option<f64>) {
     let mut means = Vec::new();
-    let mut gpu_ms = 0.0;
+    let mut gpu_ms = Some(0.0);
     for probes in f.probes.chunks(256) {
         let mut work = TraceWork::from_probes(probes, false);
         work.transport = model;
@@ -99,7 +99,11 @@ fn integrate(
                     false,
                 )
                 .unwrap();
-                gpu_ms += f64::from(gpu.last_gpu_ms.expect("native timestamp required"));
+                // Some Metal dispatches report zero/identical endpoints. Keep
+                // accuracy evidence, but never report those as free GPU work.
+                gpu_ms = gpu_ms
+                    .zip(gpu.last_gpu_ms)
+                    .map(|(sum, ms)| sum + f64::from(ms));
                 pending -= n;
             }
             for (sum, face) in sums.iter_mut().zip(&work.faces) {
