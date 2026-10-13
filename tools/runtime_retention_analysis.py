@@ -46,6 +46,10 @@ def analyze(folder):
     report = json.loads((folder / "report.json").read_text())
     trace = json.loads((folder / "temporal.json").read_text())
     validate_capture(folder, report)
+    if report["profile"] != "cave" or not report["background_terrain"]["enabled"]:
+        raise ValueError("require the composed cave with background terrain loading")
+    if trace["end_s"] < 180 or len(trace["sites"]) != 36 or len(trace["site_faces"]) != 36:
+        raise ValueError("require the complete long cave observation set")
     if not (folder / "reference.json").exists():
         if report["capture_mode"] != "window":
             raise ValueError("headless accuracy run is missing its reference")
