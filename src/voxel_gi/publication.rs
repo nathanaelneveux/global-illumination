@@ -151,6 +151,55 @@ pub(super) fn publish_scene_page(
     page: IVec3,
     descriptors: Vec<SurfaceProbeDescriptor>,
 ) {
+    let started = Instant::now();
+    // Worker scans include touching pages, even when their exposed topology
+    // did not change. Preserve their allocations, indices and measurements
+    // directly; global scene freshness and explicit edit requests still apply.
+    if page_matches(field, page, &descriptors, &runtime.materials) {
+        finish_scene_page(
+            runtime,
+            field,
+            stats,
+            result,
+            page,
+            field.probe_count(),
+            HashSet::new(),
+            Vec::new(),
+            started,
+        );
+    } else {
+        reconcile_scene_page(runtime, field, stats, result, page, descriptors);
+    }
+}
+
+/// Descriptors are the worker scanner's unique voxel keys. Equal cardinality
+/// and equal exposed records establish page identity independently of order.
+fn page_matches(
+    field: &VoxelEnergyField,
+    page: IVec3,
+    descriptors: &[SurfaceProbeDescriptor],
+    materials: &super::world::VoxelMaterialTransportTable,
+) -> bool {
+    field.pages.get(&page).is_some_and(|current| {
+        current.len() == descriptors.len()
+            && descriptors.iter().all(|descriptor| {
+                field.probes.get(&descriptor.voxel).is_some_and(|probe| {
+                    probe.face_mask == descriptor.face_mask
+                        && probe.material == descriptor.material
+                        && probe.emission == materials.get(descriptor.material).emission
+                })
+            })
+    })
+}
+
+fn reconcile_scene_page(
+    runtime: &mut VoxelGiRuntime,
+    field: &mut VoxelEnergyField,
+    stats: &mut VoxelGiStats,
+    result: &mut SceneBuildResult,
+    page: IVec3,
+    descriptors: Vec<SurfaceProbeDescriptor>,
+) {
     let publish_started = Instant::now();
 
     let old_count = field.probes.len();
@@ -276,6 +325,30 @@ pub(super) fn publish_scene_page(
         runtime.gpu_topology_dirty = true;
     }
 
+    finish_scene_page(
+        runtime,
+        field,
+        stats,
+        result,
+        page,
+        old_count,
+        invalidated,
+        added,
+        publish_started,
+    );
+}
+
+fn finish_scene_page(
+    runtime: &mut VoxelGiRuntime,
+    field: &mut VoxelEnergyField,
+    stats: &mut VoxelGiStats,
+    result: &mut SceneBuildResult,
+    page: IVec3,
+    old_count: usize,
+    mut invalidated: HashSet<IVec3>,
+    added: Vec<IVec3>,
+    publish_started: Instant,
+) {
     let mut urgent = HashSet::new();
     for &voxel in &result.exact_edits {
         let mut nearby = HashSet::new();
@@ -371,6 +444,181 @@ pub(super) fn invalidate_near_voxel(
 #[cfg(test)]
 mod donor_tests {
     use super::*;
+
+    fn unchanged_page_fixture() -> (
+        VoxelGiRuntime,
+        VoxelEnergyField,
+        Vec<SurfaceProbeDescriptor>,
+    ) {
+        let mut field = VoxelEnergyField::default();
+        let descriptors: Vec<_> = (0..32)
+            .flat_map(|z| {
+                (0..32).map(move |x| SurfaceProbeDescriptor {
+                    voxel: IVec3::new(x, 0, z),
+                    face_mask: 4,
+                    material: 1,
+                })
+            })
+            .collect();
+        for d in &descriptors {
+            let mut probe = SurfaceProbe::new(d.voxel, d.face_mask);
+            probe.material = d.material;
+            probe.samples[2] = 64;
+            probe.display[2].indirect = Vec3::splat(2.0);
+            field.probes.insert(d.voxel, probe);
+        }
+        let keys: Vec<_> = descriptors.iter().map(|d| d.voxel).collect();
+        field.pages.insert(IVec3::ZERO, keys.clone());
+        field.update_indices(&keys, &HashMap::new());
+        (
+            VoxelGiRuntime {
+                active_faces: 1024,
+                completed_samples: 65536,
+                covered_faces: 1024,
+                ..default()
+            },
+            field,
+            descriptors,
+        )
+    }
+
+    fn empty_result() -> SceneBuildResult {
+        SceneBuildResult {
+            scene: std::sync::Arc::new(super::super::world::TransportScene::default()),
+            changed: true,
+            geometry_change: None,
+            pages: default(),
+            exact_edits: Vec::new(),
+            build_time: Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn unchanged_page_check_is_exact_and_does_not_suppress_edit_refresh() {
+        let (mut runtime, mut field, mut descriptors) = unchanged_page_fixture();
+        assert!(page_matches(
+            &field,
+            IVec3::ZERO,
+            &descriptors,
+            &runtime.materials
+        ));
+        descriptors.reverse();
+        assert!(page_matches(
+            &field,
+            IVec3::ZERO,
+            &descriptors,
+            &runtime.materials
+        ));
+        descriptors[0].face_mask = 5;
+        assert!(!page_matches(
+            &field,
+            IVec3::ZERO,
+            &descriptors,
+            &runtime.materials
+        ));
+        descriptors[0].face_mask = 4;
+        descriptors[0].material = 2;
+        assert!(!page_matches(
+            &field,
+            IVec3::ZERO,
+            &descriptors,
+            &runtime.materials
+        ));
+        descriptors[0].material = 1;
+        let voxel = descriptors[0].voxel;
+        field.probes.get_mut(&voxel).unwrap().emission = super::super::EnergySpectrum::ONE;
+        assert!(!page_matches(
+            &field,
+            IVec3::ZERO,
+            &descriptors,
+            &runtime.materials
+        ));
+        field.probes.get_mut(&voxel).unwrap().emission = super::super::EnergySpectrum::ZERO;
+        assert!(!page_matches(
+            &field,
+            IVec3::ZERO,
+            &descriptors[..1023],
+            &runtime.materials
+        ));
+        let pointer = field.probes.get(&voxel).unwrap() as *const SurfaceProbe;
+        let mut result = empty_result();
+        result.exact_edits.push(IVec3::new(16, 0, 16));
+        field.publishing_pages.insert(IVec3::ZERO);
+        publish_scene_page(
+            &mut runtime,
+            &mut field,
+            &mut default(),
+            &mut result,
+            IVec3::ZERO,
+            descriptors,
+        );
+        assert_eq!(
+            field.probes.get(&voxel).unwrap() as *const SurfaceProbe,
+            pointer
+        );
+        assert_eq!(field.probes[&voxel].display[2].indirect, Vec3::splat(2.0));
+        assert!(runtime.urgent_queued.contains(&voxel));
+        assert_eq!(
+            field.probes[&voxel].samples[2],
+            super::super::geometry::NEAR_HISTORY
+        );
+        assert!(!field.publishing_pages.contains(&IVec3::ZERO));
+        assert_eq!(runtime.active_faces, 1024);
+        assert_eq!(field.order.len(), 1024);
+    }
+
+    #[test]
+    #[ignore = "isolated unchanged-page publication cost study"]
+    fn unchanged_publication_study() {
+        let (mut runtime, mut field, descriptors) = unchanged_page_fixture();
+        let mut result = empty_result();
+        let mut stats = VoxelGiStats::default();
+        let mut times: [Vec<Duration>; 2] = default();
+        for round in 0..128 {
+            for mode in [round % 2, 1 - round % 2] {
+                let descriptors = descriptors.clone();
+                let start = Instant::now();
+                if mode == 0 {
+                    reconcile_scene_page(
+                        &mut runtime,
+                        &mut field,
+                        &mut stats,
+                        &mut result,
+                        IVec3::ZERO,
+                        descriptors,
+                    );
+                } else {
+                    publish_scene_page(
+                        &mut runtime,
+                        &mut field,
+                        &mut stats,
+                        &mut result,
+                        IVec3::ZERO,
+                        descriptors,
+                    );
+                }
+                let elapsed = start.elapsed();
+                if round >= 16 {
+                    times[mode].push(elapsed);
+                }
+                assert_eq!(runtime.active_faces, 1024);
+                assert_eq!(runtime.completed_samples, 65536);
+                assert_eq!(runtime.covered_faces, 1024);
+                assert!(runtime.gpu_value_dirty.is_empty());
+                assert_eq!(
+                    field.probes[&IVec3::ZERO].display[2].indirect,
+                    Vec3::splat(2.0)
+                );
+            }
+        }
+        for values in &mut times {
+            values.sort_unstable();
+        }
+        eprintln!(
+            "UNCHANGED_PAGE 1024 receivers, baseline/identity p50 {:?}/{:?}",
+            times[0][56], times[1][56]
+        );
+    }
 
     #[test]
     fn donor_page_bounds_include_borders_and_exclude_empty_interiors() {
