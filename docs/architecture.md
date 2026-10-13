@@ -485,6 +485,13 @@ Possible occluders terminate conservatively. This avoids both leaking light
 through distant roofs and darkening a receiver merely by loading known-empty
 pages. The coarse check can reject energy that a longer fine ray would recover.
 
+A per-leg reach is not the same radius for history invalidation. Several legs,
+sun/point visibility and the remaining sky frontier can depend on geometry
+beyond it. The [transport-horizon study](transport-horizon.md) measures this
+quality tradeoff separately from a future bounded-dependency contract. Its
+canyon fixture is important: the small enclosed cave alone understates useful
+daylight travel distances. Current defaults and invalidation rules are unchanged.
+
 On GPU, depth and finite/default horizon policy are specialization constants.
 The worker lazily caches at most twelve face pipelines (three depths × two
 policies × two lane layouts);
@@ -503,7 +510,7 @@ survive; geometry, emissive distributions and direct-sun caches need no rebuild.
 No synchronous full-field clear or debounce is introduced. Coverage can remain
 high during this transition because it is not a current-model convergence metric.
 
-Work knobs (including 1–16 paths per batch) do not change the integrand or reset
+Work knobs (including 1–64 paths per batch) do not change the integrand or reset
 measurements. Adaptive stability tolerances are reevaluated as faces run/audit.
 Presentation settings only change the displayed result. Temporal response is a
 time constant subject to the existing evidence/uncertainty filter, not a promise

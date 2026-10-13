@@ -167,3 +167,75 @@ The JSON retains every five-band face mean and both windows. This is a
 matched model comparison, **not a new perfect-reference qualification**;
 completion and numerical/visual acceptance are explicitly separate. Neither
 ordinary live capture nor offscreen cadence establishes gameplay FPS.
+
+Completed on clean binary `fe1ff32` (analysis-only Python tool added while it
+ran), M4/Metal/development, headless 2560×1440, preferred corner sun and
+corner-reconstructed indirect, textures on, baked AO off, background terrain
+enabled. `cave-1791913761637216000-54996`: all 125,440 authored cells match;
+15,163 face/halo sites, 60,624 reconstructed corners. All eight comparison-stage
+and three workload capture guards pass; no warning/error logs. Each model uses
+two matched 8,192-path windows, displayed as their mean. The baseline windows'
+raw RGB disagreement is 3.638% p99 / 6.703% maximum; they are not a new
+high-sample reference.
+
+| Composed cave model | Corner RGB p99 / maximum | Rendered FLIP mean / worst 32px tile |
+| --- | ---: | ---: |
+| 64 / 3 | 6.580% / 14.426% | .02822 / .11094 |
+| 96 / 3 | .01058% / .10539% | .000289 / .00559 |
+| 128 / 3 | .00368% / .02756% | .0000694 / .00187 |
+| 256 / 3 | 0% / .00125% | .00000147 / .000266 |
+| 384 / 3 | 0% / 0% | 0 / 0 |
+| 768 / 2 | 13.783% / 19.290% | .07748 / .11588 |
+
+Reach 384's rendered PNG is pixel-identical to the matched baseline. The
+two-bounce image has OKLab delta p99 .01538; 64/3 has .00931. FLIP uses the
+official 1.7 implementation at 67 pixels/degree, a viewing assumption rather
+than universal invisibility threshold. Transport metrics here use symmetric
+normalization with a .02 floor. The entire cave's 64/3 ionizing differences are
+larger than RGB (p99 12.84%, maximum 42.21%); visible equivalence alone cannot
+qualify simulation accuracy.
+
+Evidence: `target/horizon-composed-cave.log`,
+`target/horizon-composed-analysis.json`, the run's JSON/PNGs, and
+`transport-model-overview.png`. `tools/transport_model_analysis.py` validates
+completion/audit/schema, reuses the sample study's tested corner topology and
+OKLab/FLIP routines, and makes the contact sheet from original captures without
+per-image brightness adjustment. Its new symmetric metric passes analytic
+identity/symmetry/dark-floor checks. Focused native tuning CPU/GPU parity and
+finite-frontier/no-sky-leak regressions pass after integration. The `tuning_`
+filter also incidentally ran the UI-only offscreen test; no toggle stress or
+whole-suite repetition was needed.
+
+The separate `canyon-1791914038253548000-55066` live preview on `fe1ff32`
+completes all three 2560×1440 headless capture guards with assets verified and
+clean logs. It shows the fixture, not a settled or fully resident canyon
+reference. Its cadence is not interactive FPS evidence. The canyon quality
+numbers above come from the independent fully resident native fixture, not
+from this live preview.
+
+## Conclusion and next dependency experiment
+
+Keep three hits. The lowest tested practical numerical candidate across these
+fixtures is 288/3; 384/3 is the stronger quality candidate, while 512/3 makes
+the measured canyon difference very small. No range is promoted yet: the
+whole-canyon image, other composed-world views/source changes and a true
+influence bound still need qualification. In particular, this study does not
+claim that 256/3 or any smaller radius works for every procedural world.
+
+The next architectural experiment should explicitly separate bounded diffuse
+transport from sun/sky/point visibility dependencies. A total-path or
+receiver-influence budget can bound the former; it changes the integrand and
+must be measured against this baseline. Visibility dependencies may still
+extend beyond it and need their own conservative tests/caches. The existing
+direct-sun cache already uses spatial shadow sweeps rather than whole-world
+invalidation. Equivalent dependency reasoning—not just a smaller number in the
+distance-cap rule—is needed before preserving all history outside a radius.
+The target remains retaining compatible thousands-of-samples history during
+remote streaming while responding correctly to nearby edits and changed shadows.
+
+Emitter size-aware proposal weighting is already implemented; size-aware
+uncertainty/error bounds are not. [Lightcuts](https://www.cs.cornell.edu/projects/lightcuts/)
+is a relevant precedent for bounding groups of lights to trade approximation
+error against work. It is not the same as our stochastic light-tree proposal,
+and applying its reasoning to cache confidence would be a new qualified
+experiment, not a justification for clamping path samples.
