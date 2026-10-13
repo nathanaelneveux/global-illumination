@@ -242,6 +242,14 @@ retaining 256 samples or during frequent streaming. All five bands retain the
 same statistical weight. Distance is a response heuristic, not proof of weak
 lighting influence: a very bright distant source can still matter greatly.
 
+The [distance/history qualification](distance-history.md) derives a history cap
+from a bounded lighting change and response budget, then compares real canyon
+loads, remote cave changes and long-range shadows. It supports retaining remote
+compatible history, but rejects distance alone as a general influence bound.
+Future spatial retention must also survive bounded-journal eviction; retaining
+more samples without that metadata is not a complete solution. Runtime policy
+in the table above is unchanged.
+
 `invalidate_model` is the explicit global restart operation. It advances both
 the source snapshot and model-reset watermark together, rejecting in-flight
 old-model jobs. Ordinary analytic light changes retain bounded history instead.
