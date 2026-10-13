@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "cave-user-2048-2026-10-13",
+  "scope": "Static composed-cave view, preferred shared-corner sun and reconstructed indirect, textures on, baked AO off. Not a temporal, FPS, or simulation-band certificate.",
+  "human_review": {
+    "accepted_paths": 2048,
+    "noticeable_paths": 1536,
+    "very_noticeable_paths": 1024,
+    "window": null,
+    "note": "User accepted 2048 as visually indistinguishable. The specific sequence window was not identified; numerical limits conservatively use the envelope of all four windows. This does not claim human review of every window."
+  },
+  "baseline": {
+    "sampler_id": "3331e20-production-terminal-mixture",
+    "paths_for_quality": 2048,
+    "run": "cave-1791907675248389000-51327",
+    "analysis_sha256": "5510a05941c03bac5954d6f83baf042989688cd3890d3b88241ff31c63a0eed5"
+  },
+  "view": {
+    "width": 2560,
+    "height": 1440,
+    "ppd": 67,
+    "encoding": "8-bit sRGB, game material/texture/tonemapping, fixed camera"
+  },
+  "limits": {
+    "centers": {"p99": 0.05636032379273408, "max": 0.11968896061437205},
+    "corners": {"p99": 0.03266280624777045, "max": 0.11968896061437205},
+    "flip": {"mean": 0.027400863220808837},
+    "flip_32px_tile_means": {"max": 0.07296444475650787}
+  },
+  "diagnostics_at_accepted_paths": {
+    "oklab_delta_e": {"p99": 0.006600674141459505, "max": 0.01036226915694973}
+  },
+  "note": "Fixed measured limits, not a universal invisibility threshold. Keep these errors fixed when evaluating a better sampler; do not recalibrate the limits from each candidate. OKLab stays diagnostic: its p99 does not order 1536/2048 correctly, and one 3072-window maximum slightly exceeds 2048. Original engineering gates remain unchanged."
+}
