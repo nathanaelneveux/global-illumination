@@ -2,6 +2,8 @@ mod ambient_occlusion;
 mod app_controls;
 mod assets;
 mod cave_scene;
+mod canyon_scene;
+mod scene_presets;
 mod chunk_colliders;
 mod player;
 mod structures;

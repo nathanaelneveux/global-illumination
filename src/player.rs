@@ -158,6 +158,12 @@ fn spawn_player(mut commands: Commands, world: Res<PrototypeWorld>) {
             ..default()
         });
     }
+    if crate::scene_presets::ScenePreset::current() == crate::scene_presets::ScenePreset::Canyon {
+        commands.entity(player).insert(bevy_ahoy::CharacterLook {
+            yaw: std::f32::consts::PI,
+            ..default()
+        });
+    }
 
     // Automated GI comparisons own the camera path. Background mouse motion
     // must not rotate it and change the streamed/rendered workload between runs.
@@ -173,7 +179,9 @@ fn spawn_player(mut commands: Commands, world: Res<PrototypeWorld>) {
         PlayerCamera,
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
-            fov: if crate::cave_scene::enabled() {
+            fov: if crate::scene_presets::ScenePreset::current()
+                != crate::scene_presets::ScenePreset::Terrain
+            {
                 65.0_f32.to_radians()
             } else {
                 std::f32::consts::FRAC_PI_4

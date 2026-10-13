@@ -1,5 +1,5 @@
 //! Deterministic transport fixtures shared by opt-in research studies. These
-//! reuse the host cave's geometry/material policy and allocate only in tests.
+//! reuse the host scenes' geometry/material policy and allocate only in tests.
 use super::{
     EnergySpectrum, TransportSources, VoxelMaterialTransportTable,
     naadf::{linear_index, volume_len},
@@ -9,7 +9,7 @@ use super::{
 use bevy::prelude::*;
 use std::sync::Arc;
 
-pub(super) struct Cave {
+pub(super) struct ResearchFixture {
     pub scene: Arc<TransportScene>,
     pub materials: VoxelMaterialTransportTable,
     pub sources: TransportSources,
@@ -20,7 +20,7 @@ pub(super) struct Cave {
 /// green ceiling crystals, wall torches and a small far-side skylight.
 /// IR and ionizing emissions are independent, normalized game transport bands,
 /// not a calibrated physical model of lava or thorium.
-pub(super) fn cave() -> Cave {
+pub(super) fn cave() -> ResearchFixture {
     let mut pages = Vec::new();
     for pz in 0..2 {
         for py in 0..2 {
@@ -74,7 +74,7 @@ pub(super) fn cave() -> Cave {
     for probe in &mut receivers {
         probe.material = 2;
     }
-    Cave {
+    ResearchFixture {
         scene,
         materials,
         receivers,
@@ -98,6 +98,109 @@ pub(super) fn channels(value: EnergySpectrum) -> [f32; 5] {
         value.infrared,
         value.ionizing,
     ]
+}
+
+/// Fully resident canyon volume. Uniform air/rock regions compact naturally in
+/// TransportScene; receiver sites cover floor, rims and every tower face. This
+/// is a fixed numerical fixture, not a streaming/frame-pacing benchmark.
+pub(super) fn canyon() -> ResearchFixture {
+    let size = crate::canyon_scene::SIZE;
+    let mut pages = Vec::new();
+    for pz in 0..size.z / 32 {
+        for py in 0..size.y / 32 {
+            for px in 0..size.x / 32 {
+                let coordinate = IVec3::new(px, py, pz);
+                let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+                for z in 0..32 {
+                    for x in 0..32 {
+                        let wx = px * 32 + x;
+                        let wz = pz * 32 + z;
+                        let height = crate::canyon_scene::height(wx, wz);
+                        for y in 0..32 {
+                            let wy = py * 32 + y;
+                            if wy <= height {
+                                page[linear_index(
+                                    UVec3::new(x as u32, y as u32, z as u32),
+                                    PAGE_SIZE,
+                                )] = if (wy / 16) % 4 == 2 { 2 } else { 1 };
+                            }
+                        }
+                    }
+                }
+                pages.push((coordinate, page));
+            }
+        }
+    }
+    let scene = Arc::new(TransportScene::with_page_delta(
+        &TransportScene::default(),
+        pages,
+        &[],
+    ));
+    let mut sites = std::collections::BTreeSet::new();
+    for z in (32..480).step_by(24) {
+        for x in (48..208).step_by(16) {
+            let y = crate::canyon_scene::height(x, z);
+            sites.insert((x, y, z, 2));
+        }
+    }
+    // Cross sections include vertical rims and any pillars crossing the slice.
+    for z in (16..512).step_by(32).chain([180, 294, 414, 450]) {
+        for y in [16, 48, 96, 144, 192, 224] {
+            for x in 1..255 {
+                let p = IVec3::new(x, y, z);
+                if scene.material_at(p).is_none_or(|m| m == AIR) {
+                    continue;
+                }
+                for (face, normal) in [(0, IVec3::X), (1, IVec3::NEG_X)] {
+                    if scene.material_at(p + normal) == Some(AIR) {
+                        sites.insert((x, y, z, face));
+                    }
+                }
+            }
+        }
+    }
+    let receivers = sites
+        .into_iter()
+        .map(|(x, y, z, face)| {
+            let voxel = IVec3::new(x, y, z);
+            let mut p = SurfaceProbe::new(voxel, 1 << face);
+            p.material = scene.material_at(voxel).unwrap() as u8;
+            p
+        })
+        .collect();
+    ResearchFixture {
+        scene,
+        materials: crate::canyon_scene::materials(),
+        receivers,
+        sources: TransportSources {
+            environment: crate::canyon_scene::ENVIRONMENT,
+            directional: vec![DirectionalTransportLight {
+                direction: crate::canyon_scene::sun_direction(),
+                radiance: EnergySpectrum::new(Vec3::splat(2.0), 0.2, 0.0),
+                custom_visible: Vec3::ZERO,
+            }],
+            points: vec![],
+        },
+    }
+}
+
+#[test]
+fn canyon_transport_fixture_matches_host_geometry_and_has_exposed_receivers() {
+    let canyon = canyon();
+    assert!(canyon.receivers.len() > 300);
+    for p in &canyon.receivers {
+        assert!(matches!(
+            crate::canyon_scene::voxel(p.voxel),
+            bevy_voxel_world::prelude::WorldVoxel::Solid(_)
+        ));
+        for (face, normal) in FACE_OFFSETS.iter().enumerate() {
+            if p.face_mask & (1 << face) != 0 {
+                assert_eq!(canyon.scene.material_at(p.voxel + *normal), Some(AIR));
+            }
+        }
+    }
+    assert!(canyon.receivers.iter().any(|p| p.voxel.y > 200));
+    assert!(canyon.receivers.iter().any(|p| p.voxel.z > 400));
 }
 
 #[test]

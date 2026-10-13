@@ -7,6 +7,7 @@ use bevy_voxel_world::custom_meshing::{CHUNK_SIZE_F, CHUNK_SIZE_I};
 use bevy_voxel_world::prelude::*;
 
 use crate::assets::{PrototypeConfig, TemplateAssets};
+use crate::scene_presets::ScenePreset;
 use crate::structures::{Bounds, StructureLayer, VoxelOp, showcase};
 use crate::terrain_meshing::build_chunk_mesh;
 use crate::terrain_noise::{BEDROCK_FLOOR_Y, MAX_SURFACE_Y, TerrainColumn, TerrainNoise};
@@ -110,8 +111,8 @@ impl Plugin for TerrainPlugin {
                 TerrainMaterial::Emissive.index(),
                 emissive_block_transport(),
             );
-        if crate::cave_scene::enabled() {
-            app.insert_resource(crate::cave_scene::materials());
+        if let Some(materials) = ScenePreset::current().materials() {
+            app.insert_resource(materials);
         } else {
             let cave = crate::cave_scene::materials();
             let mut table = app
@@ -130,7 +131,7 @@ impl Plugin for TerrainPlugin {
     }
 }
 
-fn emissive_block_transport() -> MaterialTransport {
+pub(crate) fn emissive_block_transport() -> MaterialTransport {
     MaterialTransport {
         diffuse: EnergySpectrum::new(Vec3::splat(0.8), 0.35, 0.04),
         emission: EnergySpectrum::new(Vec3::new(12.0, 5.0, 1.0), 4.0, 0.0),
@@ -141,7 +142,7 @@ fn emissive_block_transport() -> MaterialTransport {
 pub struct PrototypeWorld {
     config: PrototypeConfig,
     noise: Arc<TerrainNoise>,
-    cave: bool,
+    scene: ScenePreset,
     structures: Option<Arc<StructureLayer>>,
 }
 
@@ -153,18 +154,18 @@ impl Default for PrototypeWorld {
 
 impl PrototypeWorld {
     pub fn from_config(config: PrototypeConfig) -> Self {
-        let cave = crate::cave_scene::enabled();
+        let scene = ScenePreset::current();
         Self {
             noise: Arc::new(TerrainNoise::from_config(&config)),
             config,
-            cave,
-            structures: (!cave).then(showcase::world_structures),
+            scene,
+            structures: (scene == ScenePreset::Terrain).then(showcase::world_structures),
         }
     }
 
     pub fn player_spawn_position(&self) -> Vec3 {
-        if self.cave {
-            return crate::cave_scene::SPAWN;
+        if let Some(spawn) = self.scene.spawn() {
+            return spawn;
         }
         Vec3::new(
             0.0,
@@ -178,8 +179,8 @@ impl PrototypeWorld {
     }
 
     pub fn generated_voxel(&self, position: IVec3) -> WorldVoxel<MaterialIndex> {
-        if self.cave {
-            return crate::cave_scene::voxel(position);
+        if let Some(voxel) = self.scene.voxel(position) {
+            return voxel;
         }
         if let Some(voxel) = self
             .structures
@@ -206,7 +207,11 @@ impl VoxelWorldConfig for PrototypeWorld {
     type ChunkUserBundle = ();
 
     fn spawning_distance(&self) -> u32 {
-        if self.cave { 4 } else { SPAWNING_DISTANCE }
+        if self.scene == ScenePreset::Cave {
+            4
+        } else {
+            SPAWNING_DISTANCE
+        }
     }
 
     fn min_despawn_distance(&self) -> u32 {
@@ -221,7 +226,7 @@ impl VoxelWorldConfig for PrototypeWorld {
     }
 
     fn texture_index_mapper(&self) -> Arc<dyn Fn(Self::MaterialIndex) -> [u32; 3] + Send + Sync> {
-        let cave = self.cave;
+        let cave = self.scene == ScenePreset::Cave;
         Arc::new(move |id| {
             if cave && id == 2 {
                 [0; 3]
@@ -232,8 +237,9 @@ impl VoxelWorldConfig for PrototypeWorld {
     }
 
     fn voxel_lookup_delegate(&self) -> VoxelLookupDelegate<Self::MaterialIndex> {
-        if self.cave {
-            return Box::new(|_, _, _| Box::new(|p, _| crate::cave_scene::voxel(p)));
+        let scene = self.scene;
+        if scene != ScenePreset::Terrain {
+            return Box::new(move |_, _, _| Box::new(move |p, _| scene.voxel(p).unwrap()));
         }
         let terrain_noise = Arc::clone(&self.noise);
         let structures = self
@@ -398,7 +404,7 @@ mod tests {
         PrototypeWorld {
             noise: Arc::new(TerrainNoise::from_config(&config)),
             config,
-            cave: false,
+            scene: ScenePreset::Terrain,
             structures: Some(showcase::world_structures()),
         }
     }
@@ -494,7 +500,7 @@ mod tests {
         let world = PrototypeWorld {
             noise: Arc::new(TerrainNoise::from_config(&config)),
             config,
-            cave: false,
+            scene: ScenePreset::Terrain,
             structures: Some(showcase::world_structures()),
         };
         for x in -10..=10 {

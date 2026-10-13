@@ -27,10 +27,17 @@ pub fn sky_color() -> Color {
 }
 
 fn setup_lighting(mut commands: Commands) {
-    let cave = crate::cave_scene::enabled();
+    let preset = crate::scene_presets::ScenePreset::current();
+    let cave = preset == crate::scene_presets::ScenePreset::Cave;
+    let canyon = preset == crate::scene_presets::ScenePreset::Canyon;
     if cave {
         commands.insert_resource(crate::voxel_gi::VoxelGiEnvironment(
             crate::cave_scene::ENVIRONMENT,
+        ));
+    }
+    if canyon {
+        commands.insert_resource(crate::voxel_gi::VoxelGiEnvironment(
+            crate::canyon_scene::ENVIRONMENT,
         ));
     }
     let cascade_shadow_config = CascadeShadowConfigBuilder {
@@ -43,18 +50,26 @@ fn setup_lighting(mut commands: Commands) {
         Name::new("Sun"),
         DemoSun,
         DirectionalLight {
-            color: if cave {
+            color: if cave || canyon {
                 Color::WHITE
             } else {
                 Color::srgb(1.0, 0.96, 0.88)
             },
-            illuminance: if cave { 40_000.0 } else { 18_000.0 },
+            illuminance: if cave {
+                40_000.0
+            } else if canyon {
+                20_000.0
+            } else {
+                18_000.0
+            },
             shadow_maps_enabled: true,
             ..default()
         },
         Transform::IDENTITY.looking_at(
             if cave {
                 -crate::cave_scene::sun_direction()
+            } else if canyon {
+                -crate::canyon_scene::sun_direction()
             } else {
                 Vec3::new(0.35, -0.8, 0.25)
             },
@@ -62,9 +77,13 @@ fn setup_lighting(mut commands: Commands) {
         ),
         cascade_shadow_config,
     ));
-    if cave {
+    if cave || canyon {
         sun.insert(crate::voxel_gi::EnergyEmitter {
-            spectrum: crate::voxel_gi::EnergySpectrum::new(Vec3::ZERO, 2.0, 0.0),
+            spectrum: crate::voxel_gi::EnergySpectrum::new(
+                Vec3::ZERO,
+                if cave { 2.0 } else { 0.2 },
+                0.0,
+            ),
             range: 0.0,
         });
     }

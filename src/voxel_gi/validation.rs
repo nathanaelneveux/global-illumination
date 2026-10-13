@@ -288,8 +288,10 @@ pub(super) fn run_validation(
         run.structures
             .tick(elapsed, player, &mut commands, &cameras, &mut lights);
     }
-    if profile == Profile::Cave && !run.cave_camera_initialized {
-        let (eye, target) = if crate::cave_scene::enabled() {
+    if matches!(profile, Profile::Cave | Profile::Canyon) && !run.cave_camera_initialized {
+        let (eye, target) = if profile == Profile::Canyon {
+            (crate::canyon_scene::EYE, crate::canyon_scene::TARGET)
+        } else if crate::cave_scene::enabled() {
             (crate::cave_scene::EYE, crate::cave_scene::TARGET)
         } else {
             (Vec3::new(47.0, -11.4, -18.0), Vec3::new(76.0, -17.0, -34.0))
@@ -604,7 +606,11 @@ pub(super) fn run_validation(
         "performance_baseline": profile == Profile::Gameplay && evidence.render_target.is_none(),
         "build": "development", "backend": stats.backend,
         "compiled_manifest_dir": env!("CARGO_MANIFEST_DIR"),
-        "scene": if crate::cave_scene::enabled() { "many-emitter cave" } else { "terrain" },
+        "scene": match crate::scene_presets::ScenePreset::current() {
+            crate::scene_presets::ScenePreset::Cave => "many-emitter cave",
+            crate::scene_presets::ScenePreset::Canyon => "daylight canyon",
+            crate::scene_presets::ScenePreset::Terrain => "terrain",
+        },
         "house_only_control": crate::structures::showcase::validation_house_only(),
         "background_terrain": {"enabled": crate::cave_scene::background_terrain_requested(),
             "moves": run.background.moves, "speed_voxels_per_second": 4.32,
