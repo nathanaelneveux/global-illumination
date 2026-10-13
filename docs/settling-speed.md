@@ -2,6 +2,26 @@
 
 ## Batch-size and cached-bound decisions
 
+Integration check at `10a8b7c` (runtime `3e09d56`): the focused native
+cache/material-generation test passed. The default response workload
+`response-1791858630010281000-41136` completed with 14 guarded offscreen
+captures and clean render logs. Cavity-settled and emitter-removal +1 s images
+were inspected; neither was black or missing assets. This verifies the
+integrated response path, not a new independent-reference latency result or
+interactive 60 FPS. No stress sweep was needed for these unchanged lifetimes.
+
+The follow-up 6 ms + 500 ms display-response pilot used the existing knobs,
+not a new history reset or filter. Runtime `3e09d56`, clean launch `10a8b7c`,
+`cave-1791858395416839000-40989`: median/p95 settling 6.159/13.431 s, but only
+140/144 sustain the final dwell. Error p95 at 15 s .05313; peak .09834/.28623.
+Variation .11140/.09901 remains higher than quiet control .08529/.04889,
+despite longer smoothing (fresh paths at least 304/288). Age p95 .710/17.549 s,
+736.15 M paths, 99.43% coverage. CPU body 4.684/8.012/12.573/23.930 ms.
+The median narrowly exceeds 2× control speed, but the noise/CPU tradeoff is
+**not a qualified overall win**. Keep default 4 ms / 75 ms response. More work
+at the same per-update statistical gate can increase visible variation; changing
+only the time cap did not fully resolve that coupling. No interactive FPS claim.
+
 A 4.5 ms pilot on `21c03a4` (runtime `3e09d56`),
 `cave-1791858064391009000-40852`, did not justify a budget increase. Median/p95
 settling 7.211/15.593 s, all 144 sustain, 15-second error .11618, peak
