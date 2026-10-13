@@ -267,6 +267,69 @@ fn settling_roulette_study() {
     }
 }
 
+#[test]
+#[ignore = "native exact light-node normal-cone arithmetic study"]
+fn settling_light_importance_study() {
+    let original = "    var emitter = 0.0;\n    for (var face = 0u; face < 6u; face += 1u) {\n        if (node.normals & (1u << face)) != 0u {\n            emitter = max(emitter, clamp(-dot(face_normal(face), direction) + spread, 0.0, 1.0));\n        }\n    }";
+    let replacement = "    let positive = select(vec3(-1.0), -direction, (vec3(node.normals) & vec3(1u, 4u, 16u)) != vec3(0u));\n    let negative = select(vec3(-1.0), direction, (vec3(node.normals) & vec3(2u, 8u, 32u)) != vec3(0u));\n    let projected = max(positive, negative);\n    let emitter = clamp(max(max(projected.x, projected.y), projected.z) + spread, 0.0, 1.0);";
+    assert_eq!(SHADER.matches(original).count(), 1);
+    let mut baseline = super::super::tests::native_tracer();
+    let mut candidate = GpuTracer::with_shader(
+        baseline.context.clone(),
+        true,
+        &SHADER.replace(original, replacement),
+    )
+    .unwrap();
+    let mut f = cave_fixture();
+    let emitters = Arc::new(EmissionDistribution::build(&f.scene, &f.materials));
+    for paths in [1, 7, 16, 64, 256] {
+        let mut a = work(&f.probes, 65536);
+        let mut b = work(&f.probes, 65536);
+        trace(&mut baseline, &f, &emitters, &mut a, paths);
+        trace(&mut candidate, &f, &emitters, &mut b, paths);
+        for (a, b) in a.faces.iter().zip(&b.faces) {
+            for (a, b) in [a.radiance, a.second_moment, a.direct].into_iter().zip([
+                b.radiance,
+                b.second_moment,
+                b.direct,
+            ]) {
+                for (a, b) in channels(a).into_iter().zip(channels(b)) {
+                    assert!(
+                        (a - b).abs() < 1e-5 * (1.0 + a.abs()),
+                        "normal-cone rewrite changed {a} to {b}"
+                    );
+                }
+            }
+        }
+    }
+    f.probes = f.probes.iter().cycle().take(2048).cloned().collect();
+    let mut times: [Vec<f32>; 2] = default();
+    for round in 0..64 {
+        for mode in [round % 2, 1 - round % 2] {
+            let gpu = if mode == 0 {
+                &mut baseline
+            } else {
+                &mut candidate
+            };
+            trace(
+                gpu,
+                &f,
+                &emitters,
+                &mut work(&f.probes, 65536 + round as u32 * 16),
+                16,
+            );
+            if round >= 8 {
+                times[mode].push(gpu.last_gpu_ms.unwrap());
+            }
+        }
+    }
+    eprintln!(
+        "LIGHT_IMPORTANCE baseline/branchless GPU p50 {}/{}",
+        percentile(times[0].clone(), 50),
+        percentile(times[1].clone(), 50)
+    );
+}
+
 /// Fixed-work spatial reconstruction pilot. Compare against the *unfiltered*
 /// high-sample corner field, so blurring the target cannot hide approximation
 /// error. Missing coplanar neighbors are hard edges, not black samples.
