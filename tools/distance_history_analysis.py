@@ -81,7 +81,8 @@ def moments(run, key):
     return value
 
 
-def replay(case, index, reverse, repeated, policy, batch_paths, warm_paths, limit_override=None):
+def replay(case, index, reverse, repeated, policy, batch_paths, warm_paths, limit_override=None,
+           selector=None):
     before, after = [np.asarray(case["references_" + side], dtype=float).mean(axis=0)
                      for side in ("before", "after")]
     refs = [before, after]
@@ -97,6 +98,8 @@ def replay(case, index, reverse, repeated, policy, batch_paths, warm_paths, limi
     if limit.shape != weight.shape or not np.isfinite(limit).all() or (limit < 0).any():
         raise ValueError("invalid per-site history limits")
     bank = [moments(case[s][index], "batches") for s in sides]
+    second_bank = ([np.asarray([[m["second"] for m in b] for b in case[s][index]["batches"]])
+                    for s in sides] if selector is not None else None)
     if bank[0].shape != bank[1].shape or bank[0].shape[1:] != mean.shape:
         raise ValueError("inconsistent path tape")
     steps = len(bank[0])
@@ -114,9 +117,14 @@ def replay(case, index, reverse, repeated, policy, batch_paths, warm_paths, limi
     initial_error = rgb_error(mean, target, scale)
     last_bad = np.where(initial_error > 0.05, 0, -1)
     for step in range(steps):
-        if step == 0 or (repeated and step % 8 == 0):
+        event = step == 0 or (repeated and step % 8 == 0)
+        if event:
             side = 1 - side
-            weight = np.minimum(weight, limit)
+            if selector is None:
+                weight = np.minimum(weight, limit)
+        if selector is not None:
+            weight = np.minimum(weight,selector.weights(
+                mean,weight,bank[side][step],second_bank[side][step],batch_paths,event))
         old = mean.copy()
         retained = np.minimum(weight, 65536 - batch_paths)
         weight = retained + batch_paths
@@ -135,13 +143,16 @@ def replay(case, index, reverse, repeated, policy, batch_paths, warm_paths, limi
                            "rgb":summary(error)})
     settling = np.where(last_bad == -1, 0, (last_bad + 1) * batch_paths)
     settled = last_bad < steps - 16
-    return {"policy":policy,"seed":run["seed"],"reverse":reverse,"repeated":repeated,
+    result = {"policy":policy,"seed":run["seed"],"reverse":reverse,"repeated":repeated,
             "late_rgb":summary(late),"late_bands":[summary(np.asarray(band_late)[...,i]) for i in range(5)],
             "late_variation":summary(variation),"bright_excursion":summary(bright),
             "dark_excursion":summary(dark),"final_rgb":summary(error),
             "settled_fraction_5pct":float(np.mean(settled)),
             "all_settled_paths_5pct":int(settling.max()) if settled.all() else None,
             "weight":summary(weight),"curve":curves}
+    if selector is not None:
+        result["bias_noise_conflicts"] = selector.conflicts
+    return result
 
 
 def analyze(tape):

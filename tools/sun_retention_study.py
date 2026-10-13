@@ -19,6 +19,35 @@ from distance_history_analysis import caps, replay, summary
 from retention_budget import ChangePrior, QualityGoal, ResponseBudget, SamplingCalibration, select_limit
 
 
+class VarianceGuard:
+    """Experimental first-innovation noise floor over a known geometry event.
+
+    If the new batch is exactly equal to history, do not discard evidence yet.
+    Otherwise compare the bias cap with history needed to bound the estimated
+    standard deviation of this update. Sample moments are an IID proxy, not a
+    certified QMC tail bound. Conflicting budgets are reported, not concealed.
+    """
+    def __init__(self,limits,update_noise=0.05):
+        if not math.isfinite(update_noise) or update_noise <= 0:
+            raise ValueError("positive finite update-noise target required")
+        self.limits = np.asarray(limits,dtype=float)
+        self.update_noise = update_noise
+        self.pending = np.zeros(len(limits),dtype=bool)
+        self.conflicts = 0
+
+    def weights(self,mean,available,fresh,second,paths,event):
+        if event:
+            self.pending[:] = True
+        decision = self.pending & np.any(fresh != mean,axis=1)
+        variance = np.maximum(0,second-fresh*fresh)
+        scale = np.maximum(0.02,np.maximum(np.abs(mean),np.abs(fresh)))
+        noise_history = np.maximum(0,np.max(np.sqrt(variance*paths)/scale,axis=1)/self.update_noise-paths)
+        self.conflicts += int(np.sum(decision & (noise_history > self.limits)))
+        chosen = np.maximum(self.limits,noise_history)
+        self.pending[decision] = False
+        return np.where(decision,np.minimum(available,chosen),available)
+
+
 def load(path):
     raw = path.read_bytes()
     return json.loads(raw), hashlib.sha256(raw).hexdigest()
@@ -63,6 +92,9 @@ def analyze(tape,metadata,calibration,budget,prior):
                     for name,limits in policies.items():
                         result = replay(case,index,reverse,repeated,name,tape["batch_paths"],tape["warm_paths"],limits)
                         runs.append(result)
+                    guard = VarianceGuard(policies["sun-budget"])
+                    runs.append(replay(case,index,reverse,repeated,"sun-budget-variance",
+                        tape["batch_paths"],tape["warm_paths"],policies["sun-budget"],guard))
         reports.append({"name":case["name"],"bounds":case["changed_bounds"],
                         "sun_targets":evidence["sun_targets"],"sun_lowered_distance_sites":int(np.sum(effective<distances)),
                         "limits":{k:summary(v) for k,v in policies.items()},"runs":runs})
@@ -76,6 +108,61 @@ def sensitivity(calibration,budget,prior):
                 replace(calibration,paths_for_quality=calibration.paths_for_quality*factor),budget,prior))
                 for factor in (1,0.5,0.25)]}
             for distance in (0,48,96,128,192,256,384,512)]
+
+
+def legacy_controls(tape,calibration,budget,prior):
+    """Reuse existing local emitter/skylight tapes without tracing them again.
+
+    A verified baseline cap16 proves distance <=48, where this prior is flat.
+    For remote events require ALL actual edit targets in the saved diagnostics;
+    never fill missing geometry with a guessed distance. No-edit controls stay
+    no-edit, and sun changes can only reduce distance below the local flat band.
+    """
+    from history_qualification import evaluate
+    class Policy:
+        def __init__(self,name,limits,has_edit,guarded):
+            self.name,self.limits,self.has_edit = name,limits,has_edit
+            self.guard = VarianceGuard(limits) if guarded else None
+            self.pending = False
+
+        def event(self,histories,sites,audit):
+            self.pending = self.has_edit
+
+        def weights(self,histories,fresh,paths):
+            available = np.asarray([h.weight for h in histories])
+            if self.guard:
+                result = self.guard.weights(np.asarray([h.mean for h in histories]),available,
+                    np.asarray([f["mean"] for f in fresh]),np.asarray([f["second"] for f in fresh]),
+                    paths,self.pending)
+            else:
+                result = np.minimum(available,self.limits) if self.pending else available
+            self.pending = False
+            return result
+
+    results = []
+    for case in tape["cases"]:
+        metadata = case["guided"]
+        targets = {tuple(math.floor(v) for v in pair["target"])
+                   for q in metadata["receivers"] for pair in q["geometry1"]["pairs"]}
+        limits = []
+        for site,baseline in zip(case["sites"],metadata["baseline_caps"]):
+            if not metadata["has_edit"]:
+                limits.append(65536)
+            elif baseline == 16:
+                limits.append(select_limit(0,None,calibration,budget,prior))
+            elif len(targets) == metadata["edit_targets"] and targets and metadata["sun_targets"] == 0:
+                d = min(math.dist(site["voxel"],p) for p in targets)
+                limits.append(select_limit(d,None,calibration,budget,prior))
+            else:
+                raise ValueError("legacy tape lacks complete remote geometry/sun evidence")
+        for run in case["runs"]:
+            for name,values,guarded in (("baseline",metadata["baseline_caps"],False),
+                                        ("sun-budget",limits,False),("sun-budget-variance",limits,True)):
+                policy = Policy(name,values,metadata["has_edit"],guarded)
+                result = evaluate(case,run,policy,tape["batch_paths"],tape["warm_paths"],tape["steps"])
+                result["bias_noise_conflicts"] = policy.guard.conflicts if policy.guard else 0
+                results.append(result)
+    return results
 
 
 class Tests(unittest.TestCase):
@@ -131,6 +218,17 @@ class Tests(unittest.TestCase):
         b = replay(case,0,False,False,"baseline",16,4096,[256])
         self.assertEqual(a,b)
 
+    def test_variance_guard_preserves_absent_evidence_and_reports_conflict(self):
+        guard = VarianceGuard([16])
+        old,zero = np.ones((1,5)),np.zeros((1,5))
+        self.assertEqual(guard.weights(zero,np.array([4096]),zero,zero,16,True)[0],4096)
+        self.assertTrue(guard.pending[0])
+        limit = guard.weights(zero,np.array([4096]),old,old*4,16,False)[0]
+        self.assertGreater(limit,16)
+        self.assertEqual(guard.conflicts,1)
+        self.assertFalse(guard.pending[0])
+        self.assertEqual(guard.weights(old,np.array([4096]),zero,zero,16,True)[0],16)
+
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
@@ -139,6 +237,7 @@ def main():
     p.add_argument("--quality-report",type=Path,required=True)
     p.add_argument("--sampler-id",required=True)
     p.add_argument("--output",type=Path,required=True)
+    p.add_argument("--legacy-tape",type=Path)
     p.add_argument("--stale-error",type=float,default=0.03)
     p.add_argument("--response-fraction",type=float,default=1/6)
     p.add_argument("--change-distance",type=float,default=48)
@@ -153,10 +252,14 @@ def main():
     report = analyze(tape,metadata,calibration,budget,prior)
     report["inputs"] = dict(tape_sha256=tape_hash,metadata_sha256=metadata_hash,quality_sha256=quality_hash)
     report["calibration_sensitivity_only"] = sensitivity(calibration,budget,prior)
+    if args.legacy_tape:
+        legacy,legacy_hash = load(args.legacy_tape)
+        report["legacy_controls"] = legacy_controls(legacy,calibration,budget,prior)
+        report["inputs"]["legacy_tape_sha256"] = legacy_hash
     args.output.write_text(json.dumps(report,indent=2,allow_nan=False)+"\n")
     for c in report["cases"]:
         print(c["name"],c["bounds"],"sun targets",c["sun_targets"])
-        for name in c["limits"]:
+        for name in (*c["limits"],"sun-budget-variance"):
             for repeated in (False,True):
                 runs = [r for r in c["runs"] if r["policy"] == name and r["repeated"] == repeated]
                 if runs:
