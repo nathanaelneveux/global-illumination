@@ -271,10 +271,15 @@ the two fallback floors with revision stamps per distance band and origin. It
 reuses worker-computed change-to-page AABB distances and stores no baked sample
 caps. Eight recent exact events and per-receiver consumption epochs remain;
 band storage is allocated only when a page first evicts an exact event.
+The default journal omits an event when the calibrated prior at its minimum
+page distance permits unlimited history for every receiver. Such an event
+cannot evict useful bounds or allocate a band summary. A separate per-page
+latest-change revision preserves existing refresh wakeups without storing its
+bounds; wakeup checks do not depend on the last retained journal entry.
 This avoids discarding all distance information at eviction, but page extent
 and downward distance quantization are still conservative approximations.
 The calibrated curve and its empirical quality target are unchanged.
-The journal supplies both retention caps and pending-change wakeups, not ray
+The page metadata supplies both retention caps and pending-change wakeups, not ray
 traversal or radiance storage. An older closer event cannot generally replace a
 newer farther one: a receiver may already have consumed the older revision.
 Distance-only pruning would lose freshness as well as retention evidence.

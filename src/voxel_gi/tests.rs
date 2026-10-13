@@ -638,44 +638,49 @@ fn urgent_work_cannot_starve_loaded_world_sweep() {
 
 #[test]
 fn late_sun_evidence_wakes_a_current_receiver_without_resetting_distant_history() {
-    let voxel = IVec3::ZERO;
-    let mut probe = SurfaceProbe::new(voxel, 4);
-    probe.samples = [4096; 6];
-    probe.sequence = [8192; 6];
-    probe.radiance = [EnergySpectrum::ONE; 6];
-    probe.second_moment = [EnergySpectrum::ONE; 6];
-    probe.stable_batches = [8; 6];
-    probe.face_updated_at = [Some(Instant::now()); 6];
-    let mut field = VoxelEnergyField::default();
-    field.probes.insert(voxel, probe);
-    field.order.push(voxel);
-    let mut runtime = VoxelGiRuntime {
-        spatial_history: Some(default()),
-        batch_size: 1,
-        ..default()
-    };
-    assert!(select_probes(&mut runtime, &field).is_empty());
-    let change = geometry::GeometryChange {
-        nearby: HashMap::from_iter([(
-            IVec3::ZERO,
-            geometry::PageChanges::new(IVec3::ZERO, vec![geometry::Bounds::point(voxel)]),
-        )]),
-        ..default()
-    };
-    runtime
-        .spatial_history
-        .as_mut()
-        .unwrap()
-        .record(change, retention::Origin::Sunlight);
-    let selected = select_probes(&mut runtime, &field);
-    assert_eq!(selected.len(), 1);
-    assert_eq!(selected[0].samples[2], 256);
-    assert_eq!(selected[0].sequence[2], 8192);
-    assert_eq!(selected[0].radiance[2], EnergySpectrum::ONE);
-    assert_eq!(
-        field.transport_revision, 0,
-        "sky evidence does not fabricate geometry revisions"
-    );
+    for (changed, expected_samples) in [
+        (IVec3::ZERO, 256),
+        (IVec3::new(308, 40, 0), 4096), // wake-only: no retained bounds record
+    ] {
+        let voxel = IVec3::ZERO;
+        let mut probe = SurfaceProbe::new(voxel, 4);
+        probe.samples = [4096; 6];
+        probe.sequence = [8192; 6];
+        probe.radiance = [EnergySpectrum::ONE; 6];
+        probe.second_moment = [EnergySpectrum::ONE; 6];
+        probe.stable_batches = [8; 6];
+        probe.face_updated_at = [Some(Instant::now()); 6];
+        let mut field = VoxelEnergyField::default();
+        field.probes.insert(voxel, probe);
+        field.order.push(voxel);
+        let mut runtime = VoxelGiRuntime {
+            spatial_history: Some(default()),
+            batch_size: 1,
+            ..default()
+        };
+        assert!(select_probes(&mut runtime, &field).is_empty());
+        let change = geometry::GeometryChange {
+            nearby: HashMap::from_iter([(
+                IVec3::ZERO,
+                geometry::PageChanges::new(IVec3::ZERO, vec![geometry::Bounds::point(changed)]),
+            )]),
+            ..default()
+        };
+        runtime
+            .spatial_history
+            .as_mut()
+            .unwrap()
+            .record(change, retention::Origin::Sunlight);
+        let selected = select_probes(&mut runtime, &field);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].samples[2], expected_samples);
+        assert_eq!(selected[0].sequence[2], 8192);
+        assert_eq!(selected[0].radiance[2], EnergySpectrum::ONE);
+        assert_eq!(
+            field.transport_revision, 0,
+            "sky evidence does not fabricate geometry revisions"
+        );
+    }
 }
 
 #[test]

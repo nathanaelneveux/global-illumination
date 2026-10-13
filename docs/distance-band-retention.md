@@ -22,8 +22,8 @@ retention curve, transport estimator, lighting range, presentation or BVW.
 
 ## Representation and ownership
 
-Each existing 32³ receiver page still retains eight recent events with exact
-change bounds. Older events enter a fixed-size summary. For each origin
+Each existing 32³ receiver page retains up to eight recent cap-affecting events
+with exact change bounds. Older retained events enter a fixed-size summary. For each origin
 (geometry or sunlight) and distance band, store the newest event revision.
 An unconsumed revision means the band still contributes a cap; an already
 consumed near event cannot contaminate a later distant event.
@@ -203,6 +203,36 @@ than repeating them for a default switch and behavior-equivalent allocation.
 Focused tests cover pre-overflow parity, lazy allocation, immutable snapshots,
 the seven-event counterexample, cap ordering, publication and late-sun wakeups.
 No new native performance or memory-neutrality result is claimed.
+
+### Omitting no-cap events
+
+After integration at `3e9f3b4`, the default distance-band ledger drops an event's
+bounds if the existing change prior at its minimum page distance is at or below
+the existing stale-error allowance. That distance lower-bounds every receiver's
+distance: the event cannot cap any receiver in the page. It must not occupy a
+slot, force a useful older event into approximation, or allocate band storage.
+
+The worker already excludes changes beyond the coarse influence radius. The
+remaining gap is narrow: the integer radius is 278, while the no-cut boundary
+is squared distance 76,800 (about 277.13 voxels). This is a bookkeeping cleanup,
+not a newly chosen cutoff, a 384-block physics limit, or a measured speedup.
+An event relevant to even one page-edge receiver still keeps its exact bounds.
+The explicit `floors` arm preserves its previous behavior for comparisons.
+
+A single 64-bit latest-change revision per page keeps the existing wakeups,
+including pages whose journals are empty. Its immutable snapshot travels with
+the selected job, so later evidence remains pending. This adds eight bytes per
+page while removing no-cap bounds/event allocations and avoiding their evictions.
+Wakeup-only evidence is also omitted from the diagnostic shadow journal: its
+exact cap is unconditionally unlimited throughout the page, not lost evidence.
+Changes entirely outside the existing influence bin remain excluded as before.
+
+Verification: 20 retention-filter tests, six work tests, the extended late-sun
+selection regression (both capped and wake-only changes), strict production
+Clippy, development build and diff review. Tests cover negative pages, immutable
+snapshots, retirement, empty journals, no-cap event floods, cap ordering and
+receiver-edge relevance. No new GPU run or updated performance claim is needed
+for this bounded metadata change; the native measurements above predate it.
 
 ### Artifact index and reproduction
 

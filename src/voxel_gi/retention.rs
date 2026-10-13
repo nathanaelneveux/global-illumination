@@ -155,9 +155,12 @@ fn floor(origin: Origin, distance_squared: i64) -> u32 {
     (f64::from(baseline) * QUALITY_PATHS / BASELINE_QUALITY_PATHS).ceil() as u32
 }
 
+fn change_prior(distance_squared: i64) -> f64 {
+    (f64::from(RELIGHT_RADIUS).powi(2) / (distance_squared as f64).max(2304.0)).min(1.0)
+}
+
 fn limit(origin: Origin, distance_squared: i64) -> u32 {
-    let change =
-        (f64::from(RELIGHT_RADIUS).powi(2) / (distance_squared as f64).max(2304.0)).min(1.0);
+    let change = change_prior(distance_squared);
     if change <= STALE_ERROR {
         return u32::MAX;
     }
@@ -178,6 +181,9 @@ struct Event {
 
 #[derive(Clone)]
 struct PageHistory {
+    /// Refresh evidence has its own stamp: a page-wide no-cut event needs no
+    /// bounds record, but may still wake receivers that have not observed it.
+    latest_revision: u64,
     events: VecDeque<Event>,
     summary: Summary,
     /// Only opt-in watched pages retain this diagnostic shadow journal. It
@@ -191,6 +197,7 @@ struct PageHistory {
 impl PageHistory {
     fn new(mode: SummaryMode) -> Self {
         Self {
+            latest_revision: 0,
             events: VecDeque::new(),
             summary: Summary::new(mode),
             #[cfg(debug_assertions)]
@@ -239,6 +246,16 @@ impl SpatialHistory {
                     .entry(page)
                     .or_insert_with(|| Arc::new(PageHistory::new(self.mode))),
             );
+            history.latest_revision = self.revision;
+            // The page separation lower-bounds every receiver's distance. If
+            // even that distance permits unlimited history, this event cannot
+            // contribute a cap and must not evict useful exact evidence. Keep
+            // the old floor-summary arm unchanged as an explicit control.
+            if self.mode == SummaryMode::DistanceBands
+                && change_prior(changes.minimum_distance_squared) <= STALE_ERROR
+            {
+                continue;
+            }
             if history.events.len() == PAGE_EVENTS {
                 let evicted = history.events.pop_front().unwrap();
                 history.summary.fold(&evicted);
@@ -326,7 +343,7 @@ impl Snapshot {
     pub fn pending(&self, since: u64) -> bool {
         self.page
             .as_ref()
-            .is_some_and(|page| page.events.back().is_some_and(|e| e.revision > since))
+            .is_some_and(|page| page.latest_revision > since)
     }
 
     pub fn limit(&self, voxel: IVec3, since: u64) -> u32 {
@@ -334,6 +351,7 @@ impl Snapshot {
         if let Some(page) = &self.page {
             // Most selected receivers already consumed this page's evidence.
             // Its folded stamps necessarily precede its newest explicit event.
+            // Newer wake-only evidence cannot contribute any history cap.
             if page
                 .events
                 .back()
@@ -521,6 +539,7 @@ mod tests {
             audit_sun: None,
         };
         let mut page = PageHistory {
+            latest_revision: 2,
             events: VecDeque::from([latest.clone()]),
             summary: Summary::Floors([0, 1]),
             audit_events: VecDeque::from([old, latest]),
@@ -594,7 +613,7 @@ mod tests {
             }
         }
         let snapshot = candidate.snapshot(voxel);
-        candidate.record(event(voxel, IVec3::splat(1000)), Origin::Geometry);
+        candidate.record(event(voxel, IVec3::new(300, 0, 0)), Origin::Geometry);
         assert!(matches!(
             candidate.pages[&voxel].summary,
             Summary::DistanceBands(Some(_))
@@ -612,7 +631,7 @@ mod tests {
         let mut history = SpatialHistory::new(SummaryMode::DistanceBands);
         history.record(event(voxel, IVec3::new(79, 0, 0)), Origin::Geometry);
         for _ in 1..PAGE_EVENTS {
-            history.record(event(voxel, IVec3::splat(1000)), Origin::Geometry);
+            history.record(event(voxel, IVec3::new(300, 0, 0)), Origin::Geometry);
         }
         assert_eq!(history.query(voxel, 0).1, 256);
         let eight = history.snapshot(voxel);
@@ -654,6 +673,77 @@ mod tests {
             allocated,
             events.capacity()
         );
+    }
+
+    #[test]
+    fn no_cut_events_preserve_wakeups_without_evicting_exact_history() {
+        // Inside the coarse radius (278), outside the curve's no-cut edge.
+        // This is a real binning boundary, not an impossible far-away record.
+        for origin in [Origin::Geometry, Origin::Sunlight] {
+            let voxel = IVec3::ZERO;
+            let distant = IVec3::new(308, 40, 0);
+            let distance = Bounds::point(distant).distance_squared(Bounds::page(voxel));
+            assert!(distance <= i64::from(INFLUENCE_RADIUS).pow(2));
+            assert_eq!(limit(origin, distance), u32::MAX);
+            let mut history = SpatialHistory::default();
+            history.record(event(voxel, IVec3::new(192, 0, 0)), origin);
+            let before = history.snapshot(voxel);
+            for _ in 0..32 {
+                history.record(event(voxel, distant), origin);
+            }
+            let snapshot = history.snapshot(voxel);
+            assert_eq!(history.pages[&voxel].events.len(), 1);
+            assert!(matches!(
+                history.pages[&voxel].summary,
+                Summary::DistanceBands(None)
+            ));
+            assert_eq!(snapshot.limit(voxel, 0), 316);
+            assert_eq!(snapshot.limit(voxel, 1), u32::MAX);
+            assert!(snapshot.pending(32));
+            assert!(!snapshot.pending(33));
+            assert!(
+                !before.pending(1),
+                "in-flight snapshots must not consume newer wakeups"
+            );
+            let decision = snapshot.explain(voxel, 0);
+            assert_eq!(decision.cap, *decision.caps[..4].iter().min().unwrap());
+            history.retire(voxel);
+            assert!(snapshot.pending(1));
+            assert!(!history.snapshot(voxel).pending(1));
+        }
+    }
+
+    #[test]
+    fn empty_journals_can_wake_without_history_caps_or_band_storage() {
+        for page in [IVec3::ZERO, IVec3::splat(-3)] {
+            let voxel = page * 32;
+            let mut history = SpatialHistory::default();
+            history.record(
+                event(page, voxel + IVec3::new(308, 40, 0)),
+                Origin::Sunlight,
+            );
+            assert!(history.pages[&page].events.is_empty());
+            assert_eq!(history.pages[&page].events.capacity(), 0);
+            assert!(matches!(
+                history.pages[&page].summary,
+                Summary::DistanceBands(None)
+            ));
+            let snapshot = history.snapshot(voxel);
+            assert!(snapshot.pending(0));
+            assert_eq!(snapshot.limit(voxel, 0), u32::MAX);
+            assert!(!snapshot.pending(snapshot.revision));
+        }
+    }
+
+    #[test]
+    fn page_edge_receivers_keep_evidence_even_when_the_page_origin_is_too_far() {
+        let page = IVec3::ZERO;
+        let near_side = IVec3::new(31, 0, 0);
+        let mut history = SpatialHistory::default();
+        history.record(event(page, IVec3::new(287, 0, 0)), Origin::Geometry);
+        assert_eq!(history.pages[&page].events.len(), 1);
+        assert_eq!(history.query(IVec3::ZERO, 0).1, u32::MAX);
+        assert_eq!(history.query(near_side, 0).1, 1986);
     }
 
     #[test]
