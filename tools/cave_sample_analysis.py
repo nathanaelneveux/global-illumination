@@ -142,7 +142,10 @@ def perceptual_difference(first, second, ppd):
     return dict(oklab_delta_e=stats(delta),
         oklab_absolute_lightness_difference=stats(np.abs(a[..., 0] - b[..., 0])),
         fraction_pixels_over_delta_e_002=float(np.mean(delta > .02)),
-        flip=stats(error_map), flip_32px_tile_means=stats(tiles), flip_parameters=params)
+        flip=stats(error_map), flip_32px_tile_means=stats(tiles),
+        # The official API returns unused HDR exposure sentinels (infinity)
+        # even for LDR inputs. Keep only applicable, finite LDR parameters.
+        flip_parameters=dict(ppd=params["ppd"], dynamic_range="LDR"))
 
 
 def perceptual_analysis(folder, results, ppd):

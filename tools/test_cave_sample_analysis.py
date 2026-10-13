@@ -1,5 +1,6 @@
 """Small analytic guards for the cave sample-requirement tool."""
 import unittest
+import json
 import numpy as np
 from cave_sample_analysis import (
     corner_members, minimum_sustained, perceptual_difference, reconstruct, srgb_to_oklab,
@@ -37,6 +38,7 @@ class CaveSampleAnalysisTests(unittest.TestCase):
         same = perceptual_difference(image, image.copy(), 67)
         self.assertEqual(same["oklab_delta_e"]["max"], 0)
         self.assertLess(same["flip"]["max"], 1e-6)
+        json.dumps(same, allow_nan=False)
         different = perceptual_difference(image, image + .05, 67)
         self.assertGreater(different["flip"]["mean"], .01)
         self.assertGreater(different["oklab_delta_e"]["mean"], .01)
