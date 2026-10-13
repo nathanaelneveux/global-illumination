@@ -32,7 +32,7 @@ def analyze(folder):
     audit = json.loads((folder / "retention-audit.json").read_text())
     reference = json.loads((folder / "retention-reference.json").read_text())
     temporal = json.loads((folder / "temporal.json").read_text())
-    if (report["profile"] != "cave" or report["spatial_retention"] != "calibrated"
+    if (report["profile"] != "cave" or report["spatial_retention"] != "calibrated-cave-user-2048-v1"
             or not report["background_terrain"]["enabled"]
             or temporal["end_s"] < 180 or len(audit["sites"]) != 36):
         raise ValueError("require complete calibrated cave with background terrain")
@@ -47,6 +47,9 @@ def analyze(folder):
             raise ValueError("diagnostic decomposition does not match actual cap")
         if event["retained"] != min(event["before"], decision["cap"]):
             raise ValueError("invalid retained weight")
+        unfolded = decision.get("unfolded")
+        if unfolded and unfolded["cap"] != min(unfolded["caps"][:2]):
+            raise ValueError("inconsistent shadow journal")
     if any(e["source_changed"] or e["model_restart"] for e in events if e["at_s"] >= 30):
         raise ValueError("source/model changes need separate attribution")
     labels = audit["cap_labels"]
@@ -66,6 +69,15 @@ def analyze(folder):
         cuts = [e for e in selected if e["retained"] < e["before"]]
         sun = [e for e in cuts if e["decision"]["caps"][1] == e["decision"]["cap"]]
         geo = [e for e in cuts if e["decision"]["caps"][0] == e["decision"]["cap"]]
+        folded = [e for e in cuts if min(e["decision"]["caps"][2:4]) == e["decision"]["cap"]]
+        explained = [e for e in folded if e["decision"].get("unfolded")]
+        if audit["schema_version"] >= 2 and len(explained) != len(folded):
+            raise ValueError("shadow journal too short to explain a consumed overflow")
+        extra_loss = sum(min(e["before"], e["decision"]["unfolded"]["cap"])-e["retained"] for e in explained)
+        unfolded_cuts = [dict(e, decision=e["decision"]["unfolded"],
+                             retained=min(e["before"], e["decision"]["unfolded"]["cap"])) for e in explained
+                         if e["decision"]["unfolded"]["cap"] < e["before"]]
+        unfolded_sun = [e for e in unfolded_cuts if e["decision"]["caps"][1] == e["decision"]["cap"]]
         intervals.append(dict(
             seconds=[start, end], accepted_jobs=len(selected), cuts=len(cuts),
             weight_removed=sum(e["before"]-e["retained"] for e in cuts),
@@ -75,6 +87,17 @@ def analyze(folder):
             retained=distribution([e["retained"] for e in cuts]) if cuts else None,
             before=distribution([e["before"] for e in cuts]) if cuts else None,
             superseded_scene_jobs=sum(not e["sky_current"] for e in cuts),
+            overflow_counterfactual=dict(explained=len(explained),
+                no_cut_needed=sum(e["decision"]["unfolded"]["cap"] >= e["before"] for e in explained),
+                less_severe=sum(e["decision"]["unfolded"]["cap"] > e["retained"] for e in explained),
+                extra_weight_removed_by_summary=extra_loss,
+                remaining_causes=groups(unfolded_cuts, mechanism),
+                remaining_sunlight=groups(unfolded_sun, sunlight),
+                largest_cuts=[dict(seconds=e["at_s"], site=e["site"], before=e["before"], retained=e["retained"],
+                    unfolded_cap=e["decision"]["unfolded"]["cap"], unfolded_caps=e["decision"]["unfolded"]["caps"],
+                    unfolded_distances=[float(np.sqrt(v)) for v in e["decision"]["unfolded"]["distance_squared"]])
+                    for e in sorted(explained, key=lambda e:e["before"]-e["retained"], reverse=True)[:5]],
+                note="One-step counterfactual at observed weight, not a no-overflow trajectory replay."),
         ))
     checkpoints = reference["checkpoints"]
     corners = np.asarray([s["corner_references"] for s in checkpoints])[..., :3]

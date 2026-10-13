@@ -46,6 +46,21 @@ pub fn site(voxel: IVec3) -> Option<(usize, usize)> {
         .copied()
 }
 
+pub fn watches_page(page: IVec3) -> bool {
+    if !enabled() {
+        return false;
+    }
+    static PAGES: OnceLock<bevy::platform::collections::HashSet<IVec3>> = OnceLock::new();
+    PAGES
+        .get_or_init(|| {
+            super::temporal::sites(Profile::Cave)
+                .into_iter()
+                .map(|(v, _)| super::super::page_of(v))
+                .collect()
+        })
+        .contains(&page)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SunKind {
     KnownChange,
@@ -84,6 +99,9 @@ pub struct Decision {
     /// counterfactual raw-point caps; overlapping causes must not be summed.
     pub caps: [u32; 8],
     pub distance_squared: [i64; 6],
+    /// Read-only long-journal counterfactual, never used by transport. None
+    /// means the diagnostic journal itself cannot reconstruct this interval.
+    pub unfolded: Option<Box<Decision>>,
 }
 
 impl Decision {
@@ -94,6 +112,7 @@ impl Decision {
             cap: u32::MAX,
             caps: [u32::MAX; 8],
             distance_squared: [i64::MAX; 6],
+            unfolded: None,
         }
     }
 }
@@ -173,7 +192,7 @@ impl Recorder {
         std::fs::write(
             output.join("retention-audit.json"),
             serde_json::to_vec(&json!({
-                "schema_version":1,
+            "schema_version":2,
                 "sites":super::temporal::sites(Profile::Cave).iter().map(|(v,f)| json!({"voxel":v.to_array(),"face":f})).collect::<Vec<_>>(),
                 "cap_labels":["geometry","sunlight_coalesced","folded_near","folded_far","sun_known_change","sun_first_measurement","sun_unresolved","sun_recovered"],
                 "distance_labels":["geometry","sunlight_coalesced","sun_known_change","sun_first_measurement","sun_unresolved","sun_recovered"],

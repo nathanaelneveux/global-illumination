@@ -74,6 +74,12 @@ struct PageHistory {
     /// prevents an already-consumed old local edit from contaminating new sun
     /// events when the journal next overflows.
     folded: [u64; 2],
+    /// Only opt-in watched pages retain this diagnostic shadow journal. It
+    /// cannot change the eight-event production journal or its fallback.
+    #[cfg(debug_assertions)]
+    audit_events: VecDeque<Event>,
+    #[cfg(debug_assertions)]
+    audit_dropped: u64,
 }
 
 #[derive(Default)]
@@ -93,7 +99,8 @@ impl SpatialHistory {
             .expect("retention revision exhausted");
         for (page, bounds) in change.nearby {
             // A worker holds immutable page snapshots, never this world map.
-            // Copy-on-write clones at most eight small event headers, not bounds.
+            // Copy-on-write clones at most eight production event headers, not
+            // bounds. Opt-in attribution has a larger diagnostic-only sidecar.
             let history = Arc::make_mut(self.pages.entry(page).or_default());
             if history.events.len() == PAGE_EVENTS {
                 let evicted = history.events.pop_front().unwrap();
@@ -116,6 +123,15 @@ impl SpatialHistory {
                 #[cfg(debug_assertions)]
                 audit_sun: change.audit_sun.clone(),
             });
+            #[cfg(debug_assertions)]
+            if super::validation::retention_audit::watches_page(page) {
+                if history.audit_events.len() == 1024 {
+                    history.audit_dropped = history.audit_events.pop_front().unwrap().revision;
+                }
+                history
+                    .audit_events
+                    .push_back(history.events.back().unwrap().clone());
+            }
         }
     }
 
@@ -170,24 +186,20 @@ impl Snapshot {
                 }
             }
             for event in page.events.iter().filter(|event| event.revision > since) {
-                let index = usize::from(matches!(event.origin, Origin::Sunlight));
-                result.caps[index] =
-                    result.caps[index].min(bounds_limit(event.origin, voxel, &event.bounds));
-                for bounds in event.bounds.iter() {
-                    result.distance_squared[index] = result.distance_squared[index]
-                        .min(bounds.distance_squared(Bounds::point(voxel)));
+                event.explain(voxel, &mut result);
+            }
+            if !page.audit_events.is_empty() && since >= page.audit_dropped {
+                let mut unfolded = Decision::new(since, self.revision);
+                for event in page
+                    .audit_events
+                    .iter()
+                    .rev()
+                    .take_while(|e| e.revision > since)
+                {
+                    event.explain(voxel, &mut unfolded);
                 }
-                if let Some(evidence) = &event.audit_sun {
-                    for point in evidence.iter() {
-                        let distance =
-                            Bounds::point(point.position).distance_squared(Bounds::point(voxel));
-                        let index = 4 + point.kind as usize;
-                        result.caps[index] =
-                            result.caps[index].min(limit(Origin::Sunlight, distance));
-                        result.distance_squared[index - 2] =
-                            result.distance_squared[index - 2].min(distance);
-                    }
-                }
+                unfolded.cap = unfolded.caps[0].min(unfolded.caps[1]);
+                result.unfolded = Some(Box::new(unfolded));
             }
         }
         result.cap = self.limit(voxel, since);
@@ -232,6 +244,27 @@ impl Snapshot {
             }
         }
         cap
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Event {
+    fn explain(&self, voxel: IVec3, result: &mut super::validation::retention_audit::Decision) {
+        let index = usize::from(matches!(self.origin, Origin::Sunlight));
+        result.caps[index] = result.caps[index].min(bounds_limit(self.origin, voxel, &self.bounds));
+        for bounds in self.bounds.iter() {
+            result.distance_squared[index] =
+                result.distance_squared[index].min(bounds.distance_squared(Bounds::point(voxel)));
+        }
+        if let Some(evidence) = &self.audit_sun {
+            for point in evidence.iter() {
+                let distance = Bounds::point(point.position).distance_squared(Bounds::point(voxel));
+                let index = 4 + point.kind as usize;
+                result.caps[index] = result.caps[index].min(limit(Origin::Sunlight, distance));
+                result.distance_squared[index - 2] =
+                    result.distance_squared[index - 2].min(distance);
+            }
+        }
     }
 }
 
@@ -360,6 +393,42 @@ mod tests {
         assert_eq!(result.caps[4], u32::MAX);
         assert_eq!(result.caps[5], 256);
         assert_eq!(result.caps[0], u32::MAX);
+    }
+
+    #[test]
+    fn shadow_journal_measures_lost_distance_without_changing_the_cap() {
+        let old = Event {
+            revision: 1,
+            origin: Origin::Geometry,
+            bounds: Arc::new(vec![Bounds::point(IVec3::new(256, 0, 0))]),
+            audit_sun: None,
+        };
+        let latest = Event {
+            revision: 2,
+            origin: Origin::Geometry,
+            bounds: Arc::new(vec![Bounds::point(IVec3::new(300, 0, 0))]),
+            audit_sun: None,
+        };
+        let mut page = PageHistory {
+            events: VecDeque::from([latest.clone()]),
+            folded: [0, 1],
+            audit_events: VecDeque::from([old, latest]),
+            audit_dropped: 0,
+        };
+        let snapshot = Snapshot {
+            revision: 2,
+            page: Some(Arc::new(page.clone())),
+        };
+        let decision = snapshot.explain(IVec3::ZERO, 0);
+        assert_eq!(decision.cap, 256);
+        assert_eq!(decision.unfolded.unwrap().cap, 1986);
+        assert_eq!(snapshot.limit(IVec3::ZERO, 0), 256);
+        page.audit_dropped = 1;
+        let snapshot = Snapshot {
+            revision: 2,
+            page: Some(Arc::new(page)),
+        };
+        assert!(snapshot.explain(IVec3::ZERO, 0).unfolded.is_none());
     }
 
     #[test]
