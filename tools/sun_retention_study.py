@@ -108,10 +108,16 @@ def analyze(tape,metadata,calibration,budget,prior):
 
 def sensitivity(calibration,budget,prior):
     """Counterfactual calibration inputs only; no fictional new path samples."""
-    return [{"distance":distance,"caps":[min(4096,select_limit(distance,None,
-                replace(calibration,paths_for_quality=calibration.paths_for_quality*factor),budget,prior))
-                for factor in (1,0.5,0.25)]}
-            for distance in (0,48,96,128,192,256,384,512)]
+    result = []
+    for distance in (0,48,96,128,192,256,384,512):
+        row = {"distance":distance,"caps":[],"retention_caps":[]}
+        for factor in (1,0.5,0.25):
+            quality = replace(calibration,paths_for_quality=calibration.paths_for_quality*factor)
+            limit = select_limit(distance,None,quality,budget,prior)
+            row["caps"].append(min(4096,limit))
+            row["retention_caps"].append(min(4096,max(limit,QualifiedFloor().limit(distance,quality))))
+        result.append(row)
+    return result
 
 
 def legacy_controls(tape,calibration,budget,prior):
@@ -251,6 +257,9 @@ class Tests(unittest.TestCase):
             self.assertGreaterEqual(old,16 if distance<=48 else 256)
             self.assertEqual(new,old/2 if old<65536 else old)
         self.assertEqual(max(select_limit(512,10,quality),floor.limit(512,quality)),256)
+        rows = sensitivity(quality,ResponseBudget(),ChangePrior())
+        self.assertEqual(rows[0]["retention_caps"],[16,8,4])
+        self.assertEqual(rows[-1]["retention_caps"],[4096]*3)
 
     def test_legacy_adapter_rejects_uncertified_distances_and_missing_caps(self):
         quality = SamplingCalibration(3072,"test")
