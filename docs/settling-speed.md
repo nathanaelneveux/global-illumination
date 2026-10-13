@@ -234,6 +234,45 @@ choices. Both native tests passed. This is not a whole-frame or settling claim.
 Logs: `target/settling-light-importance.log` and
 `target/settling-exact-importance-{confirm,pdf}.log`.
 
+## Private-cache integration and facing-priority qualification
+
+M4/Metal/dev, 2560×1440 headless, background streaming, preferred corner look,
+16 paths and 4 ms transport target throughout. Every cave run below has valid
+captures and its own disjoint native corner reference. App intervals are not FPS.
+
+| Runtime / run | Sustained 10% corner error median / p95 | Within 10% at 15 s | Positive peak p95 / max |
+| --- | --- | --- | --- |
+| `c18380b` / `cave-1791847590335826000-30282` | 11.68 / 17.26 s | 119/144 | .1027 / .3045 |
+| `3e2d459` / `cave-1791849222156685000-31687` | 9.08 / 18.27 s | 124/144 | .1044 / .3043 |
+| `e3d1d42` / `cave-1791849592310651000-31991` | 8.47 / 13.65 s | 144/144 | .0975 / .2639 |
+
+`3e2d459` is the private-cache synchronization candidate, not a different
+estimator. First display publication advances from 11.81 to 9.08 s. Total paths
+are approximately tied (375.13 versus 372.82 M). After 15 s excluding captures,
+its offscreen interval p50/p95/p99/max is 20.93/27.00/30.00/127.89 ms; GI body
+sum is 2.16/6.51/8.61/69.62 ms. The worst selection event is 63.63 ms. Thus the
+isolated upload improvements are useful but do **not** establish stable frames.
+A windowed streaming attempt (`streaming-1791849182476730000-31621`) correctly
+rejected its unfocused black capture: no interactive 60 FPS evidence.
+
+The separate `codex/gi-facing-refinement` branch prioritizes local receivers
+with at least one camera-facing face, while tracing every due face once selected
+and retaining global/coverage/urgent reservations. Although its early cave
+accuracy is better, corner temporal variation p95 at 40–60 s rises to .1454
+versus .0683 for `c18380b`; nearby refresh-age p95 becomes 36.81 s because hidden
+faces lose opportunistic work. It is **not promoted** as a general default.
+All 11 scheduling and 25 runtime-policy tests, Clippy and dev build passed.
+
+Paired 30 s headless/background `response` runs (14 valid captures each):
+facing `response-1791849801774352000-32121`, diagnostic-only `febcaf4` control
+`response-1791850047067551000-32354` in the temporal-baseline worktree. Two
+floor receivers' last red-light residual above 10% after emitter removal improves
+2.719→1.774 s (1.53×), normalized using pre-add and pre-remove display means.
+This is an event-response proxy, **not an independent accuracy reference**.
+An earlier control launch failed the compiled-root guard and is excluded.
+Logs/analyses use the `target/settling-private-*`, `settling-facing-*` and
+`settling-control-response-verified.log` prefixes. No 2× overall claim follows.
+
 ## Continuous-distance ranking pilot — not promoted
 
 Isolated branch `codex/gi-distance-refinement`, `e982427`, applies soft inverse
