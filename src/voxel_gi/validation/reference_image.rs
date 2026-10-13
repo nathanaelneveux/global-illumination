@@ -67,12 +67,35 @@ pub(super) fn requested() -> bool {
 pub(super) fn install(app: &mut App) {
     if requested() {
         app.init_resource::<ReferenceImage>()
+            .add_systems(
+                PostStartup,
+                setup_residency.after(super::setup_capture_target),
+            )
             .configure_sets(
                 Update,
                 super::super::VoxelGiSystems.run_if(transport_running),
             )
             .add_systems(Update, tick.after(run_validation));
     }
+}
+
+/// A complete-reference fixture needs the chamber resident independently of
+/// the measured view. Use the same non-rendering host camera as the background
+/// workload, placed near the floor; the geometry audit still verifies every
+/// chamber voxel. This changes only the opt-in offline fixture's residency.
+fn setup_residency(mut commands: Commands, evidence: Res<CaptureEvidence>) {
+    let origin = if crate::cave_scene::enabled() {
+        Vec3::ZERO
+    } else {
+        crate::structures::showcase::CAVE_ORIGIN.as_vec3()
+    };
+    let eye = origin + Vec3::new(16.0, 6.0, 32.0);
+    super::background::spawn_loader(
+        &mut commands,
+        &evidence,
+        "Offline reference chamber residency (not rendered)",
+        Transform::from_translation(eye).looking_at(origin + Vec3::new(40.0, 22.0, 32.0), Vec3::Y),
+    );
 }
 
 fn transport_running(reference: Res<ReferenceImage>) -> bool {
@@ -440,7 +463,7 @@ fn tick(
             reference.complete = true;
             let saved = std::fs::write(
                 reference.output.join("cave-reference-status.json"),
-                json!({"status":"completed","captures":5,"frozen":true,
+                json!({"status":"completed","captures":5,"frozen":true,"geometry_audit_passed":true,
                     "qualification":reference.qualification})
                 .to_string(),
             );
@@ -448,7 +471,16 @@ fn tick(
                 evidence.fail(&format!("Reference status publication failed: {error}"));
                 commands.write_message(AppExit::error());
             } else {
-                commands.write_message(AppExit::Success);
+                let qualified = reference
+                    .qualification
+                    .as_ref()
+                    .and_then(|q| q["qualified"].as_bool())
+                    .unwrap_or(false);
+                commands.write_message(if qualified {
+                    AppExit::Success
+                } else {
+                    AppExit::error()
+                });
             }
             return;
         }

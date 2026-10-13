@@ -49,6 +49,13 @@ with a coplanar halo for the actual corner renderer. Terrain outside this
 reference region retains its frozen live values. The rasterizer, textures,
 camera, exposure, emission and shared-corner sun remain the regular game path.
 
+The reference fixture also holds a stationary, non-rendering loading camera near
+the chamber floor. Before baking, it compares every chamber voxel against the
+unedited host generator and writes `cave-geometry-audit.json`. Unknown or wrong
+material cells abort the reference. This completes reference-fixture residency
+through the existing host API; it changes neither BVW nor normal gameplay.
+Do not compare its frame costs directly with the older single-view workload.
+
 Two disjoint sequence ranges each provide 262,144 paths per face. Each estimate
 averages independent 32,768-path blocks in f64, below the production history
 ceiling. The bake bypasses adaptive scheduling, invalidation, history retention
@@ -64,6 +71,7 @@ stability. `cave-reference.json` records every reference face, original live
 display/history, both estimates, the exact scene generation and oracle checks.
 `cave-reference-status.json` is written after all five capture guards complete.
 The earlier `report.json` completion describes only the real-time workload.
+An unqualified bake returns a nonzero exit after saving its diagnostic images.
 
 An empirical qualification requires eight passing independent estimator checks,
 replica RGB difference p99 <=1%, and maximum <=5%, with a .02 RGB norm floor.
@@ -94,3 +102,28 @@ diagnostic only. The earlier isolated cave has complete nearby residency, so
 its comparison did not expose that mismatch. The high-sample composed-world
 run must still qualify the IR comparison; the mismatch is not assumed to
 explain it. Evidence: `target/cave-reference-pilot.log` and its output directory.
+
+## Geometry audit supersedes earlier images
+
+The 262,144-path run on `71c8077`,
+`cave-1791896665382806000-48456`, passes numerical checks on its frozen GI
+snapshot: p99/max replica difference .6229%/1.1808%, all 40 independent CPU
+band comparisons pass, held mean PNGs identical. It still is **not** accepted
+as the complete authored-cave reference. Its reference-face pages exposed a
+residency gap. The follow-up audit on `7d0c303`,
+`cave-1791898306410276000-49018`, finds 2,240 unknown chamber cells in page
+`(1,-2,-1)`, including part of the lava floor. BVW reports that page absent and
+the sampled voxels unset; there are no wrong-material cells. This confirms
+incomplete fixture geometry, not the cause of every live-noise symptom.
+
+The user requested no BVW changes. A trial source patch was removed before
+commit; `Cargo.toml`, `Cargo.lock` and both existing BVW checkouts are unchanged.
+The opt-in fixture loading camera is used instead, with the strict voxel audit
+retained. Earlier images are frozen-snapshot previews, superseded for the full
+reference. Numerical agreement alone cannot certify complete world geometry.
+
+`tools/cave_reference_analysis.py RUN --pixels` reports full-chamber centers,
+58k-plus reconstructed corners, per-orientation histories and image differences.
+The optional pixel checks need Pillow. It requires both a passing geometry audit
+and the independent numerical qualification before `reference_qualified` can be
+true. Sample counts, a still image and workload completion alone cannot pass.

@@ -24,32 +24,42 @@ impl BackgroundRun {
                 self.moves += 1;
             }
         } else {
-            self.camera = Some(
-                commands
-                    .spawn((
-                        Name::new("Validation background terrain loader (not rendered)"),
-                        Camera {
-                            is_active: false,
-                            ..default()
-                        },
-                        bevy::render::camera::CameraRenderGraph::new(
-                            bevy::core_pipeline::schedule::Core3d,
-                        ),
-                        evidence
-                            .render_target
-                            .as_ref()
-                            .map_or_else(RenderTarget::default, |target| {
-                                RenderTarget::Image(target.clone().into())
-                            }),
-                        Projection::Perspective(PerspectiveProjection::default()),
-                        bevy::camera::primitives::Frustum::default(),
-                        VoxelWorldCamera::<PrototypeWorld>::default(),
-                        transform,
-                    ))
-                    .id(),
-            );
+            self.camera = Some(spawn_loader(
+                commands,
+                evidence,
+                "Validation background terrain loader (not rendered)",
+                transform,
+            ));
         }
     }
+}
+
+pub(super) fn spawn_loader(
+    commands: &mut Commands,
+    evidence: &CaptureEvidence,
+    name: &'static str,
+    transform: Transform,
+) -> Entity {
+    commands
+        .spawn((
+            Name::new(name),
+            Camera {
+                is_active: false,
+                ..default()
+            },
+            bevy::render::camera::CameraRenderGraph::new(bevy::core_pipeline::schedule::Core3d),
+            evidence
+                .render_target
+                .as_ref()
+                .map_or_else(RenderTarget::default, |target| {
+                    RenderTarget::Image(target.clone().into())
+                }),
+            Projection::Perspective(PerspectiveProjection::default()),
+            bevy::camera::primitives::Frustum::default(),
+            VoxelWorldCamera::<PrototypeWorld>::default(),
+            transform,
+        ))
+        .id()
 }
 
 fn path(elapsed: f32) -> Transform {
