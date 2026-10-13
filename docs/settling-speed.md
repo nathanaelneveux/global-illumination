@@ -1,5 +1,14 @@
 # Settling speed — October 10, 2026
 
+October 13 reference audit: the older background-cave fixture can leave part of
+the lava floor unloaded. Its sparse references correctly target their frozen
+loaded scene, but cannot certify the complete authored chamber. Preserve these
+measurements as historical evidence; future full-cave accuracy claims require
+the [geometry-audited reference fixture](cave-reference.md). Its additional
+residency camera changes the workload, so new performance pairs must use it on
+both sides rather than comparing its timings directly with these runs. BVW
+remains unchanged at the user's request.
+
 ## Retained outcome (October 12)
 
 `codex/gi-performance-integration` retains the exact transport-cost reductions,

@@ -20,6 +20,8 @@ depends on greedy-mesh vertices or screen resolution.
   NAADF/vxray/DDGI/Solari, and the next speed experiments.
 - [Validation](docs/validation.md): focused checks, visual workloads, evidence
   requirements, and the shared build cache.
+- [Cave reference](docs/cave-reference.md): complete chamber geometry audit,
+  high-sample rendered target, independent estimator checks and image comparison.
 - [October 8 audit](docs/audit.md): findings, fixes, retained boundaries, and
   verification for this cleanup.
 - [October 10 scene-history audit](docs/scene-history-audit.md): removal of the
@@ -86,7 +88,7 @@ while the cursor is released. Display toggles do not invalidate transport.
 
 Press **Esc**, then **Lighting controls…** in the HUD. The light-model section
 stages changes until **Apply model**; work/refinement and presentation sliders
-apply live. Defaults remain 768-voxel reach, three diffuse surface hits, four paths
+apply live. Defaults remain 768-voxel reach, three diffuse surface hits, sixteen paths
 per face per batch, a 4 ms batch target and 75 ms display response.
 
 Start by saving defaults to **A**, then compare reach **16 / 32 / 64 / 128 / 256**
@@ -111,7 +113,7 @@ supported ranges. A/B slots are session-only and include presentation.
 
 ## Current behavior
 
-By default, four new paths per selected face update RGB, infrared, and ionizing channels.
+By default, sixteen new paths per selected face update RGB, infrared, and ionizing channels.
 Every loaded exposed surface remains eligible, including offscreen receivers.
 Bounded asynchronous work prioritizes nearby changes while reserving a world
 sweep for distant surfaces. Finite work budgets mean lighting changes are
