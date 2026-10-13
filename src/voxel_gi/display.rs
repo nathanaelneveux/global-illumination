@@ -137,6 +137,22 @@ pub(super) fn catch_up(
     true
 }
 
+/// Reserve for receiver pages already built and awaiting bounded publication,
+/// not just those copied into the field so far. Do not credit pending removals:
+/// additions may publish first, so the intermediate occupancy can be larger
+/// than the final count. This scans page headers, never their receiver contents.
+fn publication_capacity(
+    field: &VoxelEnergyField,
+    pages: impl IntoIterator<Item = (IVec3, usize)>,
+) -> usize {
+    pages
+        .into_iter()
+        .fold(field.probe_count(), |count, (page, next)| {
+            let current = field.pages.get(&page).map_or(0, Vec::len);
+            count.saturating_add(next.saturating_sub(current))
+        })
+}
+
 pub(super) fn upload_transport_cache(
     mut runtime: ResMut<VoxelGiRuntime>,
     field: Res<VoxelEnergyField>,
@@ -249,9 +265,20 @@ pub(super) fn upload_transport_cache(
     };
     if snapshot_done {
         let snapshot = runtime.gpu_snapshot.take().unwrap().finish();
-        // Reserve for current residency, not only the beginning-of-snapshot
-        // key list. Newly loaded probes are reconciled privately above.
-        let resident_count = field.probe_count();
+        // The scene worker may have finished a large streaming batch while
+        // only a few pages have reached the field. Repeatedly allocating for
+        // that partial count makes private generations fail as the known pages
+        // arrive. Reserve their positive growth now; reconcile their values
+        // normally as publication proceeds.
+        let resident_count = publication_capacity(
+            &field,
+            runtime.scene_publication.iter().flat_map(|result| {
+                result
+                    .pages
+                    .iter()
+                    .map(|(page, probes)| (*page, probes.len()))
+            }),
+        );
         let device = device.map(|context| context.device.clone());
         runtime.gpu_task = Some(AsyncComputeTaskPool::get().spawn(async move {
             let build = build_gpu_cache_for_residency(snapshot, resident_count);
@@ -286,6 +313,30 @@ pub(super) fn upload_transport_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capacity_includes_committed_growth_without_borrowing_future_removals() {
+        use super::super::world::SurfaceProbe;
+        let mut field = VoxelEnergyField::default();
+        for x in 0..8 {
+            let voxel = IVec3::new(x, 0, 0);
+            field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
+            field.pages.entry(IVec3::ZERO).or_default().push(voxel);
+        }
+        assert_eq!(publication_capacity(&field, []), 8);
+        assert_eq!(publication_capacity(&field, [(IVec3::ZERO, 8)]), 8);
+        assert_eq!(publication_capacity(&field, [(IVec3::ZERO, 3)]), 8);
+        assert_eq!(publication_capacity(&field, [(IVec3::ZERO, 12)]), 12);
+        assert_eq!(
+            publication_capacity(&field, [(IVec3::ZERO, 0), (IVec3::NEG_X, 20)]),
+            28,
+            "a pending deletion cannot fund an earlier addition"
+        );
+        assert_eq!(
+            publication_capacity(&field, [(IVec3::NEG_X, usize::MAX)]),
+            usize::MAX
+        );
+    }
 
     #[test]
     fn catchup_queue_coalesces_but_requeues_later_changes_fairly() {
