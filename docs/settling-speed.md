@@ -1,5 +1,43 @@
 # Settling speed — October 10, 2026
 
+## Retained outcome (October 12)
+
+`codex/gi-performance-integration` retains the exact transport-cost reductions,
+local refinement indexing, measured-receiver refinement eligibility, compact
+worker-owned display preparation, bounded live-value publication, unchanged-page
+reuse and partitioned receiver index. The default remains 16 paths / 4 ms with
+75 ms display response. The cadence-normalization and higher-budget pilots
+below are **not** included as runtime changes.
+
+The quiet control (`c8e85fe`, original runtime `febcaf4`) and latest retained
+default-runtime qualification (`2f1ed03`; `3e09d56` only widens the optional
+batch-size setting without changing defaults) give:
+
+| Observation | Control | Retained default |
+| --- | ---: | ---: |
+| Sustained corner settling, median / p95 | 12.582 / 21.426 s | 7.075 / 18.294 s |
+| Corners sustaining through final dwell | 141 / 144 | 141 / 144 |
+| Corner error p95 at 15 s | .44124 | .16298 |
+| Near-field measurement age p95 | 3.112 s | 1.350 s |
+| Late corner variation p95 | .04889 | .04781 |
+| Positive peak p95 / max | .09101 / .30090 | .10724 / .30448 |
+| GI CPU body p95 / p99 / observed max | 6.116 / 8.127 / 34.274 ms | 5.902 / 8.631 / 16.567 ms |
+
+This is **1.78× median settling, 2.71× lower early error, and 2.30× fresher
+nearby measurements**, not a qualified 2× settling win. Overshoot and CPU tails
+are not uniformly better; the remaining three late outliers still matter.
+Other retained default runs support the direction, but asynchronous terrain
+and scheduling variability preclude attributing every difference to one change.
+All are M4/Metal/development, 2560×1440 offscreen with background terrain and
+the preferred corner look. Details, artifact IDs and smaller-stage measurements
+are recorded below. Offscreen cadence does not establish interactive 60 FPS.
+
+The integrated default response run's two floor receivers last exceed 10% red
+residual at 2.562 s after emitter removal, ending at 3.77% / 3.72%. This uses
+the pre-add and pre-remove temporal levels as a response proxy, not independent
+lighting truth. It does not establish a 2× edit-response gain. The full target
+remains open; more ray budget alone is not an accepted solution.
+
 ## Batch-size and cached-bound decisions
 
 The isolated `codex/gi-time-normalized-display` experiment (`cb3c99e`) splits
