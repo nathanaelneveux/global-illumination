@@ -9,7 +9,7 @@ The sunlight-change signal fixes the distant-shadow counterexample from the
 [distance study](distance-history.md). A retention-only constraint preserves
 existing local response while retaining the large remote-cave stability win.
 This original study is a qualified **offline policy experiment**. Its subsequent
-[runtime follow-up](runtime-retention.md) adds an opt-in `cargo run` mode with
+[runtime follow-up](runtime-retention.md) adds a qualified runtime policy with
 durable spatial metadata and incremental sunlight-change evidence. Unknown or
 late sky evidence remains conservative and explicit; partial cache coverage is
 not silently declared complete. The original offline measurements below do not

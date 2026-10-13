@@ -118,10 +118,11 @@ The [sun-aware follow-up](docs/sun-aware-retention.md) retains the remote-cave w
 without changing the measured baseline shadow/edit responses, and calibrates
 history curves against measured sampler quality. The
 [runtime follow-up](docs/runtime-retention.md) now integrates page-local history,
-incremental sun-change evidence and worker-side retention queries. Try it with
-`VOXEL_GI_RETENTION=calibrated cargo run --locked`; the original policy remains
-the default control during qualification. Composed-cave tests show substantially
-less corner oscillation, not a complete convergence or locked-60-FPS solution.
+incremental sun-change evidence and worker-side retention queries. It is the
+default on `codex/gi-runtime-retention`; use `VOXEL_GI_RETENTION=baseline cargo run --locked`
+for the original control. Repeated composed-cave tests show substantially less
+corner oscillation with comparable frame pacing, not a complete convergence or
+locked-60-FPS solution.
 
 **Copy applied JSON** exports transport/work settings (not display toggles/gain).
 Paste JSON into the same panel to import, or save it to a file and launch with

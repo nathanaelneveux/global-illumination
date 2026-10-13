@@ -1,8 +1,12 @@
 # Runtime retention experiment
 
-Baseline: `986683a`. Branch: `codex/gi-runtime-retention`. Opt in with
-`VOXEL_GI_RETENTION=calibrated`; otherwise the existing 16/256, eight-global-event
-policy remains the control. No BVW, sampler, presentation or work-budget changes.
+Baseline: `986683a`. Branch: `codex/gi-runtime-retention`. **Keep the candidate
+as this branch's default:** the final paired windowed qualification retains a
+clear lighting-stability win with comparable frame pacing and sampling freshness.
+Use `VOXEL_GI_RETENTION=baseline` for the existing 16/256, eight-global-event
+control, or `calibrated` to select the new policy explicitly. No BVW, sampler,
+presentation or work-budget changes. This decision is not a locked-60-FPS or
+complete cave-convergence claim.
 
 The native curve uses the fixed `cave-user-2048` appearance goal, Q=2048,
 baseline work anchor 2048, fresh response work Q/6 and stale-error allowance .03.
@@ -120,18 +124,67 @@ over the same three intervals. This repeats the lighting win but does not prove
 a frame-pacing win (62.03-ms worst settling interval). It motivated moving the
 remaining receiver-distance queries to the worker in `9293cbb`.
 
+### Final worker-side pair and decision
+
+Both use native `9293cbb`; `113e94c` only adds documentation/analysis. Candidate
+ran first, then the control was repeated to check run-to-run pacing variation:
+
+- Candidate: `target/gi-validation/cave-1791927228047255000-61792`.
+- Repeated control: `target/gi-validation/cave-1791927488055810000-61980`.
+
+| Final windowed measure | Repeated control | Worker-side candidate |
+| --- | ---: | ---: |
+| Settling frame p50 / p95 / p99, ms | 16.89 / 21.76 / 24.71 | 16.79 / 21.22 / 24.07 |
+| Settling maximum, ms | 48.85 | 58.68 |
+| Settling frames >33.3 ms / >50 ms | 2 / 0 | 3 / 1 |
+| Selection p50 / p99, ms | 1.07 / 2.16 | 1.01 / 2.02 |
+| Publication p50 / p99, ms | .97 / 2.36 | .96 / 2.31 |
+| 30–60 s p95 excess corner variation | .20561 | .11291 |
+| 60–120 s p95 excess corner variation | .41255 | .08879 |
+| 120–180 s p95 excess corner variation | .29214 | .19716 |
+| Minimum fresh paths, those three intervals | 400 / 752 / 592 | 400 / 736 / 592 |
+| Total traced paths | 571.34 million | 557.43 million |
+| Near / far measurement-age p99, s | 1.303 / 35.255 | 1.151 / 32.155 |
+| Maximum resident pages | 1,573 | 1,587 |
+
+All 144 observed corners are continuously present in each evaluated interval.
+P95 oscillation is **1.82× / 4.65× / 1.48× lower**; median oscillation is
+2.04× / 5.40× / 1.75× lower. Total paths are 2.44% lower, not identical, while
+the slowest observed receivers continue comparable fresh sampling. This small
+work difference cannot be advertised as a transport speedup. Near/far freshness
+is not sacrificed to freeze the picture. No new sampling or smoothing is used.
+
+The earlier control p99 was 22.88 ms and the repeated control 24.71 ms, bracketing
+the final candidate's 24.07 ms. Treat pacing as **comparable, not faster**. Its
+single worst settling frame is worse than this repeated control, so there is no
+blanket tail/non-regression guarantee. Startup remains expensive (611/664-ms
+maxima), and neither policy is always 60 FPS. The additional *game-thread
+receiver-query* cost is removed; worker and bounded publication costs still exist.
+
+Decision: retain and enable the policy on this experimental branch, keeping the
+baseline switch and parent baseline intact. Across headless accuracy controls and
+repeated real-window runs, the stability benefit is unambiguous. Late truncations
+and residual cave error remain: do not infer the cause of every remaining cut
+without event attribution, increase the accepted quality limits, or call coverage
+convergence. The next step is to separate real changed-light dependencies from
+conservative/unknown evidence before weakening more retention rules.
+
 ### Reproduction and integrity
 
 Use `VOXEL_GI_VALIDATE=1`, `VOXEL_GI_VALIDATE_PROFILE=cave`,
 `VOXEL_GI_VALIDATE_BACKGROUND=1`, `VOXEL_GI_VALIDATE_CAVE_LONG=1`,
 `VOXEL_GI_VALIDATE_TEMPORAL=1`, `VOXEL_GI_VALIDATE_EXIT=1`,
 `VOXEL_GI_VALIDATE_EXPECT_BUILD_ROOT="$PWD"`, `RUST_LOG=info`, and
-`cargo run --locked --offline`. Candidate adds `VOXEL_GI_RETENTION=calibrated`.
+`cargo run --locked --offline`. Always explicitly select `VOXEL_GI_RETENTION=calibrated`
+or `VOXEL_GI_RETENTION=baseline` for reproduction: the default switched only after
+these comparisons (historical controls above ran with the variable absent).
 Headless accuracy runs additionally set `VOXEL_GI_VALIDATE_HEADLESS=1` and
 `VOXEL_GI_VALIDATE_REFERENCE=1`; never mix those cadence timings with windowed FPS.
 Analyze run directories with `tools/runtime_retention_analysis.py`; it rejects
 missing/invalid capture evidence and keeps windowed-only results reference-free.
 Raw captures, logs and JSON remain under ignored `target/`.
+The seven-run aggregate is `target/runtime-retention-all-qualified.json`, SHA-256
+`67e32dd87461d6b7fa55f68bb1c97857babd03ba425bbbdaeb8dfdb12da9fa82`.
 
 Focused native checks cover ceil rounding, full-scan equivalence, local overflow,
 unrelated streaming, unknown/known sky transitions, partial-face publication,

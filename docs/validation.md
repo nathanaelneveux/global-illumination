@@ -11,6 +11,14 @@ outlier as a universal perceptual threshold, or waive temporal/FPS qualification
 Keep the original stricter engineering metrics alongside this human-calibrated
 target, and keep IR/ionizing tolerances independent.
 
+The [runtime retention qualification](runtime-retention.md) records the current
+streamed-cave policy, independent references and repeated windowed controls.
+Calibrated retention is the runtime-retention branch's default. Always specify
+`VOXEL_GI_RETENTION=baseline` or `calibrated` in A/B commands and check the report's
+`spatial_retention` field; absence of the variable selected the control in older
+commits. The separate `history_experiment` field describes the older retain-all
+ablation, not this policy. Coverage and retained weight are still not convergence.
+
 For adaptive-history research, the [DDGI/A-SVGF qualification study](adaptive-history-qualification.md)
 records the opt-in matched native sample tapes, isolated branches, first-gate
 failures and required runtime gate. Neither detector is a gameplay default;

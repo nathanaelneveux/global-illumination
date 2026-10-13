@@ -133,7 +133,7 @@ impl Bounds {
 #[derive(Default)]
 pub(super) struct GeometryChange {
     /// Existing receiver pages only. New receivers have no history to retain.
-    /// Each bin contains just changes within the local relight radius.
+    /// Each bin contains just changes within the configured influence radius.
     pub nearby: HashMap<IVec3, Vec<Bounds>>,
 }
 

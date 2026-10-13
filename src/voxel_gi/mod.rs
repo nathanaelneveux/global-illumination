@@ -115,7 +115,8 @@ impl Plugin for VoxelGiPlugin {
                 .resource_mut::<VoxelGiSettings>()
                 .adaptive_updates = false;
         }
-        if std::env::var("VOXEL_GI_RETENTION").is_ok_and(|value| value == "calibrated") {
+        let retention_mode = std::env::var("VOXEL_GI_RETENTION").ok();
+        if retention::launch_enabled(retention_mode.as_deref()).expect("retention launch policy") {
             app.world_mut()
                 .resource_mut::<VoxelGiRuntime>()
                 .spatial_history = Some(default());

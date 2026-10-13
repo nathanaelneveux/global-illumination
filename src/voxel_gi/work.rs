@@ -33,7 +33,7 @@ pub(crate) struct ProbeWork {
     pub source_revision: u64,
     pub transport_revision: u64,
     pub restart: bool,
-    /// Candidate-only spatial evidence and cap; None preserves baseline rules.
+    /// Spatial evidence and cap; None preserves the legacy comparison policy.
     pub retention: Option<(u64, u32)>,
     pub sky: [[u32; 4]; 6],
     start: usize,

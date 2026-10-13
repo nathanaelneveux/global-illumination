@@ -1,4 +1,4 @@
-//! Experimental, sampling-calibrated statistical retention. This is a change
+//! Sampling-calibrated statistical retention. This is a change
 //! prior, not a transport bound or a convergence certificate. Only weights are
 //! capped; measured means, moments, sequences and display priors stay intact.
 //!
@@ -20,6 +20,18 @@ const BASELINE_QUALITY_PATHS: f64 = 2048.0;
 const STALE_ERROR: f64 = 0.03;
 pub(super) const INFLUENCE_RADIUS: i32 = 278; // ceil(48 / sqrt(.03))
 const PAGE_EVENTS: usize = 8;
+
+/// Demo launch comparison. The library's ledger itself does not read process
+/// environment, and an invalid choice must not silently benchmark another arm.
+pub(super) fn launch_enabled(value: Option<&str>) -> Result<bool, String> {
+    match value {
+        None | Some("calibrated") => Ok(true),
+        Some("baseline") => Ok(false),
+        Some(value) => Err(format!(
+            "unknown VOXEL_GI_RETENTION={value:?}; choose calibrated or baseline"
+        )),
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) enum Origin {
@@ -186,6 +198,14 @@ fn bounds_limit(origin: Origin, voxel: IVec3, bounds: &[Bounds]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qualified_policy_is_default_and_control_is_explicit() {
+        assert_eq!(launch_enabled(None), Ok(true));
+        assert_eq!(launch_enabled(Some("calibrated")), Ok(true));
+        assert_eq!(launch_enabled(Some("baseline")), Ok(false));
+        assert!(launch_enabled(Some("typo")).is_err());
+    }
 
     #[test]
     fn short_circuit_queries_match_full_bound_scans() {

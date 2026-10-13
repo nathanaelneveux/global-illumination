@@ -256,8 +256,9 @@ spatial evidence, measured sampler quality, stale-light budget and an empirical
 history floor. Changed shared-corner sunlight supplies secondary change origins;
 calibration remeasures paths to a fixed quality goal when sampling improves.
 The conservative offline arm preserves baseline edit responses while retaining
-remote evidence. The [runtime implementation](runtime-retention.md), enabled by
-`VOXEL_GI_RETENTION=calibrated`, uses per-page bounded journals with timestamped
+remote evidence. The [runtime implementation](runtime-retention.md), default on
+the runtime-retention branch (`VOXEL_GI_RETENTION=baseline` restores the control),
+uses per-page bounded journals with timestamped
 conservative overflow, independent sun-evidence epochs, and immutable page
 snapshots for worker-side distance/weight queries. Selection checks page stamps;
 caps apply once before either backend merges new samples. Both known transitions

@@ -436,7 +436,7 @@ pub struct SurfaceProbe {
     /// Faces refreshed in transport_revision; revision changes are lazy O(1).
     pub(crate) fresh_mask: u8,
     pub(crate) transport_revision: u64,
-    /// Independent spatial evidence consumed by the retention experiment.
+    /// Independent spatial evidence consumed by statistical retention.
     /// Sunlight changes can arrive after transport refreshed in the same scene.
     pub(crate) retention_revision: u64,
     pub(crate) stable_batches: [u8; 6],
