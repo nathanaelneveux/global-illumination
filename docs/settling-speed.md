@@ -1,5 +1,52 @@
 # Settling speed — October 10, 2026
 
+## Quiet validation comparison (October 12)
+
+Validation used to enable synchronous terminal statistics automatically, unlike
+normal gameplay. `13db971` makes those explicitly opt-in and leaves the JSON
+timelines enabled. Do not credit this harness correction as a gameplay speedup.
+The speculative allocator-retirement branch did not remove the unexplained
+page-return pauses and is not promoted. Logging was a confound, not a proven
+explanation of every stall.
+
+Matched quiet runs on M4/Metal/dev, 2560×1440 offscreen, long cave with background
+terrain, default 4 ms/16-path transport, preferred corner look, no concurrent
+compiler or native test:
+
+| Metric | Control `c8e85fe` | Candidate `13db971` |
+| --- | ---: | ---: |
+| Sustained 10%-corner error median / p95 (s) | 12.582 / 21.426 | 7.726 / 16.857 |
+| Corners sustaining through final dwell | 141 / 144 | 141 / 144 |
+| Corner RGB error p95 at 15 s | .44124 | .14312 |
+| Positive peak p95 / max | .09101 / .30090 | .10207 / .30441 |
+| Variation p95 at 40–60 / 160–180 s | .08529 / .04889 | .07840 / .05248 |
+| Minimum fresh paths in those intervals | 144 / 96 | 176 / 96 |
+| Near / far measurement age p95 (s) | 3.112 / 59.659 | 1.423 / 38.530 |
+| GI CPU body p50 / p95 / p99 / max (ms) | 2.014 / 6.116 / 8.127 / 34.274 | 2.560 / 5.836 / 8.654 / 16.642 |
+
+Both launched clean and passed compiled-root/asset/capture guards, five captures
+each; both 15-second images inspected. Control is `febcaf4` runtime plus the same
+corner oracle and quiet harness; candidate runtime is `13024df`. Artifacts:
+baseline worktree `cave-1791856242241706000-38923`, root
+`cave-1791856014554688000-38671`; analysis/log prefixes `settling-quiet-*`.
+Reference-pair disagreement p95 .472%. These establish useful early accuracy and
+freshness progress (2.19× near-age, 3.08× less 15-second p95 error), **not 2×
+settling** (1.63× median) or an interactive 60 FPS pass. CPU maxima are individual
+observations, not a guaranteed bound. Small variation/overshoot differences
+remain; do not describe all temporal behavior as identical.
+
+An earlier 6 ms budget pilot on runtime `13024df`,
+`cave-1791854655510236000-37067`, reached median settling 5.879 s but raised
+40–60/160–180 s variation to .14658/.14022 and GI CPU maximum to 70.869 ms.
+It is **not the default**: buying speed with substantially more variation did
+not satisfy the target. The prior verbose 4 ms `13024df` run,
+`cave-1791854197543590000-36653`, measured 7.015/16.173 s median/p95 settling,
+15-second error .12518, variation .07020/.04125, CPU maximum 22.014 ms.
+Its 30 s response countercheck `response-1791854482818420000-36945` changed
+the two floor receivers' last >10% red residual after removal from control
+2.719 s to 2.532 s. This is a display-response proxy, not independent accuracy
+truth or a 2× edit-response result. Those runs predate the quiet harness.
+
 ## Latest streamed qualification (October 12)
 
 Private worker catch-up `8d2d216`, run `cave-1791853243011741000-35728`:
