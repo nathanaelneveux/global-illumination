@@ -2,6 +2,20 @@
 
 ## Batch-size and cached-bound decisions
 
+The isolated `codex/gi-time-normalized-display` experiment (`cb3c99e`) splits
+the statistical display allowance over updates shorter than 50 ms, preserving
+the prior response at longer intervals. Fifteen history tests, strict Clippy
+and development build pass. It does **not** solve the larger-budget tradeoff:
+clean 6 ms / 500 ms-response run `cave-1791859276264709000-41389` settles
+median/p95 in 6.210/12.256 s (141/144 sustain), 15-second error p95 .04958,
+peak p95/max .09332/.28623. Variation .11622/.10695, with at least 304/288
+fresh paths, is still roughly twice quiet-control late variation. Near/far
+age p95 .584/16.361 s. Five guarded captures and clean render logs. This is
+not a default improvement; retain the branch as negative evidence. Only
+9.3% of observed 40–60 s measurement intervals in the prior 6 ms run were
+shorter than 50 ms, so this limited normalization cannot address the full
+rate-dependent behavior. No new history or cadence policy is promoted.
+
 Integration check at `10a8b7c` (runtime `3e09d56`): the focused native
 cache/material-generation test passed. The default response workload
 `response-1791858630010281000-41136` completed with 14 guarded offscreen
