@@ -84,14 +84,11 @@ impl SpatialHistory {
                     min,
                     max: min + IVec3::splat(super::world::PAGE_EDGE as i32 - 1),
                 };
-                let distance = evicted
-                    .bounds
-                    .iter()
-                    .map(|b| b.distance_squared(extent))
-                    .min()
-                    .unwrap_or(i64::MAX);
                 let near = matches!(evicted.origin, Origin::Geometry)
-                    && distance <= i64::from(RELIGHT_RADIUS).pow(2);
+                    && evicted
+                        .bounds
+                        .iter()
+                        .any(|b| b.distance_squared(extent) <= i64::from(RELIGHT_RADIUS).pow(2));
                 history.folded[usize::from(!near)] = evicted.revision;
             }
             history.events.push_back(Event {
@@ -113,6 +110,15 @@ impl SpatialHistory {
     pub fn query(&self, voxel: IVec3, since: u64) -> (u64, u32) {
         let mut cap = u32::MAX;
         if let Some(page) = self.pages.get(&super::page_of(voxel)) {
+            // Most selected receivers already consumed this page's evidence.
+            // Its folded stamps necessarily precede its newest explicit event.
+            if page
+                .events
+                .back()
+                .is_none_or(|event| event.revision <= since)
+            {
+                return (self.revision, cap);
+            }
             for (index, revision) in page.folded.iter().enumerate() {
                 if since < *revision {
                     cap = cap.min(floor(
@@ -126,13 +132,9 @@ impl SpatialHistory {
                 }
             }
             for event in page.events.iter().rev().take_while(|e| e.revision > since) {
-                if let Some(distance) = event
-                    .bounds
-                    .iter()
-                    .map(|b| b.distance_squared(Bounds::point(voxel)))
-                    .min()
-                {
-                    cap = cap.min(limit(event.origin, distance));
+                cap = cap.min(bounds_limit(event.origin, voxel, &event.bounds));
+                if cap == floor(Origin::Geometry, 0) {
+                    break;
                 }
             }
         }
@@ -140,9 +142,39 @@ impl SpatialHistory {
     }
 }
 
+fn bounds_limit(origin: Origin, voxel: IVec3, bounds: &[Bounds]) -> u32 {
+    let mut nearest = i64::MAX;
+    for bound in bounds {
+        nearest = nearest.min(bound.distance_squared(Bounds::point(voxel)));
+        // No other bound can lower this event below its calibrated floor.
+        if nearest <= i64::from(RELIGHT_RADIUS).pow(2) {
+            return floor(origin, 0);
+        }
+    }
+    limit(origin, nearest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_circuit_queries_match_full_bound_scans() {
+        let bounds: Vec<_> = (-16..=16)
+            .map(|i| Bounds::point(IVec3::new(i * 31, i * 7, i * 19)))
+            .collect();
+        for origin in [Origin::Geometry, Origin::Sunlight] {
+            for x in -320..=320 {
+                let voxel = IVec3::new(x, 32, -48);
+                let expected = bounds
+                    .iter()
+                    .map(|b| limit(origin, b.distance_squared(Bounds::point(voxel))))
+                    .min()
+                    .unwrap();
+                assert_eq!(bounds_limit(origin, voxel, &bounds), expected);
+            }
+        }
+    }
 
     fn event(page: IVec3, point: IVec3) -> GeometryChange {
         GeometryChange {
