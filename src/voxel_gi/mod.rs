@@ -230,6 +230,8 @@ struct VoxelGiRuntime {
     generation: u64,
     geometry_history: geometry::GeometryHistory,
     spatial_history: Option<retention::SpatialHistory>,
+    #[cfg(debug_assertions)]
+    retention_audit: validation::retention_audit::Recorder,
     source_revision: u64,
     batch_size: usize,
     /// Last global material/model replacement. Scene edits use spatial history
@@ -304,6 +306,8 @@ impl Default for VoxelGiRuntime {
             generation: 0,
             geometry_history: default(),
             spatial_history: None,
+            #[cfg(debug_assertions)]
+            retention_audit: default(),
             source_revision: 0,
             batch_size: 256,
             model_reset_source_revision: 0,

@@ -135,6 +135,9 @@ pub(super) struct GeometryChange {
     /// Existing receiver pages only. New receivers have no history to retain.
     /// Each bin contains just changes within the configured influence radius.
     pub nearby: HashMap<IVec3, Vec<Bounds>>,
+    /// Optional raw sunlight evidence for diagnostics; never selects a cap.
+    #[cfg(debug_assertions)]
+    pub audit_sun: Option<Arc<Vec<super::validation::retention_audit::SunEvidence>>>,
 }
 
 impl GeometryChange {

@@ -547,6 +547,10 @@ pub(super) fn apply_trace_task(
             continue;
         }
         let (_, old_samples, old_covered, old_settled) = probe_metrics(old, transport_revision);
+        #[cfg(debug_assertions)]
+        runtime
+            .retention_audit
+            .record(job, old, merge_started, sky_current);
         // A material-table revision can change emission without rebuilding
         // geometry. Older source results were rejected above.
         old.emission = runtime.materials.get(old.material).emission;

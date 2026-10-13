@@ -63,6 +63,8 @@ struct Event {
     revision: u64,
     origin: Origin,
     bounds: Arc<Vec<Bounds>>,
+    #[cfg(debug_assertions)]
+    audit_sun: Option<Arc<Vec<super::validation::retention_audit::SunEvidence>>>,
 }
 
 #[derive(Clone, Default)]
@@ -111,6 +113,8 @@ impl SpatialHistory {
                 revision: self.revision,
                 origin,
                 bounds: Arc::new(bounds),
+                #[cfg(debug_assertions)]
+                audit_sun: change.audit_sun.clone(),
             });
         }
     }
@@ -142,6 +146,54 @@ pub(super) struct Snapshot {
 }
 
 impl Snapshot {
+    /// Full-scan diagnostic decomposition. The production cap still comes from
+    /// `limit`; raw-corner categories do not alter coalescing or journal order.
+    #[cfg(debug_assertions)]
+    pub fn explain(
+        &self,
+        voxel: IVec3,
+        since: u64,
+    ) -> super::validation::retention_audit::Decision {
+        use super::validation::retention_audit::Decision;
+        let mut result = Decision::new(since, self.revision);
+        if let Some(page) = &self.page {
+            for (index, revision) in page.folded.iter().enumerate() {
+                if since < *revision {
+                    result.caps[2 + index] = floor(
+                        if index == 0 {
+                            Origin::Geometry
+                        } else {
+                            Origin::Sunlight
+                        },
+                        0,
+                    );
+                }
+            }
+            for event in page.events.iter().filter(|event| event.revision > since) {
+                let index = usize::from(matches!(event.origin, Origin::Sunlight));
+                result.caps[index] =
+                    result.caps[index].min(bounds_limit(event.origin, voxel, &event.bounds));
+                for bounds in event.bounds.iter() {
+                    result.distance_squared[index] = result.distance_squared[index]
+                        .min(bounds.distance_squared(Bounds::point(voxel)));
+                }
+                if let Some(evidence) = &event.audit_sun {
+                    for point in evidence.iter() {
+                        let distance =
+                            Bounds::point(point.position).distance_squared(Bounds::point(voxel));
+                        let index = 4 + point.kind as usize;
+                        result.caps[index] =
+                            result.caps[index].min(limit(Origin::Sunlight, distance));
+                        result.distance_squared[index - 2] =
+                            result.distance_squared[index - 2].min(distance);
+                    }
+                }
+            }
+        }
+        result.cap = self.limit(voxel, since);
+        result
+    }
+
     pub fn pending(&self, since: u64) -> bool {
         self.page
             .as_ref()
@@ -228,6 +280,7 @@ mod tests {
     fn event(page: IVec3, point: IVec3) -> GeometryChange {
         GeometryChange {
             nearby: HashMap::from_iter([(page, vec![Bounds::point(point)])]),
+            ..Default::default()
         }
     }
 
@@ -259,6 +312,54 @@ mod tests {
             assert_eq!(limit(Origin::Geometry, d * d), expected);
         }
         assert_eq!(limit(Origin::Sunlight, 0), 256);
+    }
+
+    #[test]
+    fn diagnostic_decomposition_matches_production_across_overflow_and_epochs() {
+        let mut history = SpatialHistory::default();
+        for i in 0..24 {
+            history.record(
+                event(IVec3::ZERO, IVec3::new(i * 17, 0, 0)),
+                if i % 3 == 0 {
+                    Origin::Geometry
+                } else {
+                    Origin::Sunlight
+                },
+            );
+            for since in 0..=history.revision {
+                for x in [-300, -48, 0, 48, 128, 192, 256, 384] {
+                    let voxel = IVec3::new(x, 0, 0);
+                    let snapshot = history.snapshot(voxel);
+                    let decision = snapshot.explain(voxel, since);
+                    assert_eq!(decision.cap, snapshot.limit(voxel, since));
+                    assert_eq!(decision.cap, *decision.caps[..4].iter().min().unwrap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn raw_sun_evidence_is_diagnostic_and_does_not_split_production_events() {
+        use super::super::validation::retention_audit::{SunEvidence, SunKind};
+        let mut history = SpatialHistory::default();
+        let mut change = event(IVec3::ZERO, IVec3::ZERO);
+        change.audit_sun = Some(Arc::new(vec![
+            SunEvidence {
+                position: IVec3::ZERO,
+                kind: SunKind::FirstMeasurement,
+            },
+            SunEvidence {
+                position: IVec3::splat(1000),
+                kind: SunKind::KnownChange,
+            },
+        ]));
+        history.record(change, Origin::Sunlight);
+        let result = history.snapshot(IVec3::ZERO).explain(IVec3::ZERO, 0);
+        assert_eq!(result.revision, 1);
+        assert_eq!(result.cap, 256);
+        assert_eq!(result.caps[4], u32::MAX);
+        assert_eq!(result.caps[5], 256);
+        assert_eq!(result.caps[0], u32::MAX);
     }
 
     #[test]

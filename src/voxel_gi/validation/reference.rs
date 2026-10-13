@@ -31,13 +31,13 @@ fn channels(energy: EnergySpectrum) -> [f32; 5] {
 /// Converged, equal-confidence counterpart of the renderer's connected
 /// coplanar reconstruction. Face-center references alone cannot measure the
 /// preferred corner appearance; a blurred target would conceal gradient bias.
-struct ReferencePatch {
-    sites: Vec<(IVec3, usize)>,
-    corners: Vec<[Vec<usize>; 4]>,
+pub(super) struct ReferencePatch {
+    pub sites: Vec<(IVec3, usize)>,
+    pub corners: Vec<[Vec<usize>; 4]>,
 }
 
 impl ReferencePatch {
-    fn new(centers: &[(IVec3, usize)], exposed: impl Fn(IVec3, usize) -> bool) -> Self {
+    pub fn new(centers: &[(IVec3, usize)], exposed: impl Fn(IVec3, usize) -> bool) -> Self {
         let mut sites = centers.to_vec();
         let mut indices: std::collections::HashMap<_, _> = centers
             .iter()
@@ -77,7 +77,7 @@ impl ReferencePatch {
         Self { sites, corners }
     }
 
-    fn reconstruct(&self, values: &[[f64; 5]]) -> Vec<[[f64; 5]; 4]> {
+    pub fn reconstruct(&self, values: &[[f64; 5]]) -> Vec<[[f64; 5]; 4]> {
         self.corners
             .iter()
             .map(|patch| {
@@ -97,6 +97,19 @@ pub(super) struct ReferenceRun {
 }
 
 impl ReferenceRun {
+    pub fn start_retention(
+        &mut self,
+        snapshots: super::retention_audit::SceneSnapshots,
+        device: Option<&GpuTransportDevice>,
+        settings: &VoxelGiSettings,
+        output: PathBuf,
+    ) -> Result<(), String> {
+        self.task = Some(super::retention_audit::start_reference(
+            snapshots, device, settings, output,
+        )?);
+        Ok(())
+    }
+
     pub fn requested() -> bool {
         std::env::var_os("VOXEL_GI_VALIDATE_REFERENCE").is_some()
     }

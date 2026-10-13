@@ -100,6 +100,10 @@ pub(crate) struct SkyCache {
     pub stats: SkyCacheStats,
     pub track_changes: bool,
     changes: HashMap<IVec3, super::geometry::Bounds>,
+    #[cfg(debug_assertions)]
+    audit_sun: Vec<super::validation::retention_audit::SunEvidence>,
+    #[cfg(debug_assertions)]
+    audit_seen: bevy::platform::collections::HashSet<IVec3>,
 }
 
 impl SkyCache {
@@ -113,11 +117,18 @@ impl SkyCache {
             return None;
         }
         let bounds: Vec<_> = self.changes.drain().map(|(_, bounds)| bounds).collect();
-        Some(super::geometry::GeometryChange::from_bounds(
+        let change = super::geometry::GeometryChange::from_bounds(
             scene,
             &bounds,
             super::retention::INFLUENCE_RADIUS,
-        ))
+        );
+        #[cfg(debug_assertions)]
+        let change = super::geometry::GeometryChange {
+            audit_sun: (!self.audit_sun.is_empty())
+                .then(|| Arc::new(std::mem::take(&mut self.audit_sun))),
+            ..change
+        };
+        Some(change)
     }
 
     pub fn prepare<P: SkyReceiver>(
@@ -167,6 +178,14 @@ impl SkyCache {
     pub fn store(&mut self, position: IVec3, value: [u32; 6]) {
         let corner = self.corners.get_mut(&position).expect("planned sky corner");
         if self.track_changes && (corner.value != value || value.contains(&0)) {
+            #[cfg(debug_assertions)]
+            if super::validation::retention_audit::enabled() {
+                use super::validation::retention_audit::{SunEvidence, SunKind};
+                self.audit_sun.push(SunEvidence {
+                    position,
+                    kind: SunKind::classify(!self.audit_seen.insert(position), corner.value, value),
+                });
+            }
             // Unknown is not black or unchanged. New/unknown corners contribute
             // conservative evidence; known equal values contribute none. Bounds
             // coalesce existing ray results, with no extra transport sampling.
@@ -278,6 +297,8 @@ impl SkyCache {
                         let keep = has_receiver(scene, *position);
                         if !keep {
                             self.corners.remove(position);
+                            #[cfg(debug_assertions)]
+                            self.audit_seen.remove(position);
                         }
                         keep
                     });

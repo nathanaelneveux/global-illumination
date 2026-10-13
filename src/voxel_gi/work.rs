@@ -35,6 +35,8 @@ pub(crate) struct ProbeWork {
     pub restart: bool,
     /// Spatial evidence and cap; None preserves the legacy comparison policy.
     pub retention: Option<(u64, u32)>,
+    #[cfg(debug_assertions)]
+    pub retention_audit: Option<Box<super::validation::retention_audit::Decision>>,
     pub sky: [[u32; 4]; 6],
     start: usize,
 }
@@ -141,6 +143,12 @@ impl TraceWork {
         for pending in self.pending_retention.drain(..) {
             let probe = &mut self.probes[pending.probe_index];
             let cap = pending.snapshot.limit(probe.voxel, pending.since);
+            #[cfg(debug_assertions)]
+            if super::validation::retention_audit::site(probe.voxel).is_some() {
+                probe.retention_audit = Some(Box::new(
+                    pending.snapshot.explain(probe.voxel, pending.since),
+                ));
+            }
             probe.retention = Some((pending.snapshot.revision, cap));
             for face in &mut self.faces[probe.faces()] {
                 face.samples = face.samples.min(cap);
@@ -212,6 +220,8 @@ impl TraceWork {
             transport_revision,
             restart,
             retention: None,
+            #[cfg(debug_assertions)]
+            retention_audit: None,
             // Filled by SkyCache before return; old presentation never crosses
             // the worker boundary, and stale sky is rejected by the publisher.
             sky: [[0; 4]; 6],
@@ -292,6 +302,7 @@ mod tests {
                     IVec3::ZERO,
                     vec![Bounds::point(IVec3::new(192, 0, 0))],
                 )]),
+                ..default()
             },
             Origin::Geometry,
         );
