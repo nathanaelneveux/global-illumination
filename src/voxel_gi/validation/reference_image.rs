@@ -47,17 +47,22 @@ pub(super) struct ReferenceImage {
     complete: bool,
     live_wait: Option<usize>,
     qualification: Option<serde_json::Value>,
+    base: ProbeMap,
+    sites: Vec<(IVec3, usize)>,
+    expected_captures: usize,
 }
 
 struct ReferenceFrame {
-    name: &'static str,
-    probes: ProbeMap,
+    name: String,
+    values: Means,
     pending: VecDeque<IVec3>,
 }
 
 struct Bake {
     frames: VecDeque<ReferenceFrame>,
     qualification: serde_json::Value,
+    base: ProbeMap,
+    sites: Vec<(IVec3, usize)>,
 }
 
 pub(super) fn requested() -> bool {
@@ -254,7 +259,13 @@ impl ReferenceImage {
             base.entry(voxel).or_insert_with(|| probe.clone());
         }
         let progress = Arc::new(AtomicU64::new(0));
-        let total_paths = sites.len() as u64 * u64::from(paths) * 2;
+        let sweep_requested = super::sample_sweep::requested();
+        let total_paths = sites.len() as u64 * u64::from(paths) * 2
+            + if sweep_requested {
+                super::sample_sweep::path_count(sites.len())
+            } else {
+                0
+            };
         info!(
             faces = sites.len(),
             paths_per_replica = paths,
@@ -271,6 +282,19 @@ impl ReferenceImage {
         let task = AsyncComputeTaskPool::get().spawn(async move {
             let mut gpu = GpuTracer::new(device)?;
             let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
+            let sweep = if sweep_requested {
+                super::sample_sweep::run(&mut gpu, &scene, &sources, &materials,
+                    transport, &emitters, &sites, &worker_progress)?
+            } else { Vec::new() };
+            if sweep_requested {
+                std::fs::write(worker_output.join("cave-sample-sweep.json"),
+                    serde_json::to_vec(&json!({"schema_version":1,
+                        "scene_generation":generation,"origin":origin.to_array(),
+                        "transport":transport,"face_count":sites.len(),
+                        "windows":sweep,
+                        "note":"Same exact frozen scene and sites as cave-reference.json. Unfiltered production estimator prefixes, disjoint unaligned sequence windows, no resets or scheduling. Equal-confidence connected corners; images use normal textures and tonemapping. Not an interactive timing or temporal-filter study."})).unwrap())
+                    .map_err(|e| e.to_string())?;
+            }
             let mut replicas = Vec::new();
             for replica in 0..2 {
                 let mut means = vec![[0.0_f64; 5]; sites.len()];
@@ -360,22 +384,23 @@ impl ReferenceImage {
                 "faces":rows,"note":"Frozen exact scene. Full chamber surfaces and coplanar reconstruction halo; outside chamber retains frozen live values. f64 average of independent blocks below history ceiling. Reference bypasses scheduling, resets and display smoothing, but uses the production finite-depth estimator. Two replica images expose residual noise; independent cosine CPU checks audit estimator bias. No infinite-bounce or mathematically perfect-reference claim."});
             std::fs::write(worker_output.join("cave-reference.json"), serde_json::to_vec(&data).unwrap())
                 .map_err(|e| e.to_string())?;
-            let frames = [
+            let mut frames: VecDeque<_> = [
                 ("reference-replica-a", &replicas[0]),
                 ("reference-replica-b", &replicas[1]),
                 ("cave-reference", &mean),
                 ("cave-reference-held", &mean),
             ].into_iter().map(|(name, values)| {
-                let mut probes = base.clone();
-                for (&(voxel, face), value) in sites.iter().zip(values) {
-                    let p = probes.get_mut(&voxel).unwrap();
-                    p.display[face].indirect = Vec3::new(value[0] as f32,value[1] as f32,value[2] as f32);
-                    p.display[face].confidence = 1.0;
-                }
-                let pending = probes.keys().copied().collect();
-                ReferenceFrame { name, probes, pending }
+                ReferenceFrame { name:name.into(), values:values.clone(), pending:default() }
             }).collect();
-            Ok(Bake { frames, qualification })
+            for (window, data) in sweep.into_iter().enumerate() {
+                for prefix in data.prefixes {
+                    frames.push_back(ReferenceFrame {
+                        name:format!("samples-{}-window-{window}",prefix.paths),
+                        values:prefix.means, pending:default(),
+                    });
+                }
+            }
+            Ok(Bake { frames, qualification, base, sites })
         });
         Ok(Self {
             frozen: true,
@@ -410,6 +435,7 @@ fn tick(
     time: Res<Time<Real>>,
     mut commands: Commands,
 ) {
+    let reference = &mut *reference;
     if !reference.frozen || reference.complete || evidence.failed {
         return;
     }
@@ -439,7 +465,10 @@ fn tick(
             None => return,
             Some(Ok(bake)) => {
                 reference.frames = bake.frames;
+                reference.expected_captures = reference.frames.len() + 1;
                 reference.qualification = Some(bake.qualification);
+                reference.base = bake.base;
+                reference.sites = bake.sites;
                 reference.task = None;
             }
             Some(Err(error)) => {
@@ -459,11 +488,21 @@ fn tick(
     if reference.current.is_none() {
         reference.current = reference.frames.pop_front();
         reference.settle_frames = 12;
+        if let Some(mut frame) = reference.current.take() {
+            for (&(voxel, face), value) in reference.sites.iter().zip(&frame.values) {
+                let p = reference.base.get_mut(&voxel).unwrap();
+                p.display[face].indirect =
+                    Vec3::new(value[0] as f32, value[1] as f32, value[2] as f32);
+                p.display[face].confidence = 1.0;
+            }
+            frame.pending = reference.base.keys().copied().collect();
+            reference.current = Some(frame);
+        }
         if reference.current.is_none() {
             reference.complete = true;
             let saved = std::fs::write(
                 reference.output.join("cave-reference-status.json"),
-                json!({"status":"completed","captures":5,"frozen":true,"geometry_audit_passed":true,
+                json!({"status":"completed","captures":reference.expected_captures,"frozen":true,"geometry_audit_passed":true,
                     "qualification":reference.qualification})
                 .to_string(),
             );
@@ -490,7 +529,7 @@ fn tick(
         try_patch_probe_values(
             &cache,
             &queue,
-            &ReferenceLookup(&frame.probes),
+            &ReferenceLookup(&reference.base),
             std::iter::from_fn(|| frame.pending.pop_front()),
             Duration::from_millis(2),
         );

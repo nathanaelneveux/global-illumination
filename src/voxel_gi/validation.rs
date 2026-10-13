@@ -10,6 +10,7 @@ mod reference;
 mod reference_image;
 mod reference_oracle;
 mod response;
+mod sample_sweep;
 mod structures;
 mod temporal;
 

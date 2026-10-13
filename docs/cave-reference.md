@@ -73,6 +73,10 @@ display/history, both estimates, the exact scene generation and oracle checks.
 The earlier `report.json` completion describes only the real-time workload.
 An unqualified bake returns a nonzero exit after saving its diagnostic images.
 
+Add `VOXEL_GI_VALIDATE_SAMPLE_SWEEP=1` to measure retained sample requirements
+against a newly baked reference on the very same scene. See the
+[sample-count and perceptual accuracy protocol](cave-sampling.md).
+
 An empirical qualification requires eight passing independent estimator checks,
 replica RGB difference p99 <=1%, and maximum <=5%, with a .02 RGB norm floor.
 These are agreement checks, not mathematical confidence guarantees. A failed
