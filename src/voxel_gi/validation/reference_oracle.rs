@@ -45,8 +45,8 @@ pub(super) fn estimate(
         let mut n = normal;
         for bounce in 0..transport.bounces {
             let direction = random.cosine(n);
-            let policy = if bounce == 0 && transport.reach >= MAX_PATH_DISTANCE {
-                UnloadedPolicy::VisibleGeometry
+            let policy = if transport.reach < MAX_PATH_DISTANCE {
+                UnloadedPolicy::BoundedTransport
             } else {
                 UnloadedPolicy::Conservative
             };
@@ -57,18 +57,9 @@ pub(super) fn estimate(
                 policy,
             ) {
                 TraceResult::Escaped => {
-                    // A finite horizon may still have an opaque frontier.
-                    let exhausted = transport.reach < MAX_PATH_DISTANCE
-                        && scene.trace_ray_result(
-                            position + n * 0.002 + direction * transport.reach,
-                            direction,
-                            MAX_PATH_DISTANCE - transport.reach,
-                        ) != TraceResult::Escaped;
-                    if !exhausted {
-                        energy += throughput
-                            * sources.environment
-                            * (0.65 + 0.35 * direction.y).clamp(0.15, 1.0);
-                    }
+                    energy += throughput
+                        * sources.environment
+                        * (0.65 + 0.35 * direction.y).clamp(0.15, 1.0);
                     break;
                 }
                 TraceResult::Unknown => break,

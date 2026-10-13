@@ -73,3 +73,24 @@ qualification must be reported even if all captures completed. Increase
 if replica disagreement is too large. A 32,768-path pilot exercises the capture
 workflow cheaply. This offline bake has no real-time performance claim and does
 not change normal gameplay resources when its flag is absent.
+
+## First rendered pilot
+
+Clean `3ef744d`, M4/Metal/development, 2560×1440 headless, preferred corner
+look and background terrain: `cave-1791896155979103000-48231` bakes 14,572
+exposed chamber/halo faces with 32,768 paths per replica (954,990,592 paths
+total). All five reference-stage capture guards pass with clean render logs.
+The mean and held-mean PNGs have identical SHA-256 hashes, proving this frozen
+publication renders the same image again. The mean and live images were
+visually inspected. The pilot is a preview, **not a qualified reference**:
+replica RGB disagreement p99 1.817%, max 3.294%; one ceiling IR comparison
+fails its independent-estimator tolerance.
+
+Review found the newly authored CPU checker initially used visible-geometry
+policy on its first ray; production uses conservative missing-region policy
+for all diffuse rays (and bounded transport for shortened reach). The checker
+is corrected to use those same visibility semantics. This affects the new
+diagnostic only. The earlier isolated cave has complete nearby residency, so
+its comparison did not expose that mismatch. The high-sample composed-world
+run must still qualify the IR comparison; the mismatch is not assumed to
+explain it. Evidence: `target/cave-reference-pilot.log` and its output directory.

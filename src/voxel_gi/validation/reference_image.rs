@@ -269,6 +269,8 @@ impl ReferenceImage {
             let rows: Vec<_> = sites.iter().enumerate().map(|(i, &(voxel,face))| {
                 let p = &base[&voxel];
                 json!({"voxel":voxel.to_array(),"face":face,
+                    "material":p.material,"source_revision":p.source_revision,
+                    "transport_revision":p.transport_revision,
                     "live_display":live[i],"live_history":p.samples[face],
                     "live_measured":super::reference_oracle::channels(p.radiance[face]),
                     "replicas":[replicas[0][i],replicas[1][i]],"mean":mean[i],
