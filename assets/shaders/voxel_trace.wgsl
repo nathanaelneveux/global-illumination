@@ -93,12 +93,12 @@ fn node_importance(node: LightNode, position: vec3<f32>, normal: vec3<f32>) -> f
     let direction = delta / distance;
     let spread = min(radius / distance, 1.0);
     let receiver = clamp(dot(normal, direction) + spread, 0.0, 1.0);
-    var emitter = 0.0;
-    for (var face = 0u; face < 6u; face += 1u) {
-        if (node.normals & (1u << face)) != 0u {
-            emitter = max(emitter, clamp(-dot(face_normal(face), direction) + spread, 0.0, 1.0));
-        }
-    }
+    // Voxel normals are the six signed axes. Reduce their projections directly;
+    // an absent normal contributes -1, which remains nonpositive after spread.
+    let positive = select(vec3(-1.0), -direction, (vec3(node.normals) & vec3(1u, 4u, 16u)) != vec3(0u));
+    let negative = select(vec3(-1.0), direction, (vec3(node.normals) & vec3(2u, 8u, 32u)) != vec3(0u));
+    let projected = max(positive, negative);
+    let emitter = clamp(max(max(projected.x, projected.y), projected.z) + spread, 0.0, 1.0);
     return node.minimum_power.w * receiver * emitter / (distance * distance + radius * radius + 0.25);
 }
 fn node_left_probability(node: LightNode, position: vec3<f32>, normal: vec3<f32>) -> f32 {

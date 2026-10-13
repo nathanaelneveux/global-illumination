@@ -218,6 +218,22 @@ also approximately tied. Larger batches sacrifice receiver refresh frequency
 without a compelling throughput gain. Keep the 16-path default and limit.
 The native study passed; log `target/settling-batch-study.log`.
 
+## Cardinal light-node importance
+
+`e8f2fd0` plus the shader reduction replaces six conditional normal projections
+with signed-axis vector operations. It computes the same maximum cosine bound;
+no proposal, PDF, path, history or work-budget change is intended. Absent normals
+contribute -1 before adding the bounded angular spread.
+
+M4/Metal/dev, 2,048 cave receivers × 16 paths, 64 alternating rounds (eight warm):
+baseline/candidate GPU medians 4.362/3.665 ms; confirmation 3.075/2.509 ms.
+Clock-dependent absolute times differ, but both pairs save 16–18% kernel time.
+All five means/moments/direct values match at 1/7/16/64/256 paths; the separate
+3,872-choice native selection/forward/reverse-PDF CPU oracle has zero differing
+choices. Both native tests passed. This is not a whole-frame or settling claim.
+Logs: `target/settling-light-importance.log` and
+`target/settling-exact-importance-{confirm,pdf}.log`.
+
 ## Continuous-distance ranking pilot — not promoted
 
 Isolated branch `codex/gi-distance-refinement`, `e982427`, applies soft inverse

@@ -272,12 +272,12 @@ fn settling_roulette_study() {
 fn settling_light_importance_study() {
     let original = "    var emitter = 0.0;\n    for (var face = 0u; face < 6u; face += 1u) {\n        if (node.normals & (1u << face)) != 0u {\n            emitter = max(emitter, clamp(-dot(face_normal(face), direction) + spread, 0.0, 1.0));\n        }\n    }";
     let replacement = "    let positive = select(vec3(-1.0), -direction, (vec3(node.normals) & vec3(1u, 4u, 16u)) != vec3(0u));\n    let negative = select(vec3(-1.0), direction, (vec3(node.normals) & vec3(2u, 8u, 32u)) != vec3(0u));\n    let projected = max(positive, negative);\n    let emitter = clamp(max(max(projected.x, projected.y), projected.z) + spread, 0.0, 1.0);";
-    assert_eq!(SHADER.matches(original).count(), 1);
-    let mut baseline = super::super::tests::native_tracer();
-    let mut candidate = GpuTracer::with_shader(
-        baseline.context.clone(),
+    assert_eq!(SHADER.matches(replacement).count(), 1);
+    let mut candidate = super::super::tests::native_tracer();
+    let mut baseline = GpuTracer::with_shader(
+        candidate.context.clone(),
         true,
-        &SHADER.replace(original, replacement),
+        &SHADER.replace(replacement, original),
     )
     .unwrap();
     let mut f = cave_fixture();
