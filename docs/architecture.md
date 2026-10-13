@@ -117,10 +117,15 @@ Each exposed solid voxel owns a six-face ambient cube. Only exposed faces are
 sampled. Each face stores a mean, second raw moment, direct term, effective history
 weight, independent sample sequence, timestamps and freshness/stability state.
 The index owns boxed probes so growing a hash table does not relocate all large
-receiver records on the game thread. Stable logical keys are voxel coordinates,
-not mesh vertices or array indices.
+receiver records on the game thread. Its 64 independently growing partitions
+also avoid rehashing the entire loaded-world index in one insertion. This trades
+a small lookup cost for smaller growth spikes, not a hard latency guarantee.
+Scheduling retains its explicit key order independently of partition iteration.
+Stable logical keys are voxel coordinates, not mesh vertices or array indices.
 
-Each selected face receives 16 paths per normal dispatch. Rotated Halton
+Each selected face receives 16 paths per normal dispatch; the tuning range is
+1–64, with no default promotion of the slower-to-refresh 32-path or noisier
+eight-path alternatives. Rotated Halton
 dimensions preserve the tested cosine-hemisphere and roulette sequences. Emitter
 selection and emitter surface coordinates use independently padded 2D Sobol pairs
 with index shuffling and hash-based Owen scrambling. CPU and GPU use the same

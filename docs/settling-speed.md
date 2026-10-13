@@ -1,5 +1,29 @@
 # Settling speed — October 10, 2026
 
+## Batch-size and cached-bound decisions
+
+On `3e09d56`, same quiet long cave/background/default 4 ms budget, 32 paths
+(`cave-1791857166053389000-40017`) settle median/p95 in 8.347/22.690 s, with
+15-second corner error .38504. Peak p95/max .09692/.22259 and variation
+40–60/160–180 s .04320/.01896 improve, but near/far age rises to 3.709/71.837 s
+and coverage falls to 88.86%. 273.82 M paths. CPU p95/p99/max
+4.961/6.833/15.494 ms. Eight paths (`cave-1791857378380795000-40153`) settle
+6.384/18.007 s, error .13222, but peak .10766/.33911 and variation
+.12228/.08971 regress. Age .708/20.110 s, coverage 99.47%, 345.78 M paths;
+CPU p95/p99/max 7.570/12.088/36.075 ms. Both runs sustain 143/144 corners,
+have five valid captures and inspected 15-second images. Minimum fresh paths
+in the two intervals: 32-path 128/64, eight-path 136/136. Later test-only
+source edits were not compiled into the eight-path run. **Keep default 16**;
+the expanded 1–64 control is for deliberate quality comparisons.
+
+Separate test-only `codex/gi-gpu-light-bounds`, `c0ef49f`, calculates the cached
+light radius on the GPU rather than CPU. Strict same-path five-band means,
+moments and direct values now pass at 1/7/16/64/256 paths. But 64 alternating
+native rounds/eight warm, 2,048 cave receivers × 16 paths, give M4/Metal kernel
+median 3.48796→3.48204 ms: no useful speedup, even before charging tree-update
+precomputation. Native study and strict Clippy pass; do not promote the extra
+pass. The retained runtime does not contain this study's instrumentation.
+
 ## Quiet validation comparison (October 12)
 
 Deadline-only snapshot capture `2f1ed03`, quiet long cave
