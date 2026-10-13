@@ -190,6 +190,13 @@ def main():
         raise ValueError("unqualified or incomplete reference")
     sweep = json.loads((args.run / "cave-sample-sweep.json").read_text())
     results = transport_analysis(reference, sweep)
+    # Small manifest for the full-resolution gallery; do not make a browser
+    # load the 100+ MiB per-face scientific dataset just to find checkpoint names.
+    manifest = dict(counts=[p["paths"] for p in sweep["windows"][0]["prefixes"]],
+                    sequence_starts=[w["sequence_start"] for w in sweep["windows"]],
+                    reference_paths=reference["paths_per_replica"] * reference["replicas"],
+                    scene_generation=reference["scene_generation"], qualified=True)
+    (args.run / "sample-gallery.json").write_text(json.dumps(manifest, allow_nan=False))
     output = dict(criteria=dict(practical="Every window: 99% of chamber corners within 5% RGB, worst <=10%",
         strict="Every window: 99% of chamber corners within 2% RGB, worst <=5%",
         perceptual="Every window at captured view: OKLab p99<=.01/max<=.02, FLIP mean<=.01/worst 32px tile mean<=.05",
