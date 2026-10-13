@@ -8,6 +8,9 @@ control, or `calibrated` to select the new policy explicitly. No BVW, sampler,
 presentation or work-budget changes. This decision is not a locked-60-FPS or
 complete cave-convergence claim.
 
+Follow-up: [history-cut attribution](retention-attribution.md) measures the
+remaining reductions and frozen-scene target motion without changing thresholds.
+
 The native curve uses the fixed `cave-user-2048` appearance goal, Q=2048,
 baseline work anchor 2048, fresh response work Q/6 and stale-error allowance .03.
 Caps round upward to integer weights (16/256/316/1986 at distances

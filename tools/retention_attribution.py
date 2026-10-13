@@ -8,6 +8,7 @@ event as harmless. Reference-window disagreement is sensitivity, not a CI.
 """
 import argparse
 from collections import defaultdict
+from itertools import combinations
 import json
 from pathlib import Path
 
@@ -78,6 +79,11 @@ def analyze(folder):
                              retained=min(e["before"], e["decision"]["unfolded"]["cap"])) for e in explained
                          if e["decision"]["unfolded"]["cap"] < e["before"]]
         unfolded_sun = [e for e in unfolded_cuts if e["decision"]["caps"][1] == e["decision"]["cap"]]
+        complete = [e for e in cuts if e["decision"].get("unfolded")]
+        single_cause = {}
+        for i in [0, 4, 5, 6, 7]:
+            losses = [max(0, e["before"]-e["decision"]["unfolded"]["caps"][i]) for e in complete]
+            single_cause[labels[i]] = dict(cuts=sum(v > 0 for v in losses), weight_removed=sum(losses))
         intervals.append(dict(
             seconds=[start, end], accepted_jobs=len(selected), cuts=len(cuts),
             weight_removed=sum(e["before"]-e["retained"] for e in cuts),
@@ -87,7 +93,9 @@ def analyze(folder):
             retained=distribution([e["retained"] for e in cuts]) if cuts else None,
             before=distribution([e["before"] for e in cuts]) if cuts else None,
             superseded_scene_jobs=sum(not e["sky_current"] for e in cuts),
-            overflow_counterfactual=dict(explained=len(explained),
+            individual_cause_counterfactual=dict(complete_cuts=len(complete), causes=single_cause,
+                note="Each cause alone at observed weights, using unfolded records. Overlapping alternatives; do not sum or call a known distant sun change a measured receiver-lighting change."),
+            overflow_counterfactual=dict(available=audit["schema_version"] >= 2, explained=len(explained),
                 no_cut_needed=sum(e["decision"]["unfolded"]["cap"] >= e["before"] for e in explained),
                 less_severe=sum(e["decision"]["unfolded"]["cap"] > e["retained"] for e in explained),
                 extra_weight_removed_by_summary=extra_loss,
@@ -95,7 +103,8 @@ def analyze(folder):
                 remaining_sunlight=groups(unfolded_sun, sunlight),
                 largest_cuts=[dict(seconds=e["at_s"], site=e["site"], before=e["before"], retained=e["retained"],
                     unfolded_cap=e["decision"]["unfolded"]["cap"], unfolded_caps=e["decision"]["unfolded"]["caps"],
-                    unfolded_distances=[float(np.sqrt(v)) for v in e["decision"]["unfolded"]["distance_squared"]])
+                    unfolded_distances=[None if v == 9223372036854775807 else float(np.sqrt(v))
+                        for v in e["decision"]["unfolded"]["distance_squared"]])
                     for e in sorted(explained, key=lambda e:e["before"]-e["retained"], reverse=True)[:5]],
                 note="One-step counterfactual at observed weight, not a no-overflow trajectory replay."),
         ))
@@ -109,7 +118,7 @@ def analyze(folder):
         mean = values.mean(axis=1)
         scale = np.maximum(np.linalg.norm(mean.max(axis=0), axis=-1), .02)
         rows = []
-        for a, b in [(i, i + 1) for i in range(5)] + [(0, 5), (1, 5)]:
+        for a, b in combinations(range(len(checkpoints)), 2):
             delta = values[b] - values[a]
             rows.append(dict(
                 seconds=[checkpoints[a]["at_s"], checkpoints[b]["at_s"]],

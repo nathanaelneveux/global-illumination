@@ -43,6 +43,7 @@ class RetentionAttributionTests(unittest.TestCase):
     def test_fixed_scene_has_zero_paired_drift_despite_reference_uncertainty(self):
         result = self.run_analysis(self.documents())
         motion = result["corner_target_motion"]
+        self.assertEqual(len(motion["comparisons"]), 15)
         self.assertGreater(motion["checkpoint_window_disagreement"][0]["max"], 0)
         self.assertTrue(all(row["change"]["max"] == 0 for row in motion["comparisons"]))
         late = result["intervals"][-1]
@@ -68,9 +69,11 @@ class RetentionAttributionTests(unittest.TestCase):
         event["decision"]["caps"] = [maximum, maximum, maximum, 256] + [maximum]*4
         event["decision"]["unfolded"] = dict(cap=768, caps=[768]+[maximum]*7,
             distance_squared=[40000]*6)
-        result = self.run_analysis(docs)["intervals"][-1]["overflow_counterfactual"]
+        interval = self.run_analysis(docs)["intervals"][-1]
+        result = interval["overflow_counterfactual"]
         self.assertEqual(result["extra_weight_removed_by_summary"], 512)
         self.assertEqual(result["remaining_causes"]["geometry"]["weight_removed"], 256)
+        self.assertEqual(interval["individual_cause_counterfactual"]["causes"]["geometry"]["weight_removed"], 256)
         event["decision"]["unfolded"] = None
         with self.assertRaisesRegex(ValueError, "shadow journal too short"):
             self.run_analysis(docs)
