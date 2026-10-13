@@ -16,7 +16,7 @@ import unittest
 import numpy as np
 
 from distance_history_analysis import caps, replay, summary
-from retention_budget import ChangePrior, QualityGoal, ResponseBudget, SamplingCalibration, select_limit
+from retention_budget import ChangePrior, QualityGoal, QualifiedFloor, ResponseBudget, SamplingCalibration, select_limit
 
 
 class VarianceGuard:
@@ -85,6 +85,8 @@ def analyze(tape,metadata,calibration,budget,prior):
             "sun-budget":[select_limit(s["geometry_distance"],s["sun_distance"],calibration,budget,prior)
                           for s in evidence["sites"]],
         }
+        floor = np.asarray([QualifiedFloor().limit(d,calibration) for d in distances])
+        policies["sun-retention"] = np.maximum(policies["sun-budget"],floor)
         runs = []
         for index in range(len(case["before"])):
             for reverse in (False,True):
@@ -97,8 +99,10 @@ def analyze(tape,metadata,calibration,budget,prior):
                         tape["batch_paths"],tape["warm_paths"],policies["sun-budget"],guard))
         reports.append({"name":case["name"],"bounds":case["changed_bounds"],
                         "sun_targets":evidence["sun_targets"],"sun_lowered_distance_sites":int(np.sum(effective<distances)),
+                        "retention_bias_floor_conflicts":int(np.sum(floor>policies["sun-budget"])),
                         "limits":{k:summary(v) for k,v in policies.items()},"runs":runs})
     return {"schema":1,"calibration":asdict(calibration),"budget":asdict(budget),"prior":asdict(prior),
+            "qualified_floor":asdict(QualifiedFloor()),
             "cases":reports,"note":"Fixed-work offline combined-policy experiment. Calibration from separate composed-cave quality sweep; exact native transition samples reused. No unknown/journal fallback, production event pipeline, display or FPS qualification."}
 
 
@@ -118,6 +122,8 @@ def legacy_controls(tape,calibration,budget,prior):
     never fill missing geometry with a guessed distance. No-edit controls stay
     no-edit, and sun changes can only reduce distance below the local flat band.
     """
+    if prior.full_change_distance < 48:
+        raise ValueError("legacy local caps only certify distances within 48 blocks")
     from history_qualification import evaluate
     class Policy:
         def __init__(self,name,limits,has_edit,guarded):
@@ -142,22 +148,28 @@ def legacy_controls(tape,calibration,budget,prior):
     results = []
     for case in tape["cases"]:
         metadata = case["guided"]
+        if len(case["sites"]) != len(metadata["baseline_caps"]):
+            raise ValueError("missing legacy receiver caps")
         targets = {tuple(math.floor(v) for v in pair["target"])
                    for q in metadata["receivers"] for pair in q["geometry1"]["pairs"]}
-        limits = []
+        limits,retention = [],[]
         for site,baseline in zip(case["sites"],metadata["baseline_caps"]):
             if not metadata["has_edit"]:
                 limits.append(65536)
+                retention.append(65536)
+                continue
             elif baseline == 16:
-                limits.append(select_limit(0,None,calibration,budget,prior))
+                d = 0
             elif len(targets) == metadata["edit_targets"] and targets and metadata["sun_targets"] == 0:
                 d = min(math.dist(site["voxel"],p) for p in targets)
-                limits.append(select_limit(d,None,calibration,budget,prior))
             else:
                 raise ValueError("legacy tape lacks complete remote geometry/sun evidence")
+            limits.append(select_limit(d,None,calibration,budget,prior))
+            retention.append(max(limits[-1],QualifiedFloor().limit(d,calibration)))
         for run in case["runs"]:
             for name,values,guarded in (("baseline",metadata["baseline_caps"],False),
-                                        ("sun-budget",limits,False),("sun-budget-variance",limits,True)):
+                                        ("sun-budget",limits,False),("sun-budget-variance",limits,True),
+                                        ("sun-retention",retention,False)):
                 policy = Policy(name,values,metadata["has_edit"],guarded)
                 result = evaluate(case,run,policy,tape["batch_paths"],tape["warm_paths"],tape["steps"])
                 result["bias_noise_conflicts"] = policy.guard.conflicts if policy.guard else 0
@@ -228,6 +240,25 @@ class Tests(unittest.TestCase):
         self.assertEqual(guard.conflicts,1)
         self.assertFalse(guard.pending[0])
         self.assertEqual(guard.weights(old,np.array([4096]),zero,zero,16,True)[0],16)
+
+    def test_retention_floor_recalibrates_without_changing_spatial_evidence(self):
+        quality = SamplingCalibration(3072,"baseline")
+        twice = replace(quality,paths_for_quality=1536,sampler_id="hypothetical")
+        floor = QualifiedFloor()
+        for distance,sun in ((0,None),(48,None),(96,None),(128,None),(512,10),(512,None)):
+            old = max(select_limit(distance,sun,quality),floor.limit(distance,quality))
+            new = max(select_limit(distance,sun,twice),floor.limit(distance,twice))
+            self.assertGreaterEqual(old,16 if distance<=48 else 256)
+            self.assertEqual(new,old/2 if old<65536 else old)
+        self.assertEqual(max(select_limit(512,10,quality),floor.limit(512,quality)),256)
+
+    def test_legacy_adapter_rejects_uncertified_distances_and_missing_caps(self):
+        quality = SamplingCalibration(3072,"test")
+        with self.assertRaises(ValueError):
+            legacy_controls({},quality,ResponseBudget(),ChangePrior(24))
+        with self.assertRaises(ValueError):
+            legacy_controls({"cases":[{"sites":[{}],"guided":{"baseline_caps":[]}}]},
+                            quality,ResponseBudget(),ChangePrior())
 
 
 def main():

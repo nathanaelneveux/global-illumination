@@ -108,6 +108,33 @@ class ResponseBudget:
         return min(available,fresh*self.stale_error/(change-self.stale_error))
 
 
+@dataclass(frozen=True)
+class QualifiedFloor:
+    """Retention-only experiment: do not discard more than the baseline did.
+
+    Express the existing 16/256 caps in quality-work units of the measured
+    3,072-path baseline sampler. This is an empirical qualification constraint,
+    not an analytic noise guarantee. Recalibrating rescales its path weights;
+    a different sampler must still pass the transition replays before promotion.
+    If this floor exceeds the bias cap, the requested response budget is NOT met.
+    """
+    anchor_quality_paths: float = 3072
+    near_weight: float = 16
+    far_weight: float = 256
+    near_distance: float = 48
+
+    def __post_init__(self):
+        if any(not math.isfinite(v) or v <= 0 for v in (
+                self.anchor_quality_paths,self.near_weight,self.far_weight,self.near_distance)):
+            raise ValueError("positive finite baseline qualification required")
+
+    def limit(self, geometry_distance, calibration):
+        if not math.isfinite(geometry_distance) or geometry_distance < 0:
+            raise ValueError("known geometry distance required")
+        weight = self.near_weight if geometry_distance <= self.near_distance else self.far_weight
+        return weight * calibration.paths_for_quality / self.anchor_quality_paths
+
+
 def select_limit(geometry_distance, sunlight_distance, calibration, budget=ResponseBudget(), prior=ChangePrior()):
     """Known changed sunlight origins supplement, never remove, geometry evidence.
 
