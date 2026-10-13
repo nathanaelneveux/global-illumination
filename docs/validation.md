@@ -189,6 +189,14 @@ VOXEL_GI_VALIDATE_EXIT=1 \
 cargo run --locked --offline > target/house-edits.log 2>&1
 ```
 
+Validation does not automatically enable terminal statistics. Use the JSON frame
+and work timelines for performance evidence; synchronous per-page console output
+can contaminate main-thread timings. Set `VOXEL_GI_LOG_STATS=1` explicitly when
+investigating verbose statistics, and label those runs separately. A quiet run
+must be compared with a quiet control, not credited as a gameplay optimization
+against an older verbose validation run. Normal gameplay already defaults to
+quiet statistics.
+
 The capture target is 2560 × 1440. This needs neither desktop focus nor an unlocked
 screen, but system sleep can still suspend execution. Do not change security or
 screensaver settings. Omit `VOXEL_GI_VALIDATE_HEADLESS` for a windowed run, then

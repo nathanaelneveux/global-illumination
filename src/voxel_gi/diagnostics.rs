@@ -41,7 +41,7 @@ impl Plugin for VoxelGiDiagnosticsPlugin {
                 .add_systems(PostStartup, super::validation::setup_capture_target)
                 .add_systems(
                     Update,
-                    super::validation::run_validation.after(log_voxel_gi_stats),
+                    super::validation::run_validation.after(VoxelGiSystems),
                 );
         }
     }
@@ -50,10 +50,7 @@ impl Plugin for VoxelGiDiagnosticsPlugin {
 pub(super) fn terminal_stats_enabled() -> bool {
     // Launch configuration, not a hot-path environment lookup on every page.
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("VOXEL_GI_LOG_STATS").is_ok_and(|value| value == "1")
-            || std::env::var_os("VOXEL_GI_VALIDATE").is_some()
-    })
+    *ENABLED.get_or_init(|| std::env::var("VOXEL_GI_LOG_STATS").is_ok_and(|value| value == "1"))
 }
 
 struct HudState {
