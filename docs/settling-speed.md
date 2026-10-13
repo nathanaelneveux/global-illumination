@@ -2,6 +2,14 @@
 
 ## Batch-size and cached-bound decisions
 
+A 4.5 ms pilot on `21c03a4` (runtime `3e09d56`),
+`cave-1791858064391009000-40852`, did not justify a budget increase. Median/p95
+settling 7.211/15.593 s, all 144 sustain, 15-second error .11618, peak
+.10166/.30339. Variation .09429/.08119 (224/176 minimum new paths) is higher
+than the 4 ms candidate. Near/far age .853/30.784 s, 462.01 M paths, 99.00%
+coverage; GI CPU p50/p95/p99/max 3.429/6.430/9.123/15.114 ms. More refresh
+does not necessarily mean earlier stable presentation. No default change.
+
 On `3e09d56`, same quiet long cave/background/default 4 ms budget, 32 paths
 (`cave-1791857166053389000-40017`) settle median/p95 in 8.347/22.690 s, with
 15-second corner error .38504. Peak p95/max .09692/.22259 and variation
