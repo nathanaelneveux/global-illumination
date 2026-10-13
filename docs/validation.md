@@ -19,6 +19,15 @@ Calibrated retention is the runtime-retention branch's default. Always specify
 commits. The separate `history_experiment` field describes the older retain-all
 ablation, not this policy. Coverage and retained weight are still not convergence.
 
+For the [overflow compression experiment](distance-band-retention.md), keep
+`VOXEL_GI_RETENTION=calibrated` and select
+`VOXEL_GI_RETENTION_SUMMARY=floors|distance-bands`; verify `retention_summary` in
+the report. Both arms use the same distance curve. The opt-in retention audit
+additionally rejects a compressed cap weaker than its complete shadow journal.
+`runtime_retention_analysis.py` can use the final frozen audit checkpoint for
+live error; `retention_attribution.py` checks target motion across all six.
+The blocked windowed capture is not a frame-pacing qualification.
+
 For adaptive-history research, the [DDGI/A-SVGF qualification study](adaptive-history-qualification.md)
 records the opt-in matched native sample tapes, isolated branches, first-gate
 failures and required runtime gate. Neither detector is a gameplay default;

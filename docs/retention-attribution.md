@@ -9,6 +9,9 @@ history even where the current distance curve would retain it. In the detailed
 recording this explained 70.94% of post-startup weight loss. Fix the summary
 before retuning the curve; the cave reference target was nearly stationary.
 
+Implementation follow-up: [distance-preserving overflow summary](distance-band-retention.md).
+It changes the bounded representation rather than tuning away these measured cuts.
+
 ## What the diagnostic measures
 
 At the same 36 cave faces / 144 reconstructed corners used for runtime

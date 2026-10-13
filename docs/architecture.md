@@ -266,6 +266,14 @@ and conservative unknown sky evidence count. This is not a complete dependency
 oracle or universal distance bound; the measured remaining limits are explicit.
 Analytic-source/model policies in the table remain unchanged.
 
+The opt-in [distance-band overflow summary](distance-band-retention.md) replaces
+the two fallback floors with revision stamps per distance band and origin. It
+reuses worker-computed change-to-page AABB distances and stores no baked sample
+caps. Eight recent exact events and per-receiver consumption epochs remain.
+This avoids discarding all distance information at eviction, but page extent
+and downward distance quantization are still conservative approximations.
+The calibrated curve and its empirical quality target are unchanged.
+
 `invalidate_model` is the explicit global restart operation. It advances both
 the source snapshot and model-reset watermark together, rejecting in-flight
 old-model jobs. Ordinary analytic light changes retain bounded history instead.

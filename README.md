@@ -124,6 +124,11 @@ for the original control. Repeated composed-cave tests show substantially less
 corner oscillation with comparable frame pacing, not a complete convergence or
 locked-60-FPS solution.
 
+The [distance-band follow-up](docs/distance-band-retention.md) preserves distance
+information when those page journals overflow. It is opt-in with
+`VOXEL_GI_RETENTION_SUMMARY=distance-bands cargo run --locked`; `floors` retains
+the existing default. Lighting thresholds, sampling and BVW are unchanged.
+
 **Copy applied JSON** exports transport/work settings (not display toggles/gain).
 Paste JSON into the same panel to import, or save it to a file and launch with
 `VOXEL_GI_SETTINGS=path.json cargo run --locked`. Omitted fields use defaults;

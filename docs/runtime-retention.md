@@ -10,6 +10,8 @@ complete cave-convergence claim.
 
 Follow-up: [history-cut attribution](retention-attribution.md) measures the
 remaining reductions and frozen-scene target motion without changing thresholds.
+Its [distance-band follow-up](distance-band-retention.md) implements an opt-in
+distance-preserving replacement for the overflow floors described below.
 
 The native curve uses the fixed `cave-user-2048` appearance goal, Q=2048,
 baseline work anchor 2048, fresh response work Q/6 and stale-error allowance .03.
