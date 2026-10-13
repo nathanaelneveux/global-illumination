@@ -42,6 +42,24 @@ def validate_capture(folder, report):
             raise ValueError("invalid offscreen target")
 
 
+def checkpoint_reference(document):
+    """Use the final independent audit oracle, not the final live estimate.
+
+    The attribution analyzer separately checks motion across all six frozen
+    scenes; early live error here still uses the final scene's target.
+    """
+    checkpoints = document["checkpoints"]
+    if len(checkpoints) != 6 or checkpoints[-1]["at_s"] < 180:
+        raise ValueError("incomplete retention reference checkpoints")
+    sites = document["sites"]
+    if document["patch_sites"][:len(sites)] != sites:
+        raise ValueError("reference patch prefix differs from receiver sites")
+    final = checkpoints[-1]
+    return dict(sites=sites, paths_per_replicate=document["paths_per_replicate"],
+                references=[replica[:len(sites)] for replica in final["patch_references"]],
+                corner_references=final["corner_references"])
+
+
 def analyze(folder):
     report = json.loads((folder / "report.json").read_text())
     trace = json.loads((folder / "temporal.json").read_text())
@@ -50,16 +68,21 @@ def analyze(folder):
         raise ValueError("require the composed cave with background terrain loading")
     if trace["end_s"] < 180 or len(trace["sites"]) != 36 or len(trace["site_faces"]) != 36:
         raise ValueError("require the complete long cave observation set")
-    if not (folder / "reference.json").exists():
+    ref = None
+    if (folder / "reference.json").exists():
+        ref = json.loads((folder / "reference.json").read_text())
+    elif (folder / "retention-reference.json").exists():
+        ref = checkpoint_reference(json.loads((folder / "retention-reference.json").read_text()))
+    if ref is None:
         if report["capture_mode"] != "window":
             raise ValueError("headless accuracy run is missing its reference")
         return dict(run=str(folder), policy=report["spatial_retention"],
+                    summary=report.get("retention_summary", "floors"),
                     capture_mode="window", phases=report["measurements"]["phases"],
                     traced_paths=report["traced_paths"], max_loaded_pages=report["max_loaded_pages"],
                     background=report["background_terrain"],
                     stability=[summarize(trace,a,b,"corners") for a,b in ((30,60),(60,120),(120,180))],
                     note="Windowed stability/frame pacing only; no accuracy reference for this run.")
-    ref = json.loads((folder / "reference.json").read_text())
     if report["status"] != "completed" or trace.get("overflow", False):
         raise ValueError("incomplete workload")
     identities = [(v, f) for v, f in zip(trace["sites"], trace["site_faces"])]
@@ -101,6 +124,7 @@ def analyze(folder):
             worst_corner_p99=max(s["corners"]["p99"] for s in samples),
             median_corner_p99=float(np.median([s["corners"]["p99"] for s in samples]))))
     return dict(run=str(folder), policy=report["spatial_retention"],
+                summary=report.get("retention_summary", "floors"),
                 capture_mode=report["capture_mode"], phases=report["measurements"]["phases"],
                 traced_paths=report["traced_paths"], transport_batches=report["transport_batches"],
                 max_loaded_pages=report["max_loaded_pages"], background=report["background_terrain"],

@@ -33,6 +33,9 @@ def analyze(folder):
     audit = json.loads((folder / "retention-audit.json").read_text())
     reference = json.loads((folder / "retention-reference.json").read_text())
     temporal = json.loads((folder / "temporal.json").read_text())
+    summary = report.get("retention_summary", "floors")
+    if audit.get("retention_summary", "floors") != summary:
+        raise ValueError("summary identity differs between report and audit")
     if (report["profile"] != "cave" or report["spatial_retention"] != "calibrated-cave-user-2048-v1"
             or not report["background_terrain"]["enabled"]
             or temporal["end_s"] < 180 or len(audit["sites"]) != 36):
@@ -51,6 +54,8 @@ def analyze(folder):
         unfolded = decision.get("unfolded")
         if unfolded and unfolded["cap"] != min(unfolded["caps"][:2]):
             raise ValueError("inconsistent shadow journal")
+        if unfolded and decision["cap"] > unfolded["cap"]:
+            raise ValueError("summary failed to preserve an exact-history cap")
     if any(e["source_changed"] or e["model_restart"] for e in events if e["at_s"] >= 30):
         raise ValueError("source/model changes need separate attribution")
     labels = audit["cap_labels"]
@@ -131,10 +136,10 @@ def analyze(folder):
             note="Fixed brighter-across-checkpoints RGB normalization with .02 norm floor. Common sequence windows; paired-delta disagreement is not a formal confidence bound.",
         )
 
-    return dict(run=str(folder), intervals=intervals, corner_target_motion=target_motion(corners),
+    return dict(run=str(folder), summary=summary, intervals=intervals, corner_target_motion=target_motion(corners),
                 face_target_motion=target_motion(faces), traced_paths=report["traced_paths"],
                 max_pages=report["max_loaded_pages"], background=report["background_terrain"],
-                note="Instrumentation only, no threshold/policy changes. Mechanism attribution is event-complete at 36 faces; oracle samples six scene checkpoints, not every event. No FPS claim.")
+                note="Mechanism attribution is event-complete at 36 faces; oracle samples six scene checkpoints, not every event. Counterfactuals are one-step at observed weights, not alternative trajectories. No FPS claim.")
 
 
 if __name__ == "__main__":

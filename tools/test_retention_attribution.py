@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from retention_attribution import analyze, groups
+from runtime_retention_analysis import checkpoint_reference
 
 
 class RetentionAttributionTests(unittest.TestCase):
@@ -77,6 +78,32 @@ class RetentionAttributionTests(unittest.TestCase):
         event["decision"]["unfolded"] = None
         with self.assertRaisesRegex(ValueError, "shadow journal too short"):
             self.run_analysis(docs)
+
+    def test_distance_summary_identity_and_conservatism_are_checked(self):
+        docs = self.documents()
+        docs["report.json"]["retention_summary"] = "distance-bands"
+        with self.assertRaisesRegex(ValueError, "summary identity"):
+            self.run_analysis(docs)
+        audit = docs["retention-audit.json"]
+        audit["retention_summary"] = "distance-bands"
+        self.assertEqual(self.run_analysis(docs)["summary"], "distance-bands")
+        audit["events"][0]["decision"]["unfolded"] = dict(cap=16, caps=[16]+[4294967295]*7)
+        with self.assertRaisesRegex(ValueError, "exact-history cap"):
+            self.run_analysis(docs)
+
+    def test_live_accuracy_uses_final_independent_oracle_and_checks_patch_order(self):
+        ref = self.documents()["retention-reference.json"]
+        ref["patch_sites"] = ref["sites"] + [dict(voxel=[100, 0, 0], face=2)]
+        ref["checkpoints"][-1]["patch_references"][0][0] = [2]*5
+        result = checkpoint_reference(ref)
+        self.assertEqual(len(result["references"][0]), 36)
+        self.assertEqual(result["references"][0][0], [2]*5)
+        ref["patch_sites"] = list(reversed(ref["patch_sites"]))
+        with self.assertRaisesRegex(ValueError, "patch prefix"):
+            checkpoint_reference(ref)
+        ref["checkpoints"].pop()
+        with self.assertRaisesRegex(ValueError, "incomplete retention reference"):
+            checkpoint_reference(ref)
 
 
 if __name__ == "__main__":
