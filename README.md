@@ -113,11 +113,15 @@ establish a safe history-invalidation radius.
 The [distance/history study](docs/distance-history.md) measures actual streamed
 geometry changes and retained-history tails. Remote retention substantially
 reduces repeated cave noise, but a distant bounced-sun shadow rejects a universal
-384-block cutoff. Runtime caps remain unchanged pending dependency-aware retention.
+384-block cutoff.
 The [sun-aware follow-up](docs/sun-aware-retention.md) retains the remote-cave win
 without changing the measured baseline shadow/edit responses, and calibrates
-history curves against measured sampler quality. It is an offline experiment;
-the incremental runtime change pipeline is not enabled yet.
+history curves against measured sampler quality. The
+[runtime follow-up](docs/runtime-retention.md) now integrates page-local history,
+incremental sun-change evidence and worker-side retention queries. Try it with
+`VOXEL_GI_RETENTION=calibrated cargo run --locked`; the original policy remains
+the default control during qualification. Composed-cave tests show substantially
+less corner oscillation, not a complete convergence or locked-60-FPS solution.
 
 **Copy applied JSON** exports transport/work settings (not display toggles/gain).
 Paste JSON into the same panel to import, or save it to a file and launch with

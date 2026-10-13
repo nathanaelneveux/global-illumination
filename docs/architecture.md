@@ -32,7 +32,7 @@ host chunks / edits / sources / material table
 | BVW events and generator snapshots | `bvw.rs` |
 | Scene/receiver representation | `world.rs`, `field.rs` |
 | Acceleration and packing | `naadf.rs`, `gpu_scene.rs` |
-| Change metadata and retention | `geometry.rs`, `sources.rs`, `revision.rs` |
+| Change metadata and retention | `geometry.rs`, `retention.rs`, `sources.rs`, `revision.rs` |
 | Receiver page publication | `publication.rs` |
 | Eligibility, priority and dispatch | `scheduling.rs`, `dispatch.rs` |
 | Model/work configuration and revision synchronization | `settings.rs` |
@@ -213,6 +213,8 @@ Freshness, retained statistical weight, scheduling urgency and displayed values
 are independent. A revision can make an estimate stale without clearing its
 display, rewinding its sequence, or resetting the world sweep.
 
+Baseline control policy (the runtime candidate is described below):
+
 | Change | Retained statistical weight on refresh |
 | --- | --- |
 | Unchanged transport | Accumulate up to 65,536 |
@@ -246,17 +248,22 @@ The [distance/history qualification](distance-history.md) derives a history cap
 from a bounded lighting change and response budget, then compares real canyon
 loads, remote cave changes and long-range shadows. It supports retaining remote
 compatible history, but rejects distance alone as a general influence bound.
-Future spatial retention must also survive bounded-journal eviction; retaining
-more samples without that metadata is not a complete solution. Runtime policy
-in the table above is unchanged.
+Spatial retention must also survive bounded-journal eviction; retaining
+more samples without that metadata is not a complete solution.
 
 The follow-up [sun-aware retention experiment](sun-aware-retention.md) separates
 spatial evidence, measured sampler quality, stale-light budget and an empirical
 history floor. Changed shared-corner sunlight supplies secondary change origins;
 calibration remeasures paths to a fixed quality goal when sampling improves.
 The conservative offline arm preserves baseline edit responses while retaining
-remote evidence. This is not yet a production event pipeline or a safe universal
-distance bound; the study records its partial-cache and journal requirements.
+remote evidence. The [runtime implementation](runtime-retention.md), enabled by
+`VOXEL_GI_RETENTION=calibrated`, uses per-page bounded journals with timestamped
+conservative overflow, independent sun-evidence epochs, and immutable page
+snapshots for worker-side distance/weight queries. Selection checks page stamps;
+caps apply once before either backend merges new samples. Both known transitions
+and conservative unknown sky evidence count. This is not a complete dependency
+oracle or universal distance bound; the measured remaining limits are explicit.
+Analytic-source/model policies in the table remain unchanged.
 
 `invalidate_model` is the explicit global restart operation. It advances both
 the source snapshot and model-reset watermark together, rejecting in-flight

@@ -14,8 +14,12 @@ Geometry bounds are binned on the scene worker. Per-receiver-page journals hold
 eight spatial events; older local events fold into independently timestamped
 16/256 conservative floors. Unrelated distant streaming never evicts local
 evidence. Retired receiver pages release their metadata. Queries consume all
-intervening events, including late sunlight evidence, without a main-thread
-world/probe scan.
+intervening events, including late sunlight evidence. At `9293cbb`, selection
+only checks the newest page stamp; immutable copy-on-write page snapshots travel
+to the tracing worker, which evaluates exact per-receiver caps. Publication
+clones at most eight small event headers when a worker still holds a page, not
+its bounds arrays. Conservative page-edge wakeups may add an audit, never a
+stronger cap. There is no main-thread world/probe scan for the change signal.
 
 Existing CPU/GPU shared-corner results contribute sunlight-change evidence.
 Known equal values (including black) contribute none; either transition direction
@@ -34,8 +38,105 @@ evidence. All faces consume a cap together, including unselected faces; means,
 moments, sequences and display histories are preserved. Source/model replacement
 continues using its existing policy. No debounce or radiance clamping is added.
 
-This first checkpoint is an implementation, **not a gameplay qualification or
-default promotion**. Focused curve/journal, sky-state and partial-publication
-checks plus native CPU/GPU parity are the initial verification. Paired composed
-cave runs with moving background terrain, event-complete corner observations,
-reference error and separate windowed frame-time tails determine acceptance.
+## Qualification — October 13, 2026
+
+Implementation `00c329e`; exact-cap scan shortcuts `b448140`; worker-side query
+ownership `9293cbb`. These are local, buildable checkpoints. The control at
+`00c329e` keeps the pre-experiment policy, with the new (unused) per-probe stamp
+present in both arms. The sampling estimator, work budgets, presentation and
+BVW are identical across policies.
+
+Apple M4 integrated GPU, 16 GiB, Metal, macOS 26.6.2; Rust 1.95,
+Bevy 0.19.1 / registry BVW 0.17. Development profile: application opt-level 1,
+dependencies 3. 2560×1440, corner sun/reconstructed indirect, textures on, AO off.
+16 paths/face, 4-ms adaptive trace target, 8,192 receiver cap, 768 reach/3 bounces,
+75-ms display response, 50-ms upload, 2-ms scene publication. All runs use the
+normal terrain plus nearby cave structure, moving nonrendering background loader
+at 4.32 voxels/s, 182-second workload and event-complete 36-face/144-corner
+observations. No reference-only residency loader or full-cave bake. No concurrent
+compiler, analysis workload or second native process during timed captures.
+
+### Accuracy and stability (headless; not FPS)
+
+Both at native `00c329e` (only the later Python analyzer was untracked):
+
+- Control: `target/gi-validation/cave-1791925532295999000-61021`.
+- Candidate: `target/gi-validation/cave-1791925755993216000-61155`.
+
+Each run computes its **own** exact final-scene reference after timing/captures:
+two disjoint 65,536-path replicas, including connected corner neighborhoods.
+Reference disagreement is .604% corner p99 (1.30% face-center p99). The two
+runs' mean corner references differ by only .072% p99, despite modest residency
+differences (maximum 1,544 versus 1,594 pages).
+
+| Headless measure | Control | Candidate |
+| --- | ---: | ---: |
+| Corner p99 error, 60 s | 10.00% | 3.38% |
+| Corner p99 error, 120 s | 6.44% | 3.52% |
+| Corner p99 error, 180 s | 8.23% | 4.18% |
+| 60–120 s p95 excess corner variation | .23468 | .06699 |
+| 120–180 s p95 excess corner variation | .19924 | .11649 |
+| 120–180 s worst checkpoint corner p99 error | 11.53% | 8.82% |
+| Total traced paths | 400.47 million | 431.51 million |
+| Median retained weight at 180 s | 272 | 888 |
+| Median path sequence at 180 s | 4,216 | 4,608 |
+
+Earlier residency differs from the final-scene oracle; error is not time-varying
+ground truth. Excess variation removes monotone drift in compressed RGB and
+measures world-space reconstructed corner oscillation, not FLIP or screenshot
+flicker. All sites are present, and fresh sampling continues. These sparse error
+improvements do **not** establish a whole-image 2,048-path quality pass: the
+accepted fixed corner p99 target is 3.266%, and the late candidate still exceeds
+it. No IR/ionizing accuracy qualification is inferred from RGB.
+
+### Windowed control and first candidate
+
+Native `00c329e`, five focused/visible/nonblank captures per run, Fifo:
+
+- Control: `target/gi-validation/cave-1791926119753586000-61286`.
+- Candidate: `target/gi-validation/cave-1791926337934717000-61353`.
+
+| Windowed measure | Control | Candidate |
+| --- | ---: | ---: |
+| Settling frame p50 / p95 / p99, ms | 16.75 / 20.54 / 22.88 | 16.79 / 20.89 / 23.64 |
+| Settling maximum, ms | 58.56 | 48.03 |
+| Settling frames >33.3 ms / >50 ms | 3 / 1 | 4 / 0 |
+| 30–60 s p95 excess corner variation | .24647 | .10628 |
+| 60–120 s p95 excess corner variation | .41229 | .10417 |
+| 120–180 s p95 excess corner variation | .29128 | .17202 |
+| Total traced paths | 608.95 million | 618.34 million |
+| Near / far measurement-age p99, s | 1.258 / 34.574 | 1.138 / 30.174 |
+
+The candidate improves real windowed stability, not by freezing measurements.
+It is not free: selection p99 rises from 2.13 to 2.59 ms and frame p99 is
+.76 ms worse in this pair. Neither arm is an always-60-FPS pass. Startup has
+roughly 614–616-ms worst intervals in both; capture/cooldown frames are excluded
+from the reported settling distribution. No stage attribution was enabled.
+
+The exact-cap scan cleanup at `b448140` was separately checked in
+`target/gi-validation/cave-1791926736752451000-61510`: selection p99 2.36 ms,
+frame p99 23.99 ms, 629.75 million paths. Corner variation is .08470/.09377/.21340
+over the same three intervals. This repeats the lighting win but does not prove
+a frame-pacing win (62.03-ms worst settling interval). It motivated moving the
+remaining receiver-distance queries to the worker in `9293cbb`.
+
+### Reproduction and integrity
+
+Use `VOXEL_GI_VALIDATE=1`, `VOXEL_GI_VALIDATE_PROFILE=cave`,
+`VOXEL_GI_VALIDATE_BACKGROUND=1`, `VOXEL_GI_VALIDATE_CAVE_LONG=1`,
+`VOXEL_GI_VALIDATE_TEMPORAL=1`, `VOXEL_GI_VALIDATE_EXIT=1`,
+`VOXEL_GI_VALIDATE_EXPECT_BUILD_ROOT="$PWD"`, `RUST_LOG=info`, and
+`cargo run --locked --offline`. Candidate adds `VOXEL_GI_RETENTION=calibrated`.
+Headless accuracy runs additionally set `VOXEL_GI_VALIDATE_HEADLESS=1` and
+`VOXEL_GI_VALIDATE_REFERENCE=1`; never mix those cadence timings with windowed FPS.
+Analyze run directories with `tools/runtime_retention_analysis.py`; it rejects
+missing/invalid capture evidence and keeps windowed-only results reference-free.
+Raw captures, logs and JSON remain under ignored `target/`.
+
+Focused native checks cover ceil rounding, full-scan equivalence, local overflow,
+unrelated streaming, unknown/known sky transitions, partial-face publication,
+late-sun wakeups, immutable snapshot lifetime and stronger source caps. The M4
+GPU/CPU test measured RMS 0 on 504 × 64-path faces and also passed emissive-room
+parity. Strict production Clippy passes. No routine toggle stress/full suite was
+run. Render logs have no validation errors or GPU fallback; normal Metal
+bindless-fallback and window-destroy warnings are not hidden.

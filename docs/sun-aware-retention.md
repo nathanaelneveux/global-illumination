@@ -8,10 +8,12 @@ not promote the aggressive reset curve or first-innovation variance guard.**
 The sunlight-change signal fixes the distant-shadow counterexample from the
 [distance study](distance-history.md). A retention-only constraint preserves
 existing local response while retaining the large remote-cave stability win.
-This is a qualified **offline policy experiment**, not a new `cargo run` mode.
-Production history, scheduling, presentation and BVW are unchanged. Runtime
-integration still needs durable spatial metadata and incremental, explicitly
-complete sunlight-change evidence; those are not optional details.
+This original study is a qualified **offline policy experiment**. Its subsequent
+[runtime follow-up](runtime-retention.md) adds an opt-in `cargo run` mode with
+durable spatial metadata and incremental sunlight-change evidence. Unknown or
+late sky evidence remains conservative and explicit; partial cache coverage is
+not silently declared complete. The original offline measurements below do not
+themselves qualify runtime cost or appearance.
 
 Branch: `codex/gi-sun-aware-retention`. Main policy recording: clean `cb28ac7`.
 The [user-calibrated follow-up](#user-calibrated-follow-up) uses the subsequently
