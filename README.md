@@ -105,6 +105,11 @@ cheap to traverse, while rejected distant emitter samples still cost work. Sun
 visibility keeps its independent 768-voxel horizon; analytic point lights retain
 their source ranges. All loaded receivers remain eligible, including IR/radiation.
 
+The opt-in `VOXEL_GI_SCENE=canyon` fixture tests high rims and long daylight
+sightlines. See the [reach/depth study and invalidation constraints](docs/transport-horizon.md)
+for controlled comparisons; neither shorter rays nor its live captures alone
+establish a safe history-invalidation radius.
+
 **Copy applied JSON** exports transport/work settings (not display toggles/gain).
 Paste JSON into the same panel to import, or save it to a file and launch with
 `VOXEL_GI_SETTINGS=path.json cargo run --locked`. Omitted fields use defaults;

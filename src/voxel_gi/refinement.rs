@@ -20,6 +20,9 @@ mod history_qualification;
 #[path = "settling_study.rs"]
 mod settling_study;
 
+#[path = "horizon_study.rs"]
+mod horizon_study;
+
 struct Fixture {
     name: &'static str,
     scene: Arc<TransportScene>,
