@@ -2,9 +2,9 @@
 //! in bounded batches, then become visible atomically. The old generation keeps
 //! receiving lighting updates throughout preparation.
 use super::render::{
-    GpuProbePatchQueue, GpuSnapshot, GpuTransportCache, PreparedGpuCache, VoxelTransportAssets,
-    VoxelTransportMaterial, build_gpu_cache_for_residency, install_prepared_gpu_cache,
-    patch_gpu_topology, patch_probe_values,
+    GpuProbe, GpuProbePatchQueue, GpuSnapshot, GpuTransportCache, PreparedGpuCache,
+    VoxelTransportAssets, VoxelTransportMaterial, build_gpu_cache_for_residency, gpu_probe,
+    install_prepared_gpu_cache, patch_gpu_topology, patch_probe_values,
 };
 use super::telemetry::{DisplayStage, GiWorkTimings, MainStage};
 use super::{VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, field::ProbeLookup};
@@ -22,6 +22,9 @@ use std::{
 
 const CATCHUP_BATCH: usize = 512;
 const CATCHUP_BUDGET: Duration = Duration::from_micros(1500);
+// A small tail can finish atomically on the game thread. Larger backlogs ship
+// compact records to a worker; neither route increases the capture time slice.
+const CATCHUP_WORKER_THRESHOLD: usize = 8192;
 
 /// Coalesce changes without repeatedly scanning a mostly-empty hash table.
 /// Popping makes a key eligible for re-enqueue if it changes again. FIFO keeps
@@ -137,6 +140,27 @@ pub(super) fn catch_up(
     true
 }
 
+fn capture_catchup(
+    dirty: &mut DisplayDirtyQueue,
+    probes: &impl ProbeLookup,
+    budget: Duration,
+) -> Vec<(IVec3, Option<GpuProbe>)> {
+    let started = Instant::now();
+    let mut delta = Vec::new();
+    let mut keys = Vec::with_capacity(CATCHUP_BATCH);
+    while !dirty.is_empty() {
+        dirty.take_batch(&mut keys);
+        delta.extend(
+            keys.iter()
+                .map(|&voxel| (voxel, probes.lookup(&voxel).map(gpu_probe))),
+        );
+        if started.elapsed() >= budget {
+            break;
+        }
+    }
+    delta
+}
+
 /// Reserve for receiver pages already built and awaiting bounded publication,
 /// not just those copied into the field so far. Do not credit pending removals:
 /// additions may publish first, so the intermediate occupancy can be larger
@@ -184,34 +208,47 @@ pub(super) fn upload_transport_cache(
         record_changes(&mut runtime, cache.ready);
     }
     if let Some(mut prepared) = runtime.gpu_prepared.take() {
-        let fits = catch_up(
-            &mut prepared,
-            &mut runtime.gpu_catchup_dirty,
-            &field.probes,
-            CATCHUP_BUDGET,
-        );
-        if !fits {
-            // Actual capacity/hash exhaustion, not merely a newer scene revision.
-            // Keep the live generation and snapshot current residency again.
-            runtime.gpu_topology_dirty = true;
-            runtime.gpu_rebuild_required = true;
-        } else if runtime.gpu_catchup_dirty.is_empty() {
-            install_prepared_gpu_cache(
-                prepared,
-                &mut cache,
-                &mut patch_queue,
-                &mut assets,
-                &mut buffers,
-                &mut materials,
-                &material_handle.handle,
+        if prepared.is_valid() && runtime.gpu_catchup_dirty.len() > CATCHUP_WORKER_THRESHOLD {
+            let delta = capture_catchup(
+                &mut runtime.gpu_catchup_dirty,
+                &field.probes,
+                CATCHUP_BUDGET,
             );
-            runtime.gpu_topology_dirty = false;
-            runtime.gpu_rebuild_required = false;
-            runtime.gpu_value_dirty.clear();
-            runtime.sky_upload_pending = false;
-            runtime.last_gpu_upload = Instant::now();
+            runtime.gpu_task = Some(AsyncComputeTaskPool::get().spawn(async move {
+                prepared.synchronize_delta(&delta);
+                prepared
+            }));
         } else {
-            runtime.gpu_prepared = Some(prepared);
+            let fits = prepared.is_valid()
+                && catch_up(
+                    &mut prepared,
+                    &mut runtime.gpu_catchup_dirty,
+                    &field.probes,
+                    CATCHUP_BUDGET,
+                );
+            if !fits {
+                // Actual capacity/hash exhaustion, not merely a newer scene revision.
+                // Keep the live generation and snapshot current residency again.
+                runtime.gpu_topology_dirty = true;
+                runtime.gpu_rebuild_required = true;
+            } else if runtime.gpu_catchup_dirty.is_empty() {
+                install_prepared_gpu_cache(
+                    prepared,
+                    &mut cache,
+                    &mut patch_queue,
+                    &mut assets,
+                    &mut buffers,
+                    &mut materials,
+                    &material_handle.handle,
+                );
+                runtime.gpu_topology_dirty = false;
+                runtime.gpu_rebuild_required = false;
+                runtime.gpu_value_dirty.clear();
+                runtime.sky_upload_pending = false;
+                runtime.last_gpu_upload = Instant::now();
+            } else {
+                runtime.gpu_prepared = Some(prepared);
+            }
         }
     }
     timing.display_checkpoint(DisplayStage::Install);
@@ -313,6 +350,28 @@ pub(super) fn upload_transport_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_capture_is_bounded_immutable_and_requeues_later_changes() {
+        use super::super::world::SurfaceProbe;
+        let mut probes = bevy::platform::collections::HashMap::new();
+        probes.insert(IVec3::ZERO, SurfaceProbe::new(IVec3::ZERO, 4));
+        let mut dirty: DisplayDirtyQueue = (0..2048).map(|x| IVec3::new(x, 0, 0)).collect();
+        let captured = capture_catchup(&mut dirty, &probes, Duration::ZERO);
+        assert_eq!(captured.len(), CATCHUP_BATCH);
+        assert!(captured[0].1.is_some());
+        assert!(captured[1..].iter().all(|(_, value)| value.is_none()));
+        assert_eq!(dirty.len(), 2048 - CATCHUP_BATCH);
+        // A removal after capture does not mutate the worker's earlier record.
+        // The ledger carries the new state until a later reconciliation.
+        probes.remove(&IVec3::ZERO);
+        dirty.extend([IVec3::ZERO]);
+        assert!(captured[0].1.is_some());
+        let next = capture_catchup(&mut dirty, &probes, Duration::from_secs(1));
+        assert_eq!(next.last().unwrap().0, IVec3::ZERO);
+        assert!(next.last().unwrap().1.is_none());
+        assert!(dirty.is_empty());
+    }
 
     #[test]
     fn capacity_includes_committed_growth_without_borrowing_future_removals() {

@@ -411,6 +411,10 @@ pub(crate) struct PreparedGpuCache {
 }
 
 impl PreparedGpuCache {
+    pub fn is_valid(&self) -> bool {
+        self.cache.ready
+    }
+
     pub fn new(build: GpuCacheBuild) -> Self {
         // Native preparation already populated the private GPU allocation from
         // these mirrors. Only the CPU fallback needs separate asset payloads.
@@ -449,6 +453,17 @@ impl PreparedGpuCache {
     /// all converge to the same latest probe. No renderer can see this cache.
     /// On exhaustion the private generation is invalid and must be discarded.
     pub fn synchronize(&mut self, keys: &[IVec3], probes: &impl super::field::ProbeLookup) -> bool {
+        let delta: Vec<_> = keys
+            .iter()
+            .map(|&voxel| (voxel, probes.lookup(&voxel).map(gpu_probe)))
+            .collect();
+        self.synchronize_delta(&delta)
+    }
+
+    /// Apply compact immutable records captured by the game thread. A worker
+    /// can own this entire private generation while topology indexing and GPU
+    /// initialization proceed; subsequent changes remain in the caller's ledger.
+    pub fn synchronize_delta(&mut self, delta: &[(IVec3, Option<GpuProbe>)]) -> bool {
         if !self.cache.ready {
             return false;
         }
@@ -462,8 +477,8 @@ impl PreparedGpuCache {
         // Retire first, so additions in a full private cache can reuse the
         // released slots. Unlike the live cache, private state needs no delta
         // preflight/rollback or pending-upload sets and range sorting.
-        for voxel in keys {
-            if probes.lookup(voxel).is_some() {
+        for (voxel, probe) in delta {
+            if probe.is_some() {
                 continue;
             }
             if let Some(slot) = self.cache.slots.remove(voxel) {
@@ -480,8 +495,8 @@ impl PreparedGpuCache {
                 );
             }
         }
-        for voxel in keys {
-            let Some(probe) = probes.lookup(voxel) else {
+        for (voxel, probe) in delta {
+            let Some(probe) = probe else {
                 continue;
             };
             let slot = if let Some(&slot) = self.cache.slots.get(voxel) {
@@ -522,7 +537,7 @@ impl PreparedGpuCache {
                 );
                 slot
             };
-            write_probe(&mut state.probe_mirror, slot, gpu_probe(probe));
+            write_probe(&mut state.probe_mirror, slot, *probe);
             copy_private_range(
                 mapped.as_mut().map(|m| &mut m[0]),
                 &mut self.probe_data,
@@ -1147,7 +1162,7 @@ pub fn set_enabled(
     }
 }
 
-fn gpu_probe(probe: &SurfaceProbe) -> GpuProbe {
+pub(crate) fn gpu_probe(probe: &SurfaceProbe) -> GpuProbe {
     let face = |i: usize| {
         if probe.face_mask & (1 << i) != 0 {
             (probe.display[i].indirect + probe.custom_direct[i])
@@ -1888,6 +1903,10 @@ mod tests {
             "a bounded catch-up slice must not expose a partial generation"
         );
         assert!(world.resource::<VoxelGiRuntime>().gpu_prepared.is_some());
+        bevy::tasks::AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::new);
+        world.run_system_once(upload_transport_cache).unwrap();
+        assert!(world.resource::<VoxelGiRuntime>().gpu_task.is_some());
+        assert_eq!(world.resource::<VoxelTransportAssets>().probes.id(), old_id);
         // Editing during preparation must requeue already-processed keys and
         // reconcile final membership, including remove/re-add of the same key.
         let added = IVec3::new(12_000, 0, 0);
@@ -1905,8 +1924,12 @@ mod tests {
             runtime.gpu_topology_dirty = true;
         }
         let deadline = Instant::now() + Duration::from_secs(2);
-        while world.resource::<VoxelGiRuntime>().gpu_prepared.is_some() {
+        while {
+            let runtime = world.resource::<VoxelGiRuntime>();
+            runtime.gpu_prepared.is_some() || runtime.gpu_task.is_some()
+        } {
             world.run_system_once(upload_transport_cache).unwrap();
+            std::thread::yield_now();
             assert!(
                 Instant::now() < deadline,
                 "private catch-up made no progress"
