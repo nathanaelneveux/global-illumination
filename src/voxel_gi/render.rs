@@ -2027,7 +2027,7 @@ mod tests {
             .resource_mut::<VoxelGiSettings>()
             .display_upload_interval = Duration::from_secs(3600);
         world.resource_mut::<VoxelGiRuntime>().gpu_task =
-            Some(pool.spawn(async move { build_gpu_cache(snapshot) }));
+            Some(pool.spawn(async move { PreparedGpuCache::new(build_gpu_cache(snapshot)) }));
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             world.run_system_once(upload_transport_cache).unwrap();

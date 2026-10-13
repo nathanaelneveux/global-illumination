@@ -366,10 +366,16 @@ At this size, the removed allocations comprise an 81.79 MB typed probe array,
 sizes, not a measured 197 MB peak-RSS reduction (lifetimes overlap differently).
 No GPU resource, lighting statistic, storage precision or work budget changes.
 
-18 regular render tests, three journal tests, native generation/material/actual
-submission parity, strict all-target Clippy and formatting passed. The native
-test preceded the small worker-completion ownership change; the subsequent
-regular/Clippy checks include it. Native mapped bytes/lifetimes were unchanged.
+Verification correction: `0e3e79e`'s message overstated the final checks. The
+17 preexisting regular render tests, new encoding parity/study, native generation
+test and Clippy passed **before** the worker-completion type changed. The next
+test build found one stale mock worker returning `GpuCacheBuild` instead of
+`PreparedGpuCache`; the committed checkpoint therefore did not compile its tests.
+The immediate follow-up updates that mock and reruns the relevant checks. Keep
+this failure explicit rather than rewriting the checkpoint's history.
+The corrective follow-up passed all 18 regular render tests, three journal tests,
+the native generation/material/submission test, strict all-target Clippy and the
+development build. These reruns include the new worker completion type.
 Logs: `target/settling-cache-encoding-{tests,queue,parity,study,native,clippy}.log`.
 End-to-end startup and frame effects are not inferred from this stage benchmark.
 
