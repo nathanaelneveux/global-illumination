@@ -204,8 +204,12 @@ pub(crate) fn sun_targets(
             for corner in 0..4 {
                 let x = a.display[face].sky[corner];
                 let y = b.display[face].sky[corner];
-                // Unknown is not a known dark value. Use only paired evidence.
-                if x != 0 && y != 0 && x != y {
+                // This fully populated fixture query promises complete paired
+                // evidence. Never certify a missing/budget-exhausted sample as
+                // unchanged sunlight. Runtime partial caches need an explicit
+                // unknown fallback instead of this test-only assertion.
+                assert!(x != 0 && y != 0, "incomplete fixture sunlight evidence");
+                if x != y {
                     let position =
                         crate::voxel_gi::sky::corner_position(a.voxel, face, corner).as_vec3();
                     // Aim just inside the unit face to avoid ambiguous edge hits.
