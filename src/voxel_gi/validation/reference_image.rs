@@ -135,6 +135,8 @@ impl ReferenceImage {
         queue: &GpuProbePatchQueue,
         device: Option<&GpuTransportDevice>,
         settings: &VoxelGiSettings,
+        world: &VoxelWorld<PrototypeWorld>,
+        generator: &PrototypeWorld,
         profile: Profile,
         output: PathBuf,
     ) -> Result<Self, String> {
@@ -161,6 +163,57 @@ impl ReferenceImage {
         } else {
             crate::structures::showcase::CAVE_ORIGIN
         };
+        let lookup = world.get_voxel_fn();
+        let chunk_lookup = world.get_chunk_data_fn();
+        let mut unknown = 0;
+        let mut mismatched = 0;
+        let mut samples = Vec::new();
+        let mut pages: HashMap<IVec3, (usize, usize)> = default();
+        for z in 4..=59 {
+            for y in 4..=43 {
+                for x in 4..=59 {
+                    let voxel = origin + IVec3::new(x, y, z);
+                    let expected = match generator.generated_voxel(voxel) {
+                        WorldVoxel::Solid(id) => u16::from(id),
+                        _ => AIR,
+                    };
+                    let actual = runtime.scene.material_at(voxel);
+                    if actual == Some(expected) {
+                        continue;
+                    }
+                    let page = super::super::page_of(voxel);
+                    let counts = pages.entry(page).or_default();
+                    if actual.is_none() {
+                        unknown += 1;
+                        counts.0 += 1;
+                    } else {
+                        mismatched += 1;
+                        counts.1 += 1;
+                    }
+                    if samples.len() < 24 {
+                        samples.push(json!({"voxel":voxel.to_array(),"expected":expected,
+                            "scene":actual,"bvw":format!("{:?}",lookup(voxel))}));
+                    }
+                }
+            }
+        }
+        let pages: Vec<_> = pages.into_iter().map(|(page,(unknown,mismatched))| {
+            let chunk = chunk_lookup(page);
+            json!({"page":page.to_array(),"unknown":unknown,"mismatched":mismatched,
+                "bvw_chunk_present":chunk.is_some(),"bvw_chunk_empty":chunk.as_ref().map(|c| c.is_empty())})
+        }).collect();
+        let audit = json!({"unknown_voxels":unknown,"mismatched_voxels":mismatched,
+            "pages":pages,"samples":samples,"note":"Unedited cave profile: compare every authored chamber voxel against the host generator and sample BVW values at mismatches. Unknown and wrong-material cells invalidate a complete-chamber reference."});
+        std::fs::write(
+            output.join("cave-geometry-audit.json"),
+            serde_json::to_vec_pretty(&audit).unwrap(),
+        )
+        .map_err(|e| e.to_string())?;
+        if unknown > 0 || mismatched > 0 {
+            return Err(format!(
+                "Cave GI snapshot differs from generated geometry: {unknown} unknown and {mismatched} wrong-material voxels; see cave-geometry-audit.json"
+            ));
+        }
         let sites = chamber_sites(&runtime.scene, origin);
         if sites.is_empty() || !cache.ready {
             return Err("Reference image has no chamber receivers or live display cache".into());

@@ -167,6 +167,7 @@ pub(super) fn run_validation(
         Res<TemplateAssets>,
         Res<AssetServer>,
         Res<Assets<PrototypeConfig>>,
+        Res<PrototypeWorld>,
     ),
 ) {
     if run.done {
@@ -177,7 +178,7 @@ pub(super) fn run_validation(
         return;
     }
     let (stats, runtime, cache, queue, host_timing, device) = gi;
-    let (assets, asset_server, configs) = asset_context;
+    let (assets, asset_server, configs, generator) = asset_context;
     if run.startup.is_none() {
         // Shared Cargo build directories can reuse another worktree's package
         // artifact. The optional expected root is supplied by the run command;
@@ -655,6 +656,8 @@ pub(super) fn run_validation(
                 &queue,
                 device.as_deref(),
                 &settings,
+                &world,
+                &generator,
                 profile,
                 output.clone(),
             ) {
