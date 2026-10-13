@@ -103,3 +103,99 @@ reference qualification, geometry, scene generation, transport settings and all
 four windows before analysis. `tools/test_cave_sample_analysis.py` checks known
 OKLab colors, official FLIP identity/brightness response, connected corners and
 the all-windows/persistent threshold rule. Large data/captures stay in `target/`.
+
+## Full-resolution visual review
+
+Analysis writes a small `sample-gallery.json` manifest beside the captures, so
+the browser never needs to parse the 100+ MiB scientific face dataset. From the
+repository root, serve locally with `python3 -m http.server 8765 --bind 127.0.0.1`
+and open `http://127.0.0.1:8765/tools/cave_sample_gallery.html?run=<run-name>`.
+The gallery includes every checkpoint and all four windows, original PNG links,
+reference hold/wipe comparison and native-pixel zoom corrected for display
+pixel ratio. It neither recompresses originals nor changes exposure. The local
+server does not publish anything remotely. Stop it when review is finished.
+
+`tools/cave_sample_contact_sheet.py RUN --window 0` creates a labeled overview
+of every checkpoint and the reference. That overview is downsampled for
+navigation only; evaluate subtle noise/gradients with the original captures.
+
+## Measured baseline — October 13, 2026
+
+Executable built/launched clean at `3331e20`; subsequent `a8ee3cc` changes only
+Python LDR metadata handling. Apple M4 / 16 GiB / Metal, macOS 26.6.2,
+Rust 1.95, Bevy 0.19.1, unchanged registry BVW 0.17.0. Development application
+opt1/dependencies opt3, 2560×1440 headless, preferred corner sun/reconstructed
+indirect, textures on, baked AO off. Background terrain and the reference-only
+residency camera are enabled. The 62-second live prelude uses unchanged
+16-path/4 ms/75 ms defaults; the sweep has no time budget, reset or temporal
+display filtering. No compiler or second native GPU workload overlaps the run.
+No interactive FPS or speed-to-convergence claim is made.
+
+Run `cave-1791907675248389000-51327` traces 9,937,223,680 paths in total and
+audits all 125,440 authored chamber cells
+with zero unknowns/material mismatches. It samples 15,163 chamber/halo faces in
+four windows and compares 15,156 centers / 60,624 corners against the same-scene
+524,288-path mean. All 40 independent CPU comparisons pass; reference-replica
+RGB disagreement p99/max is .5625%/1.1184%. All 81 reference-stage captures
+(plus the three timed prelude captures) pass with clean logs. Repeated reference
+mean PNGs are byte-identical. Full-resolution sample/reference images and the
+contact sheet were visually inspected; Safari sample selection, window
+selection, wipe and native-pixel zoom controls were exercised.
+
+The **lowest tested practical threshold is 3,072 paths per face**. At 2,048,
+the worst corner is still 11.97% off; at 3,072, every window has corner p99
+<=2.63% and worst <=8.97%. Raw face-center RGB also passes the practical 5%/10%
+gate at 3,072 (p99/max <=4.513%/9.926%). The **strict corner threshold is 8,192**:
+p99/max <=1.539%/4.792%. Strict raw face centers require 16,384. These are finite
+tested checkpoints across four windows, not universal guarantees.
+
+Worst across the four windows at each count:
+
+| Paths/face | Corner RGB p99 | Worst corner RGB | Image OKLab p99 | Image FLIP mean |
+| ---: | ---: | ---: | ---: | ---: |
+| 256 | 10.764% | 39.292% | .02103 | .06029 |
+| 512 | 7.143% | 29.265% | .01179 | .04625 |
+| 1,024 | 4.832% | 18.030% | .00937 | .03668 |
+| 2,048 | 3.266% | 11.969% | .00660 | .02740 |
+| 3,072 | 2.629% | 8.971% | .00587 | .02318 |
+| 4,096 | 2.271% | 7.227% | .00463 | .02104 |
+| 8,192 | 1.538% | 4.792% | .00352 | .01704 |
+| 32,768 | .752% | 2.368% | .00316 | .01013 |
+
+The OKLab-only component passes at 1,024 (p99 <=.00937, max <=.01409), but
+**the combined predeclared perceptual gate does not pass all windows through
+32,768**: worst-window FLIP mean .010129 exceeds .01. Do not move the gate to
+manufacture a pass. At 32,768, worst tile mean is .03051 and OKLab max .00614.
+The two high-sample reference replicas themselves have FLIP mean .005983 and
+OKLab p99/max .002816/.005125; 8-bit quantization and residual reference noise
+matter at these levels. FLIP .01 is an engineering choice, not a published
+visibility threshold. This failure does **not** establish that gameplay needs
+more than 32k paths to look good. The gallery and human review should calibrate
+the desired appearance, and a temporal study must still test runtime flicker.
+
+Per-band raw face-center tolerances differ. With the same practical 5% p99 / 10%
+max rule and .02 floor, IR first passes at 1,024; ionizing first passes at
+16,384. At 3,072, IR p99/max is 2.414%/5.580%, ionizing 9.686%/30.130%.
+Never use perceived RGB agreement to certify a simulation channel.
+
+Fresh prefixes are not equivalent to the live cache's displayed sample count:
+its capped statistical history and separate display filter retain discounted
+older information. This study intentionally measures actual fresh accumulated
+paths without those filters. Retaining history should eliminate one source of
+persistent noise, but the frozen low-sample prefixes prove intrinsic sampling
+variance also needs work. Increasing the work budget alone is not the result.
+
+Next sampling candidates should aim to halve the *same-target* practical/strict
+requirements to <=1,536 / <=4,096 paths, preserving all bands and source
+gradients. Keep the common reference and thresholds fixed when comparing a
+candidate; also inspect early 16–512-path errors and tails, not just the final
+average. No sampler, filter, history or gameplay default is promoted here.
+
+Evidence: `target/cave-sample-sweep-run.log`,
+`target/cave-sample-sweep-analysis.json`,
+`target/cave-sample-reference-analysis.json` and the run directory. Python
+analysis uses the bundled Python with NumPy/Pillow and isolated FLIP 1.7 under
+`target/perceptual-python`. Focused Rust tests, strict all-target Clippy and dev
+build passed before launch; four analytic Python tests pass. No solved toggle
+stress or broad native suite was rerun. All BVW source/dependency files remain
+unchanged; these are diagnostic-only additions.
