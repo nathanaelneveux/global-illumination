@@ -69,7 +69,7 @@ def joined_cases(tape, metadata):
         yield case,evidence
 
 
-def analyze(tape,metadata,calibration,budget,prior):
+def analyze(tape,metadata,calibration,budget,prior,qualified_floor=QualifiedFloor()):
     reports = []
     for case,evidence in joined_cases(tape,metadata):
         distances = np.asarray([s["geometry_distance"] for s in evidence["sites"]])
@@ -85,7 +85,7 @@ def analyze(tape,metadata,calibration,budget,prior):
             "sun-budget":[select_limit(s["geometry_distance"],s["sun_distance"],calibration,budget,prior)
                           for s in evidence["sites"]],
         }
-        floor = np.asarray([QualifiedFloor().limit(d,calibration) for d in distances])
+        floor = np.asarray([qualified_floor.limit(d,calibration) for d in distances])
         policies["sun-retention"] = np.maximum(policies["sun-budget"],floor)
         runs = []
         for index in range(len(case["before"])):
@@ -102,11 +102,11 @@ def analyze(tape,metadata,calibration,budget,prior):
                         "retention_bias_floor_conflicts":int(np.sum(floor>policies["sun-budget"])),
                         "limits":{k:summary(v) for k,v in policies.items()},"runs":runs})
     return {"schema":1,"calibration":asdict(calibration),"budget":asdict(budget),"prior":asdict(prior),
-            "qualified_floor":asdict(QualifiedFloor()),
+            "qualified_floor":asdict(qualified_floor),
             "cases":reports,"note":"Fixed-work offline combined-policy experiment. Calibration from separate composed-cave quality sweep; exact native transition samples reused. No unknown/journal fallback, production event pipeline, display or FPS qualification."}
 
 
-def sensitivity(calibration,budget,prior):
+def sensitivity(calibration,budget,prior,qualified_floor=QualifiedFloor()):
     """Counterfactual calibration inputs only; no fictional new path samples."""
     result = []
     for distance in (0,48,96,128,192,256,384,512):
@@ -115,12 +115,12 @@ def sensitivity(calibration,budget,prior):
             quality = replace(calibration,paths_for_quality=calibration.paths_for_quality*factor)
             limit = select_limit(distance,None,quality,budget,prior)
             row["caps"].append(min(4096,limit))
-            row["retention_caps"].append(min(4096,max(limit,QualifiedFloor().limit(distance,quality))))
+            row["retention_caps"].append(min(4096,max(limit,qualified_floor.limit(distance,quality))))
         result.append(row)
     return result
 
 
-def legacy_controls(tape,calibration,budget,prior):
+def legacy_controls(tape,calibration,budget,prior,qualified_floor=QualifiedFloor()):
     """Reuse existing local emitter/skylight tapes without tracing them again.
 
     A verified baseline cap16 proves distance <=48, where this prior is flat.
@@ -171,7 +171,7 @@ def legacy_controls(tape,calibration,budget,prior):
             else:
                 raise ValueError("legacy tape lacks complete remote geometry/sun evidence")
             limits.append(select_limit(d,None,calibration,budget,prior))
-            retention.append(max(limits[-1],QualifiedFloor().limit(d,calibration)))
+            retention.append(max(limits[-1],qualified_floor.limit(d,calibration)))
         for run in case["runs"]:
             for name,values,guarded in (("baseline",metadata["baseline_caps"],False),
                                         ("sun-budget",limits,False),("sun-budget-variance",limits,True),
@@ -181,6 +181,27 @@ def legacy_controls(tape,calibration,budget,prior):
                 result["bias_noise_conflicts"] = policy.guard.conflicts if policy.guard else 0
                 results.append(result)
     return results
+
+
+def calibration_inputs(quality,sampler_id,profile=None):
+    """Changing the goal is not evidence that the sampler became more efficient.
+
+    A visual profile supplies fixed error limits AND the baseline work at those
+    limits. The same sampler therefore keeps the same qualified 16/256 floor
+    when the user chooses a different target. A better sampler has to achieve
+    this same target with less measured work before its floor can shrink.
+    """
+    if profile is None:
+        return SamplingCalibration.from_sweep(quality,sampler_id),QualifiedFloor(),None
+    from visual_quality import assess
+    assessment = assess(quality,profile)
+    if assessment["minimum_sustained_paths"] is None:
+        raise ValueError("sampler never sustains the selected visual quality goal")
+    limits = profile["limits"]["centers"]
+    goal = QualityGoal(limits["p99"],limits["max"])
+    quality = SamplingCalibration(assessment["minimum_sustained_paths"],sampler_id,goal)
+    floor = QualifiedFloor(anchor_quality_paths=profile["baseline"]["paths_for_quality"])
+    return quality,floor,assessment
 
 
 class Tests(unittest.TestCase):
@@ -269,12 +290,29 @@ class Tests(unittest.TestCase):
             legacy_controls({"cases":[{"sites":[{}],"guided":{"baseline_caps":[]}}]},
                             quality,ResponseBudget(),ChangePrior())
 
+    def test_changed_acceptance_goal_is_not_a_sampler_speedup(self):
+        from visual_quality import Tests as VisualTests
+        quality,profile = VisualTests.fixture()
+        profile["baseline"] = {"paths_for_quality":2048}
+        calibration,floor,_ = calibration_inputs(quality,"same-sampler",profile)
+        self.assertEqual(calibration.paths_for_quality,2048)
+        self.assertEqual(floor.limit(0,calibration),16)
+        self.assertEqual(floor.limit(512,calibration),256)
+        for row in quality["measurements"]:
+            for s,ks in profile["limits"].items():
+                for key in ks: row[s][key]*=.5
+        calibration,floor,_ = calibration_inputs(quality,"hypothetically-better",profile)
+        self.assertEqual(calibration.paths_for_quality,1024)
+        self.assertEqual(floor.limit(0,calibration),8)
+        self.assertEqual(floor.limit(512,calibration),128)
+
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("tape",type=Path)
     p.add_argument("metadata",type=Path)
     p.add_argument("--quality-report",type=Path,required=True)
+    p.add_argument("--quality-profile",type=Path,help="fixed human-calibrated target; default remains the original raw 5%%/10%% gate")
     p.add_argument("--sampler-id",required=True)
     p.add_argument("--output",type=Path,required=True)
     p.add_argument("--legacy-tape",type=Path)
@@ -284,17 +322,22 @@ def main():
     p.add_argument("--change-power",type=float,default=2)
     args = p.parse_args()
     quality,quality_hash = load(args.quality_report)
-    calibration = SamplingCalibration.from_sweep(quality,args.sampler_id)
+    profile,profile_hash = load(args.quality_profile) if args.quality_profile else (None,None)
+    calibration,floor,assessment = calibration_inputs(quality,args.sampler_id,profile)
     tape,tape_hash = load(args.tape)
     metadata,metadata_hash = load(args.metadata)
     budget = ResponseBudget(args.stale_error,args.response_fraction)
     prior = ChangePrior(args.change_distance,args.change_power)
-    report = analyze(tape,metadata,calibration,budget,prior)
+    report = analyze(tape,metadata,calibration,budget,prior,floor)
     report["inputs"] = dict(tape_sha256=tape_hash,metadata_sha256=metadata_hash,quality_sha256=quality_hash)
-    report["calibration_sensitivity_only"] = sensitivity(calibration,budget,prior)
+    report["calibration_sensitivity_only"] = sensitivity(calibration,budget,prior,floor)
+    if profile is not None:
+        report["quality_profile"] = profile
+        report["quality_assessment"] = assessment
+        report["inputs"]["quality_profile_sha256"] = profile_hash
     if args.legacy_tape:
         legacy,legacy_hash = load(args.legacy_tape)
-        report["legacy_controls"] = legacy_controls(legacy,calibration,budget,prior)
+        report["legacy_controls"] = legacy_controls(legacy,calibration,budget,prior,floor)
         report["inputs"]["legacy_tape_sha256"] = legacy_hash
     args.output.write_text(json.dumps(report,indent=2,allow_nan=False)+"\n")
     for c in report["cases"]:

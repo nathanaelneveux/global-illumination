@@ -20,11 +20,13 @@ class QualityGoal:
 
 @dataclass(frozen=True)
 class SamplingCalibration:
-    """Measured work to meet the same raw-face RGB quality gate.
+    """Measured work to meet the same versioned quality gate.
 
     Import a new qualified sample sweep after changing the sampler. A better
     estimator may reduce variance through correlations without reducing its
     single-path second moment, so that moment alone is not a calibration.
+    `from_sweep` checks raw-face RGB; a visual-profile caller must additionally
+    qualify the rendered images/corners before supplying its work requirement.
     RGB calibration does not certify an IR/ionizing simulation tolerance.
     """
     paths_for_quality: float
@@ -112,8 +114,10 @@ class ResponseBudget:
 class QualifiedFloor:
     """Retention-only experiment: do not discard more than the baseline did.
 
-    Express the existing 16/256 caps in quality-work units of the measured
-    3,072-path baseline sampler. This is an empirical qualification constraint,
+    Express the existing 16/256 caps in quality-work units of the baseline
+    sampler AT THE SAME QUALITY GOAL (3,072 paths for the original 5%/10% gate).
+    Changing acceptance quality must also remeasure this anchor, not pretend
+    that a different error target improved sampling. This is an empirical constraint,
     not an analytic noise guarantee. Recalibrating rescales its path weights;
     a different sampler must still pass the transition replays before promotion.
     If this floor exceeds the bias cap, the requested response budget is NOT met.
