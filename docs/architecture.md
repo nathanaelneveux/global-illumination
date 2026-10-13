@@ -120,14 +120,16 @@ The index owns boxed probes so growing a hash table does not relocate all large
 receiver records on the game thread. Stable logical keys are voxel coordinates,
 not mesh vertices or array indices.
 
-Each selected face receives four paths per normal dispatch. Rotated Halton
+Each selected face receives 16 paths per normal dispatch. Rotated Halton
 dimensions preserve the tested cosine-hemisphere and roulette sequences. Emitter
 selection and emitter surface coordinates use independently padded 2D Sobol pairs
 with index shuffling and hash-based Owen scrambling. CPU and GPU use the same
 integer operations; the second Sobol dimension uses a Pascal-matrix butterfly,
 so no direction tables or per-receiver guide are needed. Sequences advance
 independently of retained history, so invalidation does not repeat early rays.
-The GPU uses four lanes per face; the serial entry remains an opt-in reference.
+The GPU uses eight lanes per face at 16 or more paths, and four for smaller
+batches; the serial entry remains an opt-in reference. Lanes own disjoint paths,
+not reused samples. This layout change preserves all five means and moments.
 Dispatch tasks are encoded directly into a reusable 32-byte-per-task upload
 array, with explicit little-endian words and initialized padding. This removes
 the intermediate typed array without changing the shader ABI. Scratch capacity
@@ -251,7 +253,11 @@ as heuristics, not presented as physical requirements.
 
 Scene publication preserves compatible faces, introduces new faces without
 inventing measurements, and publishes at most four atomic pages within a nominal
-2 ms budget. A single expensive page can exceed that budget. Existing BVW event
+2 ms budget. A single expensive page can exceed that budget. Worker scans
+can include unchanged touching pages. Equal exposed keys, face masks,
+material IDs and emission establish identity; those pages keep their allocations
+and indices without destructive removal/reinsertion. They still pass through
+the common edit-invalidation and refresh path. Existing BVW event
 coalescing remains 40 ms for edits / 350 ms for streaming, with a one-second
 overdue bound. The audit adds no debounce.
 
@@ -266,7 +272,11 @@ not a confidence interval or certified convergence test.
 
 Settled faces remain eligible for two-second audits. Simulation requests and
 changes wake them. Bounded candidate searches combine urgent/bootstrap work,
-nearby rotating windows and a reserved one-quarter global sweep. The camera is
+nearby rotating windows and a reserved one-quarter global sweep. Under continuous
+streaming, another quarter serves initial coverage and half serves refinement;
+explicit edits preempt the three non-global slots. Empty queues lend their slots.
+Measured receivers rank ahead of unmeasured fallback candidates in refinement's
+bounded window, so initial coverage cannot consume both reservations. The camera is
 a priority hint, never the extent of the lighting field. Empty/settled candidates
 do not consume the ray allowance or collapse the scheduler budget.
 
@@ -277,6 +287,8 @@ remain capped at 1,024 candidates, with the existing near bonus and close-range
 fallback cursor. This gives large rooms useful refinement across their far wall
 without mixing all surrounding terrain into the close-range sweep. It changes
 work allocation, not transport extent, spatial filtering, or the sampling PDF.
+Only receiver membership changes inside these two page rings invalidate the
+local index; distant streaming does not rebuild it or rewind its cursor.
 The reserved global sweep still visits every loaded receiver, including hidden
 simulation bands. The [streaming experiment record](research-2026-10-09.md#refinement-under-continuous-terrain-loading)
 includes the rejected wider-window and separate-lane alternatives.
@@ -326,9 +338,18 @@ corner measurements; indirect light interpolates reconstructed corners.
 
 `display.rs` coordinates snapshots and sparse patches; `render.rs` owns buffer
 layouts and uploads. Snapshot packing is incremental, then encoding and initial
-buffer allocation run off thread. A replacement remains private while topology
-and measurements catch up in batches of 512 keys, at most 8,192 scanned keys per
-Update and a 1.5-ms soft target. The existing cache keeps receiving value updates;
+buffer allocation run off thread. Encoding writes one authoritative pair of byte
+mirrors directly, without world-sized typed staging arrays and duplicate encoded
+payloads. The worker also prepares the CPU-only fallback payloads. Capacity
+includes positive growth in already-built, pending receiver pages; future removals
+cannot fund earlier additions.
+
+A replacement remains private while topology and measurements catch up in
+batches of 512 keys and a 1.5-ms soft game-thread target. Large journals capture
+compact immutable records within that slice and transfer the private generation
+to a worker for index/GPU-memory updates. Small tails reconcile on the game thread
+so installation can be atomic with the latest state. There is no additional
+8,192-key per-frame catch-up cap. The existing cache keeps receiving value updates;
 the replacement's topology, values and material become visible atomically only
 when its journal is empty. This trades replacement latency for bounded frame
 work, not transport starvation or a debounce. Ordinary sparse edits still use
@@ -343,7 +364,9 @@ Capacity/hash exhaustion restarts from current residency; a scene revision alone
 does not. Worker-built lookup maps reserve growth capacity too, avoiding a
 main-thread rehash while catching up.
 
-Private buffers remain mapped until catch-up is complete. Each bounded patch
+Private buffers remain mapped until catch-up is complete. Each batch acquires
+mapped views once and edits private indices directly; no live-transaction
+preflight or sparse-upload ledger is needed for an invisible generation. Each bounded patch
 updates their initial bytes directly, so installation cannot produce a giant
 deferred patch upload. On devices with `MAPPABLE_PRIMARY_BUFFERS` already enabled,
 the buffers include `MAP_WRITE`: this avoids wgpu's otherwise implicit full-size
@@ -365,6 +388,12 @@ queue. Extracted older frames retain their generation. Hash and value patches
 preflight together and snapshot under one lock; a failed bounds check retains both
 for retry. Driver writes happen after releasing the lock, using immutable paired
 scratch bytes; changes arriving meanwhile form the next transaction.
+Ordinary value changes use a coalescing FIFO and a 1.5-ms main-thread slice,
+checked every 128 records. A nonblocking lock attempt leaves all pending keys
+untouched if the renderer is capturing a transaction. Unfinished values retry
+on the next frame without another upload-interval delay. This bounds the value
+path, not atomic topology publication or OS scheduling; it is not a hard frame
+deadline guarantee.
 Sparse writes use wgpu's reusable mapped staging chunks instead of allocating
 one temporary driver buffer per range. One copy submission publishes both
 buffers before drawing. Recall is asynchronous, with no device wait in the main

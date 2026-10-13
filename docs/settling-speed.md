@@ -2,6 +2,39 @@
 
 ## Latest streamed qualification (October 12)
 
+Private worker catch-up `8d2d216`, run `cave-1791853243011741000-35728`:
+first display publication about 5.748 s, sustained corner median/p95
+7.119/18.379 s (141/144 sustain through the final dwell). Error p95 at 15 s
+.25239; peak overshoot .10150/.30451. 367.61 M paths, final coverage 98.58%.
+Main GI body p50/p95/p99/max 2.159/6.536/8.773/43.105 ms. Mixed overall
+quality timing despite earlier publication; do not attribute run-to-run path
+count variation solely to this change.
+
+Bounded nonblocking live values `80e5263`, run
+`cave-1791853582318240000-36063`: first publication about 2.897 s, corner
+median/p95 6.984/15.428 s (141/144); 15-second error p95 .10531, peak
+.10205/.30433. 371.42 M paths, coverage 99.00%. Corner excess variation
+p95 .06672 over 40–60 s and .05548 over 160–180 s, minimum fresh paths
+144/112. Near/far refresh age p95 1.208/35.816 s during settling. Main GI
+body 2.400/5.884/8.411/22.055 ms; value stage p95/p99/max
+1.527/1.536/6.885 ms. Soft slices cannot prevent OS preemption. Remaining
+large spikes include atomic scene/topology publication, not just value uploads.
+Both runs have five valid captures and clean render logs; no FPS claim.
+They launched clean; later source-only edits were not compiled into them.
+
+Exact unchanged-page check `13024df`: keep allocations and counters when
+exposed records match, but still run explicit edit invalidation and refresh.
+Focused 25 runtime/publication and two donor/identity tests, Clippy and build
+pass. Isolated M4/dev 1,024-receiver fixture, 128 alternating pairs/16 warm:
+full reconciliation 68.125 µs versus identity path 5.209 µs median (13.1× for
+this stage only). Full streamed qualification is pending at this checkpoint.
+
+The separate cached-radius pilot `c429924` is **not in this runtime**. It
+uses a spare node word and passes the 3,872-choice forward/reverse PDF oracle,
+but fails strict equal-path five-band parity (1.0340708→1.0420537). Timing
+stopped at that check. Preserve the failed criterion and branch; do not call
+this an exact or measured faster kernel. Evidence: `settling-light-radius*.log`.
+
 Same M4/dev/2560×1440 offscreen long-cave/background settings as below;
 five valid nonblank captures per run, clean render logs. Control is clean
 `5c2d333` (runtime `febcaf4`, diagnostic corner oracle only), run
