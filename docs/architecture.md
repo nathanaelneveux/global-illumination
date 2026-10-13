@@ -342,7 +342,9 @@ corner measurements; indirect light interpolates reconstructed corners.
 ## Display-cache lifetime
 
 `display.rs` coordinates snapshots and sparse patches; `render.rs` owns buffer
-layouts and uploads. Snapshot packing is incremental, then encoding and initial
+layouts and uploads. Snapshot packing uses a 1.5-ms slice, checked every 128
+keys (including removed keys), with no additional record ceiling. It does not
+promise a hard deadline under OS preemption. Encoding and initial
 buffer allocation run off thread. Encoding writes one authoritative pair of byte
 mirrors directly, without world-sized typed staging arrays and duplicate encoded
 payloads. The worker also prepares the CPU-only fallback payloads. Capacity
@@ -484,7 +486,8 @@ through distant roofs and darkening a receiver merely by loading known-empty
 pages. The coarse check can reject energy that a longer fine ray would recover.
 
 On GPU, depth and finite/default horizon policy are specialization constants.
-The worker lazily caches at most six face pipelines (three depths × two policies);
+The worker lazily caches at most twelve face pipelines (three depths × two
+policies × two lane layouts);
 numeric reach stays in the uniform, so 16→32 does not compile another variant.
 The default path keeps the original traversal loop without a runtime cutoff
 policy argument. First use of a variant can delay that asynchronous batch during
