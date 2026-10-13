@@ -81,7 +81,7 @@ def moments(run, key):
     return value
 
 
-def replay(case, index, reverse, repeated, policy, batch_paths, warm_paths):
+def replay(case, index, reverse, repeated, policy, batch_paths, warm_paths, limit_override=None):
     before, after = [np.asarray(case["references_" + side], dtype=float).mean(axis=0)
                      for side in ("before", "after")]
     refs = [before, after]
@@ -92,7 +92,10 @@ def replay(case, index, reverse, repeated, policy, batch_paths, warm_paths):
     scale = np.maximum(0.02, np.linalg.norm(np.maximum(before, after)[:, :3], axis=1))
     band_scale = np.maximum(0.02, np.maximum(before, after))
     weight = np.full(len(mean), float(warm_paths))
-    limit = caps(policy, [s["distance"] for s in case["sites"]])
+    limit = (caps(policy, [s["distance"] for s in case["sites"]]) if limit_override is None
+             else np.asarray(limit_override, dtype=float))
+    if limit.shape != weight.shape or not np.isfinite(limit).all() or (limit < 0).any():
+        raise ValueError("invalid per-site history limits")
     bank = [moments(case[s][index], "batches") for s in sides]
     if bank[0].shape != bank[1].shape or bank[0].shape[1:] != mean.shape:
         raise ValueError("inconsistent path tape")
