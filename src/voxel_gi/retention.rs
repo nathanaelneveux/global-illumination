@@ -44,16 +44,16 @@ const BAND_STARTS: [i64; BAND_COUNT] = {
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub(super) enum SummaryMode {
-    #[default]
     Floors,
+    #[default]
     DistanceBands,
 }
 
 impl SummaryMode {
     pub fn launch(value: Option<&str>) -> Result<Self, String> {
         match value {
-            None | Some("floors") => Ok(Self::Floors),
-            Some("distance-bands") => Ok(Self::DistanceBands),
+            Some("floors") => Ok(Self::Floors),
+            None | Some("distance-bands") => Ok(Self::DistanceBands),
             Some(value) => Err(format!(
                 "unknown VOXEL_GI_RETENTION_SUMMARY={value:?}; choose floors or distance-bands"
             )),
@@ -566,7 +566,8 @@ mod tests {
 
     #[test]
     fn summary_launch_control_is_explicit() {
-        assert_eq!(SummaryMode::launch(None), Ok(SummaryMode::Floors));
+        assert_eq!(SummaryMode::launch(None), Ok(SummaryMode::DistanceBands));
+        assert_eq!(SummaryMode::default(), SummaryMode::DistanceBands);
         assert_eq!(SummaryMode::launch(Some("floors")), Ok(SummaryMode::Floors));
         assert_eq!(
             SummaryMode::launch(Some("distance-bands")),

@@ -256,8 +256,8 @@ spatial evidence, measured sampler quality, stale-light budget and an empirical
 history floor. Changed shared-corner sunlight supplies secondary change origins;
 calibration remeasures paths to a fixed quality goal when sampling improves.
 The conservative offline arm preserves baseline edit responses while retaining
-remote evidence. The [runtime implementation](runtime-retention.md), default on
-the runtime-retention branch (`VOXEL_GI_RETENTION=baseline` restores the control),
+remote evidence. The [runtime implementation](runtime-retention.md), now the
+integrated default (`VOXEL_GI_RETENTION=baseline` restores the control),
 uses per-page bounded journals with timestamped
 conservative overflow, independent sun-evidence epochs, and immutable page
 snapshots for worker-side distance/weight queries. Selection checks page stamps;
@@ -266,13 +266,18 @@ and conservative unknown sky evidence count. This is not a complete dependency
 oracle or universal distance bound; the measured remaining limits are explicit.
 Analytic-source/model policies in the table remain unchanged.
 
-The opt-in [distance-band overflow summary](distance-band-retention.md) replaces
+The default [distance-band overflow summary](distance-band-retention.md) replaces
 the two fallback floors with revision stamps per distance band and origin. It
 reuses worker-computed change-to-page AABB distances and stores no baked sample
-caps. Eight recent exact events and per-receiver consumption epochs remain.
+caps. Eight recent exact events and per-receiver consumption epochs remain;
+band storage is allocated only when a page first evicts an exact event.
 This avoids discarding all distance information at eviction, but page extent
 and downward distance quantization are still conservative approximations.
 The calibrated curve and its empirical quality target are unchanged.
+The journal supplies both retention caps and pending-change wakeups, not ray
+traversal or radiance storage. An older closer event cannot generally replace a
+newer farther one: a receiver may already have consumed the older revision.
+Distance-only pruning would lose freshness as well as retention evidence.
 
 `invalidate_model` is the explicit global restart operation. It advances both
 the source snapshot and model-reset watermark together, rejecting in-flight

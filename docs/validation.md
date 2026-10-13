@@ -13,7 +13,7 @@ target, and keep IR/ionizing tolerances independent.
 
 The [runtime retention qualification](runtime-retention.md) records the current
 streamed-cave policy, independent references and repeated windowed controls.
-Calibrated retention is the runtime-retention branch's default. Always specify
+Calibrated retention is the integrated default. Always specify
 `VOXEL_GI_RETENTION=baseline` or `calibrated` in A/B commands and check the report's
 `spatial_retention` field; absence of the variable selected the control in older
 commits. The separate `history_experiment` field describes the older retain-all
@@ -22,7 +22,8 @@ ablation, not this policy. Coverage and retained weight are still not convergenc
 For the [overflow compression experiment](distance-band-retention.md), keep
 `VOXEL_GI_RETENTION=calibrated` and select
 `VOXEL_GI_RETENTION_SUMMARY=floors|distance-bands`; verify `retention_summary` in
-the report. Both arms use the same distance curve. The opt-in retention audit
+the report. Distance bands are now the default; floors is the explicit control.
+Both arms use the same distance curve. The opt-in retention audit
 additionally rejects a compressed cap weaker than its complete shadow journal.
 `runtime_retention_analysis.py` can use the final frozen audit checkpoint for
 live error; `retention_attribution.py` checks target motion across all six.

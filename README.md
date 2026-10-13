@@ -119,15 +119,17 @@ without changing the measured baseline shadow/edit responses, and calibrates
 history curves against measured sampler quality. The
 [runtime follow-up](docs/runtime-retention.md) now integrates page-local history,
 incremental sun-change evidence and worker-side retention queries. It is the
-default on `codex/gi-runtime-retention`; use `VOXEL_GI_RETENTION=baseline cargo run --locked`
+default on `voxel-global-illumination`; use `VOXEL_GI_RETENTION=baseline cargo run --locked`
 for the original control. Repeated composed-cave tests show substantially less
 corner oscillation with comparable frame pacing, not a complete convergence or
 locked-60-FPS solution.
 
 The [distance-band follow-up](docs/distance-band-retention.md) preserves distance
-information when those page journals overflow. It is opt-in with
-`VOXEL_GI_RETENTION_SUMMARY=distance-bands cargo run --locked`; `floors` retains
-the existing default. Lighting thresholds, sampling and BVW are unchanged.
+information when those page journals overflow and is now the default. Use
+`VOXEL_GI_RETENTION_SUMMARY=floors cargo run --locked` for the previous summary.
+Eight exact events remain; band storage is allocated only on first overflow.
+Lighting thresholds, sampling and BVW are unchanged. The summary's measured
+late-stability gain does not establish faster startup or qualified windowed FPS.
 
 **Copy applied JSON** exports transport/work settings (not display toggles/gain).
 Paste JSON into the same panel to import, or save it to a file and launch with

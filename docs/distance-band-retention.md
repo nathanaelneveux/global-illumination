@@ -6,11 +6,14 @@ Experiment branch: `codex/gi-distance-band-summary`.
 Cleanup `ff2b848` only gates report accessors to diagnostic builds and simplifies
 the equivalent constant initializer; the measured retention behavior is unchanged.
 
-**Decision:** keep the candidate opt-in. Two reversed-order offscreen pairs
-confirm a substantial late-stability/accuracy improvement with unchanged
-thresholds. Early settling is not consistently better, and a black/unfocused
-windowed capture prevented frame-pacing qualification. This is not yet a
-promotion to the default or an always-60-FPS claim.
+**Decision:** integrate distance bands as the default on
+`voxel-global-illumination`, following the user's acceptance of the repeated
+late-stability gain and more faithful enforcement of the calibrated rules.
+Keep eight exact events and retain `floors` as the comparison option. Two
+reversed-order offscreen pairs support the improvement with unchanged thresholds.
+The initial qualification kept it opt-in; this decision changes the default,
+not the evidence. Startup regression was not causally established, and the
+black/unfocused windowed capture remains excluded. No FPS or faster-startup claim.
 
 The [attribution audit](retention-attribution.md) found that the eight-event
 journal's overflow fallback, rather than measured cave target motion, dominated
@@ -43,7 +46,9 @@ Changing the distance prior itself would require reviewing its bin boundaries
 and influence radius too.
 
 The band payload is 592 bytes/page (37 × 2 × 8), under 0.9 MiB for 1,500 pages,
-plus allocation/header overhead and unchanged exact bounds. Retiring a page
+plus allocation/header overhead and unchanged exact bounds. Since `194055a`,
+it is allocated only when a page first overflows: no evictions means no band
+allocation, with exactly the same caps as an all-zero summary. Retiring a page
 releases its metadata. A worker-held snapshot can temporarily duplicate a page's
 small summary on publication; there are no locks shared with that worker.
 
@@ -61,8 +66,9 @@ not implemented without evidence that this residual justifies their cost.
 ## Comparison and checks
 
 Select `VOXEL_GI_RETENTION=calibrated` and
-`VOXEL_GI_RETENTION_SUMMARY=floors|distance-bands`. At the implementation
-checkpoint, `floors` remains the default pending qualification. The older
+`VOXEL_GI_RETENTION_SUMMARY=floors|distance-bands`. Distance bands are the
+integrated default; the recorded implementation checkpoint defaulted to floors.
+The older
 `VOXEL_GI_RETENTION=baseline` is a different, global-journal control; do not
 confuse it with this experiment's calibrated per-page `floors` control.
 
@@ -156,8 +162,47 @@ The attempted windowed control, `cave-1791933739568020000-70281`, stopped at its
 first capture: `focused=false`, `varied=false`. It contributes **no** gameplay
 quality or timing evidence. The next qualification step is a valid focused
 windowed floors/bands pair, with freshness and stability measured alongside
-frame-time tails. Keep the old default until then. No screensaver/security
+frame-time tails. The user subsequently accepted integration without treating
+that missing check as a demonstrated regression. No screensaver/security
 settings were changed, and no BVW changes were made.
+
+## Integration and memory decision
+
+Retain eight exact events. A native layout check reports a 40-byte development
+event header, 24-byte bounds elements and 592-byte band payload. An event owns
+a shared, variable-capacity bounds allocation; releasing it can save less or
+more than the summary, and worker/diagnostic snapshots can delay that release.
+Removing one event from the eight-slot deque does not shrink its allocation.
+There is no fixed one-event-for-one-summary memory equivalence.
+
+More importantly, seven exact events are a different accuracy tradeoff. The
+regression test constructs a page spanning x=0..31 with a change at x=79:
+the page is 48 away, but the receiver at x=0 is 79 away. Exact evidence permits
+256 samples; moving that event into its summary one event earlier caps this
+receiver to 16. This would reintroduce avoidable invalidation earlier. Lazy
+summary allocation instead saves memory without changing any cap or epoch.
+
+The two summary modes are identical before a page's first eviction. They can
+differ during startup **after** eviction; the original audit already records
+overflow cuts before 30 seconds. Thus the noisy startup measurements neither
+prove a regression nor prove that startup is unaffected. This integration does
+not change ray generation, trace budgets, the retention curve or the quality goal.
+
+The journal is only lighting-change metadata, also used for waking receivers
+with pending evidence. It is not geometry storage, an undo log or saved rays.
+Simply dropping a newer far event because older near events exist is unsafe:
+some receivers have consumed the near revisions and need the new revision.
+Safe dominance pruning would require a **newer** event with an equal or stronger
+cap for **every** receiver in the page, accounting for origin as well as distance.
+Closest-to-page distance alone cannot prove that for exact events at different
+locations. Within each summary band/origin we already retain only the newest
+revision. Further dominance pruning is not part of this integration.
+
+Integration verification reuses the four recorded native comparisons, rather
+than repeating them for a default switch and behavior-equivalent allocation.
+Focused tests cover pre-overflow parity, lazy allocation, immutable snapshots,
+the seven-event counterexample, cap ordering, publication and late-sun wakeups.
+No new native performance or memory-neutrality result is claimed.
 
 ### Artifact index and reproduction
 
