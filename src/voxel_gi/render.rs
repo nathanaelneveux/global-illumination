@@ -1028,7 +1028,8 @@ pub(crate) fn patch_gpu_topology(
     true
 }
 
-pub(crate) fn patch_probe_values(
+#[cfg(test)]
+fn patch_probe_values(
     cache: &GpuTransportCache,
     patches: &GpuProbePatchQueue,
     probes: &impl super::field::ProbeLookup,
@@ -1036,6 +1037,36 @@ pub(crate) fn patch_probe_values(
 ) {
     let mut state = patches.state.lock().unwrap();
     patch_values_locked(&mut state, cache, probes, dirty_voxels);
+}
+
+/// Value publication may defer, but must never wait for render extraction or
+/// consume a world-sized backlog in one frame. The iterator is advanced only
+/// after acquiring the mirror; unconsumed FIFO entries remain with the caller.
+/// Topology still uses its separate atomic hash/probe transaction.
+pub(crate) fn try_patch_probe_values(
+    cache: &GpuTransportCache,
+    patches: &GpuProbePatchQueue,
+    probes: &impl super::field::ProbeLookup,
+    dirty: impl Iterator<Item = IVec3>,
+    budget: std::time::Duration,
+) {
+    let started = std::time::Instant::now();
+    let mut state = match patches.state.try_lock() {
+        Ok(state) => state,
+        Err(std::sync::TryLockError::WouldBlock) => return,
+        Err(std::sync::TryLockError::Poisoned(error)) => panic!("{error}"),
+    };
+    for (index, voxel) in dirty.enumerate() {
+        if let (Some(slot), Some(probe)) = (cache.slots.get(&voxel), probes.lookup(&voxel)) {
+            state.pending_probes.insert(*slot);
+            write_probe(&mut state.probe_mirror, *slot, gpu_probe(probe));
+        }
+        // Include removed/unknown keys in the budget too. Small bounded chunks
+        // avoid clock queries per voxel while ensuring a zero budget progresses.
+        if (index + 1).is_multiple_of(128) && started.elapsed() >= budget {
+            break;
+        }
+    }
 }
 
 fn patch_values_locked(
@@ -1255,6 +1286,58 @@ pub(crate) fn prepare_texture_array(
 mod tests {
     use super::*;
     use crate::voxel_gi::spectrum::EnergySpectrum;
+
+    #[test]
+    fn live_values_never_wait_for_render_and_resume_without_losing_dirty_keys() {
+        use std::time::Duration;
+        let mut probes: HashMap<_, _> = (0..512)
+            .map(|x| {
+                let voxel = IVec3::new(x, 0, 0);
+                (voxel, SurfaceProbe::new(voxel, 4))
+            })
+            .collect();
+        let keys: Vec<_> = (0..512).map(|x| IVec3::new(x, 0, 0)).collect();
+        let prepared = PreparedGpuCache::new(build_gpu_cache(snapshot_gpu_probes(&probes, &keys)));
+        let mut dirty = keys.iter().copied();
+        let lock = prepared.patches.state.lock().unwrap();
+        try_patch_probe_values(
+            &prepared.cache,
+            &prepared.patches,
+            &probes,
+            &mut dirty,
+            Duration::ZERO,
+        );
+        assert_eq!(dirty.len(), 512, "contention must consume no keys");
+        drop(lock);
+        try_patch_probe_values(
+            &prepared.cache,
+            &prepared.patches,
+            &probes,
+            &mut dirty,
+            Duration::ZERO,
+        );
+        assert_eq!(dirty.len(), 512 - 128, "one bounded chunk must progress");
+        let voxel = IVec3::new(511, 0, 0);
+        probes.get_mut(&voxel).unwrap().display[2].indirect = Vec3::splat(7.0);
+        try_patch_probe_values(
+            &prepared.cache,
+            &prepared.patches,
+            &probes,
+            &mut dirty,
+            Duration::from_secs(1),
+        );
+        assert_eq!(dirty.len(), 0);
+        let state = prepared.patches.state.lock().unwrap();
+        assert_eq!(state.pending_probes.len(), 512);
+        let slot = prepared.cache.slots[&voxel];
+        let expected = ShaderBuffer::from(vec![gpu_probe(&probes[&voxel])])
+            .data
+            .unwrap();
+        assert_eq!(
+            &state.probe_mirror[slot * GPU_PROBE_BYTES..(slot + 1) * GPU_PROBE_BYTES],
+            &expected
+        );
+    }
 
     #[test]
     fn terrain_shader_composes_with_bevys_real_pbr_modules_without_a_window() {
@@ -2017,7 +2100,7 @@ mod tests {
         world.insert_resource(VoxelGiRuntime {
             gpu_task: Some(pool.spawn(std::future::pending())),
             gpu_catchup_dirty: [voxel].into_iter().collect(),
-            gpu_value_dirty: HashSet::from([voxel]),
+            gpu_value_dirty: [voxel].into_iter().collect(),
             last_gpu_upload: Instant::now() - Duration::from_secs(1),
             ..default()
         });

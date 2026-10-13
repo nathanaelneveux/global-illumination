@@ -4,7 +4,7 @@
 use super::render::{
     GpuProbe, GpuProbePatchQueue, GpuSnapshot, GpuTransportCache, PreparedGpuCache,
     VoxelTransportAssets, VoxelTransportMaterial, build_gpu_cache_for_residency, gpu_probe,
-    install_prepared_gpu_cache, patch_gpu_topology, patch_probe_values,
+    install_prepared_gpu_cache, patch_gpu_topology, try_patch_probe_values,
 };
 use super::telemetry::{DisplayStage, GiWorkTimings, MainStage};
 use super::{VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, field::ProbeLookup};
@@ -25,6 +25,7 @@ const CATCHUP_BUDGET: Duration = Duration::from_micros(1500);
 // A small tail can finish atomically on the game thread. Larger backlogs ship
 // compact records to a worker; neither route increases the capture time slice.
 const CATCHUP_WORKER_THRESHOLD: usize = 8192;
+const LIVE_VALUE_BUDGET: Duration = Duration::from_micros(1500);
 
 /// Coalesce changes without repeatedly scanning a mostly-empty hash table.
 /// Popping makes a key eligible for re-enqueue if it changes again. FIFO keeps
@@ -36,6 +37,20 @@ pub(super) struct DisplayDirtyQueue {
 }
 
 impl DisplayDirtyQueue {
+    pub(super) fn insert(&mut self, key: IVec3) {
+        self.extend([key]);
+    }
+    pub(super) fn keys(&self) -> &HashSet<IVec3> {
+        &self.queued
+    }
+    fn pop(&mut self) -> Option<IVec3> {
+        while let Some(key) = self.order.pop_front() {
+            if self.queued.remove(&key) {
+                return Some(key);
+            }
+        }
+        None
+    }
     fn extend(&mut self, keys: impl IntoIterator<Item = IVec3>) {
         for key in keys {
             if self.queued.insert(key) {
@@ -47,7 +62,7 @@ impl DisplayDirtyQueue {
         self.order.clear();
         self.queued.clear();
     }
-    fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         self.queued.is_empty()
     }
     pub(super) fn len(&self) -> usize {
@@ -266,7 +281,7 @@ pub(super) fn upload_transport_cache(
             &field.probes,
             &removed,
             &added,
-            &runtime.gpu_value_dirty,
+            runtime.gpu_value_dirty.keys(),
         ) {
             runtime.gpu_topology_dirty = false;
             runtime.gpu_value_dirty.clear();
@@ -287,7 +302,7 @@ pub(super) fn upload_transport_cache(
         let runtime = runtime.as_mut();
         runtime
             .gpu_catchup_dirty
-            .extend(runtime.gpu_value_dirty.iter().copied());
+            .extend(runtime.gpu_value_dirty.keys().iter().copied());
         record_changes(runtime, cache.ready);
     }
     timing.display_checkpoint(DisplayStage::SnapshotStart);
@@ -337,13 +352,20 @@ pub(super) fn upload_transport_cache(
     {
         return;
     }
-    let dirty = std::mem::take(&mut runtime.gpu_value_dirty);
-    patch_probe_values(&cache, &patch_queue, &field.probes, &dirty);
+    let mut dirty = std::mem::take(&mut runtime.gpu_value_dirty);
+    try_patch_probe_values(
+        &cache,
+        &patch_queue,
+        &field.probes,
+        std::iter::from_fn(|| dirty.pop()),
+        LIVE_VALUE_BUDGET,
+    );
     timing.display_checkpoint(DisplayStage::Values);
     runtime.gpu_value_dirty = dirty;
-    runtime.gpu_value_dirty.clear();
-    runtime.last_gpu_upload = Instant::now();
-    runtime.sky_upload_pending = false;
+    if runtime.gpu_value_dirty.is_empty() {
+        runtime.last_gpu_upload = Instant::now();
+        runtime.sky_upload_pending = false;
+    }
     timing.display_checkpoint(DisplayStage::Ledger);
 }
 
