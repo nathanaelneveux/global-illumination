@@ -14,6 +14,8 @@ integration still needs durable spatial metadata and incremental, explicitly
 complete sunlight-change evidence; those are not optional details.
 
 Branch: `codex/gi-sun-aware-retention`. Main policy recording: clean `cb28ac7`.
+The [user-calibrated follow-up](#user-calibrated-follow-up) uses the subsequently
+accepted 2,048-path appearance; the original measurements below are retained.
 
 ## Separate what changed, sampling quality, and the response policy
 
@@ -228,3 +230,46 @@ Input SHA-256 values in `sun-retention-qualified-study.json`:
 | Sun metadata | `f0a6425058ff23faf2417eb4919bcc78bc9f80a7534b19b09e6572f247811856` |
 | Calibration report | `5510a05941c03bac5954d6f83baf042989688cd3890d3b88241ff31c63a0eed5` |
 | Legacy tape | `f2ffb02688a23ab1acea7c593e9185cd34694917d877365187c1b76d19e3ed8f` |
+
+## User-calibrated follow-up
+
+The user subsequently accepted the [2,048-path visual target](cave-sampling.md#user-calibrated-visual-target).
+Add `--quality-profile tools/quality_profiles/cave-user-2048.json` to the replay
+command and use `--output target/sun-retention-user-2048-study.json`. Omitting
+the option preserves the original raw 5%/10% calibration for reproduction.
+
+Changing the goal is **not** evidence of improved sampling. Both measured work
+`Q` and baseline work at the selected goal now equal 2,048. The qualified floor
+therefore remains **16 nearby / 256 distant**, not 10.7 / 170.7. If a future
+sampler meets this same fixed profile in 1,024 paths, its relative floor can then
+halve, subject to transition qualification. Image, corner and raw-face gates
+must all pass across complete windows and sustained larger prefixes.
+
+The unchanged response fraction `Q/6` gives 341.3 rather than 512 fresh paths;
+this retunes the bias curve without inventing a faster estimator. At geometry
+distance 256 the candidate cap falls from 2,979 to 1,986. The conservative floor
+still protects previously accepted near/distant reset responses.
+
+Clean `7ecb0c7` replay, reusing the exact tapes and native provenance above:
+
+- All 52 baseline results reproduce, all 20 sun-bounce results match baseline,
+  and all 33 legacy edit/source controls match baseline.
+- Repeated remote-cave p99/variation remain **2.179% / .09369**, versus baseline
+  **8.785% / 2.94233**, at equal fresh sampling work.
+- Diffuse roof at 256: late p99 **.337%**, versus the earlier candidate's .402%
+  and baseline .193%. The bias/stability tradeoff remains; roofs at 384/512 stay
+  .275%/.197%. All these faces remain within the original 5% gate.
+- Canyon late p99 remains 1.813% versus baseline 1.885%, with identical settling
+  and worst excursions. Its final-checkpoint p99 is 1.614% versus 1.482% baseline:
+  the last checkpoint is slightly worse despite the pooled late-period gain.
+
+The transition report retains its original 5% settling metric for comparable
+measurements. Sparse raw-cache replays do not receive an image-quality pass by
+comparing differently normalized percentages with a rendered-view gate. No
+candidate gameplay-FPS or rendered temporal qualification is claimed.
+
+Profile SHA-256:
+`fb83f1fabef2640f8edcb0fe15c56b65d2379c577a0c3e5a69a67a159026db9a`.
+Other input hashes are unchanged. Seventeen focused Python tests pass, including
+same-sampler/different-goal versus better-sampler/same-goal behavior. No BVW,
+shader, runtime history or gameplay scheduling changes were made.

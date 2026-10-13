@@ -6,6 +6,11 @@ unchanged. Its purpose is to determine how much *retained useful history* the
 current estimator needs, then provide a common target for variance-reduction
 experiments. More submitted paths do not replace history discarded by resets.
 
+**Current visual target:** subsequent user review accepts the 2,048-path
+appearance, with 1,536 noticeable and 1,024 very noticeable. Use the versioned
+[human-calibrated profile](#user-calibrated-visual-target) for appearance/performance
+experiments. Original engineering gates/results remain separate diagnostics.
+
 ## Exact target and workload
 
 Use the [complete geometry-audited cave reference](cave-reference.md), adding
@@ -199,3 +204,64 @@ analysis uses the bundled Python with NumPy/Pillow and isolated FLIP 1.7 under
 build passed before launch; four analytic Python tests pass. No solved toggle
 stress or broad native suite was rerun. All BVW source/dependency files remain
 unchanged; these are diagnostic-only additions.
+
+## User-calibrated visual target
+
+On October 13 the user accepted **2,048 paths as visually indistinguishable
+from the reference**, 1,536 as noticeable, and 1,024 as very noticeable. This is
+an appearance target, **not a cap on useful history**. Live sample count/coverage
+does not certify equivalent accuracy after resets or changing geometry.
+
+`tools/quality_profiles/cave-user-2048.json` freezes the measured four-window
+envelope of this qualified sweep. The user did not identify a sequence window;
+the envelope is an automated robustness choice, not a claim they reviewed all
+four. Keep these error limits fixed for subsequent samplers: a 2× efficiency win
+now means reaching this same target in <=1,024 paths. Preserve older practical/
+strict gates as diagnostics and qualify simulation channels independently.
+
+Worst across the four windows:
+
+| Paths | User assessment | Corner RGB p99 / max | Raw-face RGB p99 / max | FLIP mean / worst tile |
+| ---: | --- | --- | --- | --- |
+| 1,024 | Very noticeable | 4.832% / 18.030% | 8.409% / 19.679% | .03668 / .10453 |
+| 1,536 | Noticeable | 3.843% / 14.686% | 6.643% / 15.090% | .03061 / .08128 |
+| 2,048 | Accepted | 3.266% / 11.969% | 5.636% / 11.969% | .02740 / .07296 |
+
+The combined gate uses raw-face/corner p99/max and FLIP mean/worst 32×32 tile.
+All four 2,048 windows and every larger measured checkpoint pass; all 1,536 and
+1,024 windows fail. FLIP is not a percentage RGB error. A 12% raw outlier does not
+permit every surface to be 12% wrong or establish an invisibility threshold in
+other scenes. This static target does not certify flicker, lag, overshoot, unseen
+views, different exposure, or IR/ionizing simulation values.
+
+OKLab stays diagnostic: its worst-window p99 at 1,536 is .006494, slightly lower
+than .006601 at 2,048 despite the user's preference. One single-pixel maximum at
+3,072 is .010543, slightly above .010362 at 2,048. A strict monotonic OKLab gate
+would misrepresent this accepted appearance; the spatial/transport gates above
+distinguish the observed levels without that assumption.
+
+```sh
+PYTHONPATH=tools python3 tools/visual_quality.py \
+  target/cave-sample-sweep-analysis.json \
+  --profile tools/quality_profiles/cave-user-2048.json --verify-anchor \
+  --output target/cave-user-2048-acceptance.json
+```
+
+For a candidate use its qualified same-target analysis without `--verify-anchor`;
+this evaluates fixed limits, not new limits learned from the candidate. That
+flag specifically checks the original baseline hash, accepted envelope and
+visible-failure controls. Generating reference/geometry/capture checks remain
+mandatory. The older engineering gates and their historical results are not
+overwritten or retroactively declared passes.
+
+Verification at `d38c251` / `7ecb0c7`: 17 focused profile/history Python tests
+pass. All 12 original 2560×1440 images for 1,024/1,536/2,048 were re-evaluated
+with official FLIP 1.7 and OKLab; metrics reproduce to 1e-12. Geometry/reference
+qualification, the 81 capture guards, nonblank images and identical held-reference
+pixels were checked. Reference and 2,048 images were inspected. This reuses
+existing qualified captures, not a new reference bake. Evidence:
+`target/cave-user-2048-{acceptance.json,capture-check.log}`.
+
+The [retention follow-up](sun-aware-retention.md#user-calibrated-follow-up) supports
+this target while distinguishing a new goal from a better sampler. Runtime
+integration remains separate.

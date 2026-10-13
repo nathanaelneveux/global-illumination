@@ -4,6 +4,13 @@ Use the smallest check that answers the current question. The purpose is faster,
 stable gameplay and useful simulation measurements, not maximizing test minutes.
 The full suite is an integration checkpoint, not the default for every tweak.
 
+Current appearance acceptance is the user's [2,048-path cave target](cave-sampling.md#user-calibrated-visual-target),
+with 1,536 and 1,024 as visible-failure controls. Use the fixed, versioned profile
+for sampler comparisons; do not turn 2,048 into a history cap, use a raw RGB
+outlier as a universal perceptual threshold, or waive temporal/FPS qualification.
+Keep the original stricter engineering metrics alongside this human-calibrated
+target, and keep IR/ionizing tolerances independent.
+
 For adaptive-history research, the [DDGI/A-SVGF qualification study](adaptive-history-qualification.md)
 records the opt-in matched native sample tapes, isolated branches, first-gate
 failures and required runtime gate. Neither detector is a gameplay default;
