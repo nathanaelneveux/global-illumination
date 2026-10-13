@@ -16,6 +16,11 @@ defaults or scheduler. The previous [reach study](transport-horizon.md) is a
 different experiment: limiting each path segment does not bound the effect of
 loading arbitrary distant geometry.
 
+Follow-up: the [sun-aware retention study](sun-aware-retention.md) combines
+actual shared-corner sunlight changes with sampling-calibrated history curves.
+Its conservative arm preserves the remote-cave win and baseline shadow/edit
+responses; aggressive resets still regress noise. Runtime integration is pending.
+
 ## Current policy, precisely
 
 For scene edits, loads and unloads, `geometry.rs` uses changed voxel bounds

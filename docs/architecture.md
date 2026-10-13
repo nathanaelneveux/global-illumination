@@ -250,6 +250,14 @@ Future spatial retention must also survive bounded-journal eviction; retaining
 more samples without that metadata is not a complete solution. Runtime policy
 in the table above is unchanged.
 
+The follow-up [sun-aware retention experiment](sun-aware-retention.md) separates
+spatial evidence, measured sampler quality, stale-light budget and an empirical
+history floor. Changed shared-corner sunlight supplies secondary change origins;
+calibration remeasures paths to a fixed quality goal when sampling improves.
+The conservative offline arm preserves baseline edit responses while retaining
+remote evidence. This is not yet a production event pipeline or a safe universal
+distance bound; the study records its partial-cache and journal requirements.
+
 `invalidate_model` is the explicit global restart operation. It advances both
 the source snapshot and model-reset watermark together, rejecting in-flight
 old-model jobs. Ordinary analytic light changes retain bounded history instead.
