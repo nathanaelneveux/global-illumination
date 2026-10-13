@@ -7,7 +7,7 @@ use super::render::{
     patch_gpu_topology, patch_probe_values,
 };
 use super::telemetry::{DisplayStage, GiWorkTimings, MainStage};
-use super::{VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings};
+use super::{VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, field::ProbeLookup};
 use bevy::{
     platform::collections::HashSet,
     prelude::*,
@@ -21,7 +21,6 @@ use std::{
 };
 
 const CATCHUP_BATCH: usize = 512;
-const CATCHUP_MAX_PROBES: usize = 8192;
 const CATCHUP_BUDGET: Duration = Duration::from_micros(1500);
 
 /// Coalesce changes without repeatedly scanning a mostly-empty hash table.
@@ -113,6 +112,31 @@ fn record_changes(runtime: &mut VoxelGiRuntime, live: bool) {
     }
 }
 
+/// Reconcile a private generation within a time slice. False means capacity
+/// exhaustion; a nonempty journal on success means continuation next frame.
+pub(super) fn catch_up(
+    prepared: &mut PreparedGpuCache,
+    dirty: &mut DisplayDirtyQueue,
+    probes: &impl ProbeLookup,
+    budget: Duration,
+) -> bool {
+    let started = Instant::now();
+    let mut batch = Vec::with_capacity(CATCHUP_BATCH);
+    // Include obsolete queue entries in the deadline. A second item cap would
+    // delay publication even when this budget is idle. Check after each bounded
+    // batch so even a zero-duration slice makes progress.
+    while !dirty.is_empty() {
+        dirty.take_batch(&mut batch);
+        if !prepared.synchronize(&batch, probes) {
+            return false;
+        }
+        if started.elapsed() >= budget {
+            break;
+        }
+    }
+    true
+}
+
 pub(super) fn upload_transport_cache(
     mut runtime: ResMut<VoxelGiRuntime>,
     field: Res<VoxelEnergyField>,
@@ -144,20 +168,12 @@ pub(super) fn upload_transport_cache(
         record_changes(&mut runtime, cache.ready);
     }
     if let Some(mut prepared) = runtime.gpu_prepared.take() {
-        let started = Instant::now();
-        let mut batch = Vec::with_capacity(CATCHUP_BATCH);
-        let mut processed = 0;
-        let mut fits = true;
-        while !runtime.gpu_catchup_dirty.is_empty() && processed < CATCHUP_MAX_PROBES {
-            processed += runtime.gpu_catchup_dirty.take_batch(&mut batch);
-            if !prepared.synchronize(&batch, &field.probes) {
-                fits = false;
-                break;
-            }
-            if started.elapsed() >= CATCHUP_BUDGET {
-                break;
-            }
-        }
+        let fits = catch_up(
+            &mut prepared,
+            &mut runtime.gpu_catchup_dirty,
+            &field.probes,
+            CATCHUP_BUDGET,
+        );
         if !fits {
             // Actual capacity/hash exhaustion, not merely a newer scene revision.
             // Keep the live generation and snapshot current residency again.

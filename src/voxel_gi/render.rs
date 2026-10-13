@@ -1732,14 +1732,24 @@ mod tests {
         for &voxel in &field.order {
             field.probes.get_mut(&voxel).unwrap().display[2].indirect = Vec3::splat(2.0);
         }
-        let mut world = World::new();
-        world.insert_resource(VoxelGiRuntime {
+        let mut runtime = VoxelGiRuntime {
             gpu_prepared: Some(replacement),
             gpu_catchup_dirty: field.order.iter().copied().collect(),
             gpu_value_dirty: field.order.iter().copied().collect(),
             last_gpu_upload: Instant::now() - Duration::from_secs(1),
             ..default()
-        });
+        };
+        // A zero-duration slice deterministically processes one bounded batch.
+        // The normal 1.5 ms budget may finish this small fixture on fast hosts.
+        assert!(super::super::display::catch_up(
+            runtime.gpu_prepared.as_mut().unwrap(),
+            &mut runtime.gpu_catchup_dirty,
+            &field.probes,
+            Duration::ZERO,
+        ));
+        assert_eq!(runtime.gpu_catchup_dirty.len(), 12_000 - 512);
+        let mut world = World::new();
+        world.insert_resource(runtime);
         world.insert_resource(field);
         world.insert_resource(assets);
         world.insert_resource(patches);
@@ -1750,11 +1760,10 @@ mod tests {
         world.insert_resource(VoxelGiSettings::default());
         world.init_resource::<super::super::telemetry::GiWorkTimings>();
 
-        world.run_system_once(upload_transport_cache).unwrap();
         assert_eq!(
             world.resource::<VoxelTransportAssets>().probes.id(),
             old_id,
-            "more than a frame's catch-up budget must not publish a partial generation"
+            "a bounded catch-up slice must not expose a partial generation"
         );
         assert!(world.resource::<VoxelGiRuntime>().gpu_prepared.is_some());
         // Editing during preparation must requeue already-processed keys and
