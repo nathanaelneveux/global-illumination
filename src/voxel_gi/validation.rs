@@ -617,6 +617,7 @@ pub(super) fn run_validation(
             "note": "Inactive BVW loader walks from (-96,40,0) toward -Z. Does not render or alter GI view priority. Loaded terrain participates in transport."},
         "presentation": "shared-corner sun + corner-reconstructed indirect; preferred modes except compare/stress",
         "history_experiment": if retained_history_limit(0) == u32::MAX { "retain-compatible-history" } else { "production" },
+        "spatial_retention": if runtime.spatial_history.is_some() { "calibrated-cave-user-2048-v1" } else { "baseline-16-256-journal8" },
         "settings": {"transport": settings.transport, "samples_per_dispatch": settings.batch_samples(),
             "trace_budget_ms": settings.trace_budget_ms, "max_probes_per_dispatch": settings.max_probes_per_dispatch,
             "scene_publish_budget_ms": settings.scene_publish_budget.as_secs_f32() * 1000.0,

@@ -111,6 +111,11 @@ pub(super) fn start_scene_task(
 
     let affected_pages = affected_probe_pages(&dirty_pages, &removed_pages);
     let previous_scene = Arc::clone(&runtime.scene);
+    let retention_radius = if runtime.spatial_history.is_some() {
+        super::retention::INFLUENCE_RADIUS
+    } else {
+        super::geometry::RELIGHT_RADIUS
+    };
     let voxel_lookup = voxel_world.get_voxel_fn();
     let chunk_lookup = voxel_world.get_chunk_data_fn();
     let generator = generator.clone();
@@ -154,7 +159,8 @@ pub(super) fn start_scene_task(
             changed_pages,
             &removed_pages,
         ));
-        let changes = super::geometry::SceneChanges::between(&previous_scene, &scene);
+        let changes =
+            super::geometry::SceneChanges::with_radius(&previous_scene, &scene, retention_radius);
         let descriptors = if changes.changed {
             scan_surface_probe_pages(&scene, &affected_pages, focus_page)
         } else {

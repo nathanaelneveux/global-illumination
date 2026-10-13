@@ -108,6 +108,7 @@ pub(super) fn start_trace_task(
     stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
     let scene = Arc::clone(&runtime.scene);
     let scene_generation = runtime.generation;
+    let track_changes = runtime.spatial_history.is_some();
     let sky_revision = runtime.sky_revision;
     let sources = runtime.sources.clone();
     let materials = Arc::clone(&runtime.materials);
@@ -143,6 +144,10 @@ pub(super) fn start_trace_task(
             }
         }
         let mut work = selected;
+        cpu_sky_cache.track_changes = track_changes;
+        if let Some(tracer) = &mut gpu_tracer {
+            tracer.sky_cache.track_changes = track_changes;
+        }
         if let Some(tracer) = gpu_tracer.as_mut()
             && let Err(error) = tracer.trace_compact(
                 Arc::clone(&scene),
@@ -181,6 +186,10 @@ pub(super) fn start_trace_task(
                 )
             });
         }
+        let sunlight_change = gpu_tracer.as_mut().map_or_else(
+            || cpu_sky_cache.take_changes(&scene),
+            |tracer| tracer.sky_cache.take_changes(&scene),
+        );
         TraceBatchResult {
             work,
             paths,
@@ -194,6 +203,7 @@ pub(super) fn start_trace_task(
             sky_count,
             scene_generation,
             sky_revision,
+            sunlight_change,
         }
     }));
 }
@@ -356,6 +366,11 @@ pub(super) fn select_transport(
         let Some(probe) = field.probes.get(&voxel) else {
             continue;
         };
+        let retention = runtime
+            .spatial_history
+            .as_ref()
+            .map(|history| history.query(voxel, probe.retention_revision));
+        force |= retention.is_some_and(|(_, cap)| cap != u32::MAX);
         let mask = scheduling::due_faces(probe, field.transport_revision, now, settings, force);
         if mask == 0 {
             continue;
@@ -370,10 +385,15 @@ pub(super) fn select_transport(
                 runtime.source_revision,
             );
         }
-        let geometry_limit = runtime.geometry_history.history_limit(
-            voxel,
-            probe.transport_revision,
-            field.transport_revision,
+        let geometry_limit = retention.map_or_else(
+            || {
+                runtime.geometry_history.history_limit(
+                    voxel,
+                    probe.transport_revision,
+                    field.transport_revision,
+                )
+            },
+            |(_, cap)| cap,
         );
         #[cfg(debug_assertions)]
         let (geometry_limit, history_limit) = (
@@ -389,6 +409,14 @@ pub(super) fn select_transport(
             geometry_limit,
             history_limit,
         );
+        if let Some(retention) = retention {
+            let header = selected.probes.last_mut().unwrap();
+            header.retention = Some(retention);
+            // Late sun evidence is independent of the old scene/fresh mask.
+            for face in &mut selected.faces[header.faces()] {
+                face.samples = face.samples.min(retention.1);
+            }
+        }
     }
     runtime.selection_seen = seen;
     runtime.ranked_candidates = adaptive;
@@ -415,6 +443,16 @@ pub(super) fn apply_trace_task(
     };
     let merge_started = Instant::now();
     runtime.trace_task = None;
+    if let Some(mut change) = result.sunlight_change.take()
+        && let Some(history) = &mut runtime.spatial_history
+    {
+        // Even superseded results describe a possible change, so retain their
+        // conservative evidence. They cannot publish stale sky display values.
+        // Jobs carry their *selection* stamp, leaving late evidence pending.
+        // A superseded worker must not recreate metadata for retired pages.
+        change.nearby.retain(|page, _| field.pages.contains_key(page));
+        history.record(change, super::retention::Origin::Sunlight);
+    }
     timing.record_gpu_batch(
         result
             .gpu_tracer

@@ -21,6 +21,7 @@ mod reconstruction;
 pub(crate) mod render;
 #[cfg(test)]
 mod research;
+mod retention;
 mod revision;
 mod sampling;
 mod scheduling;
@@ -113,6 +114,11 @@ impl Plugin for VoxelGiPlugin {
             app.world_mut()
                 .resource_mut::<VoxelGiSettings>()
                 .adaptive_updates = false;
+        }
+        if std::env::var("VOXEL_GI_RETENTION").is_ok_and(|value| value == "calibrated") {
+            app.world_mut()
+                .resource_mut::<VoxelGiRuntime>()
+                .spatial_history = Some(default());
         }
     }
 
@@ -222,6 +228,7 @@ struct VoxelGiRuntime {
     urgent_edit: bool,
     generation: u64,
     geometry_history: geometry::GeometryHistory,
+    spatial_history: Option<retention::SpatialHistory>,
     source_revision: u64,
     batch_size: usize,
     /// Last global material/model replacement. Scene edits use spatial history
@@ -295,6 +302,7 @@ impl Default for VoxelGiRuntime {
             urgent_edit: false,
             generation: 0,
             geometry_history: default(),
+            spatial_history: None,
             source_revision: 0,
             batch_size: 256,
             model_reset_source_revision: 0,
@@ -370,6 +378,7 @@ struct TraceBatchResult {
     sky_count: usize,
     scene_generation: u64,
     sky_revision: u64,
+    sunlight_change: Option<geometry::GeometryChange>,
 }
 
 fn page_of(voxel: IVec3) -> IVec3 {

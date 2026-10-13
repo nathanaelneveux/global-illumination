@@ -66,6 +66,7 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
                 sky_count: usize::from(case == 1),
                 scene_generation: 0,
                 sky_revision: 0,
+                sunlight_change: None,
             }
         });
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -421,6 +422,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
                     sky_count: 0,
                     scene_generation: 0,
                     sky_revision: 0,
+                    sunlight_change: None,
                 }
             });
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -632,6 +634,44 @@ fn urgent_work_cannot_starve_loaded_world_sweep() {
         );
     }
     assert_eq!(visited.len(), 64);
+}
+
+#[test]
+fn late_sun_evidence_wakes_a_current_receiver_without_resetting_distant_history() {
+    let voxel = IVec3::ZERO;
+    let mut probe = SurfaceProbe::new(voxel, 4);
+    probe.samples = [4096; 6];
+    probe.sequence = [8192; 6];
+    probe.radiance = [EnergySpectrum::ONE; 6];
+    probe.second_moment = [EnergySpectrum::ONE; 6];
+    probe.stable_batches = [8; 6];
+    probe.face_updated_at = [Some(Instant::now()); 6];
+    let mut field = VoxelEnergyField::default();
+    field.probes.insert(voxel, probe);
+    field.order.push(voxel);
+    let mut runtime = VoxelGiRuntime {
+        spatial_history: Some(default()),
+        batch_size: 1,
+        ..default()
+    };
+    assert!(select_probes(&mut runtime, &field).is_empty());
+    let change = geometry::GeometryChange {
+        nearby: HashMap::from_iter([(IVec3::ZERO, vec![geometry::Bounds::point(voxel)])]),
+    };
+    runtime
+        .spatial_history
+        .as_mut()
+        .unwrap()
+        .record(change, retention::Origin::Sunlight);
+    let selected = select_probes(&mut runtime, &field);
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].samples[2], 256);
+    assert_eq!(selected[0].sequence[2], 8192);
+    assert_eq!(selected[0].radiance[2], EnergySpectrum::ONE);
+    assert_eq!(
+        field.transport_revision, 0,
+        "sky evidence does not fabricate geometry revisions"
+    );
 }
 
 #[test]

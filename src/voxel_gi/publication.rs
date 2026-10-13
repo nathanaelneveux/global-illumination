@@ -84,12 +84,17 @@ pub(super) fn apply_scene_task(
         // material table or transport model, not residency of one source.
         runtime.scene = result.scene.clone();
         runtime.generation = runtime.generation.wrapping_add(1);
-        if let Some(change) = result.geometry_change.take() {
+        if let Some(mut change) = result.geometry_change.take() {
             let from = field.transport_revision;
             advance_transport_revision(&mut runtime, &mut field);
-            runtime
-                .geometry_history
-                .record(from, field.transport_revision, change);
+            if let Some(history) = &mut runtime.spatial_history {
+                change.nearby.retain(|page, _| field.pages.contains_key(page));
+                history.record(change, super::retention::Origin::Geometry);
+            } else {
+                runtime
+                    .geometry_history
+                    .record(from, field.transport_revision, change);
+            }
         }
         field
             .publishing_pages
@@ -152,6 +157,11 @@ pub(super) fn publish_scene_page(
     descriptors: Vec<SurfaceProbeDescriptor>,
 ) {
     let started = Instant::now();
+    if descriptors.is_empty()
+        && let Some(history) = &mut runtime.spatial_history
+    {
+        history.retire(page);
+    }
     // Worker scans include touching pages, even when their exposed topology
     // did not change. Preserve their allocations, indices and measurements
     // directly; global scene freshness and explicit edit requests still apply.

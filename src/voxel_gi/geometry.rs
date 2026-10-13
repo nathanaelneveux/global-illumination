@@ -22,7 +22,12 @@ pub(super) struct SceneChanges {
 }
 
 impl SceneChanges {
+    #[cfg(test)]
     pub fn between(previous: &TransportScene, next: &TransportScene) -> Self {
+        Self::with_radius(previous, next, RELIGHT_RADIUS)
+    }
+
+    pub fn with_radius(previous: &TransportScene, next: &TransportScene, radius: i32) -> Self {
         let mut occupied_min = IVec3::MAX;
         let mut occupied_max = IVec3::MIN;
         for (&coordinate, region) in &previous.regions {
@@ -94,30 +99,30 @@ impl SceneChanges {
             }
         }
         if !bounds.is_empty() {
-            result.transport = Some(GeometryChange::from_bounds(previous, &bounds));
+            result.transport = Some(GeometryChange::from_bounds(previous, &bounds, radius));
         }
         result
     }
 }
 
 #[derive(Clone, Copy)]
-struct Bounds {
-    min: IVec3,
-    max: IVec3,
+pub(super) struct Bounds {
+    pub min: IVec3,
+    pub max: IVec3,
 }
 
 impl Bounds {
-    fn distance_squared(self, other: Self) -> i64 {
+    pub fn distance_squared(self, other: Self) -> i64 {
         let separation = (self.min.as_i64vec3() - other.max.as_i64vec3())
             .max(other.min.as_i64vec3() - self.max.as_i64vec3())
             .max(I64Vec3::ZERO)
-            // Only the radius test matters; cap distant axes before squaring
-            // so disconnected islands cannot overflow the distance arithmetic.
-            .min(I64Vec3::splat(i64::from(RELIGHT_RADIUS) + 1));
+            // Beyond the transport horizon no supported retention curve needs
+            // an exact distance. Bound arithmetic for disconnected worlds.
+            .min(I64Vec3::splat(4096));
         separation.length_squared()
     }
 
-    fn point(voxel: IVec3) -> Self {
+    pub fn point(voxel: IVec3) -> Self {
         Self {
             min: voxel,
             max: voxel,
@@ -129,7 +134,7 @@ impl Bounds {
 pub(super) struct GeometryChange {
     /// Existing receiver pages only. New receivers have no history to retain.
     /// Each bin contains just changes within the local relight radius.
-    nearby: HashMap<IVec3, Vec<Bounds>>,
+    pub nearby: HashMap<IVec3, Vec<Bounds>>,
 }
 
 impl GeometryChange {
@@ -138,7 +143,7 @@ impl GeometryChange {
         SceneChanges::between(previous, next).transport
     }
 
-    fn from_bounds(previous: &TransportScene, changes: &[Bounds]) -> Self {
+    pub fn from_bounds(previous: &TransportScene, changes: &[Bounds], radius: i32) -> Self {
         let pages: HashSet<_> = previous
             .regions
             .iter()
@@ -146,7 +151,7 @@ impl GeometryChange {
             .map(|(r, _)| r.div_euclid(IVec3::splat(2)))
             .collect();
         let mut plan = Self::default();
-        let radius_squared = i64::from(RELIGHT_RADIUS).pow(2);
+        let radius_squared = i64::from(radius).pow(2);
         for page in pages {
             let min = page * PAGE_EDGE as i32;
             let bounds = Bounds {

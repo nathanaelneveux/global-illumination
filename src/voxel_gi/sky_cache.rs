@@ -98,9 +98,28 @@ pub(crate) struct SkyCache {
     batch: u64,
     lit_faces: u8,
     pub stats: SkyCacheStats,
+    pub track_changes: bool,
+    changes: HashMap<IVec3, super::geometry::Bounds>,
 }
 
 impl SkyCache {
+    /// Build spatial bins on the tracing worker. Unknown coverage is explicit
+    /// conservative evidence, not a claim that the whole sky cache is complete.
+    pub fn take_changes(
+        &mut self,
+        scene: &TransportScene,
+    ) -> Option<super::geometry::GeometryChange> {
+        if self.changes.is_empty() {
+            return None;
+        }
+        let bounds: Vec<_> = self.changes.drain().map(|(_, bounds)| bounds).collect();
+        Some(super::geometry::GeometryChange::from_bounds(
+            scene,
+            &bounds,
+            super::retention::INFLUENCE_RADIUS,
+        ))
+    }
+
     pub fn prepare<P: SkyReceiver>(
         &mut self,
         scene: &Arc<TransportScene>,
@@ -147,6 +166,19 @@ impl SkyCache {
 
     pub fn store(&mut self, position: IVec3, value: [u32; 6]) {
         let corner = self.corners.get_mut(&position).expect("planned sky corner");
+        if self.track_changes && (corner.value != value || value.contains(&0)) {
+            // Unknown is not black or unchanged. New/unknown corners contribute
+            // conservative evidence; known equal values contribute none. Bounds
+            // coalesce existing ray results, with no extra transport sampling.
+            let bucket = position.div_euclid(IVec3::splat(BUCKET_EDGE));
+            self.changes
+                .entry(bucket)
+                .and_modify(|bounds| {
+                    bounds.min = bounds.min.min(position);
+                    bounds.max = bounds.max.max(position);
+                })
+                .or_insert(super::geometry::Bounds::point(position));
+        }
         corner.value = value;
         // Traversal-budget exhaustion is not a valid forever-cached shadow.
         corner.generation = if value.contains(&0) {
@@ -307,6 +339,39 @@ mod tests {
         world::{PAGE_EDGE, PAGE_SIZE},
     };
     use super::*;
+
+    #[test]
+    fn change_evidence_distinguishes_known_black_unknown_and_equal_values() {
+        let scene = floor(&[IVec3::ZERO]);
+        let position = IVec3::new(4, 5, 4);
+        let mut cache = SkyCache {
+            track_changes: true,
+            ..default()
+        };
+        cache.corners.insert(position, Corner::default());
+        cache.store(position, [1; 6]);
+        assert!(
+            cache.take_changes(&scene).is_some(),
+            "unknown to black needs conservative evidence"
+        );
+        cache.store(position, [1; 6]);
+        assert!(
+            cache.take_changes(&scene).is_none(),
+            "known black is unchanged"
+        );
+        cache.store(position, [2; 6]);
+        assert!(cache.take_changes(&scene).is_some(), "becoming lit counts");
+        cache.store(position, [1; 6]);
+        assert!(
+            cache.take_changes(&scene).is_some(),
+            "becoming shadowed counts"
+        );
+        cache.store(position, [0; 6]);
+        assert!(
+            cache.take_changes(&scene).is_some(),
+            "traversal uncertainty must not mean unchanged"
+        );
+    }
 
     fn sun(direction: Vec3) -> TransportSources {
         TransportSources {

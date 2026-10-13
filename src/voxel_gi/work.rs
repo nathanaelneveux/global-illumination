@@ -26,6 +26,8 @@ pub(crate) struct ProbeWork {
     pub source_revision: u64,
     pub transport_revision: u64,
     pub restart: bool,
+    /// Candidate-only spatial evidence and cap; None preserves baseline rules.
+    pub retention: Option<(u64, u32)>,
     pub sky: [[u32; 4]; 6],
     start: usize,
 }
@@ -45,9 +47,17 @@ impl ProbeWork {
         now: Instant,
         settings: &super::VoxelGiSettings,
     ) {
-        let same_revision = probe.transport_revision == self.transport_revision;
+        let same_revision = probe.transport_revision == self.transport_revision
+            && self.retention.is_none_or(|(_, cap)| cap == u32::MAX);
         let previous_stable = probe.stable_batches;
         let previous_display_time = probe.display_updated_at;
+        if let Some((revision, cap)) = self.retention {
+            // Consume evidence for all faces atomically, including faces not
+            // selected in this batch. Partial selections must not lose a cap
+            // when the probe-level scene revision advances.
+            probe.samples = probe.samples.map(|samples| samples.min(cap));
+            probe.retention_revision = revision;
+        }
         if !same_revision || self.restart {
             probe.fresh_mask = 0;
             probe.stable_batches = [0; 6];
@@ -172,6 +182,7 @@ impl TraceWork {
             source_revision,
             transport_revision,
             restart,
+            retention: None,
             // Filled by SkyCache before return; old presentation never crosses
             // the worker boundary, and stale sky is rejected by the publisher.
             sky: [[0; 4]; 6],
@@ -238,6 +249,30 @@ impl FaceWork {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spatial_evidence_caps_unselected_faces_and_does_not_consume_later_events() {
+        let mut probe = SurfaceProbe::new(IVec3::ZERO, 63);
+        probe.samples = [4096; 6];
+        probe.radiance = [EnergySpectrum::ONE; 6];
+        probe.second_moment = [EnergySpectrum::ONE * 2.0; 6];
+        probe.sequence = [9000; 6];
+        let mut work = TraceWork::default();
+        work.push(&probe, 1, 1, 0, false, 256, u32::MAX);
+        work.probes[0].retention = Some((7, 256));
+        work.faces[0].samples += 16;
+        work.faces[0].sequence += 16;
+        work.probes[0].publish(&work.faces, &mut probe, Instant::now(), &default());
+        assert_eq!(probe.samples, [272, 256, 256, 256, 256, 256]);
+        assert_eq!(probe.sequence, [9016, 9000, 9000, 9000, 9000, 9000]);
+        assert_eq!(
+            probe.retention_revision, 7,
+            "publication must retain selection's stamp, not a later worker-result stamp"
+        );
+        assert_eq!(probe.fresh_mask, 1);
+        assert_eq!(probe.radiance, [EnergySpectrum::ONE; 6]);
+        assert_eq!(probe.second_moment, [EnergySpectrum::ONE * 2.0; 6]);
+    }
 
     #[test]
     fn compact_publication_matches_full_probe_reference_for_partial_faces_and_resets() {

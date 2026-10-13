@@ -1980,6 +1980,7 @@ pub(super) mod tests {
             probes.clone(),
             64,
         );
+        gpu.sky_cache.track_changes = true;
         let mut actual = probes;
         gpu.trace(
             Arc::clone(&scene),
@@ -2016,6 +2017,7 @@ pub(super) mod tests {
         );
         assert!(rms < 0.005, "GPU and CPU transport diverged: {rms}");
         let uploaded = gpu.uploaded_geometry_bytes;
+        assert!(gpu.sky_cache.take_changes(&scene).is_some());
         gpu.trace(
             Arc::clone(&scene),
             &sources,
@@ -2030,6 +2032,7 @@ pub(super) mod tests {
             "unchanged geometry must not be uploaded"
         );
         assert_eq!(gpu.sky_cache.stats.traced, 0, "warm sky must not retrace");
+        assert!(gpu.sky_cache.take_changes(&scene).is_none());
         page[linear_index(UVec3::new(8, 8, 15), PAGE_SIZE)] = AIR;
         let edited = Arc::new(TransportScene::with_page_delta(
             &scene,
