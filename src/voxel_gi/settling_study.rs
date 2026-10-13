@@ -191,25 +191,57 @@ fn lane_layout_study(lanes: &[u32]) {
 #[test]
 #[ignore = "native roulette variance/cost study, no history changes"]
 fn settling_roulette_study() {
-    let mut baseline = super::super::tests::native_tracer();
     assert_eq!(SHADER.matches("if bounce >= 1u {").count(), 1);
     let shader = SHADER.replace("if bounce >= 1u {", "if bounce >= 3u {");
-    let mut candidate = GpuTracer::with_shader(baseline.context.clone(), true, &shader).unwrap();
+    estimator_study("ROULETTE", &shader);
+}
+
+#[test]
+#[ignore = "native power-MIS variance/cost study; no runtime estimator change"]
+fn settling_power_mis_study() {
+    // Power weights for the paired light/cosine techniques. Retain balance
+    // weights at the terminal bounce: that is a single-sample mixture, for
+    // which balance is optimal (PBRT 4e, Improving Efficiency).
+    let light = "let factor = cosine_pdf / (light_pdf + cosine_pdf);";
+    let cosine = "mis = cosine_pdf / (cosine_pdf + light_pdf);";
+    assert_eq!(SHADER.matches(light).count(), 1);
+    assert_eq!(SHADER.matches(cosine).count(), 1);
+    let shader = SHADER
+        .replace(
+            light,
+            r#"
+    var factor = cosine_pdf / (light_pdf + cosine_pdf);
+    if bounce < DIFFUSE_HITS {
+        let a = cosine_pdf / (cosine_pdf + light_pdf);
+        let b = light_pdf / (cosine_pdf + light_pdf);
+        factor = a * b / (a * a + b * b);
+    }"#,
+        )
+        .replace(
+            cosine,
+            r#"
+        let a = cosine_pdf / (cosine_pdf + light_pdf);
+        let b = light_pdf / (cosine_pdf + light_pdf);
+        mis = a * a / (a * a + b * b);"#,
+        );
+    estimator_study("POWER_MIS", &shader);
+}
+
+fn estimator_study(label: &str, shader: &str) {
+    let mut baseline = super::super::tests::native_tracer();
+    let mut candidate = GpuTracer::with_shader(baseline.context.clone(), true, shader).unwrap();
     for f in [fixture(1), fixture(2), ceiling_fixture(), cave_fixture()] {
         let emitters = Arc::new(EmissionDistribution::build(&f.scene, &f.materials));
         let mut references = Vec::new();
         for (mode, gpu) in [&mut baseline, &mut candidate].into_iter().enumerate() {
             let mut high = work(&f.probes, 4_194_304 + mode as u32 * 1_048_576);
-            trace(gpu, &f, &emitters, &mut high, 65536);
+            for _ in 0..64 {
+                trace(gpu, &f, &emitters, &mut high, 1024);
+            }
             references.push(values(&high));
         }
-        let reference: Vec<_> = f.analytic.clone().unwrap_or_else(|| {
-            references[0]
-                .iter()
-                .zip(&references[1])
-                .map(|(a, b)| (*a + *b) * 0.5)
-                .collect()
-        });
+        // The candidate must not move the target toward its own answer.
+        let reference = f.analytic.clone().unwrap_or_else(|| references[0].clone());
         eprintln!(
             "SETTLING_REFERENCE {}",
             json!({"fixture":f.name,"difference":errors(&references[0],&references[1])})
@@ -258,7 +290,7 @@ fn settling_roulette_study() {
         }
         for mode in 0..2 {
             eprintln!(
-                "SETTLING_ROULETTE {}",
+                "SETTLING_{label} {}",
                 json!({"fixture":f.name,"mode":mode,"gpu_batch_p50_ms":percentile(times[mode].clone(),50),
                 "bright_peak_p95":percentile(peaks[mode].clone(),95),"bright_peak_max":percentile(peaks[mode].clone(),100),
                 "checkpoints":checkpoints.iter().zip(&estimates[mode]).map(|(n,v)| json!({"paths":n,"error":errors(v,&expected)})).collect::<Vec<_>>()})

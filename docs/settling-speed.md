@@ -273,6 +273,48 @@ An earlier control launch failed the compiled-root guard and is excluded.
 Logs/analyses use the `target/settling-private-*`, `settling-facing-*` and
 `settling-control-response-verified.log` prefixes. No 2× overall claim follows.
 
+## Exact-kernel integration and time-bounded catch-up
+
+Same settings/hardware as above. `59d721c` ran clean at launch as
+`cave-1791850540212693000-32968`; later documentation/test-only source edits were
+not compiled into that process. All five captures are valid. Corner settling
+median/p95 9.28/16.31 s; 128/144 within 10% at 15 s, p95 error .1296; peak
+p95/max .1021/.3044. 386.95 M paths. Variation p95 at 40–60 and 160–180 s is
+.07388/.05911, with at least 176/128 new paths. After 15 s excluding captures,
+offscreen interval p50/p95/p99/max 20.88/26.88/30.22/89.29 ms, GI body
+2.26/6.96/9.41/47.89 ms. First publication 9.28 s, replacement 6.55 s.
+
+The isolated `0ebc3c8` experiment removes only the 8,192-record catch-up ceiling,
+retaining the 1.5 ms deadline checked every 512 records. It ran clean at launch as
+`cave-1791850901451970000-33399` (test-only study edits later, not compiled).
+All five captures valid. Median/p95 9.52/15.87 s; 138/144 within tolerance at
+15 s, p95 error .08886; peak .09887/.30451. 451.62 M paths. Variation
+.09264/.06343, minimum fresh paths 192/96. Offscreen interval
+20.54/27.31/31.19/68.93 ms, GI body 2.33/6.99/9.17/32.21 ms. First publication
+9.68 s is not better; replacement 4.69 s is faster. Run-to-run throughput/temporal
+differences exceed the narrow change's expected effect: do not attribute all of
+them to removing the cap. This preserves a buildable experimental checkpoint,
+not a demonstrated 2× result. Logs/analyses: `target/settling-{exact,time-budget}-*`.
+
+## Power-MIS pilot — not promoted
+
+Test-only study on `0ebc3c8` compares balance with exponent-two power weighting
+for paired light/cosine techniques. The terminal one-sample mixture retains
+balance, following [PBRT's MIS discussion](https://www.pbr-book.org/4ed/Monte_Carlo_Integration/Improving_Efficiency).
+No history or presentation change. Four disjoint live sequences, 16-path batches
+through 2,048 paths; analytic two-emitter truth or disjoint 65,536-path baseline
+references. Candidate high-sample results are checked separately, never used to
+move the target. Native references are split into bounded 1,024-path submissions.
+
+On M4/Metal/dev, analytic emitter p95 error at 256 paths improves .00541→.00176;
+peak p95/max .05328/.21219→.01547/.03240 at effectively equal GPU cost.
+Both nonemissive skylight fixtures are identical. However, the many-emitter cave
+barely improves at 256 paths (.19403→.19188) and early peak p95/max worsens
+.55505/1.08611→.56092/1.11080. No general/cave win is established, so the runtime
+estimator remains unchanged. Ignored native study passed;
+`target/settling-power-mis.log`. This also refactors the previous roulette study's
+harness; its historical numbers above are from the earlier harness, not a rerun.
+
 ## Continuous-distance ranking pilot — not promoted
 
 Isolated branch `codex/gi-distance-refinement`, `e982427`, applies soft inverse
