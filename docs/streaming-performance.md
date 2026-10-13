@@ -620,3 +620,49 @@ Final `cargo clippy --locked --all-targets -- -D warnings` passed at `02babc2`
 plus documentation-only changes (`target/streaming-perf-final-clippy.log`).
 Focused tests/native checks above remain the verification for unchanged code;
 the full suite and optional toggle-stress workload were not rerun.
+
+## October 13 windowed cave baseline for retention integration
+
+Clean **`7ecb0c7`**, Apple M4 / 16 GiB / Metal, macOS 26.6.2, Rust 1.95,
+Bevy 0.19.1 / registry BVW 0.17, dev application opt1 / dependencies opt3.
+The intervening retention experiments are test/Python-only: **production history
+is unchanged**. This run is a current runtime baseline, not a candidate A/B or
+evidence of a retention speedup. No compiler or second native/analysis workload
+overlapped the measured run; the development build finished before launch.
+
+```sh
+RUST_LOG=info VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_BACKGROUND=1 \
+VOXEL_GI_VALIDATE_PROFILE=cave VOXEL_GI_VALIDATE_EXIT=1 \
+VOXEL_GI_VALIDATE_EXPECT_BUILD_ROOT="$PWD" cargo run --locked --offline \
+  > target/cave-user-2048-windowed-baseline.log 2>&1
+```
+
+Run `cave-1791923657582393000-59696`: real 2560×1440 window, FIFO presentation,
+preferred shared-corner sun/reconstructed indirect, textures on and baked AO off.
+Normal terrain with the authored cave and moving background loader; max 1,113
+loaded pages. Defaults remain 16 paths/dispatch, 4 ms trace budget, 8,192 maximum
+probes, 2 ms scene publication budget, 75 ms display response, 50 ms upload
+interval, three diffuse hits and reach 768. No reference-only residency camera
+or offline bake. Do not compare pixels numerically against an older frozen
+reference without matching and auditing its complete scene.
+
+| Phase | Recorded frames | Median | p95 | p99 | Maximum | Frames >33.3 ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Startup | 849 | 16.74 ms | 20.82 ms | 23.87 ms | 685.63 ms | 6 |
+| Settling | 2,760 | 16.77 ms | 20.59 ms | 22.65 ms | 25.60 ms | 0 |
+
+Capture/readback and cooldown exclude 60 settling frames. This does **not** pass
+an always-60-FPS requirement. Near-receiver refresh age p99 during settling is
+889 ms; far-receiver age p99 is 20.78 s. Final interactive coverage is 100%, not
+a convergence or freshness certificate. These observations keep responsiveness
+and lighting freshness alongside frame-time tails; faster frames alone cannot
+qualify the eventual candidate. No stall-source attribution is established by
+this run; detailed host-stage timing was not enabled.
+
+All three 15/30/60-second captures report focused, visible, varied, 2560×1440
+output with the active cave camera. Pixels are nonblank; the 60-second image was
+visually inspected. Assets verified, exit success, no render validation errors.
+The log includes the normal unsupported-Metal-bindless fallback warning and a
+window-destruction warning on exit; it is not described as warning-free. No
+screen/security settings were changed. This does not certify temporal stability
+or the new [2,048-path appearance target](cave-sampling.md#user-calibrated-visual-target).
