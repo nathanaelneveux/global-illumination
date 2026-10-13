@@ -161,7 +161,7 @@ fn edit_targets(before: &TransportScene, after: &TransportScene) -> Vec<Vec3> {
 /// Reconstruct the existing shared-corner cache for all stable fixture surfaces,
 /// not only the evaluated receivers. In gameplay these values already exist;
 /// this study explicitly reports cold population and post-edit refresh work.
-fn sun_targets(
+pub(crate) fn sun_targets(
     before: &Arc<TransportScene>,
     after: &Arc<TransportScene>,
     sources: &TransportSources,

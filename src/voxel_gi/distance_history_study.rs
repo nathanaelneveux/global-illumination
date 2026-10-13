@@ -232,17 +232,27 @@ fn record_distance_history_tape() {
     assert!((4096..=262144).contains(&paths));
     let mut gpu = super::super::tests::native_tracer();
     let mut cases = Vec::new();
+    for_each_fixture(|f, before, min, max| {
+        cases.push(record(&mut gpu, f, before, min, max, paths));
+    });
+    let report = json!({"schema":1,"batch_paths":BATCH,"steps":STEPS,"warm_paths":WARM,
+        "reference_paths_per_window":paths,"reference_windows":WINDOWS,"transport":TransportSettings::default(),"cases":cases,
+        "note":"Two disjoint QMC windows, not independent random scrambles. Raw five-band indirect transport only, same paths per policy. No scheduling/display/FPS claim; runtime caps unchanged."});
+    std::fs::write(output, serde_json::to_vec(&report).unwrap()).unwrap();
+}
+
+/// One fixture definition feeds path tapes and auxiliary event evidence. Keep
+/// detection independent of high-sample references and of the future ray tape.
+fn for_each_fixture(mut visit: impl FnMut(Fixture, Arc<TransportScene>, IVec3, IVec3)) {
     for height in [64, 128, 256, 384, 512] {
         for sun in [false, true] {
             let (f, before) = roof_fixture(height, sun);
-            cases.push(record(
-                &mut gpu,
+            visit(
                 f,
                 before,
                 IVec3::new(0, height, 0),
                 IVec3::new(31, height, 31),
-                paths,
-            ));
+            );
         }
     }
     let f = crate::voxel_gi::research::canyon();
@@ -262,14 +272,7 @@ fn record_distance_history_tape() {
             .collect(),
         analytic: None,
     };
-    cases.push(record(
-        &mut gpu,
-        f,
-        before,
-        IVec3::new(0, 0, 448),
-        IVec3::new(255, 255, 511),
-        paths,
-    ));
+    visit(f, before, IVec3::new(0, 0, 448), IVec3::new(255, 255, 511));
 
     let f = crate::voxel_gi::research::cave();
     let before = f.scene.clone();
@@ -292,16 +295,44 @@ fn record_distance_history_tape() {
         probes: f.receivers,
         analytic: None,
     };
-    cases.push(record(
-        &mut gpu,
-        f,
-        before,
-        IVec3::new(0, 512, 0),
-        IVec3::new(63, 543, 63),
-        paths,
-    ));
-    let report = json!({"schema":1,"batch_paths":BATCH,"steps":STEPS,"warm_paths":WARM,
-        "reference_paths_per_window":paths,"reference_windows":WINDOWS,"transport":TransportSettings::default(),"cases":cases,
-        "note":"Two disjoint QMC windows, not independent random scrambles. Raw five-band indirect transport only, same paths per policy. No scheduling/display/FPS claim; runtime caps unchanged."});
-    std::fs::write(output, serde_json::to_vec(&report).unwrap()).unwrap();
+    visit(f, before, IVec3::new(0, 512, 0), IVec3::new(63, 543, 63));
+}
+
+#[test]
+#[ignore = "shared-corner change evidence for the existing distance tape; no new transport paths"]
+fn record_sun_distance_metadata() {
+    let output = std::env::var("VOXEL_GI_SUN_DISTANCE_OUTPUT")
+        .unwrap_or_else(|_| "target/sun-distance-metadata.json".into());
+    let mut cases = Vec::new();
+    for_each_fixture(|f, before, min, max| {
+        let started = Instant::now();
+        let (targets, cold_rays, update_rays, surfaces) =
+            crate::voxel_gi::tracer::edit_guided::sun_targets(&before, &f.scene, &f.sources);
+        let sites: Vec<_> = f
+            .probes
+            .iter()
+            .map(|p| {
+                let sun_distance = targets
+                    .iter()
+                    .map(|v| v.as_dvec3().distance(p.voxel.as_dvec3()))
+                    .min_by(f64::total_cmp);
+                json!({"voxel":p.voxel.to_array(),"face":p.face_mask.trailing_zeros(),
+                "geometry_distance":distance(p.voxel,min,max),"sun_distance":sun_distance})
+            })
+            .collect();
+        eprintln!(
+            "SUN_DISTANCE {} min={min} targets={} cold={cold_rays} update={update_rays} ms={:.2}",
+            f.name,
+            targets.len(),
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+        cases.push(
+            json!({"name":f.name,"changed_bounds":[min.to_array(),max.to_array()],
+            "sites":sites,"sun_targets":targets.len(),"cold_rays":cold_rays,
+            "update_rays":update_rays,"stable_receiver_voxels":surfaces}),
+        );
+    });
+    let result = json!({"schema":1,"transport":TransportSettings::default(),"cases":cases,
+        "note":"Known old/new shared-corner sunlight changes on stable surfaces. No references or future path samples used. Full fixture cache reconstruction is test setup, not a production event implementation; missing/unknown evidence does not certify unchanged transport."});
+    std::fs::write(output, serde_json::to_vec(&result).unwrap()).unwrap();
 }
