@@ -315,6 +315,39 @@ estimator remains unchanged. Ignored native study passed;
 `target/settling-power-mis.log`. This also refactors the previous roulette study's
 harness; its historical numbers above are from the earlier harness, not a rerun.
 
+## Conservative light support pilot — not promoted
+
+`settling_light_support_study`, test-only diff on `28624e0`, uses the axis-aligned
+receiver plane and emitting normal mask to exclude a child whose entire bounds
+cannot connect. No energy threshold, visibility assumption or band-specific
+rejection; other branches retain the power mixture. This is a restricted voxel
+case of orientation-aware [many-light bounds](https://fpsunflower.github.io/ckulla/data/many-lights-hpg2018.pdf),
+not a port of adaptive tree splitting.
+
+Same fixed-work native fixtures and independent references as the power-MIS
+pilot. Analytic CDF emitters and both skylight fixtures are unchanged. Cave
+256-path p95 error only improves .19403→.19118; peak p95/max improves
+.55505/1.08611→.53581/1.04392, but GPU batch median rises .74079→.77796 ms.
+The extra bound tests do not pay for themselves here. Native study passed;
+`target/settling-light-support.log`. Keep runtime proposals unchanged.
+
+## Valid baseline repeat
+
+Diagnostic-only `5c2d333` (runtime `febcaf4`), baseline worktree,
+`cave-1791851270749646000-33719`: compiled-root guard passed and all five captures
+are valid; the 15 s image was inspected. This replaces the earlier rejected
+black-startup comparison, not its historical record. Same M4/dev/background/
+2560×1440/default settings. Independent corner reference disagreement p95 .472%.
+
+Sustained corner error median/p95 12.80/21.24 s, all 144 eventually within 10%;
+at 15 s 103/144 within tolerance, p95 error .4293. Peak p95/max .10205/.30430.
+Variation at 40–60/160–180 s .09921/.05821, min new paths 224/128.
+343.42 M paths. After 15 s excluding captures, offscreen interval
+21.81/26.39/30.08/89.03 ms and GI body 2.29/6.73/8.76/17.51 ms.
+The candidates substantially reduce 15-second error, but the sustained settling
+times are still only about 1.3–1.4× better and occasional CPU tails remain.
+Evidence: `target/settling-control-repeat-*`; no 2× settling/60 FPS claim.
+
 ## Continuous-distance ranking pilot — not promoted
 
 Isolated branch `codex/gi-distance-refinement`, `e982427`, applies soft inverse

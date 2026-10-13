@@ -227,6 +227,44 @@ fn settling_power_mis_study() {
     estimator_study("POWER_MIS", &shader);
 }
 
+#[test]
+#[ignore = "native conservative light-tree support study; no runtime change"]
+fn settling_light_support_study() {
+    // Every receiving/emitting normal is cardinal. A whole node behind either
+    // one-sided plane has exactly zero contribution in every spectral band.
+    // Unlike an approximate importance threshold, this is a geometric support
+    // test. Leave the existing power mixture/floor on all other branches.
+    let signature = "fn node_left_probability(";
+    let load = "    let right = load_node(node.children.y);";
+    assert_eq!(SHADER.matches(signature).count(), 1);
+    assert_eq!(SHADER.matches(load).count(), 1);
+    let shader = SHADER
+        .replace(
+            signature,
+            r#"
+fn node_can_contribute(node: LightNode, position: vec3<f32>, normal: vec3<f32>) -> bool {
+    let a = node.minimum_power.xyz - position;
+    let b = node.maximum - position;
+    let receiver = max(dot(a, normal), dot(b, normal)) > 0.0;
+    let positive = ((vec3(node.normals) & vec3(1u, 4u, 16u)) != vec3(0u)) & (-a > vec3(0.0));
+    let negative = ((vec3(node.normals) & vec3(2u, 8u, 32u)) != vec3(0u)) & (b > vec3(0.0));
+    return receiver && any(positive | negative);
+}
+fn node_left_probability("#,
+        )
+        .replace(
+            load,
+            &format!(
+                "{load}\n{}",
+                r#"
+    let left_possible = node_can_contribute(left, position, normal);
+    let right_possible = node_can_contribute(right, position, normal);
+    if left_possible != right_possible { return select(0.0, 1.0, left_possible); }"#
+            ),
+        );
+    estimator_study("LIGHT_SUPPORT", &shader);
+}
+
 fn estimator_study(label: &str, shader: &str) {
     let mut baseline = super::super::tests::native_tracer();
     let mut candidate = GpuTracer::with_shader(baseline.context.clone(), true, shader).unwrap();
