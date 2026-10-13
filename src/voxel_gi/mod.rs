@@ -58,9 +58,7 @@ pub(crate) use diagnostics::VoxelGiDiagnosticsPlugin;
 use dispatch::{apply_trace_task, start_trace_task};
 use display::upload_transport_cache;
 use publication::apply_scene_task;
-use render::{
-    GpuCacheBuild, GpuSnapshot, GpuTransportCache, PreparedGpuCache, install_render_assets,
-};
+use render::{GpuSnapshot, GpuTransportCache, PreparedGpuCache, install_render_assets};
 use sources::{TransportSources, synchronize_material_table, synchronize_transport_sources};
 use telemetry::GiWorkTimings;
 use tracer::BOOTSTRAP_SAMPLES;
@@ -268,7 +266,7 @@ struct VoxelGiRuntime {
     gpu_rebuild_required: bool,
     gpu_added: Vec<IVec3>,
     gpu_removed: Vec<IVec3>,
-    gpu_task: Option<Task<GpuCacheBuild>>,
+    gpu_task: Option<Task<PreparedGpuCache>>,
     gpu_snapshot: Option<GpuSnapshot>,
     gpu_prepared: Option<PreparedGpuCache>,
     gpu_catchup_dirty: display::DisplayDirtyQueue,

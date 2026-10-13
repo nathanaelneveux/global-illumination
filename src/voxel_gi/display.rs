@@ -160,7 +160,7 @@ pub(super) fn upload_transport_cache(
         .and_then(|task| block_on(poll_once(task)));
     if let Some(build) = build {
         runtime.gpu_task = None;
-        runtime.gpu_prepared = Some(PreparedGpuCache::new(build));
+        runtime.gpu_prepared = Some(build);
     }
     timing.display_checkpoint(DisplayStage::Poll);
 
@@ -255,11 +255,14 @@ pub(super) fn upload_transport_cache(
         let device = device.map(|context| context.device.clone());
         runtime.gpu_task = Some(AsyncComputeTaskPool::get().spawn(async move {
             let build = build_gpu_cache_for_residency(snapshot, resident_count);
-            if let Some(device) = device {
+            let build = if let Some(device) = device {
                 build.prepare_buffers(&device)
             } else {
                 build
-            }
+            };
+            // CPU-only fallback payloads also belong on the worker, not in
+            // the main-thread completion poll.
+            PreparedGpuCache::new(build)
         }));
     }
     timing.display_checkpoint(DisplayStage::SnapshotAdvance);

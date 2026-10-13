@@ -348,6 +348,31 @@ The candidates substantially reduce 15-second error, but the sustained settling
 times are still only about 1.3–1.4× better and occasional CPU tails remain.
 Evidence: `target/settling-control-repeat-*`; no 2× settling/60 FPS claim.
 
+## Single-copy cache construction
+
+`fd971e2` plus the construction diff encodes initial cache mirrors using the
+already-tested sparse byte layout. It removes the full typed staging array,
+cloned hash-entry staging array and duplicate encoded payloads from the native
+build. CPU-only fallback still needs separate Bevy asset payloads; their creation
+now explicitly stays on the worker along with native preparation. Publication
+continues to receive a fully owned, private generation.
+
+M4/dev CPU-only encoding benchmark, 262,144 live records, 393,216 allocated probe
+slots and 1,048,576 hash entries, 24 alternating rounds/four warm: median
+20.412→14.705 ms (1.39× this stage). Exact mirror/layout parity includes empty
+snapshots, spare slots, tombstones, negative coordinates and packed sky words.
+At this size, the removed allocations comprise an 81.79 MB typed probe array,
+16.78 MB hash staging and 98.57 MB duplicate encoded payloads; these are allocation
+sizes, not a measured 197 MB peak-RSS reduction (lifetimes overlap differently).
+No GPU resource, lighting statistic, storage precision or work budget changes.
+
+18 regular render tests, three journal tests, native generation/material/actual
+submission parity, strict all-target Clippy and formatting passed. The native
+test preceded the small worker-completion ownership change; the subsequent
+regular/Clippy checks include it. Native mapped bytes/lifetimes were unchanged.
+Logs: `target/settling-cache-encoding-{tests,queue,parity,study,native,clippy}.log`.
+End-to-end startup and frame effects are not inferred from this stage benchmark.
+
 ## Continuous-distance ranking pilot — not promoted
 
 Isolated branch `codex/gi-distance-refinement`, `e982427`, applies soft inverse

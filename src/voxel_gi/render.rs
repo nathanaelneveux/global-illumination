@@ -391,8 +391,6 @@ pub fn material_template(assets: &VoxelTransportAssets) -> VoxelTransportMateria
 pub(crate) struct GpuCacheBuild {
     mapped: Option<[Buffer; 2]>,
     patch_state: ProbePatchState,
-    hash_data: Vec<u8>,
-    probe_data: Vec<u8>,
     slots: VoxelMap<IVec3, usize>,
     hash_slots: VoxelMap<IVec3, usize>,
     hash_entries: Vec<GpuHashEntry>,
@@ -414,6 +412,16 @@ pub(crate) struct PreparedGpuCache {
 
 impl PreparedGpuCache {
     pub fn new(build: GpuCacheBuild) -> Self {
+        // Native preparation already populated the private GPU allocation from
+        // these mirrors. Only the CPU fallback needs separate asset payloads.
+        let (hash_data, probe_data) = if build.mapped.is_none() {
+            (
+                build.patch_state.hash_mirror.clone(),
+                build.patch_state.probe_mirror.clone(),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
         Self {
             cache: GpuTransportCache {
                 slots: build.slots,
@@ -430,8 +438,8 @@ impl PreparedGpuCache {
                 prepared: None,
                 state: Arc::new(Mutex::new(build.patch_state)),
             },
-            hash_data: build.hash_data,
-            probe_data: build.probe_data,
+            hash_data,
+            probe_data,
             mapped: build.mapped,
         }
     }
@@ -704,27 +712,38 @@ pub(crate) fn build_gpu_cache_for_residency(
             hash_capacity *= 2;
             continue;
         }
-        let mut gpu_probes = vec![GpuProbe::default(); probe_capacity];
-        for (index, (_, probe)) in snapshot.iter().enumerate() {
-            gpu_probes[index] = *probe;
-        }
-        let hash_data = ShaderBuffer::from(entries.clone()).data.unwrap();
-        let probe_data = ShaderBuffer::from(gpu_probes).data.unwrap();
         return GpuCacheBuild {
             mapped: None,
-            patch_state: ProbePatchState {
-                probe_mirror: probe_data.clone(),
-                hash_mirror: hash_data.clone(),
-                ..default()
-            },
-            hash_data,
-            probe_data,
+            patch_state: encode_cache_snapshot(&snapshot, probe_capacity, &entries),
             slots,
             hash_slots,
             hash_entries: entries,
             probe_capacity,
             high_water: snapshot.len(),
         };
+    }
+}
+
+/// Encode directly into the persistent mirrors with the same layout used for
+/// sparse patches. Unoccupied probe slots are zeroed; hash sentinels are not.
+/// Avoid a full typed staging array and a second copy of each encoded buffer.
+fn encode_cache_snapshot(
+    snapshot: &[(IVec3, GpuProbe)],
+    probe_capacity: usize,
+    entries: &[GpuHashEntry],
+) -> ProbePatchState {
+    let mut probe_mirror = vec![0; probe_capacity * GPU_PROBE_BYTES];
+    for (index, &(_, probe)) in snapshot.iter().enumerate() {
+        write_probe(&mut probe_mirror, index, probe);
+    }
+    let mut hash_mirror = vec![0; entries.len() * 16];
+    for (index, &entry) in entries.iter().enumerate() {
+        write_hash_entry(&mut hash_mirror, index, entry);
+    }
+    ProbePatchState {
+        probe_mirror,
+        hash_mirror,
+        ..default()
     }
 }
 
@@ -758,12 +777,9 @@ impl GpuCacheBuild {
             buffer
         };
         self.mapped = Some([
-            make("Voxel GI display probes", &self.probe_data),
-            make("Voxel GI display hash", &self.hash_data),
+            make("Voxel GI display probes", &self.patch_state.probe_mirror),
+            make("Voxel GI display hash", &self.patch_state.hash_mirror),
         ]);
-        // Mirrors retain authoritative bytes; no second initial asset payload.
-        self.probe_data = Vec::new();
-        self.hash_data = Vec::new();
         self
     }
 }
@@ -1361,6 +1377,112 @@ mod tests {
         assert_eq!(encoded, ShaderBuffer::from(vec![entry]).data.unwrap());
     }
 
+    /// Previous worker serialization, including its two retained copies. Keep
+    /// the typed Bevy serializer independent of the direct sparse encoder.
+    fn typed_snapshot_bytes(
+        snapshot: &[(IVec3, GpuProbe)],
+        capacity: usize,
+        entries: &[GpuHashEntry],
+    ) -> (ProbePatchState, Vec<u8>, Vec<u8>) {
+        let mut probes = vec![GpuProbe::default(); capacity];
+        for (index, &(_, probe)) in snapshot.iter().enumerate() {
+            probes[index] = probe;
+        }
+        let hash = ShaderBuffer::from(entries.to_vec()).data.unwrap();
+        let probes = ShaderBuffer::from(probes).data.unwrap();
+        (
+            ProbePatchState {
+                probe_mirror: probes.clone(),
+                hash_mirror: hash.clone(),
+                ..default()
+            },
+            probes,
+            hash,
+        )
+    }
+
+    fn encoding_fixture(count: usize) -> (Vec<(IVec3, GpuProbe)>, Vec<GpuHashEntry>) {
+        let snapshot = (0..count)
+            .map(|i| {
+                let value = i as f32 * 0.125;
+                (
+                    IVec3::new(i as i32 - 17, 2, -3),
+                    GpuProbe {
+                        positive_x: Vec4::splat(value),
+                        negative_y: Vec4::new(0.0, -0.0, value + 2.0, 0.5),
+                        emission: Vec4::new(value, 2.0, 3.0, 4.0),
+                        direct_sky: std::array::from_fn(|f| UVec4::splat(i as u32 + f as u32)),
+                        ..default()
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut entries = vec![GpuHashEntry::EMPTY; (count.max(1) * 4).next_power_of_two()];
+        for (i, &(voxel, _)) in snapshot.iter().enumerate() {
+            entries[i * 2] = GpuHashEntry {
+                voxel,
+                probe_index: i as u32,
+            };
+            entries[i * 2 + 1] = GpuHashEntry::TOMBSTONE;
+        }
+        (snapshot, entries)
+    }
+
+    #[test]
+    fn cache_snapshot_bytes_match_typed_layout_including_unused_slots() {
+        for count in [0, 1, 17, 4097] {
+            let (snapshot, entries) = encoding_fixture(count);
+            let capacity = count * 3 / 2 + 16;
+            let expected = typed_snapshot_bytes(&snapshot, capacity, &entries).0;
+            let actual = encode_cache_snapshot(&snapshot, capacity, &entries);
+            assert_eq!(actual.probe_mirror, expected.probe_mirror);
+            assert_eq!(actual.hash_mirror, expected.hash_mirror);
+            assert!(actual.pending_probes.is_empty() && actual.pending_hash.is_empty());
+        }
+    }
+
+    #[test]
+    #[ignore = "paired large worker cache serialization/allocation benchmark"]
+    fn cache_snapshot_encoding_study() {
+        let count = 262_144;
+        let (snapshot, entries) = encoding_fixture(count);
+        let capacity = count * 3 / 2;
+        let expected = typed_snapshot_bytes(&snapshot, capacity, &entries).0;
+        let mut times: [Vec<f64>; 2] = default();
+        for round in 0..24 {
+            for mode in [round % 2, 1 - round % 2] {
+                let started = std::time::Instant::now();
+                let (state, probes, hash) = if mode == 0 {
+                    typed_snapshot_bytes(&snapshot, capacity, &entries)
+                } else {
+                    (
+                        encode_cache_snapshot(&snapshot, capacity, &entries),
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                };
+                let ms = started.elapsed().as_secs_f64() * 1000.0;
+                std::hint::black_box((&state, &probes, &hash));
+                if round == 0 {
+                    assert_eq!(state.probe_mirror, expected.probe_mirror);
+                    assert_eq!(state.hash_mirror, expected.hash_mirror);
+                }
+                if round >= 4 {
+                    times[mode].push(ms);
+                }
+            }
+        }
+        for samples in &mut times {
+            samples.sort_by(f64::total_cmp);
+        }
+        eprintln!(
+            "CACHE_ENCODING count={count} capacity={capacity} hash={} baseline/direct p50_ms={}/{}",
+            entries.len(),
+            times[0][10],
+            times[1][10]
+        );
+    }
+
     #[test]
     fn direct_sky_is_separate_from_gi_and_preserves_exposed_face_mask() {
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
@@ -1463,8 +1585,8 @@ mod tests {
             hash_buffer: Handle::default(),
             prepared: None,
             state: Arc::new(Mutex::new(ProbePatchState {
-                probe_mirror: build.probe_data.clone(),
-                hash_mirror: build.hash_data.clone(),
+                probe_mirror: build.patch_state.probe_mirror.clone(),
+                hash_mirror: build.patch_state.hash_mirror.clone(),
                 ..default()
             })),
         };
@@ -1522,8 +1644,8 @@ mod tests {
                 hash_buffer: default(),
                 prepared: None,
                 state: Arc::new(Mutex::new(ProbePatchState {
-                    probe_mirror: build.probe_data.clone(),
-                    hash_mirror: build.hash_data.clone(),
+                    probe_mirror: build.patch_state.probe_mirror.clone(),
+                    hash_mirror: build.patch_state.hash_mirror.clone(),
                     ..default()
                 })),
             };
@@ -1562,8 +1684,8 @@ mod tests {
             let state = patches.state.lock().unwrap();
             assert!(state.pending_hash.is_empty());
             assert!(state.pending_probes.is_empty());
-            assert_eq!(state.probe_mirror, build.probe_data);
-            assert_eq!(state.hash_mirror, build.hash_data);
+            assert_eq!(state.probe_mirror, build.patch_state.probe_mirror);
+            assert_eq!(state.hash_mirror, build.patch_state.hash_mirror);
         }
     }
 
