@@ -27,7 +27,7 @@ fn moment(face: &crate::voxel_gi::work::FaceWork) -> Value {
     json!({"mean":channels(face.radiance),"second":channels(face.second_moment)})
 }
 
-fn trace(
+pub(super) fn trace(
     gpu: &mut GpuTracer,
     fixture: &Fixture,
     scene: Arc<TransportScene>,

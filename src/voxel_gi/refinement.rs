@@ -23,6 +23,9 @@ mod settling_study;
 #[path = "horizon_study.rs"]
 mod horizon_study;
 
+#[path = "distance_history_study.rs"]
+mod distance_history_study;
+
 struct Fixture {
     name: &'static str,
     scene: Arc<TransportScene>,

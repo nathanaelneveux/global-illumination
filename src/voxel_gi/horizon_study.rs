@@ -58,7 +58,7 @@ fn models() -> Vec<TransportSettings> {
 
 /// Return f64 block averages, never the capped runtime EMA. Splitting both
 /// candidate and baseline into the same batches preserves common random paths.
-fn integrate(
+pub(super) fn integrate(
     gpu: &mut GpuTracer,
     f: &Fixture,
     emitters: &Arc<EmissionDistribution>,
