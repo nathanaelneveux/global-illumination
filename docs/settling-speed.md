@@ -1,5 +1,30 @@
 # Settling speed — October 10, 2026
 
+## Latest streamed qualification (October 12)
+
+Same M4/dev/2560×1440 offscreen long-cave/background settings as below;
+five valid nonblank captures per run, clean render logs. Control is clean
+`5c2d333` (runtime `febcaf4`, diagnostic corner oracle only), run
+`cave-1791851270749646000-33719` in the baseline worktree. Its sustained
+10%-corner-error settling median/p95 is 12.801/21.236 s.
+
+Capacity-aware construction `c937f12`, run
+`cave-1791852300606229000-34652`: median/p95 7.686/17.361 s; 15-second
+corner error p95 .13366; positive overshoot p95/max .10179/.30453.
+All 144 corners eventually sustain the tolerance. Main GI body
+p50/p95/p99/max 2.500/7.394/9.611/83.761 ms: not a frame-pacing pass.
+
+Measured-refinement eligibility `41ba201`, run
+`cave-1791852636629598000-34987`: median/p95 7.881/15.397 s; 138/144
+corners within tolerance at 15 seconds, error p95 .08730 versus control
+.42926. Overshoot .10203/.30441, essentially unchanged from control
+.10205/.30431. All 144 corners eventually sustain tolerance. First live
+display generation appears around 7.94 s, so much of the early delay is
+publication rather than unavailable measurements. This is useful progress,
+**not an established 2× visual-settling or 60 FPS result**. Both runs launched
+from clean commits; later source-only edits were not compiled into them.
+
+
 Target: halve time to visually close-to-settled lighting without increasing
 overshoot, starving other receivers, or blocking the player. Coverage is not
 convergence. The starting runtime is `febcaf4`; the edit-guided experiment in
