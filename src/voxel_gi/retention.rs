@@ -3,8 +3,8 @@
 //! capped; measured means, moments, sequences and display priors stay intact.
 //!
 //! Each receiver page retains its own bounded change journal. Unrelated distant
-//! streaming cannot evict local evidence. Evicted local evidence folds into
-//! revision-stamped distance bands, never silently becoming "unchanged".
+//! streaming cannot evict local evidence. Evicted local evidence folds into a
+//! bounded conservative summary, never silently becoming "unchanged".
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -33,8 +33,8 @@ const BAND_STARTS: [i64; BAND_COUNT] = {
         starts[index] = distance * distance;
         index += 1;
         if distance == 48 {
+            starts[index] = 48 * 48 + 1;
             index += 1;
-            starts[index - 1] = 48 * 48 + 1;
         }
         distance += 8;
     }
@@ -60,6 +60,7 @@ impl SummaryMode {
         }
     }
 
+    #[cfg(debug_assertions)]
     pub fn name(self) -> &'static str {
         match self {
             Self::Floors => "floors",
@@ -211,6 +212,7 @@ impl SpatialHistory {
         }
     }
 
+    #[cfg(debug_assertions)]
     pub fn summary_mode(&self) -> SummaryMode {
         self.mode
     }
