@@ -7,6 +7,8 @@ mod house;
 mod metrics;
 mod profiles;
 mod reference;
+#[cfg(test)]
+mod reference_oracle;
 mod response;
 mod structures;
 mod temporal;

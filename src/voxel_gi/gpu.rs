@@ -931,7 +931,7 @@ mod refinement;
 mod terminal_mixture;
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     #[test]
@@ -971,7 +971,7 @@ mod tests {
         );
     }
 
-    pub(super) fn native_tracer() -> GpuTracer {
+    pub(crate) fn native_tracer() -> GpuTracer {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = bevy::tasks::block_on(
             instance.request_adapter(&wgpu::RequestAdapterOptions::default()),

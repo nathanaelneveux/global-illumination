@@ -45,14 +45,14 @@ pub struct RayHit {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum TraceResult {
+pub(super) enum TraceResult {
     Hit(RayHit),
     Escaped,
     Unknown,
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum UnloadedPolicy {
+pub(super) enum UnloadedPolicy {
     /// Unknown space cannot certify energy arriving at a simulation surface.
     Conservative,
     /// A deliberately shortened diffuse segment cannot certify environment
@@ -71,7 +71,12 @@ impl TransportScene {
         }
     }
 
-    fn trace_ray_result(&self, origin: Vec3, direction: Vec3, max_distance: f32) -> TraceResult {
+    pub(super) fn trace_ray_result(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max_distance: f32,
+    ) -> TraceResult {
         self.trace_ray_with_policy(
             origin,
             direction,
@@ -80,7 +85,7 @@ impl TransportScene {
         )
     }
 
-    fn trace_ray_with_policy(
+    pub(super) fn trace_ray_with_policy(
         &self,
         origin: Vec3,
         direction: Vec3,
