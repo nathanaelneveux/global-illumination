@@ -3,8 +3,8 @@
 //! capped; measured means, moments, sequences and display priors stay intact.
 //!
 //! Each receiver page retains its own bounded change journal. Unrelated distant
-//! streaming cannot evict local evidence. Evicted *local* evidence folds into a
-//! conservative floor instead of silently becoming "unchanged".
+//! streaming cannot evict local evidence. Evicted local evidence folds into
+//! revision-stamped distance bands, never silently becoming "unchanged".
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -20,6 +20,109 @@ const BASELINE_QUALITY_PATHS: f64 = 2048.0;
 const STALE_ERROR: f64 = 0.03;
 pub(super) const INFLUENCE_RADIUS: i32 = 278; // ceil(48 / sqrt(.03))
 const PAGE_EVENTS: usize = 8;
+
+/// Eight-voxel bands, with exact edges at the near-floor discontinuity and
+/// the current prior's no-cut boundary. The summary stores distances, not
+/// sample caps: recalibrating estimator work does not bake in old weights.
+const BAND_COUNT: usize = 37;
+const BAND_STARTS: [i64; BAND_COUNT] = {
+    let mut starts = [0; BAND_COUNT];
+    let mut index = 0;
+    let mut distance = 0;
+    while distance <= 272 {
+        starts[index] = distance * distance;
+        index += 1;
+        if distance == 48 {
+            index += 1;
+            starts[index - 1] = 48 * 48 + 1;
+        }
+        distance += 8;
+    }
+    starts[index] = 76800; // 48² / STALE_ERROR
+    starts
+};
+
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub(super) enum SummaryMode {
+    #[default]
+    Floors,
+    DistanceBands,
+}
+
+impl SummaryMode {
+    pub fn launch(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("floors") => Ok(Self::Floors),
+            Some("distance-bands") => Ok(Self::DistanceBands),
+            Some(value) => Err(format!(
+                "unknown VOXEL_GI_RETENTION_SUMMARY={value:?}; choose floors or distance-bands"
+            )),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Floors => "floors",
+            Self::DistanceBands => "distance-bands",
+        }
+    }
+}
+
+#[derive(Clone)]
+enum Summary {
+    Floors([u64; 2]),
+    DistanceBands(Box<[[u64; BAND_COUNT]; 2]>),
+}
+
+impl Summary {
+    fn new(mode: SummaryMode) -> Self {
+        match mode {
+            SummaryMode::Floors => Self::Floors([0; 2]),
+            SummaryMode::DistanceBands => Self::DistanceBands(Box::new([[0; BAND_COUNT]; 2])),
+        }
+    }
+
+    fn fold(&mut self, event: &Event) {
+        let distance = event.page_distance_squared;
+        let stamp = match self {
+            Self::Floors(stamps) => {
+                let near = matches!(event.origin, Origin::Geometry)
+                    && distance <= i64::from(RELIGHT_RADIUS).pow(2);
+                &mut stamps[usize::from(!near)]
+            }
+            Self::DistanceBands(stamps) => {
+                let band = BAND_STARTS.partition_point(|start| *start <= distance) - 1;
+                &mut stamps[event.origin as usize][band]
+            }
+        };
+        *stamp = event.revision;
+    }
+
+    /// The newest revision in each band suffices: if it was consumed, all
+    /// older events in that band were too. An old near event cannot poison a
+    /// newer far one. Distances round down, so compression never weakens an
+    /// unconsumed event's cap relative to its exact receiver distance.
+    fn caps(&self, since: u64) -> [u32; 2] {
+        let mut caps = [u32::MAX; 2];
+        match self {
+            Self::Floors(stamps) => {
+                for (i, origin) in [Origin::Geometry, Origin::Sunlight].into_iter().enumerate() {
+                    if stamps[i] > since {
+                        caps[i] = floor(origin, 0);
+                    }
+                }
+            }
+            Self::DistanceBands(stamps) => {
+                for (i, origin) in [Origin::Geometry, Origin::Sunlight].into_iter().enumerate() {
+                    if let Some(band) = stamps[i].iter().position(|revision| *revision > since) {
+                        caps[i] = limit(origin, BAND_STARTS[band]);
+                    }
+                }
+            }
+        }
+        caps
+    }
+}
 
 /// Demo launch comparison. The library's ledger itself does not read process
 /// environment, and an invalid choice must not silently benchmark another arm.
@@ -63,17 +166,15 @@ struct Event {
     revision: u64,
     origin: Origin,
     bounds: Arc<Vec<Bounds>>,
+    page_distance_squared: i64,
     #[cfg(debug_assertions)]
     audit_sun: Option<Arc<Vec<super::validation::retention_audit::SunEvidence>>>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct PageHistory {
     events: VecDeque<Event>,
-    /// Last evicted event at each conservative floor. Keeping separate stamps
-    /// prevents an already-consumed old local edit from contaminating new sun
-    /// events when the journal next overflows.
-    folded: [u64; 2],
+    summary: Summary,
     /// Only opt-in watched pages retain this diagnostic shadow journal. It
     /// cannot change the eight-event production journal or its fallback.
     #[cfg(debug_assertions)]
@@ -82,13 +183,38 @@ struct PageHistory {
     audit_dropped: u64,
 }
 
+impl PageHistory {
+    fn new(mode: SummaryMode) -> Self {
+        Self {
+            events: VecDeque::new(),
+            summary: Summary::new(mode),
+            #[cfg(debug_assertions)]
+            audit_events: VecDeque::new(),
+            #[cfg(debug_assertions)]
+            audit_dropped: 0,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct SpatialHistory {
     revision: u64,
+    mode: SummaryMode,
     pages: HashMap<IVec3, Arc<PageHistory>>,
 }
 
 impl SpatialHistory {
+    pub fn new(mode: SummaryMode) -> Self {
+        Self {
+            mode,
+            ..Default::default()
+        }
+    }
+
+    pub fn summary_mode(&self) -> SummaryMode {
+        self.mode
+    }
+
     pub fn record(&mut self, change: GeometryChange, origin: Origin) {
         if change.nearby.is_empty() {
             return;
@@ -97,29 +223,24 @@ impl SpatialHistory {
             .revision
             .checked_add(1)
             .expect("retention revision exhausted");
-        for (page, bounds) in change.nearby {
+        for (page, changes) in change.nearby {
             // A worker holds immutable page snapshots, never this world map.
             // Copy-on-write clones at most eight production event headers, not
             // bounds. Opt-in attribution has a larger diagnostic-only sidecar.
-            let history = Arc::make_mut(self.pages.entry(page).or_default());
+            let history = Arc::make_mut(
+                self.pages
+                    .entry(page)
+                    .or_insert_with(|| Arc::new(PageHistory::new(self.mode))),
+            );
             if history.events.len() == PAGE_EVENTS {
                 let evicted = history.events.pop_front().unwrap();
-                let min = page * super::world::PAGE_EDGE as i32;
-                let extent = Bounds {
-                    min,
-                    max: min + IVec3::splat(super::world::PAGE_EDGE as i32 - 1),
-                };
-                let near = matches!(evicted.origin, Origin::Geometry)
-                    && evicted
-                        .bounds
-                        .iter()
-                        .any(|b| b.distance_squared(extent) <= i64::from(RELIGHT_RADIUS).pow(2));
-                history.folded[usize::from(!near)] = evicted.revision;
+                history.summary.fold(&evicted);
             }
             history.events.push_back(Event {
                 revision: self.revision,
                 origin,
-                bounds: Arc::new(bounds),
+                bounds: Arc::new(changes.bounds),
+                page_distance_squared: changes.minimum_distance_squared,
                 #[cfg(debug_assertions)]
                 audit_sun: change.audit_sun.clone(),
             });
@@ -173,18 +294,7 @@ impl Snapshot {
         use super::validation::retention_audit::Decision;
         let mut result = Decision::new(since, self.revision);
         if let Some(page) = &self.page {
-            for (index, revision) in page.folded.iter().enumerate() {
-                if since < *revision {
-                    result.caps[2 + index] = floor(
-                        if index == 0 {
-                            Origin::Geometry
-                        } else {
-                            Origin::Sunlight
-                        },
-                        0,
-                    );
-                }
-            }
+            result.caps[2..4].copy_from_slice(&page.summary.caps(since));
             for event in page.events.iter().filter(|event| event.revision > since) {
                 event.explain(voxel, &mut result);
             }
@@ -224,18 +334,7 @@ impl Snapshot {
             {
                 return cap;
             }
-            for (index, revision) in page.folded.iter().enumerate() {
-                if since < *revision {
-                    cap = cap.min(floor(
-                        if index == 0 {
-                            Origin::Geometry
-                        } else {
-                            Origin::Sunlight
-                        },
-                        0,
-                    ));
-                }
-            }
+            cap = page.summary.caps(since).into_iter().min().unwrap();
             for event in page.events.iter().rev().take_while(|e| e.revision > since) {
                 cap = cap.min(bounds_limit(event.origin, voxel, &event.bounds));
                 if cap == floor(Origin::Geometry, 0) {
@@ -312,7 +411,10 @@ mod tests {
 
     fn event(page: IVec3, point: IVec3) -> GeometryChange {
         GeometryChange {
-            nearby: HashMap::from_iter([(page, vec![Bounds::point(point)])]),
+            nearby: HashMap::from_iter([(
+                page,
+                super::super::geometry::PageChanges::new(page, vec![Bounds::point(point)]),
+            )]),
             ..Default::default()
         }
     }
@@ -401,17 +503,19 @@ mod tests {
             revision: 1,
             origin: Origin::Geometry,
             bounds: Arc::new(vec![Bounds::point(IVec3::new(256, 0, 0))]),
+            page_distance_squared: 225 * 225,
             audit_sun: None,
         };
         let latest = Event {
             revision: 2,
             origin: Origin::Geometry,
             bounds: Arc::new(vec![Bounds::point(IVec3::new(300, 0, 0))]),
+            page_distance_squared: 269 * 269,
             audit_sun: None,
         };
         let mut page = PageHistory {
             events: VecDeque::from([latest.clone()]),
-            folded: [0, 1],
+            summary: Summary::Floors([0, 1]),
             audit_events: VecDeque::from([old, latest]),
             audit_dropped: 0,
         };
@@ -451,5 +555,101 @@ mod tests {
         assert_eq!(history.query(IVec3::ZERO, 0).1, 256);
         history.retire(IVec3::ZERO);
         assert_eq!(history.query(IVec3::ZERO, 0).1, u32::MAX);
+    }
+
+    #[test]
+    fn summary_launch_control_is_explicit() {
+        assert_eq!(SummaryMode::launch(None), Ok(SummaryMode::Floors));
+        assert_eq!(SummaryMode::launch(Some("floors")), Ok(SummaryMode::Floors));
+        assert_eq!(
+            SummaryMode::launch(Some("distance-bands")),
+            Ok(SummaryMode::DistanceBands)
+        );
+        assert!(SummaryMode::launch(Some("typo")).is_err());
+    }
+
+    #[test]
+    fn bands_preserve_monotonic_caps_and_both_policy_boundaries() {
+        assert!(BAND_STARTS.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(BAND_STARTS[0], 0);
+        assert_eq!(*BAND_STARTS.last().unwrap(), 76800);
+        for origin in [Origin::Geometry, Origin::Sunlight] {
+            let mut previous = 0;
+            for d2 in 0..=100_000 {
+                let band = BAND_STARTS.partition_point(|start| *start <= d2) - 1;
+                let cap = limit(origin, BAND_STARTS[band]);
+                assert!(previous <= cap);
+                assert!(floor(origin, d2) <= cap && cap <= limit(origin, d2));
+                previous = cap;
+            }
+        }
+        assert_eq!(limit(Origin::Geometry, BAND_STARTS[7]), 256);
+        assert_eq!(limit(Origin::Sunlight, 76800), u32::MAX);
+    }
+
+    #[test]
+    fn banded_journal_is_between_floor_control_and_exact_history_at_every_epoch() {
+        for page in [IVec3::splat(-3), IVec3::ZERO, IVec3::new(5, -2, 1)] {
+            let mut control = SpatialHistory::new(SummaryMode::Floors);
+            let mut candidate = SpatialHistory::new(SummaryMode::DistanceBands);
+            let mut exact = Vec::new();
+            for i in 0..40 {
+                let point = page * 32 + IVec3::new((i * 59) % 330 - 16, (i * 11) % 80, -12);
+                let origin = if i % 3 == 0 {
+                    Origin::Geometry
+                } else {
+                    Origin::Sunlight
+                };
+                exact.push((origin, point));
+                control.record(event(page, point), origin);
+                candidate.record(event(page, point), origin);
+                for since in 0..=candidate.revision {
+                    for x in [0, 15, 31] {
+                        for y in [0, 15, 31] {
+                            for z in [0, 15, 31] {
+                                let voxel = page * 32 + IVec3::new(x, y, z);
+                                let full = exact
+                                    .iter()
+                                    .skip(since as usize)
+                                    .map(|(o, p)| {
+                                        limit(
+                                            *o,
+                                            Bounds::point(*p)
+                                                .distance_squared(Bounds::point(voxel)),
+                                        )
+                                    })
+                                    .min()
+                                    .unwrap_or(u32::MAX);
+                                let cap = candidate.query(voxel, since).1;
+                                assert!(control.query(voxel, since).1 <= cap && cap <= full);
+                                let explanation = candidate.snapshot(voxel).explain(voxel, since);
+                                assert_eq!(cap, *explanation.caps[..4].iter().min().unwrap());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn consumed_near_bands_do_not_poison_new_far_events_or_worker_snapshots() {
+        let voxel = IVec3::ZERO;
+        let mut history = SpatialHistory::new(SummaryMode::DistanceBands);
+        history.record(event(voxel, voxel), Origin::Geometry);
+        let before = history.snapshot(voxel);
+        for _ in 0..20 {
+            history.record(event(voxel, IVec3::new(287, 0, 0)), Origin::Geometry);
+        }
+        let snapshot = history.snapshot(voxel);
+        assert_eq!(snapshot.limit(voxel, 0), 16);
+        assert_eq!(snapshot.limit(voxel, 1), 1986); // page edge is 256 away
+        assert_eq!(snapshot.limit(voxel, 21), u32::MAX);
+        history.record(event(voxel, voxel), Origin::Sunlight);
+        assert_eq!(history.query(voxel, 21).1, 256);
+        history.retire(voxel);
+        assert_eq!(before.limit(voxel, 0), 16);
+        assert_eq!(snapshot.limit(voxel, 1), 1986);
+        assert_eq!(history.query(voxel, 1).1, u32::MAX);
     }
 }

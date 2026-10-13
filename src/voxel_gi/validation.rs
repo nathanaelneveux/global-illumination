@@ -590,10 +590,11 @@ pub(super) fn run_validation(
         commands.write_message(AppExit::error());
         return;
     }
-    if let Err(error) = runtime
-        .retention_audit
-        .save(evidence.output.as_ref().unwrap(), run.started.unwrap())
-    {
+    if let Err(error) = runtime.retention_audit.save(
+        evidence.output.as_ref().unwrap(),
+        run.started.unwrap(),
+        runtime.spatial_history.as_ref().map(|h| h.summary_mode()),
+    ) {
         evidence.fail(&format!("Could not save retention attribution: {error}"));
         commands.write_message(AppExit::error());
         return;
@@ -640,6 +641,7 @@ pub(super) fn run_validation(
         "presentation": "shared-corner sun + corner-reconstructed indirect; preferred modes except compare/stress",
         "history_experiment": if retained_history_limit(0) == u32::MAX { "retain-compatible-history" } else { "production" },
         "spatial_retention": if runtime.spatial_history.is_some() { "calibrated-cave-user-2048-v1" } else { "baseline-16-256-journal8" },
+        "retention_summary": runtime.spatial_history.as_ref().map(|h| h.summary_mode().name()),
         "settings": {"transport": settings.transport, "samples_per_dispatch": settings.batch_samples(),
             "trace_budget_ms": settings.trace_budget_ms, "max_probes_per_dispatch": settings.max_probes_per_dispatch,
             "scene_publish_budget_ms": settings.scene_publish_budget.as_secs_f32() * 1000.0,

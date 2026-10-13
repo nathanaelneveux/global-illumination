@@ -656,7 +656,10 @@ fn late_sun_evidence_wakes_a_current_receiver_without_resetting_distant_history(
     };
     assert!(select_probes(&mut runtime, &field).is_empty());
     let change = geometry::GeometryChange {
-        nearby: HashMap::from_iter([(IVec3::ZERO, vec![geometry::Bounds::point(voxel)])]),
+        nearby: HashMap::from_iter([(
+            IVec3::ZERO,
+            geometry::PageChanges::new(IVec3::ZERO, vec![geometry::Bounds::point(voxel)]),
+        )]),
         ..default()
     };
     runtime

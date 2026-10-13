@@ -128,13 +128,44 @@ impl Bounds {
             max: voxel,
         }
     }
+
+    pub fn page(page: IVec3) -> Self {
+        let min = page * PAGE_EDGE as i32;
+        Self {
+            min,
+            max: min + IVec3::splat(PAGE_EDGE as i32 - 1),
+        }
+    }
+}
+
+/// Worker-built bounds and their minimum separation from the receiver page.
+/// Carrying the distance avoids rescanning bounds when publication folds an
+/// old event into the bounded retention summary on the main thread.
+pub(super) struct PageChanges {
+    pub bounds: Vec<Bounds>,
+    pub minimum_distance_squared: i64,
+}
+
+impl PageChanges {
+    #[cfg(test)]
+    pub fn new(page: IVec3, bounds: Vec<Bounds>) -> Self {
+        let minimum_distance_squared = bounds
+            .iter()
+            .map(|b| b.distance_squared(Bounds::page(page)))
+            .min()
+            .unwrap_or(i64::MAX);
+        Self {
+            bounds,
+            minimum_distance_squared,
+        }
+    }
 }
 
 #[derive(Default)]
 pub(super) struct GeometryChange {
     /// Existing receiver pages only. New receivers have no history to retain.
     /// Each bin contains just changes within the configured influence radius.
-    pub nearby: HashMap<IVec3, Vec<Bounds>>,
+    pub nearby: HashMap<IVec3, PageChanges>,
     /// Optional raw sunlight evidence for diagnostics; never selects a cap.
     #[cfg(debug_assertions)]
     pub audit_sun: Option<Arc<Vec<super::validation::retention_audit::SunEvidence>>>,
@@ -156,18 +187,28 @@ impl GeometryChange {
         let mut plan = Self::default();
         let radius_squared = i64::from(radius).pow(2);
         for page in pages {
-            let min = page * PAGE_EDGE as i32;
-            let bounds = Bounds {
-                min,
-                max: min + IVec3::splat(PAGE_EDGE as i32 - 1),
-            };
+            let bounds = Bounds::page(page);
+            let mut minimum_distance_squared = i64::MAX;
             let nearby: Vec<_> = changes
                 .iter()
                 .copied()
-                .filter(|change| change.distance_squared(bounds) <= radius_squared)
+                .filter(|change| {
+                    let distance = change.distance_squared(bounds);
+                    if distance > radius_squared {
+                        return false;
+                    }
+                    minimum_distance_squared = minimum_distance_squared.min(distance);
+                    true
+                })
                 .collect();
             if !nearby.is_empty() {
-                plan.nearby.insert(page, nearby);
+                plan.nearby.insert(
+                    page,
+                    PageChanges {
+                        bounds: nearby,
+                        minimum_distance_squared,
+                    },
+                );
             }
         }
         plan
@@ -178,7 +219,7 @@ impl GeometryChange {
             .nearby
             .get(&super::page_of(voxel))
             .is_some_and(|changes| {
-                changes.iter().any(|bounds| {
+                changes.bounds.iter().any(|bounds| {
                     bounds.distance_squared(Bounds::point(voxel))
                         <= i64::from(RELIGHT_RADIUS).pow(2)
                 })
@@ -281,7 +322,10 @@ mod tests {
     fn overlapping_changes_combine_and_old_or_source_gaps_fall_back() {
         let voxel = IVec3::ZERO;
         let mut near = GeometryChange::default();
-        near.nearby.insert(IVec3::ZERO, vec![Bounds::point(voxel)]);
+        near.nearby.insert(
+            IVec3::ZERO,
+            PageChanges::new(IVec3::ZERO, vec![Bounds::point(voxel)]),
+        );
         let mut history = GeometryHistory::default();
         history.record(10, 11, near);
         history.record(11, 12, GeometryChange::default());

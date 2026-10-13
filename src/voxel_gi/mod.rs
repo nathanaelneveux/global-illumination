@@ -116,10 +116,13 @@ impl Plugin for VoxelGiPlugin {
                 .adaptive_updates = false;
         }
         let retention_mode = std::env::var("VOXEL_GI_RETENTION").ok();
+        let summary = std::env::var("VOXEL_GI_RETENTION_SUMMARY").ok();
+        let summary = retention::SummaryMode::launch(summary.as_deref())
+            .expect("retention summary launch policy");
         if retention::launch_enabled(retention_mode.as_deref()).expect("retention launch policy") {
             app.world_mut()
                 .resource_mut::<VoxelGiRuntime>()
-                .spatial_history = Some(default());
+                .spatial_history = Some(retention::SpatialHistory::new(summary));
         }
     }
 

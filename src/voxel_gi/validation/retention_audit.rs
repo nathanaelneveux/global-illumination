@@ -172,7 +172,12 @@ impl Recorder {
         });
     }
 
-    pub fn save(&self, output: &Path, started: Instant) -> std::io::Result<()> {
+    pub fn save(
+        &self,
+        output: &Path,
+        started: Instant,
+        summary: Option<super::super::retention::SummaryMode>,
+    ) -> std::io::Result<()> {
         if !enabled() {
             return Ok(());
         }
@@ -189,12 +194,14 @@ impl Recorder {
                 value
             })
             .collect();
+        let bands = summary == Some(super::super::retention::SummaryMode::DistanceBands);
         std::fs::write(
             output.join("retention-audit.json"),
             serde_json::to_vec(&json!({
-            "schema_version":2,
+            "schema_version":3,
+                "retention_summary":summary.map(|s| s.name()),
                 "sites":super::temporal::sites(Profile::Cave).iter().map(|(v,f)| json!({"voxel":v.to_array(),"face":f})).collect::<Vec<_>>(),
-                "cap_labels":["geometry","sunlight_coalesced","folded_near","folded_far","sun_known_change","sun_first_measurement","sun_unresolved","sun_recovered"],
+                "cap_labels":["geometry","sunlight_coalesced",if bands {"folded_geometry"} else {"folded_near"},if bands {"folded_sunlight"} else {"folded_far"},"sun_known_change","sun_first_measurement","sun_unresolved","sun_recovered"],
                 "distance_labels":["geometry","sunlight_coalesced","sun_known_change","sun_first_measurement","sun_unresolved","sun_recovered"],
                 "events":events,
                 "note":"Accepted jobs only, before fresh paths are merged. Retained=min(authoritative weight, spatial cap); source/model changes are flagged separately. First four causes are exhaustive; raw-corner counterfactual causes can overlap. History weights are not literal stored rays. Instrumented headless cadence is not gameplay FPS."

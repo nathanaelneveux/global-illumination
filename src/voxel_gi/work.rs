@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn deferred_caps_run_once_and_preserve_stronger_source_caps() {
         use super::super::{
-            geometry::{Bounds, GeometryChange},
+            geometry::{Bounds, GeometryChange, PageChanges},
             retention::{Origin, SpatialHistory},
         };
         let mut history = SpatialHistory::default();
@@ -300,7 +300,7 @@ mod tests {
             GeometryChange {
                 nearby: bevy::platform::collections::HashMap::from_iter([(
                     IVec3::ZERO,
-                    vec![Bounds::point(IVec3::new(192, 0, 0))],
+                    PageChanges::new(IVec3::ZERO, vec![Bounds::point(IVec3::new(192, 0, 0))]),
                 )]),
                 ..default()
             },
