@@ -6,6 +6,7 @@
 //! streaming cannot evict local evidence. Evicted *local* evidence folds into a
 //! conservative floor instead of silently becoming "unchanged".
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use bevy::{platform::collections::HashMap, prelude::*};
 
@@ -45,13 +46,14 @@ fn limit(origin: Origin, distance_squared: i64) -> u32 {
     bias.max(floor(origin, distance_squared))
 }
 
+#[derive(Clone)]
 struct Event {
     revision: u64,
     origin: Origin,
-    bounds: Vec<Bounds>,
+    bounds: Arc<Vec<Bounds>>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct PageHistory {
     events: VecDeque<Event>,
     /// Last evicted event at each conservative floor. Keeping separate stamps
@@ -63,7 +65,7 @@ struct PageHistory {
 #[derive(Default)]
 pub(super) struct SpatialHistory {
     revision: u64,
-    pages: HashMap<IVec3, PageHistory>,
+    pages: HashMap<IVec3, Arc<PageHistory>>,
 }
 
 impl SpatialHistory {
@@ -76,7 +78,9 @@ impl SpatialHistory {
             .checked_add(1)
             .expect("retention revision exhausted");
         for (page, bounds) in change.nearby {
-            let history = self.pages.entry(page).or_default();
+            // A worker holds immutable page snapshots, never this world map.
+            // Copy-on-write clones at most eight small event headers, not bounds.
+            let history = Arc::make_mut(self.pages.entry(page).or_default());
             if history.events.len() == PAGE_EVENTS {
                 let evicted = history.events.pop_front().unwrap();
                 let min = page * super::world::PAGE_EDGE as i32;
@@ -94,7 +98,7 @@ impl SpatialHistory {
             history.events.push_back(Event {
                 revision: self.revision,
                 origin,
-                bounds,
+                bounds: Arc::new(bounds),
             });
         }
     }
@@ -105,11 +109,36 @@ impl SpatialHistory {
         self.pages.remove(&page);
     }
 
-    /// Independent from global scene freshness: a late sunlight result must
-    /// still wake a receiver which already refreshed in that geometry revision.
+    pub fn snapshot(&self, voxel: IVec3) -> Snapshot {
+        Snapshot {
+            revision: self.revision,
+            page: self.pages.get(&super::page_of(voxel)).cloned(),
+        }
+    }
+
+    #[cfg(test)]
     pub fn query(&self, voxel: IVec3, since: u64) -> (u64, u32) {
+        (self.revision, self.snapshot(voxel).limit(voxel, since))
+    }
+}
+
+/// Selection only checks the page stamp. Distance scans and the calibrated
+/// weight curve execute on the existing tracing worker against this snapshot.
+pub(super) struct Snapshot {
+    pub revision: u64,
+    page: Option<Arc<PageHistory>>,
+}
+
+impl Snapshot {
+    pub fn pending(&self, since: u64) -> bool {
+        self.page
+            .as_ref()
+            .is_some_and(|page| page.events.back().is_some_and(|e| e.revision > since))
+    }
+
+    pub fn limit(&self, voxel: IVec3, since: u64) -> u32 {
         let mut cap = u32::MAX;
-        if let Some(page) = self.pages.get(&super::page_of(voxel)) {
+        if let Some(page) = &self.page {
             // Most selected receivers already consumed this page's evidence.
             // Its folded stamps necessarily precede its newest explicit event.
             if page
@@ -117,7 +146,7 @@ impl SpatialHistory {
                 .back()
                 .is_none_or(|event| event.revision <= since)
             {
-                return (self.revision, cap);
+                return cap;
             }
             for (index, revision) in page.folded.iter().enumerate() {
                 if since < *revision {
@@ -138,7 +167,7 @@ impl SpatialHistory {
                 }
             }
         }
-        (self.revision, cap)
+        cap
     }
 }
 
@@ -180,6 +209,20 @@ mod tests {
         GeometryChange {
             nearby: HashMap::from_iter([(page, vec![Bounds::point(point)])]),
         }
+    }
+
+    #[test]
+    fn worker_snapshots_preserve_the_selected_epoch_across_publication_and_retirement() {
+        let mut history = SpatialHistory::default();
+        history.record(event(IVec3::ZERO, IVec3::new(192, 0, 0)), Origin::Geometry);
+        let snapshot = history.snapshot(IVec3::ZERO);
+        assert!(snapshot.pending(0));
+        history.record(event(IVec3::ZERO, IVec3::ZERO), Origin::Sunlight);
+        assert_eq!(snapshot.limit(IVec3::ZERO, 0), 316);
+        assert_eq!(history.query(IVec3::ZERO, snapshot.revision).1, 256);
+        history.retire(IVec3::ZERO);
+        assert_eq!(snapshot.limit(IVec3::ZERO, 0), 316);
+        assert!(!history.snapshot(IVec3::ZERO).pending(0));
     }
 
     #[test]

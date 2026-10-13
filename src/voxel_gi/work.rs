@@ -13,6 +13,13 @@ pub(crate) struct TraceWork {
     pub transport: super::TransportSettings,
     pub probes: Vec<ProbeWork>,
     pub faces: Vec<FaceWork>,
+    pub(super) pending_retention: Vec<RetentionWork>,
+}
+
+pub(super) struct RetentionWork {
+    probe_index: usize,
+    since: u64,
+    snapshot: super::retention::Snapshot,
 }
 
 pub(crate) struct ProbeWork {
@@ -117,6 +124,28 @@ impl TraceWork {
     pub fn clear(&mut self) {
         self.probes.clear();
         self.faces.clear();
+        self.pending_retention.clear();
+    }
+
+    pub fn defer_retention(&mut self, since: u64, snapshot: super::retention::Snapshot) {
+        self.pending_retention.push(RetentionWork {
+            probe_index: self.probes.len() - 1,
+            since,
+            snapshot,
+        });
+    }
+
+    /// Resolve geometry and late-sun evidence off the game thread, before either
+    /// backend merges fresh paths. Source caps were already applied at selection.
+    pub fn apply_retention(&mut self) {
+        for pending in self.pending_retention.drain(..) {
+            let probe = &mut self.probes[pending.probe_index];
+            let cap = pending.snapshot.limit(probe.voxel, pending.since);
+            probe.retention = Some((pending.snapshot.revision, cap));
+            for face in &mut self.faces[probe.faces()] {
+                face.samples = face.samples.min(cap);
+            }
+        }
     }
 
     /// Preserve the scheduler's history policy without cloning six-face state.
@@ -249,6 +278,42 @@ impl FaceWork {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deferred_caps_run_once_and_preserve_stronger_source_caps() {
+        use super::super::{
+            geometry::{Bounds, GeometryChange},
+            retention::{Origin, SpatialHistory},
+        };
+        let mut history = SpatialHistory::default();
+        history.record(
+            GeometryChange {
+                nearby: bevy::platform::collections::HashMap::from_iter([(
+                    IVec3::ZERO,
+                    vec![Bounds::point(IVec3::new(192, 0, 0))],
+                )]),
+            },
+            Origin::Geometry,
+        );
+        let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
+        probe.samples = [4096; 6];
+        for (source_cap, expected) in [(u32::MAX, 316), (64, 64)] {
+            let mut work = TraceWork::default();
+            work.push(&probe, 4, 1, 1, false, u32::MAX, source_cap);
+            work.defer_retention(0, history.snapshot(probe.voxel));
+            assert_eq!(work.faces[0].samples, 4096.min(source_cap));
+            work.apply_retention();
+            assert_eq!(work.faces[0].samples, expected);
+            work.faces[0].samples += 16;
+            work.apply_retention();
+            assert_eq!(
+                work.faces[0].samples,
+                expected + 16,
+                "resolved work cannot cap fresh samples again"
+            );
+            assert!(work.pending_retention.is_empty());
+        }
+    }
 
     #[test]
     fn spatial_evidence_caps_unselected_faces_and_does_not_consume_later_events() {

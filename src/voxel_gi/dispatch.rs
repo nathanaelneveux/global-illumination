@@ -144,6 +144,7 @@ pub(super) fn start_trace_task(
             }
         }
         let mut work = selected;
+        work.apply_retention();
         cpu_sky_cache.track_changes = track_changes;
         if let Some(tracer) = &mut gpu_tracer {
             tracer.sky_cache.track_changes = track_changes;
@@ -258,7 +259,8 @@ pub(super) fn select_probes(
 ) -> Vec<SurfaceProbe> {
     // Reference view for existing policy tests. Production never materializes
     // these full receiver copies; it transfers only TraceWork.
-    let work = select_transport(runtime, field, &VoxelGiSettings::default());
+    let mut work = select_transport(runtime, field, &VoxelGiSettings::default());
+    work.apply_retention();
     work.probes
         .iter()
         .map(|job| {
@@ -369,8 +371,13 @@ pub(super) fn select_transport(
         let retention = runtime
             .spatial_history
             .as_ref()
-            .map(|history| history.query(voxel, probe.retention_revision));
-        force |= retention.is_some_and(|(_, cap)| cap != u32::MAX);
+            .map(|history| history.snapshot(voxel));
+        // Conservative page wakeup is O(1). Exact per-receiver distances are
+        // evaluated by the worker; page-edge false positives may get an audit,
+        // but never an unjustified cap or a lost late sunlight notification.
+        force |= retention
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.pending(probe.retention_revision));
         let mask = scheduling::due_faces(probe, field.transport_revision, now, settings, force);
         if mask == 0 {
             continue;
@@ -385,7 +392,7 @@ pub(super) fn select_transport(
                 runtime.source_revision,
             );
         }
-        let geometry_limit = retention.map_or_else(
+        let geometry_limit = retention.as_ref().map_or_else(
             || {
                 runtime.geometry_history.history_limit(
                     voxel,
@@ -393,7 +400,7 @@ pub(super) fn select_transport(
                     field.transport_revision,
                 )
             },
-            |(_, cap)| cap,
+            |_| u32::MAX,
         );
         #[cfg(debug_assertions)]
         let (geometry_limit, history_limit) = (
@@ -409,13 +416,8 @@ pub(super) fn select_transport(
             geometry_limit,
             history_limit,
         );
-        if let Some(retention) = retention {
-            let header = selected.probes.last_mut().unwrap();
-            header.retention = Some(retention);
-            // Late sun evidence is independent of the old scene/fresh mask.
-            for face in &mut selected.faces[header.faces()] {
-                face.samples = face.samples.min(retention.1);
-            }
+        if let Some(snapshot) = retention {
+            selected.defer_retention(probe.retention_revision, snapshot);
         }
     }
     runtime.selection_seen = seen;
@@ -450,7 +452,9 @@ pub(super) fn apply_trace_task(
         // conservative evidence. They cannot publish stale sky display values.
         // Jobs carry their *selection* stamp, leaving late evidence pending.
         // A superseded worker must not recreate metadata for retired pages.
-        change.nearby.retain(|page, _| field.pages.contains_key(page));
+        change
+            .nearby
+            .retain(|page, _| field.pages.contains_key(page));
         history.record(change, super::retention::Origin::Sunlight);
     }
     timing.record_gpu_batch(
