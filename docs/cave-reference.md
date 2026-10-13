@@ -127,3 +127,45 @@ reference. Numerical agreement alone cannot certify complete world geometry.
 The optional pixel checks need Pillow. It requires both a passing geometry audit
 and the independent numerical qualification before `reference_qualified` can be
 true. Sample counts, a still image and workload completion alone cannot pass.
+
+## Qualified complete-chamber reference — October 13
+
+Clean `8c0807d`, Apple M4 / 16 GiB / Metal, macOS 26.6.2, Rust 1.95,
+development profile (application opt-level 1, dependencies 3), Bevy 0.19.1 and
+unchanged registry BVW 0.17.0. No compiler or second native workload ran during
+capture. Subsequent `f752966` changes documentation only. The viewport is
+2560×1440 offscreen, textures on, shared-corner sunlight, reconstructed indirect
+corners and baked AO off. The live prelude uses the unchanged defaults: 16 paths
+per dispatch, 4 ms transport budget, 75 ms display response, three diffuse hits
+and 768-voxel reach. Background terrain and the reference residency camera are
+enabled. This is an accuracy bake, not interactive frame-pacing evidence.
+
+Run `cave-1791899368791235000-49592` passes the chamber geometry audit: all
+125,440 authored cells are known and have the expected material. It bakes
+15,163 exposed chamber/halo faces with 262,144 paths per replica, 524,288 in the
+mean (7,949,778,944 paths total). All 40 independent CPU band comparisons pass.
+Replica relative RGB difference p50/p95/p99/max is
+0.1768% / 0.4156% / 0.5625% / 1.1184%. All five reference capture guards pass;
+render logs have no warnings or errors. The mean and held-mean PNGs are byte
+identical. The reference and live images were visually inspected.
+
+The two rendered replicas differ by an average 0.0447/255 per RGB channel;
+99% of pixels differ by at most one 8-bit channel level, and none by more than
+two. This gives a stable visual target for the current finite-depth model,
+not a claim of infinite-bounce or mathematically exact physical illumination.
+Evidence remains under ignored `target/`: `cave-reference-complete.log`,
+`cave-reference-complete-analysis.json` and the run's `gi-validation/` directory.
+Its final image is `cave-reference.png`; `live-frozen.png` is the matched live
+comparison. `cave-reference-status.json` reports a qualified completed bake.
+
+At the 62-second freeze, the 15,156 chamber faces have live center RGB error
+p50/p95/p99/max 3.365% / 8.176% / 11.734% / 30.551% versus this reference.
+Across 60,624 reconstructed corners those errors are
+1.742% / 4.465% / 6.747% / 22.345%; 99.843% are within 10%. A single frozen
+image does not measure temporal noise. All 15,163 live face histories are only
+272 (12,597 faces) or 288 (2,566 faces) retained samples despite the minute-long
+prelude. This is consistent with repeated geometry-revision history reduction
+keeping a nonzero noise floor while distant terrain streams. It is a strong
+diagnostic lead, not proof that retention is the sole cause, and not a reason
+to preserve stale history after every meaningful local edit. Runtime sampling,
+history and filtering policies have not changed in this reference branch.
