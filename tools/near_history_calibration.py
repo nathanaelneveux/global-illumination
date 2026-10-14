@@ -114,7 +114,7 @@ def display_step(display, confidence, mean, second, weight, dt):
     return display, confidence
 
 
-def replay(tape, window, case, radius, near, dt, every, checkpoints=None):
+def replay(tape, window, case, radius, near, dt, every, checkpoints=None, literal=False):
     before, after = [s["data"][window] for s in tape["states"]]
     sides = (before, after) if case != "add" else (after, before)
     if case == "null":
@@ -127,8 +127,10 @@ def replay(tape, window, case, radius, near, dt, every, checkpoints=None):
     confidence = np.clip(weight / (weight + 8.) /
                          (1. + relative_error(mean, second, weight, .02)), .125, 1.)
     distance = edit_distances(tape)
-    cap = limits(distance, radius, near) if near else np.full(n, 65536.)
-    # Zero is the explicitly named retain control, not a zero-history reset.
+    cap = (np.full(n, float(near)) if literal else
+           limits(distance, radius, near) if near else np.full(n, 65536.))
+    # Legacy h0 is retain-all. Literal mode bypasses BOTH the prior-derived
+    # lower bound (11 nearby) and distance curve; h0 then truly retains nothing.
     now = 0
     if checkpoints is None:
         checkpoints = REPEAT_CHECKPOINTS if every else SINGLE_CHECKPOINTS
@@ -234,7 +236,7 @@ def make_plan(args):
             every = args.null_every if case == "null" and args.null_every is not None else args.every
             for radius, history in pairs:
                 for paths, after, raw, display, confidence, weight in replay(
-                        tape, w, case, radius, history, args.dt, every, args.checkpoints):
+                        tape, w, case, radius, history, args.dt, every, args.checkpoints, args.literal):
                     name = f"{case}-r{radius}-h{history}-w{w}-p{paths}"
                     target = "after" if after else "before"
                     save(name, display, confidence, case=case, radius=radius, history=history,
@@ -246,9 +248,9 @@ def make_plan(args):
                     view=tape.get("view"), skies=skies, sites=tape["sites"], frames=frames,
                     tape=str(args.tape.resolve()), tape_sha256=digest(args.tape / "near-history.json"),
                     moments_sha256={s["moments"]:digest(args.tape / s["moments"]) for s in tape["states"]},
-                    policies=pairs,
+                    policies=pairs, literal_history=args.literal,
                     arguments={k:str(v) if isinstance(v, Path) else v for k,v in vars(args).items()},
-                    note="Frozen edited integrands, retained existing receivers, actual production display resolve at explicit uniform per-face cadence. Warm display starts at the 4096-path mean, not a perfectly converged oracle. No scheduling/new-face/interactive latency claim. h0 is retain control. Radius changes only the floor boundary, not the distant prior.")
+                    note="Frozen edited integrands, retained existing receivers, actual production display resolve at explicit uniform per-face cadence. Warm display starts at the 4096-path mean, not a perfectly converged oracle. No scheduling/new-face/interactive latency claim. In literal mode h0 discards statistical history and h65536 retains it, with no distance curve. Otherwise h0 is retain control and radius changes only the floor boundary, not the distant prior.")
     (args.output / "plan.json").write_text(json.dumps(metadata, indent=2, allow_nan=False) + "\n")
     print(json.dumps(dict(plan=str(args.output.resolve() / "plan.json"), frames=len(frames))))
 
@@ -334,6 +336,21 @@ def assess(args):
 
 
 class Tests(unittest.TestCase):
+    def test_literal_weights_bypass_the_bias_floor_and_keep_display_history(self):
+        a = np.ones((1,257,1,6))
+        b = np.zeros_like(a)
+        tape = dict(states=[dict(data=a),dict(data=b)],batch_paths=16,warm_paths=4096,
+                    sites=[[[0,0,0],0]],edit=[0,0,0],steps=256)
+        for history in (0,1,2,4,8,16,32,64,128,256,65536):
+            rows = list(replay(tape,0,"remove",48,history,.85,0,[16],literal=True))
+            retained = min(history,4096)
+            self.assertEqual(rows[1][5][0],retained+16)
+            np.testing.assert_allclose(rows[1][2],retained/(retained+16))
+            self.assertTrue(np.all(rows[1][3] > rows[1][2]))
+        legacy = list(replay(tape,0,"remove",48,0,.85,0,[16]))
+        self.assertEqual(legacy[1][5][0],4112)
+        np.testing.assert_equal(limits(np.array([1.]),48,1),[11])
+
     def test_extra_observations_do_not_change_the_replayed_estimator(self):
         before = np.ones((1,257,1,6))
         after = np.zeros_like(before)
@@ -426,6 +443,8 @@ def main():
     p.add_argument("tape",type=Path)
     p.add_argument("--output",type=Path,required=True)
     p.add_argument("--histories",type=int,nargs="+",help="default: 16 256")
+    p.add_argument("--literal",action="store_true",
+                   help="use exact history weights everywhere, bypassing the prior floor; 0 discards, 65536 retains")
     p.add_argument("--radii",type=int,nargs="+",help="default: 48")
     p.add_argument("--policies",nargs="+",help="explicit radius:history shortlist, instead of histories/radii")
     p.add_argument("--windows",type=int,nargs="+",default=[0])
