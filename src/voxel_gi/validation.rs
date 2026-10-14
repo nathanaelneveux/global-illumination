@@ -304,10 +304,8 @@ pub(super) fn run_validation(
     if matches!(profile, Profile::Cave | Profile::Canyon) && !run.cave_camera_initialized {
         let (eye, target) = if profile == Profile::Canyon {
             (crate::canyon_scene::EYE, crate::canyon_scene::TARGET)
-        } else if crate::cave_scene::enabled() {
-            (crate::cave_scene::EYE, crate::cave_scene::TARGET)
         } else {
-            (Vec3::new(47.0, -11.4, -18.0), Vec3::new(76.0, -17.0, -34.0))
+            cave::view()
         };
         player.translation = eye - Vec3::Y * 1.62;
         for camera in &cameras {

@@ -160,8 +160,8 @@ pub(super) fn start(
     // All modified voxel corners are behind the calibrated camera's eye plane.
     // Thus both states render the same receiving geometry; no missing-object
     // pixels contaminate the image-space lighting comparison.
-    let eye = origin.as_vec3() + crate::cave_scene::EYE;
-    let forward = (crate::cave_scene::TARGET - crate::cave_scene::EYE).normalize();
+    let (eye, target) = crate::voxel_gi::validation::cave::view();
+    let forward = (target - eye).normalize();
     for z in 0..=1 {
         for y in 0..=1 {
             for x in 0..=1 {
@@ -245,7 +245,7 @@ pub(super) fn start(
             states.push(json!({"name":name,"replicas":replicas,"mean":mean,"moments":file_name}));
         }
         let metadata=json!({"schema":1,"kind":"near_history_tape","compiled_manifest_dir":env!("CARGO_MANIFEST_DIR"),
-            "scene_generation":generation,"origin":origin.to_array(),"transport":crate::voxel_gi::TransportSettings::default(),
+            "scene_generation":generation,"origin":origin.to_array(),"view":{"eye":eye.to_array(),"target":target.to_array()},"transport":crate::voxel_gi::TransportSettings::default(),
             "warm_paths":WARM,"batch_paths":BATCH,"steps":STEPS,"starts":STARTS,"chunk_faces":CHUNK_FACES,
             "reference_paths_per_replica":REFERENCE_PATHS,"edit":edit.to_array(),
             "sites":sites.iter().map(|(v,f)|json!([v.to_array(),f])).collect::<Vec<_>>(),"states":states,
