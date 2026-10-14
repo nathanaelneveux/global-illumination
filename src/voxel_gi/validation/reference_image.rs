@@ -24,6 +24,8 @@ const CHUNK_FACES: usize = 512;
 
 #[path = "model_comparison.rs"]
 mod model_comparison;
+#[path = "near_history.rs"]
+mod near_history;
 
 type ProbeMap = HashMap<IVec3, SurfaceProbe>;
 type Means = Vec<[f64; 5]>;
@@ -61,6 +63,7 @@ struct ReferenceFrame {
     name: String,
     values: Means,
     pending: VecDeque<IVec3>,
+    confidence: Option<Vec<f32>>,
 }
 
 struct Bake {
@@ -74,6 +77,7 @@ struct Bake {
 pub(super) fn requested() -> bool {
     std::env::var("VOXEL_GI_VALIDATE_REFERENCE_IMAGE").is_ok_and(|v| v == "1")
         || model_comparison::requested()
+        || near_history::requested()
 }
 
 pub(super) fn install(app: &mut App) {
@@ -268,6 +272,12 @@ impl ReferenceImage {
         if model_comparison::requested() {
             return model_comparison::start(runtime, device, output, origin, sites, base);
         }
+        if near_history::requested() {
+            if settings.transport != super::super::TransportSettings::default() {
+                return Err("Near-history calibration requires the baseline transport model".into());
+            }
+            return near_history::start(runtime, device, output, origin, sites, base);
+        }
         let progress = Arc::new(AtomicU64::new(0));
         let sweep_requested = super::sample_sweep::requested();
         let total_paths = sites.len() as u64 * u64::from(paths) * 2
@@ -400,13 +410,14 @@ impl ReferenceImage {
                 ("cave-reference", &mean),
                 ("cave-reference-held", &mean),
             ].into_iter().map(|(name, values)| {
-                ReferenceFrame { name:name.into(), values:values.clone(), pending:default() }
+                ReferenceFrame { name:name.into(), values:values.clone(), pending:default(), confidence:None }
             }).collect();
             for (window, data) in sweep.into_iter().enumerate() {
                 for prefix in data.prefixes {
                     frames.push_back(ReferenceFrame {
                         name:format!("samples-{}-window-{window}",prefix.paths),
                         values:prefix.means, pending:default(),
+                        confidence:None,
                     });
                 }
             }
@@ -501,11 +512,13 @@ fn tick(
         reference.current = reference.frames.pop_front();
         reference.settle_frames = 12;
         if let Some(mut frame) = reference.current.take() {
-            for (&(voxel, face), value) in reference.sites.iter().zip(&frame.values) {
+            for (i, (&(voxel, face), value)) in
+                reference.sites.iter().zip(&frame.values).enumerate()
+            {
                 let p = reference.base.get_mut(&voxel).unwrap();
                 p.display[face].indirect =
                     Vec3::new(value[0] as f32, value[1] as f32, value[2] as f32);
-                p.display[face].confidence = 1.0;
+                p.display[face].confidence = frame.confidence.as_ref().map_or(1.0, |c| c[i]);
             }
             frame.pending = reference.base.keys().copied().collect();
             reference.current = Some(frame);

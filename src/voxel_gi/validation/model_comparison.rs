@@ -106,7 +106,7 @@ pub(super) fn start(
             info!(?model,?errors,"Audited cave model comparison complete");
             rows.push(json!({"model":model,"name":name,"mean":mean,
                 "windows":windows,"paired_rgb_error":errors}));
-            frames.push_back(ReferenceFrame { name,values:mean,pending:default() });
+            frames.push_back(ReferenceFrame { name,values:mean,pending:default(),confidence:None });
         }
         let data = json!({"schema_version":1,"kind":"paired_model_comparison",
             "scene_generation":generation,"origin":origin.to_array(),
