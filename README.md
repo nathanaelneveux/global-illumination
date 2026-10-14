@@ -131,6 +131,12 @@ Eight exact events remain; band storage is allocated only on first overflow.
 Lighting thresholds, sampling and BVW are unchanged. The summary's measured
 late-stability gain does not establish faster startup or qualified windowed FPS.
 
+The [near-history calibration](docs/near-history-calibration.md) separately
+measures post-edit paths to sustained FLIP acceptance and repeated-cap noise.
+It uses common native sample tapes and actual material captures; replay-clock
+seconds are not gameplay latency. The inherited near 48/16 defaults remain
+unchanged pending response-time qualification, not assumed analytically valid.
+
 **Copy applied JSON** exports transport/work settings (not display toggles/gain).
 Paste JSON into the same panel to import, or save it to a file and launch with
 `VOXEL_GI_SETTINGS=path.json cargo run --locked`. Omitted fields use defaults;
