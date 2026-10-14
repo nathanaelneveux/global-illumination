@@ -133,8 +133,8 @@ Higher floors lower observed peak worst-tile error for all four aperture cases:
 | Open west door | 0.11546 | 0.08517 | 0.07441 |
 | Close west door | 0.12724 | 0.09791 | 0.08625 |
 
-The stronger emitter reverses the trade-off. Its full target change is mean
-FLIP 0.30695 / worst tile 0.43120, versus 0.04161 / 0.06887 for the skylight
+The locally dominant house emitter reverses the trade-off. Its full target
+change is mean FLIP 0.30695 / worst tile 0.43120, versus 0.04161 / 0.06887 for the skylight
 and 0.04050 / 0.05977 for the door. Reference-replica noise remains well below
 the gate (emitter-present 0.00473 / 0.01357), so this is not an uncertain target.
 These measured amplitudes explain the result; they are **not** oracle inputs
@@ -157,7 +157,7 @@ tile 0.07746; addition remains at mean 0.04196 / worst tile 0.06155 (the mean
 alone fails). This is not a single unlucky sample sequence.
 
 Thus do not promote a universal 256 or 512 floor. They improve ordinary
-aperture edits but fail the stronger source response gate. This is also not
+aperture edits but fail the dominant-source response gate. This is also not
 grounds for an emitter-specific exception: the important distinction is
 change amplitude versus sampling variance, which geometry and sunlight can
 also change. Keep the general baseline while qualifying estimator improvements
@@ -166,6 +166,149 @@ unchanged-cave failures remain relevant and are not reclassified as passes.
 This screening rejects blanket higher-floor promotion before spending a full
 windowed runtime matrix on it. Actual gameplay seconds to sustained FLIP
 acceptance remain unqualified; replay-clock seconds must not fill that gap.
+
+## Distance attribution and a visible sunlight patch
+
+Follow-up on 2026-10-14, native diagnostic commit `9beec66`, analysis
+`5a2e15e`. No runtime retention, transport, emitter falloff or BVW changes.
+The original small skylight/corner control remains available unchanged.
+
+The original corner view cannot show the floor's direct-sun update. The new
+`house-sun-patch` fixture removes/restores nine roof voxels: x=-1..1,
+y=17, z=-19..-17. Its camera is (0.5,15.5,-18), aimed at (2.5,11,-16.5),
+vertical FOV 40 degrees. All edited roof geometry remains offscreen. Four
+unique shared floor corners change from measured black to sunlit:
+(3,11,-16), (3,11,-15), (4,11,-16), (4,11,-15). They affect nine floor
+faces and 783,994 pixels in this view. Direct-sun-only captures with indirect
+GI zeroed independently confirm the patch; the measured full references are
+nonblank and retain normal textures and indirect lighting.
+
+As before, the replay installs the target-state direct sunlight at time zero.
+This verifies a visible direct-sun change and measures the remaining indirect
+history response. It does **not** time the runtime sky worker, secondary
+sunlit-face invalidation, or propagation through a streaming/edit pipeline.
+Normal background loading occurs before freezing; it does not continue during
+the isolated common-path replay.
+
+The opening's full before/after mean FLIP is 0.25460. Even with direct sun
+already updated, the old indirect display starts at mean FLIP 0.08480 on
+opening and 0.09601 on closing. Thus this is a substantial geometry/light
+change, not a disguised emitter-specific test.
+
+Fresh paths to the sustained whole-image gate:
+
+| Floor-view edit | H16, window 0 / 1 | H256, window 0 / 1 |
+| --- | ---: | ---: |
+| Open 3x3 skylight | 256 / 256 | 1,536 / 1,280 |
+| Close 3x3 skylight | 256 / 192 | 1,536 / 1,536 |
+
+The previous failing observations in window 0 are 128 (H16) and 1,024
+(H256). In window 1 they are opening 192/1,024 and closing 128/1,280
+(H16/H256). Every accepted suffix has at least two later passing observations.
+
+All warm controls and reference replicas pass. In window 0, H16 reduces
+both lag and early error: after 256 fresh paths, opening mean/worst-tile FLIP
+is 0.01722/0.07181 versus H256's 0.05422/0.14023. Closing H16 is
+0.01013/0.03203. Trapezoidal mean FLIP over the first 512 fresh paths is
+opening 0.02960/0.05782 and closing 0.02683/0.06177 (H16/H256) in window 0;
+window 1 is 0.02656/0.05457 and 0.03409/0.06517 respectively. H16 roughly
+halves this early-error measure as well as reaching the gate sooner.
+These are observed sample-work crossings, not exact first crossings or
+measured seconds. The fixed house engineering gate remains a
+transfer of the user's cave calibration, not a new human judgment.
+
+### Error versus source distance
+
+`tools/history_distance_analysis.py` evaluates official FLIP on the original
+2560x1440 images, then groups errors by receiver-voxel distance to the edit.
+Pixel-center ray/quad intersections map to the nearest audited surface;
+distance matches the policy's integer-voxel metric. This maps all pixels in
+the house emitter view, 99.69% in the cave, and 99.98% in the tight floor view.
+Unmapped pixels are excluded only from regional diagnostics, never from the
+whole-image acceptance gate. Regional tile diagnostics require at least 256
+in-band pixels per 32x32 tile. Neither regional statistic is an independently
+calibrated perceptual gate. Corner reconstruction and FLIP spatial filters
+span neighboring receivers, so this is spatial attribution, not identification
+of each path's contributing source.
+
+Window-0 mean regional FLIP after 256 fresh paths:
+
+| Visible receiver band | Remove, H16 / H256 | Add, H16 / H256 |
+| --- | ---: | ---: |
+| House, 9.38 to <12 blocks | 0.08045 / 0.21491 | 0.06416 / 0.19064 |
+| House, 12 to 13.15 blocks | 0.06451 / 0.18536 | 0.05138 / 0.17680 |
+| Cave, 19.65 to <24 blocks | 0.05539 / 0.03760 | 0.06662 / 0.04808 |
+| Cave, 32 to <48 blocks | 0.05046 / 0.04092 | 0.05332 / 0.04118 |
+
+This supports testing a smaller low-history neighborhood. It does **not**
+prove perceptual error decreases monotonically with distance. The cave's
+full target-change mean is 0.03641 in the 20..24 band and 0.04497 in the
+32..48 band. Visibility, material, background lighting and sampling variance
+matter, and the house/cave lamps and scenes differ. The house emitter uses
+(12,3,0.3) emission, below the normal placeable block's (12,5,1); it is not
+an artificially boosted lamp. The cave diagnostic still uses its 8x torch.
+
+### A 16-block low-history neighborhood
+
+The experiment `16:16` retains 16 within 16 blocks, then uses the existing
+256-plus-distance-derived curve. It does not truncate emitter range, alter
+the distant prior, or add a source-type specialization.
+
+In the cave native replay, sustained crossings are removal 2,560/3,072 and
+addition 3,072/3,328 for windows 0/1: the same as `48:256`. At the 24 common
+observations per window, mean FLIP differs by less than 8e-8 and worst-tile
+FLIP is identical. In every recorded house fixture all receiver distances
+are below 16, so `16:16` and `48:16` produce identical cap arrays and replay
+states. No redundant house render is needed to establish that identity.
+Consequently this candidate preserves the fast house emitter response and
+the large floor-opening response while retaining the cave's smoothness.
+The original small upper-corner aperture tests still get H16, so their
+extra smoothing from H256 is not retained. It is not universally optimal.
+
+**Sixteen is a promising candidate, not an analytically identified optimum.**
+The measured house emitter view stops at 13.15 blocks; visible cave receiver
+contributors (including corner neighbors) start at 18.97. Cutoffs of 14..18
+cannot be distinguished by those two views. Further qualification should
+hold scene/source constant and put receivers around this transition in view,
+then test runtime edit/streaming response. Runtime defaults remain 48/16.
+Emitter falloff/range was deliberately left unchanged.
+
+### Follow-up evidence
+
+- Expanded-opening native tape: `house-1791987058895295000-85469`.
+- Floor W0 render: `house-1791987179731036000-85529`, plan/analysis prefix
+  `target/history-sun-patch-tight`, 58 planned frames including two direct-only
+  controls. Regional analysis: `target/history-sun-patch-distance.json`.
+- Floor W1 render: `house-1791987445090808000-85708`, prefix
+  `target/history-sun-patch-w1`, 64 planned frames using the independent
+  native sequence and finer observations around the passing checkpoints.
+- Near-16 cave render: `cave-1791987316132219000-85667`, prefix
+  `target/history-cave-near16`, 58 planned frames across two native windows.
+- Reused emitter/cave W0 captures from the earlier section; regional output
+  `target/history-house-emitter-distance.json`, `target/history-cave-distance.json`.
+- Contact sheet: `target/history-sun-patch-overview.png`; unchanged image
+  brightness, downsampled only for presentation. Metrics use full resolution.
+- The first broad floor framing (`house-1791986805140297000-85287`) showed the
+  patch but included 10.5% unaudited outdoor pixels through the doorway.
+  Its replay `house-1791986930999523000-85407` was intentionally stopped and
+  is not accepted evidence. The tighter view was re-recorded, not silently
+  paired with the old camera's captures.
+
+Four focused Rust tests and eleven Python tests pass; native build succeeds.
+Successful record/render runs have valid offscreen cameras, target dimensions,
+assets and complete geometry-audited captures, with no WARN/ERROR render logs.
+As throughout this study, no windowed FPS or interactive latency claim follows.
+
+Reproduction uses the earlier commands with fixture `house-sun-patch` and
+`--sky-controls` when making the plan. For distance attribution:
+
+```sh
+python tools/history_distance_analysis.py PLAN_JSON RENDER_RUN --output RESULT_JSON
+```
+
+Keep the same NumPy/Pillow/FLIP environment as the main analysis. This tool
+verifies the native tape hash and capture completion; run the normal `assess`
+command too for reference-replica, warm-control and sustained-gate qualification.
 
 ## Evidence and reproduction
 
