@@ -32,10 +32,8 @@ def digest(path):
     return h.hexdigest()
 
 
-def flip_difference(reference, candidate):
-    """Only the two fixed acceptance statistics; do not spend sweep time on
-    unused per-pixel OKLab/FLIP percentiles. Same official LDR FLIP evaluator.
-    """
+def flip_map(reference, candidate):
+    """Evaluate the full image before selecting any spatial diagnostic masks."""
     import flip_evaluator as flip
     if reference.shape != candidate.shape or reference.shape != (1440,2560,3):
         raise ValueError("capture dimensions differ from the calibrated view")
@@ -44,9 +42,17 @@ def flip_difference(reference, candidate):
     error = np.asarray(error).reshape(1440,2560)
     if not np.all(np.isfinite(error)):
         raise ValueError("nonfinite FLIP map")
+    return error
+
+
+def flip_statistics(error):
     tiles = error.reshape(45,32,80,32).mean((1,3))
     return dict(flip=dict(mean=float(np.mean(error,dtype=np.float64))),
                 flip_32px_tile_means=dict(max=float(tiles.max())))
+
+
+def flip_difference(reference, candidate):
+    return flip_statistics(flip_map(reference, candidate))
 
 
 def load_tape(folder):
@@ -189,13 +195,19 @@ def make_plan(args):
         # Use the target state's sky at t=0, before indirect history responds.
         state = metadata.get("target", name).split("-")[1]
         if state in skies:
-            metadata["sky_state"] = state
+            metadata.setdefault("sky_state", state)
         frames.append(dict(name=name, **metadata))
 
     for state in tape["states"]:
         save(f"near-{state['name']}-reference", state["mean"], np.ones(len(tape["sites"])), reference=True)
         for i, replica in enumerate(state["replicas"]):
             save(f"near-{state['name']}-replica-{i}", replica, np.ones(len(tape["sites"])), reference=True)
+    if args.sky_controls:
+        if len(skies) != 2:
+            raise ValueError("direct-sun controls require both recorded sky states")
+        for state in tape["states"]:
+            save(f"direct-{state['name']}", np.zeros((len(tape["sites"]), 3)),
+                 np.ones(len(tape["sites"])), reference=True)
     if args.analytic:
         distance=edit_distances(tape)
         for case, old, new in (("remove",0,1),("add",1,0)):
@@ -378,6 +390,10 @@ class Tests(unittest.TestCase):
         got = limits(np.array([0.,48.,96.,128.,192.,256.,384.]),48,16)
         np.testing.assert_equal(got,[16,16,256,256,316,1986,65536])
 
+    def test_small_near_reset_preserves_the_existing_far_curve(self):
+        distances = np.array([0., 16., 16.001, 48., 192., 384.])
+        np.testing.assert_equal(limits(distances,16,16),[16,16,256,256,316,65536])
+
     def test_display_is_convex_and_does_not_change_measurement(self):
         mean=np.array([[.01,.02,.03],[4.,2.,1.]])
         second=mean**2*100
@@ -420,6 +436,8 @@ def main():
     p.add_argument("--null-every",type=int,help="separate event interval for unchanged-lighting pressure control")
     p.add_argument("--analytic",action="store_true",
                    help="render noise-free residual-bias and ideal update-radius controls")
+    p.add_argument("--sky-controls",action="store_true",
+                   help="also render each direct-sun state with indirect GI zeroed")
     p.add_argument("--checkpoints",type=int,nargs="+",
                    help="explicit fresh-path observations; zero is always captured")
     a = sub.add_parser("assess")
