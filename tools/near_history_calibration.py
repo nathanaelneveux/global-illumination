@@ -139,13 +139,29 @@ def replay(tape, window, case, radius, near, dt, every):
             yield paths, sides[now] is after, mean.copy(), display.copy(), confidence.copy(), weight.copy()
 
 
+def policy_pairs(histories=None, radii=None, policies=None):
+    """Allow an explicit shortlist instead of rendering a wasteful cross product."""
+    if policies is not None:
+        if histories is not None or radii is not None:
+            raise ValueError("use --policies or --histories/--radii, not both")
+        pairs = [tuple(map(int, value.split(":"))) for value in policies]
+    else:
+        pairs = [(r, h) for r in (radii or [48]) for h in (histories or [16,256])]
+    if not pairs or any(len(pair) != 2 for pair in pairs):
+        raise ValueError("policies must be radius:history pairs")
+    if len(set(pairs)) != len(pairs):
+        raise ValueError("duplicate policies would overwrite frame identities")
+    if any(r < 0 or h < 0 or h > 65536 for r,h in pairs):
+        raise ValueError("invalid retained history/radius")
+    return pairs
+
+
 def make_plan(args):
     tape = load_tape(args.tape)
+    pairs = policy_pairs(args.histories, args.radii, args.policies)
     if not np.isfinite(args.dt) or args.dt <= 0:
         raise ValueError("publication cadence must be positive and finite")
-    if any(h < 0 or h > 65536 for h in args.histories) or any(r < 0 for r in args.radii):
-        raise ValueError("invalid retained history/radius")
-    for values in (args.histories,args.radii,args.windows,args.cases):
+    for values in (args.windows,args.cases):
         if len(set(values)) != len(values):
             raise ValueError("duplicate sweep arguments would overwrite frame identities")
     for spacing in (args.every,args.null_every):
@@ -187,20 +203,20 @@ def make_plan(args):
                  fresh_paths=0,replay_seconds=0,target=f"near-{state['name']}-reference")
         for case in args.cases:
             every = args.null_every if case == "null" and args.null_every is not None else args.every
-            for radius in args.radii:
-                for history in args.histories:
-                    for paths, after, raw, display, confidence, weight in replay(
-                            tape, w, case, radius, history, args.dt, every):
-                        name = f"{case}-r{radius}-h{history}-w{w}-p{paths}"
-                        target = "after" if after else "before"
-                        save(name, display, confidence, case=case, radius=radius, history=history,
-                             window=w, fresh_paths=paths, replay_seconds=paths / 16 * args.dt,
-                             event_interval_paths=every,
-                             target=f"near-{target}-reference", weight_p50=float(np.median(weight)),
-                             raw_rgb_rmse=float(np.sqrt(np.mean((raw - np.asarray(tape["states"][int(after)]["mean"])[:, :3]) ** 2))))
+            for radius, history in pairs:
+                for paths, after, raw, display, confidence, weight in replay(
+                        tape, w, case, radius, history, args.dt, every):
+                    name = f"{case}-r{radius}-h{history}-w{w}-p{paths}"
+                    target = "after" if after else "before"
+                    save(name, display, confidence, case=case, radius=radius, history=history,
+                         window=w, fresh_paths=paths, replay_seconds=paths / 16 * args.dt,
+                         event_interval_paths=every,
+                         target=f"near-{target}-reference", weight_p50=float(np.median(weight)),
+                         raw_rgb_rmse=float(np.sqrt(np.mean((raw - np.asarray(tape["states"][int(after)]["mean"])[:, :3]) ** 2))))
     metadata = dict(schema=1, sites=tape["sites"], frames=frames,
                     tape=str(args.tape.resolve()), tape_sha256=digest(args.tape / "near-history.json"),
                     moments_sha256={s["moments"]:digest(args.tape / s["moments"]) for s in tape["states"]},
+                    policies=pairs,
                     arguments={k:str(v) if isinstance(v, Path) else v for k,v in vars(args).items()},
                     note="Frozen edited integrands, retained existing receivers, actual production display resolve at explicit uniform per-face cadence. Warm display starts at the 4096-path mean, not a perfectly converged oracle. No scheduling/new-face/interactive latency claim. h0 is retain control. Radius changes only the floor boundary, not the distant prior.")
     (args.output / "plan.json").write_text(json.dumps(metadata, indent=2, allow_nan=False) + "\n")
@@ -285,6 +301,15 @@ def assess(args):
 
 
 class Tests(unittest.TestCase):
+    def test_explicit_shortlist_preserves_legacy_defaults_and_frame_identity(self):
+        self.assertEqual(policy_pairs(), [(48,16), (48,256)])
+        self.assertEqual(policy_pairs(policies=["48:16", "278:2048"]), [(48,16), (278,2048)])
+        for args in (dict(histories=[16], policies=["48:16"]),
+                     dict(policies=["48:16", "48:16"]),
+                     dict(policies=["48:16:32"]), dict(policies=["48:-1"])):
+            with self.assertRaises(ValueError):
+                policy_pairs(**args)
+
     def test_noisy_warm_image_cannot_qualify_settled_start_response(self):
         base = dict(radius=48, history=16, window=0, replay_seconds=0.,
                     flip=dict(mean=.01), flip_32px_tile_means=dict(max=.02))
@@ -343,8 +368,9 @@ def main():
     p = sub.add_parser("plan")
     p.add_argument("tape",type=Path)
     p.add_argument("--output",type=Path,required=True)
-    p.add_argument("--histories",type=int,nargs="+",default=[16,256])
-    p.add_argument("--radii",type=int,nargs="+",default=[48])
+    p.add_argument("--histories",type=int,nargs="+",help="default: 16 256")
+    p.add_argument("--radii",type=int,nargs="+",help="default: 48")
+    p.add_argument("--policies",nargs="+",help="explicit radius:history shortlist, instead of histories/radii")
     p.add_argument("--windows",type=int,nargs="+",default=[0])
     p.add_argument("--cases",choices=["null","remove","add"],nargs="+",default=["null","remove","add"])
     p.add_argument("--dt",type=float,default=.85,
