@@ -163,6 +163,18 @@ def make_plan(args):
         save(f"near-{state['name']}-reference", state["mean"], np.ones(len(tape["sites"])), reference=True)
         for i, replica in enumerate(state["replicas"]):
             save(f"near-{state['name']}-replica-{i}", replica, np.ones(len(tape["sites"])), reference=True)
+    if args.analytic:
+        distance=np.linalg.norm(np.array([s[0] for s in tape["sites"]])-tape["edit"],axis=1)
+        for case, old, new in (("remove",0,1),("add",1,0)):
+            a,b=[np.asarray(tape["states"][i]["mean"])[:,:3] for i in (old,new)]
+            target=f"near-{tape['states'][new]['name']}-reference"
+            for radius in (0,16,24,32,48,64):
+                values=np.where((distance<=radius)[:,None],b,a)
+                save(f"spatial-{case}-r{radius}",values,np.ones(len(distance)),
+                     kind="spatial",case=case,radius=radius,target=target)
+            for fraction in (1.,.5,.25,.125,.0625,.03125):
+                save(f"bias-{case}-f{int(fraction*100000)}",a*fraction+b*(1-fraction),np.ones(len(distance)),
+                     kind="bias",case=case,stale_fraction=fraction,target=target)
     for w in args.windows:
         if not 0 <= w < len(tape["starts"]):
             raise ValueError("missing native sequence window")
@@ -238,10 +250,11 @@ def assess(args):
         # Checkpoint expensive analysis so a later interruption is recoverable.
         args.output.write_text(json.dumps(dict(profile_id=profile["id"], complete=False,
                                                measurements=results),allow_nan=False))
-    keys = sorted({(r["case"],r["radius"],r["history"],r["window"]) for r in results})
+    temporal=[r for r in results if "kind" not in r]
+    keys = sorted({(r["case"],r["radius"],r["history"],r["window"]) for r in temporal})
     summary = []
     for key in keys:
-        rows = [r for r in results if (r["case"],r["radius"],r["history"],r["window"]) == key]
+        rows = [r for r in temporal if (r["case"],r["radius"],r["history"],r["window"]) == key]
         summary.append(dict(case=key[0],radius=key[1],history=key[2],window=key[3],
                             sustained=sustained(rows), failed_captures=sum(not r["accepted"] for r in rows),
                             peak_flip=max(r["flip"]["mean"] for r in rows),
@@ -308,6 +321,8 @@ def main():
                    help="uniform seconds per 16-path face publication, not frame time")
     p.add_argument("--every",type=int,default=0,help="repeat edit every N fresh paths; 0 is one edit")
     p.add_argument("--null-every",type=int,help="separate event interval for unchanged-lighting pressure control")
+    p.add_argument("--analytic",action="store_true",
+                   help="render noise-free residual-bias and ideal update-radius controls")
     a = sub.add_parser("assess")
     a.add_argument("plan",type=Path)
     a.add_argument("run",type=Path)
