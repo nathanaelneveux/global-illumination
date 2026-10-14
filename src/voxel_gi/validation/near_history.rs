@@ -179,8 +179,8 @@ pub(super) fn start(
             return Err("Diagnostic material 250 is already in use".into());
         }
         let mut optical = materials.get(scene.material_at(edit).unwrap() as u8);
-        optical.emission = optical.emission * scale;
-        materials.set(250, optical);
+        optical.emission *= scale;
+        Arc::make_mut(&mut materials).set(250, optical);
         scene = replace_voxel(&scene, edit, 250)?;
     }
     // All modified voxel corners are behind the calibrated camera's eye plane.
