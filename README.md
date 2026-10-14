@@ -136,6 +136,10 @@ measures post-edit paths to sustained FLIP acceptance and repeated-cap noise.
 It uses common native sample tapes and actual material captures; replay-clock
 seconds are not gameplay latency. The inherited near 48/16 defaults remain
 unchanged pending response-time qualification, not assumed analytically valid.
+The [cross-scene follow-up](docs/history-cross-scene.md) tightens crossing
+observations and adds actual house skylight, doorway and emitter images.
+Higher floors help small edits but can retain too much stale source brightness;
+no blanket replacement is promoted from the cave result alone.
 
 **Copy applied JSON** exports transport/work settings (not display toggles/gain).
 Paste JSON into the same panel to import, or save it to a file and launch with
