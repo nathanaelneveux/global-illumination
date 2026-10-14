@@ -80,3 +80,85 @@ Large captures and path tapes remain in ignored `target/`; record exact tape,
 plan, executable and source identities with results. Assessments may compact
 reproducible intermediate captures after hashing, retaining references and
 selected review images. Never accept a blank/unfocused gameplay capture.
+
+## Completed independent decisions
+
+### Reject a universal 2,048 statistical ceiling
+
+Same hallway offset-8 tape, both native windows, 16-path publications, production
+display filter and material. Compare ceilings 2,048 and 65,536 separately from
+edit caps. Cold controls begin at zero; static controls begin at the same
+4,096-path warm mean. The lower-cap static control clamps its initial weight,
+not the recorded warm mean: it is a policy-transition test, not a capped warm
+prefix. The cold control has the proposed cap from its very first batch.
+
+| Control, window 1 | Ceiling 2,048 | Ceiling 65,536 |
+| --- | ---: | ---: |
+| Cold start, mean FLIP at 2,048 fresh paths | .01905 | .01905 |
+| Cold start, mean FLIP at 4,096 | **.02907, fails** | .02325, passes |
+| Unchanged warm scene, mean FLIP after 4,096 | **.02989, fails** | .01859, passes |
+| Unchanged warm scene, any failed observations | 1 | 0 |
+
+The mean limit remains .0274008632. Both windows of the large-cap warm control
+remain accepted throughout; window 0 of the lower cap also passes. This is a
+measured regression in one sequence, not a claim that every 2,048-cap result is
+bad. It is sufficient to reject that cap as a universal quality-preserving
+default. The original cave's accepted 2,048 prefix does not guarantee an
+arbitrarily long weighted stream, other cameras, or arbitrary player geometry.
+
+A smaller global cap would speed changes with no local invalidation, but near
+edits already reduce weight to far below 2,048. With retained H=256, at 2,048
+fresh paths the uncapped stale fraction is 11.11%; a 2,048 ceiling only reduces
+it to about 11.03%. It cannot substantially improve that early response before
+the ceiling is reached. Keep the existing ceiling; do not conflate it with
+slowing scheduling. The scheduler already uses per-band variance, mean drift
+and display lag to enter sparse audits, not a universal 2,048-count stop.
+No IR/radiation cap is qualified by these RGB images.
+
+Evidence: `target/decision-static{2048,65536}-d8-assessment.json`. Both runs
+complete their native audits. The first launcher inherited `RUST_LOG=warn`,
+so its info-level output-directory line was absent; its completed native
+status was resolved explicitly and assessed without rerendering. The launcher
+now requests info logs. This was an orchestration failure, not a black capture
+or a waived reference check.
+
+### Separate cold-start noise from reset noise
+
+On the native hallway tape, zero-history lamp addition and a dark-seeded cold
+start have **exactly identical raw RGB and filtered display RGB at every
+recorded checkpoint in both windows**. Initial reconstruction confidence
+differs (retained old face versus new unknown face), so rendered images need
+not be exactly identical. At offset 8/window 1, the cold image reaches 108.48%
+of reference mean rendered luminance at 256 paths; the earlier zero-history
+edit reaches about 109.1%. Both subsequently recover. Thus this observed
+brightening overshoot is predominantly early sampling/reconstruction behavior,
+not a separate energy overshoot introduced by clearing statistical history.
+
+This does not make all zero resets harmless: resetting an unchanged bright
+surface unnecessarily discards good evidence, and retaining a bright display
+while its statistical confidence drops differs from starting dark. Report that
+cost separately rather than demanding the edit equation fix cold-start noise.
+
+The original static cave sweep was reanalyzed for endpoint luminance using all
+76 retained full-resolution sample images; existing qualified FLIP measurements
+were reused. `target/decision-original-static-cave.json` records every count and
+window. Representative worst-window mean / worst-tile FLIP:
+
+| Fresh paths | Mean FLIP | Worst tile |
+| ---: | ---: | ---: |
+| 16 | .18008 | .50576 |
+| 64 | .10301 | .31540 |
+| 256 | .06029 | .16118 |
+| 512 | .04625 | .12367 |
+| 1,024 | .03668 | .10453 |
+| 1,536 | .03061 | .08128 |
+| 2,048 | .02740 | .07296 |
+| 4,096 | .02104 | .06865 |
+| 8,192 | .01704 | .06170 |
+
+Whole-image brightness is a poor overshoot detector: even the 16-path cave
+means are within about 1.03% of reference, while bright and dark local errors
+cancel. Maximum 32px-tile **positive linear-display-luminance error** drops from
+.07679 at 16 paths to .00404 at 2,048. These are absolute normalized display
+luminance units, not percentages of physical radiance. The hallway's uniform
+close-up makes its mean-brightness ratio more informative than the cave's.
