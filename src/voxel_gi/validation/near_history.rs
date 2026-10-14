@@ -58,6 +58,14 @@ fn remove_torch(
     if scene.material_at(voxel) != Some(expected) {
         return Err("Near-history fixture requires its authored torch".into());
     }
+    Ok((replace_voxel(scene, voxel, AIR)?, voxel))
+}
+
+fn replace_voxel(
+    scene: &Arc<crate::voxel_gi::world::TransportScene>,
+    voxel: IVec3,
+    material: u16,
+) -> Result<Arc<crate::voxel_gi::world::TransportScene>, String> {
     let page = crate::voxel_gi::page_of(voxel);
     let page_origin = page * 32;
     let mut cells = Vec::with_capacity(32 * 32 * 32);
@@ -72,14 +80,9 @@ fn remove_torch(
             }
         }
     }
-    cells[linear_index((voxel - page_origin).as_uvec3(), PAGE_SIZE)] = AIR;
-    Ok((
-        Arc::new(crate::voxel_gi::world::TransportScene::with_page_delta(
-            scene,
-            vec![(page, cells)],
-            &[],
-        )),
-        voxel,
+    cells[linear_index((voxel - page_origin).as_uvec3(), PAGE_SIZE)] = material;
+    Ok(Arc::new(
+        crate::voxel_gi::world::TransportScene::with_page_delta(scene, vec![(page, cells)], &[]),
     ))
 }
 
@@ -152,11 +155,34 @@ pub(super) fn start(
             + STARTS.len() as u64 * (u64::from(WARM) + STEPS as u64 * u64::from(BATCH)));
     let worker_progress = progress.clone();
     let worker_output = output.clone();
-    let scene = runtime.scene.clone();
+    let mut scene = runtime.scene.clone();
     let sources = runtime.sources.clone();
-    let materials = runtime.materials.clone();
+    let mut materials = runtime.materials.clone();
     let generation = runtime.generation;
     let (changed, edit) = remove_torch(&scene, origin)?;
+    let scale = std::env::var("VOXEL_GI_NEAR_EMITTER_SCALE")
+        .unwrap_or_else(|_| "1".into())
+        .parse::<f32>()
+        .map_err(|_| "NEAR_EMITTER_SCALE must be a number")?;
+    if !scale.is_finite() || !(1.0..=1024.0).contains(&scale) {
+        return Err("NEAR_EMITTER_SCALE must be finite and in [1,1024]".into());
+    }
+    if scale != 1.0 {
+        // One diagnostic host material, never a change to the global torch
+        // palette. A bright-source control prevents tiny edits below the FLIP
+        // gate from making a slow response policy look universally superior.
+        if scene
+            .regions
+            .values()
+            .any(|r| r.contains_any_material(&[0, 0, 0, 1 << 58]))
+        {
+            return Err("Diagnostic material 250 is already in use".into());
+        }
+        let mut optical = materials.get(scene.material_at(edit).unwrap() as u8);
+        optical.emission = optical.emission * scale;
+        materials.set(250, optical);
+        scene = replace_voxel(&scene, edit, 250)?;
+    }
     // All modified voxel corners are behind the calibrated camera's eye plane.
     // Thus both states render the same receiving geometry; no missing-object
     // pixels contaminate the image-space lighting comparison.
@@ -247,7 +273,7 @@ pub(super) fn start(
         let metadata=json!({"schema":1,"kind":"near_history_tape","compiled_manifest_dir":env!("CARGO_MANIFEST_DIR"),
             "scene_generation":generation,"origin":origin.to_array(),"view":{"eye":eye.to_array(),"target":target.to_array()},"transport":crate::voxel_gi::TransportSettings::default(),
             "warm_paths":WARM,"batch_paths":BATCH,"steps":STEPS,"starts":STARTS,"chunk_faces":CHUNK_FACES,
-            "reference_paths_per_replica":REFERENCE_PATHS,"edit":edit.to_array(),
+            "reference_paths_per_replica":REFERENCE_PATHS,"edit":edit.to_array(),"emitter_scale":scale,
             "sites":sites.iter().map(|(v,f)|json!([v.to_array(),f])).collect::<Vec<_>>(),"states":states,
             "note":"Existing off-camera cave torch removed/restored, plus exact unchanged-lighting control. Same frozen composed-world geometry and sources; common native path windows. Only retained receivers are calibrated, not newly exposed topology. No scheduling, display smoothing or gameplay seconds in this tape. Binary little-endian f32 moments layout is documented in near_history.rs."});
         std::fs::write(worker_output.join("near-history.json"),serde_json::to_vec(&metadata).unwrap()).map_err(|e|e.to_string())?;
