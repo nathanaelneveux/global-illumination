@@ -117,6 +117,39 @@ limit. The IID effective-count estimate correctly supplied a useful search
 range but did not predict the actual FLIP pass at H=1,024. More frequent edits,
 different visibility and a changed sampler need fresh qualification.
 
+## Bright-source stress control
+
+Scaling only the edited torch's emission by 64 makes the settled change large:
+mean FLIP 0.16631, worst tile 0.38501. The two bright-state reference replicas
+differ by mean 0.01516 / tile 0.05460: below the acceptance limits, but material
+uncertainty for fine comparisons. The 4,096-path bright warm image itself fails
+(0.04166 / 0.13918). Its removal trajectories therefore do **not** qualify
+settled-start response latency. The source-absent warm image does pass, so the
+addition trajectories have a valid starting point.
+
+Near floors 16, 64 and 256 at R=48, and full retention, all fail sustained
+acceptance through 4,096 fresh paths. On removal, 16 and 64 first pass at the
+last checkpoint, which is not a confirmed tail. On addition, all four policies
+still fail at the last checkpoint. This is a sampler/response stress result,
+not permission to loosen the visual goal.
+
+Reference-blend controls isolate stale bias from incoming sample variance
+(the high-sample references themselves are not infinitely exact). For both
+directions, 1/8 retained old-lighting fraction fails while 1/16 passes. For
+H=2,048, these correspond to 14,336 and 30,720 fresh paths respectively. Thus
+the floor that survives ordinary null-change pressure carries a substantial
+response cost on this change even before fresh-sample variance is included.
+These are tested fraction brackets, not an exact crossing or a universal bound.
+
+Updating the reference perfectly only within R=48 still leaves mean 0.1164 /
+tile 0.2883 error; even R=64 leaves a failing tile near 0.225. The near boundary
+is not a physical influence limit. This result does not itself reject the
+runtime's wider distance curve, which also updates receivers outside R=48.
+
+The moderate-source control is deliberately separate: a 64x stress light
+whose own 4,096-path warm image is noisy cannot select ordinary near-edit
+defaults by itself.
+
 ## Provenance and reproduction
 
 Hardware: Apple M4 integrated GPU, Metal, 16 GiB, macOS 26.6.2; Rust 1.95,
@@ -139,6 +172,15 @@ may overlap diagnostic rendering; these are not frame-pacing measurements.
   `target/near-history-churn-v2-analysis.json`. Native code unchanged from
   `a68a1d8`; analyzer `20a92a9`; no algorithm diff. Concurrent review commits
   `40205fd`/`55f74f1` only add/edit a source-review document.
+- Bright tape: `target/gi-validation/cave-1791938695493179000-75916`;
+  plan `target/near-history-bright-plan/plan.json`; render
+  `target/gi-validation/cave-1791939754242635000-77041`; result
+  `target/near-history-bright-analysis.json`, analyzer `20a92a9`, no algorithm
+  diff. The extra high-floor bright plan was generated but not rendered:
+  reference-blend results already expose the substantial stale-bias cost.
+- Analyzer `dcc2e09` adds explicit settled-start qualification and a fifth
+  focused passing test. It leaves earlier image measurements unchanged; the
+  bright warm-start limitation above was checked directly in the older report.
 - Native verification: two focused near-history Rust tests, production
   Clippy with warnings denied and dev build at `a68a1d8`. Four focused Python
   tests also pass at `20a92a9`. Runtime code has not changed since those checks.
