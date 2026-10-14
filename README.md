@@ -134,31 +134,33 @@ late-stability gain does not establish faster startup or qualified windowed FPS.
 The [near-history calibration](docs/near-history-calibration.md) separately
 measures post-edit paths to sustained FLIP acceptance and repeated-cap noise.
 It uses common native sample tapes and actual material captures; replay-clock
-seconds are not gameplay latency. The inherited near 48/16 defaults remain
-unchanged pending response-time qualification, not assumed analytically valid.
+seconds are not gameplay latency. The inherited near 48/16 defaults are not
+assumed analytically valid; the completed replacement decision is below.
 The [cross-scene follow-up](docs/history-cross-scene.md) tightens crossing
 observations and adds actual house skylight, doorway and emitter images.
 
-Higher floors help small edits but can retain too much stale source brightness;
-no blanket replacement is promoted from the cave result alone.
-Its [distance and visible-sunlight follow-up](docs/history-cross-scene.md#distance-attribution-and-a-visible-sunlight-patch)
-adds a floor-facing 3x3 skylight and regional FLIP measurements. A 16-block
-low-history neighborhood preserves the tested near response and distant cave
-smoothness; the exact cutoff and runtime response remain unqualified.
+Those studies found that higher floors help small edits but can retain too much
+stale source brightness; a cave-only blanket replacement was not promoted.
+The [distance and visible-sunlight follow-up](docs/history-cross-scene.md#distance-attribution-and-a-visible-sunlight-patch)
+adds a floor-facing 3x3 skylight and regional FLIP measurements. Its proposed
+16-block neighborhood was an intermediate experiment, not the final equation.
 
 The [controlled hallway study](docs/hallway-history-study.md) supports equal-sized
 floor measurements from the adjacent block out to 64 blocks, with literal retained
 weights below 16, matched source/occluder controls and native material captures.
 The hallway is also visitable west of the house; see the [route](docs/structures.md).
 
-The [history-policy decision](docs/history-decision.md) now selects a continuous
-fourth-power near-edit curve for live integration: `round(256 * (d/48)^4)`
-inside 48 blocks, with the existing far rule unchanged. Its balanced offline
-settling-work score improves about 20%, but some brightening sequences regress;
-it is a measured tradeoff, not a uniform speedup. A permanent 2,048 weight cap
-is not selected. Runtime defaults remain unchanged until the chosen equation's
-event/journal behavior is qualified in gameplay. The report includes the static
-error-by-count table, holdouts, exclusions and exact decision criteria.
+The [whole-range history decision](docs/whole-range-history.md) selects
+`min(existing_weight, round((distance / 12)^4))` over the **entire** distance
+range. There is no 48-block handoff, inherited far plateau, or fixed 278/384
+cutoff. Both coefficients were free; crossing 48/256 is a measured selection,
+not a required anchor. It replaces the earlier near-only recommendation.
+Native comparisons support a better speed/noise balance, with explicit
+brightening and diffuse-roof regressions in the report; it is not a universal
+speedup. Keep the current 65,536 ceiling: the earlier
+[static/cap decision](docs/history-decision.md) did not qualify a permanent
+2,048 cap. **Normal runtime defaults are unchanged** until the selected
+equation's event/journal enforcement is integrated and checked in gameplay.
 
 **Copy applied JSON** exports transport/work settings (not display toggles/gain).
 Paste JSON into the same panel to import, or save it to a file and launch with
