@@ -117,10 +117,10 @@ reduces repeated cave noise, but a distant bounced-sun shadow rejects a universa
 The [sun-aware follow-up](docs/sun-aware-retention.md) retains the remote-cave win
 without changing the measured baseline shadow/edit responses, and calibrates
 history curves against measured sampler quality. The
-[runtime follow-up](docs/runtime-retention.md) now integrates page-local history,
-incremental sun-change evidence and worker-side retention queries. It is the
-default on `voxel-global-illumination`; use `VOXEL_GI_RETENTION=baseline cargo run --locked`
-for the original control. Repeated composed-cave tests show substantially less
+[runtime follow-up](docs/runtime-retention.md) introduced page-local history,
+incremental sun-change evidence and worker-side retention queries. These remain
+the default architecture; use `VOXEL_GI_RETENTION=baseline cargo run --locked`
+for the original global-journal control. Repeated composed-cave tests show substantially less
 corner oscillation with comparable frame pacing, not a complete convergence or
 locked-60-FPS solution.
 
@@ -150,7 +150,7 @@ floor measurements from the adjacent block out to 64 blocks, with literal retain
 weights below 16, matched source/occluder controls and native material captures.
 The hallway is also visitable west of the house; see the [route](docs/structures.md).
 
-The [whole-range history decision](docs/whole-range-history.md) selects
+The [whole-range history decision](docs/whole-range-history.md) is now integrated:
 `min(existing_weight, round((distance / 12)^4))` over the **entire** distance
 range. There is no 48-block handoff, inherited far plateau, or fixed 278/384
 cutoff. Both coefficients were free; crossing 48/256 is a measured selection,
@@ -159,8 +159,12 @@ Native comparisons support a better speed/noise balance, with explicit
 brightening and diffuse-roof regressions in the report; it is not a universal
 speedup. Keep the current 65,536 ceiling: the earlier
 [static/cap decision](docs/history-decision.md) did not qualify a permanent
-2,048 cap. **Normal runtime defaults are unchanged** until the selected
-equation's event/journal enforcement is integrated and checked in gameplay.
+2,048 cap. **A normal `cargo run --locked` uses the whole-range curve** for
+geometry and changed sunlight, with per-receiver queries still on the tracing worker.
+`VOXEL_GI_RETENTION=whole-range` selects it explicitly; `calibrated` is a
+compatibility alias for the new curve, not the old formula. The previous
+calibrated runtime is preserved at `5381c17`. See the
+[integration record](docs/whole-range-history.md#runtime-integration).
 
 **Copy applied JSON** exports transport/work settings (not display toggles/gain).
 Paste JSON into the same panel to import, or save it to a file and launch with

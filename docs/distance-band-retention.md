@@ -1,5 +1,10 @@
 # Distance-preserving retention summary
 
+This records qualification of the previous curve and its 37-bin summary.
+The [whole-range integration](whole-range-history.md#runtime-integration)
+retains the architecture with 25 bins and the new equation. Historical
+comparison flags reproduce these results only on the recorded old commits.
+
 Baseline: `fd7194d`, preserved on `codex/gi-retention-attribution`.
 Implementation: `a194199`; analysis: `effb098`.
 Experiment branch: `codex/gi-distance-band-summary`.

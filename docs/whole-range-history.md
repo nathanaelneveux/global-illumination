@@ -25,9 +25,10 @@ This is the selected **data-calibrated tradeoff**, not a physical theorem or a
 proof of a globally optimal coefficient. Both parameters were free in the
 120-curve screen, with final selection by native material images and distant
 transport controls. No more coefficient sweep is required to make this decision.
-The code in this branch implements and verifies the replay policy; **normal
-gameplay defaults have not changed**. Live event/journal integration is a
-separate implementation checkpoint, not a claimed result of offline rendering.
+The offline decision was finalized at `5381c17`. Following user approval,
+`c2b754f` integrates this policy as the **normal gameplay default**. The
+[runtime integration](#runtime-integration) below is a separate implementation
+and verification checkpoint, not a result inferred from offline rendering.
 
 | Distance in blocks | Maximum retained statistical weight |
 | ---: | ---: |
@@ -282,13 +283,12 @@ The canyon's selected late/final raw RGB p99 is .02132/.01826, versus baseline
 These results support tightening retention, not claiming that all distant
 changes are negligible or that this equation dominates baseline everywhere.
 
-## Runtime integration boundary
+## Runtime integration requirements
 
-This branch finalizes the equation and evidence; it does not silently switch
-the normal game to an offline-tested policy. Integration must replace the old
-flat-near-zone `bounds_limit` early exit, not multiply a new near curve onto the
-old plateau. Apply a cap to existing weight, never assign synthetic evidence.
-Keep the current estimator, display smoothing, transport and BVW unchanged.
+The implementation replaces the old flat-near-zone `bounds_limit` early exit;
+it does not multiply a new near curve onto the old plateau. Apply a cap to
+existing weight, never assign synthetic evidence. Keep the current estimator,
+display smoothing, transport and BVW unchanged.
 
 Exact events and overflow summaries must enforce the same distance function.
 The journal's distance bands are a conservative storage approximation, not
@@ -369,5 +369,162 @@ suite and toggle stress were not rerun.
 
 After completed assessment, reproducible intermediate PNGs were hashed and
 compacted. Native tapes, binary frame inputs, plans, reference images, metrics
-and selected trajectory images remain. No extra coefficient search, transport
-change, BVW change or unmeasured default switch is included in this decision.
+and selected trajectory images remain. These measurements qualify selection;
+the runtime implementation/checks below are separate. No extra coefficient
+search, transport change or BVW change is included.
+
+## Runtime integration
+
+Implementation `c2b754f`, branch `codex/gi-whole-range-runtime`, preserved
+baseline `5381c17`. A normal launch now uses the selected curve. Explicit
+`VOXEL_GI_RETENTION=whole-range` is equivalent; the previous `calibrated`
+spelling remains a compatibility alias for this new policy. Reproduce the
+previous calibrated algorithm at `5381c17`, not by selecting that alias in a
+new build. The much older `baseline` global-journal control remains available.
+
+Both geometry changes and changed direct-sunlight surfaces use the same law.
+Runtime distance is computed from each receiver to the nearest event bounds.
+Only statistical weight is capped, including zero; means, second moments,
+sample sequence and displayed values remain intact. Selected faces merge fresh
+samples on the worker; publication also applies the consumed cap to unselected
+faces without clearing their display. No debounce, sampler, transport reach,
+bounce count, source strength, work budget, shader or BVW change was added.
+
+The old change-prior formula, origin-specific floors and 48-block shortcut are
+removed. Evaluating the new law uses squared distance directly, without a
+square root. The coarse event-binning radius is derived from the existing
+65,536 ceiling: 192 blocks is where this curve permits all supported weights.
+This is not a new light cutoff. Distant blockers can still create nearby
+sunlight-change events, and ordinary sampling/sweeps remain active.
+
+Each page still keeps eight exact events and immutable worker snapshots.
+Overflow summaries now use 25 eight-block distance bins, with the last edge
+at the derived reach. Their lazy payload is **400 rather than 592 bytes/page**,
+with unchanged exact bounds/header storage. Conservative page distance and
+rounding can still cap more than a full exact journal; they never cap less.
+No-cap events cannot evict useful evidence, but retain their wake stamp.
+The optional `floors` compression control now uses the new law's zero-distance
+floor per origin, not the historical 16/256 near/far split.
+
+Diagnostics identify `whole-range-power4-scale12-v1`. Attribution schema 4
+records the policy independently from summary mode; analysis accepts historical
+records but rejects mismatched/unknown policy identities. No old measurements
+are relabeled as the new runtime.
+
+Focused checks: 21 retention-filter test executions, seven worker tests, the
+late-sun wake test and two geometry tests pass (30 distinct Rust tests), as do
+seven Python attribution tests and the development build. Curve parity covers
+100,001 integer squared distances. Overflow/full-history ordering is checked
+across negative pages, page-edge receivers and every consumed epoch. A new
+zero-weight regression preserves unselected face display, moments and sequence.
+The unrelated full suite, toggle stress and coefficient sweeps were not rerun.
+
+### Live streaming-cave pair
+
+Two 182-second offscreen runs use the real runtime, normal terrain plus cave,
+moving background terrain, adaptive scheduling and unchanged preferred look.
+Each computes its own final-scene reference after the timed workload (two
+65,536-path replicas, 36 faces / 144 reconstructed corners). Unlike the
+offline replay, these exercise actual geometry/sunlight event delivery,
+worker snapshots, journal overflow and publication.
+
+| Measure | Previous calibrated runtime | Whole-range runtime |
+| --- | ---: | ---: |
+| Corner p99 relative error, 15 s | 21.23% | 43.36% |
+| Corner p99 relative error, 30 s | 6.06% | 7.10% |
+| Corner p99 relative error, 60 s | 3.08% | 3.20% |
+| Corner p99 relative error, 120 s | 2.61% | 2.94% |
+| Corner p99 relative error, 180 s | 2.43% | 2.75% |
+| 30-60 s p95 excess corner variation | .05388 | .03970 |
+| 60-120 s p95 excess corner variation | .04716 | .04544 |
+| 120-180 s p95 excess corner variation | .06114 | .02059 |
+| Worst checkpoint corner p99 error, 120-180 s | 3.63% | 3.23% |
+| Median retained weight, 180 s | 1,304.5 | 3,584 |
+| Minimum fresh paths, 30-60 / 60-120 / 120-180 s | 288 / 560 / 368 | 256 / 544 / 384 |
+| Total traced paths | 411.38 million | 359.45 million |
+| Maximum loaded pages | 1,550 | 1,556 |
+
+All watched corners remain present and every observed interval receives fresh
+paths. Late variation is about **2.97x lower**, with a better worst late error,
+but startup is worse and the final single-checkpoint error is slightly higher.
+The larger retained weights are not convergence certificates. These are sparse
+corner RGB diagnostics, not whole-image FLIP, and the earlier checkpoints use
+the final scene's reference. Between-arm final target p99 difference is .00843%;
+within-reference replica disagreement is about .604% p99 in both arms.
+
+Do not present this as uniformly faster settling or free performance. Total
+paths are 12.6% lower and observed near/far freshness p99 changes from
+1.614/42.016 seconds to 2.444/43.316 seconds. Adaptive work and asynchronous
+residency differ; the comparison does not isolate sampler throughput. In the
+late cave interval, the minimum incoming work is slightly higher, so the large
+late-stability gain is not obtained by freezing the watched field.
+
+Offscreen settling selection p99 is 1.793 -> 2.035 ms and publication p99 is
+2.061 -> 2.171 ms. Publication's observed maximum is 6.99 -> 27.12 ms, while
+whole-frame maximum is 134.50 -> 52.91 ms. Offscreen frame p50/p99 is
+20.74/30.82 -> 21.62/29.34 ms. These mixed single-pair tails are **not** an
+interactive FPS measurement, a responsiveness improvement, or a no-regression
+guarantee. No new game-thread receiver scans were added. The integration is
+retained for its selected policy and late stability, not an invented 60-FPS win.
+
+Run identity:
+
+- Baseline `5381c17`, clean source at launch; native executable SHA-256
+  `b783a60f8703b6fbddbc52292c62fbc5fb4f006722c6f661a065918e7682cc78`;
+  `target/gi-validation/cave-1792020795799482000-99521`;
+  `target/whole-runtime-baseline.log`.
+- Candidate `c2b754f`, clean source at launch; native executable SHA-256
+  `0412e3c6898a1b9e4ae127b8421f895e861d3a6ec2c37f85cade506805ad5290`;
+  `target/gi-validation/cave-1792021334264172000-99874`;
+  `target/whole-runtime-candidate.log`.
+
+Apple M4 / 16 GiB, Metal, macOS 26.6.2, Rust 1.95, Bevy 0.19.1, optimized
+development profile, 2560x1440 offscreen. Both use 16 paths/face, 4-ms trace
+target, 8,192 receiver cap, 768-block reach, three bounces, 75-ms display
+response, 50-ms upload, 2-ms scene publication and unchanged adaptive settings.
+No concurrent build or second native app ran during either timed workload.
+Both runs have five valid captures and clean rendering logs. The final
+candidate image was also inspected; no unexplained blank capture was accepted.
+
+`target/whole-runtime-pair.json` records the analysis, SHA-256
+`0aedc232fd58dbb791f4654d5bfd1c2655a8ec7eebdb5333b24b5b15a9ba3c6f`.
+Launch flags for this paired check: `VOXEL_GI_VALIDATE=1`, profile `cave`,
+`BACKGROUND=1`, `CAVE_LONG=1`, `TEMPORAL=1`, `REFERENCE=1`, `EXIT=1`,
+`HEADLESS=1` (each suffix prefixed `VOXEL_GI_VALIDATE_`),
+`VOXEL_GI_RETENTION_SUMMARY=distance-bands`, expected build root set to this
+checkout, `RUST_LOG=info`, and `cargo run --locked --offline`. Baseline selects
+`VOXEL_GI_RETENTION=calibrated` on the old commit; candidate selects
+`VOXEL_GI_RETENTION=whole-range`. Analyze with
+`tools/runtime_retention_analysis.py BASELINE_RUN CANDIDATE_RUN`.
+
+### Live opening/edit check and completion
+
+The same `c2b754f` native executable also completes the 180-second
+`house-edits` profile with moving background terrain, fixed preferred look,
+temporal recording and headless capture. Only documentation was dirty during
+this run; no native source or asset changed. All nine captures validate and
+render logs are clean. The recorded edits remove one actual roof block at
+90 seconds, three west-door blocks at 120 seconds, and three east-door blocks
+with a camera turn at 150 seconds. This is the normal house workload, not the
+separate three-by-three sunlight-patch calibration fixture.
+
+For each edit, all 24 surviving watched roof faces receive fresh measurements
+within the following ten seconds; minimum increments are 400 / 256 / 208
+paths, and the transport revision advances. The removed roof receiver is
+correctly excluded, not treated as an unlit or missing survivor. Display
+values remain finite, and the skylight/last doorway images were inspected.
+This verifies actual edit delivery and continuing work, not a new FLIP
+response-time or windowed-performance comparison.
+
+Evidence: `target/gi-validation/house-edits-1792021595486652000-99986`,
+`target/whole-runtime-house.log`; `house.json` SHA-256
+`e01dbf6d93fd3ddbc866f1c0ab01ab5db4a9c63b91c0daeaf58f89b612dbe26d`.
+Use the cave launch recipe with profile `house-edits`, omitting `CAVE_LONG`
+and `REFERENCE`, to reproduce. Capture/event/reference artifacts remain under
+ignored `target/`; no new captures were deleted in this integration round.
+
+**Integration complete: keep the selected equation enabled by default.**
+The live cave pair supports substantially quieter late refinement, not faster
+startup or universally lower error. Preserve those limitations and move on to
+early sampling accuracy/performance; do not reopen distance-curve fitting or
+silently claim the remaining startup/noise/frame-pacing work is solved.

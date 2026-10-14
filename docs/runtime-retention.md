@@ -1,5 +1,10 @@
 # Runtime retention experiment
 
+Historical calibrated-curve measurements follow. Current builds use the
+[whole-range runtime policy](whole-range-history.md#runtime-integration).
+The `calibrated` launch spelling now aliases that policy; use `5381c17` to
+reproduce the previous calibrated implementation, not current default flags.
+
 Baseline: `986683a`. Branch: `codex/gi-runtime-retention`. **Keep the candidate
 as this branch's default:** the final paired windowed qualification retains a
 clear lighting-stability win with comparable frame pacing and sampling freshness.
