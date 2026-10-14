@@ -151,6 +151,15 @@ floor measurements from the adjacent block out to 64 blocks, with literal retain
 weights below 16, matched source/occluder controls and native material captures.
 The hallway is also visitable west of the house; see the [route](docs/structures.md).
 
+The [history-policy decision](docs/history-decision.md) now selects a continuous
+fourth-power near-edit curve for live integration: `round(256 * (d/48)^4)`
+inside 48 blocks, with the existing far rule unchanged. Its balanced offline
+settling-work score improves about 20%, but some brightening sequences regress;
+it is a measured tradeoff, not a uniform speedup. A permanent 2,048 weight cap
+is not selected. Runtime defaults remain unchanged until the chosen equation's
+event/journal behavior is qualified in gameplay. The report includes the static
+error-by-count table, holdouts, exclusions and exact decision criteria.
+
 **Copy applied JSON** exports transport/work settings (not display toggles/gain).
 Paste JSON into the same panel to import, or save it to a file and launch with
 `VOXEL_GI_SETTINGS=path.json cargo run --locked`. Omitted fields use defaults;

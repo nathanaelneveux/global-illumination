@@ -2,8 +2,10 @@
 
 Branch `codex/gi-history-decision`, baseline `423e188`. This round separates
 three decisions: maximum statistical weight, the near-edit distance equation,
-and whether source-type rules are justified. Runtime defaults are unchanged
-until the evidence below supports a specific promotion.
+and whether source-type rules are justified. **Decision: select power 4 as the
+near-edit policy candidate, keep the large statistical ceiling and existing
+far rule, and do not add source-type heuristics.** This completes the offline
+policy selection; runtime defaults remain unchanged pending live integration.
 
 ## Decision contract (before new measurements)
 
@@ -70,7 +72,7 @@ The statistical basis is the [NIST EWMA variance formula](https://www.itl.nist.g
 
 - Reuse the original four-window static cave sweep for its error-by-count data.
 - Native hallway cold/static capped-versus-uncapped trajectories and matched
-  zero-history edits; include a near and a mid-distance receiver.
+  zero-history edits; screen the whole edit equation at multiple distances.
 - Complete equation replays, with each corner donor's own edit distance, on
   hallway source/occlusion, house source/opening and cave source cases.
 - Repeat shortlisted comparisons on the second native window; do not exhaust
@@ -102,9 +104,22 @@ prefix. The cold control has the proposed cap from its very first batch.
 The mean limit remains .0274008632. Both windows of the large-cap warm control
 remain accepted throughout; window 0 of the lower cap also passes. This is a
 measured regression in one sequence, not a claim that every 2,048-cap result is
-bad. It is sufficient to reject that cap as a universal quality-preserving
-default. The original cave's accepted 2,048 prefix does not guarantee an
+bad. It does not support adopting that cap as a quality-preserving default.
+The original cave's accepted 2,048 prefix does not guarantee an
 arbitrarily long weighted stream, other cameras, or arbitrary player geometry.
+
+Reference uncertainty matters here: the two independent 131,072-path reference
+images differ by .01396 mean FLIP, although they pass the reference agreement
+guard. Repeating the final comparison against each replica changes the lower
+cap's pass/fail classification. Cold-start FLIP is .02526 / .03262 for the
+2,048 cap versus .01892 / .02716 for the large cap; warm-static FLIP is
+.02612 / .03340 versus .01505 / .02308. The larger cap is better against
+**both** replicas and passes against each, but the lower cap's marginal failure
+against their combined reference is not a reference-independent proof of
+crossing a human visibility boundary. Keep the larger cap because no benefit
+has been qualified that compensates for this measured accuracy loss, not
+because this experiment proves a universal minimum. Details are in
+`target/decision-cap-reference-sensitivity.json`.
 
 A smaller global cap would speed changes with no local invalidation, but near
 edits already reduce weight to far below 2,048. With retained H=256, at 2,048
@@ -218,8 +233,8 @@ In the offset-16 null control its peak is .05559 versus .05013 for power 4 and
 that is reported, not hidden or used as an automatic veto.
 
 In the cave, power 4 lowers the removal peak worst-tile FLIP from .19076 to
-.14127 (about 26%) without changing this screen's settling checkpoint. Addition
-peak tile changes .17048 to .16323, a smaller benefit. Power 6 is slightly
+.14130 (about 26%) without changing this screen's settling checkpoint. Addition
+peak tile changes .17048 to .16316, a smaller benefit. Power 6 is slightly
 noisier there. These are appearance error peaks, not measurements of physical
 energy overshoot or video flicker. Endpoint luminance excursions are recorded
 separately in each assessment.
@@ -234,3 +249,170 @@ development optimized/debuginfo, 2560x1440 offscreen, preferred corner look,
 textures on and AO off. Background terrain streams during each normal prelude,
 then the measurement field is frozen. Some CPU assessments overlap another
 run's prelude; no frame-pacing or gameplay-latency claims are made.
+
+## Second-window checks and measured weaknesses
+
+Shortlisted policies use a second disjoint native sample window, with the same
+reference, material, old-state qualification and sustained-tail rule. This is
+sequence replication, not a second independent scene/reference calibration.
+
+| Qualified edit, window 1 | Current 48/16 | Power 4 | Power 6 |
+| --- | ---: | ---: | ---: |
+| Hallway offset 8, lamp off | 1,024 | 128 | 128 |
+| Hallway offset 8, lamp on | 256 | **1,024** | **1,024** |
+| House emitter off | 1,024 | 512 | 512 |
+| House emitter on | 1,024 | **1,536** | **1,536** |
+| Visible roof opening / closing | 256 / 256 | 256 / 256 | 256 / 256 |
+| Cave moderate source off | 3,072 | 3,072 | 3,072 |
+| Cave moderate source on | Tail unconfirmed | Tail unconfirmed | Tail unconfirmed |
+
+The cave-add arms first pass at 3,584 and also pass at 4,096. All lack the
+predeclared **two** subsequent passing observations, so none gets a sustained
+settling claim. This is insufficient tail observation, not a failing final
+image. The cave null controls have the same limitation. It does not distinguish
+the policies, so more native samples solely to declare this common tail would
+not resolve the choice.
+
+The hallway's 4x brightening-work regression is material, even though its
+window-0 brightening improves 6x and removal improves 8x in both windows.
+House brightening also regresses 1.5x in window 1. These are the expected risk
+of exposing low-sample noise instead of carrying a stabilizing old mean; the
+matched cold control supports that explanation. Neither curve dominates the
+baseline in every direction/sequence. Do not promise uniformly faster edits.
+
+Power 4's cave window-1 removal peak tile is .22326 versus baseline .21648
+(slightly worse), despite a lower peak mean FLIP (.05181 versus .05397).
+Addition peak tile improves .18556 to .15644. Thus the window-0 removal-peak
+improvement is not a universal worst-tile win either. Endpoint luminance
+excursions and null-change controls remain available separately in the
+assessments; FLIP includes both noise and lag.
+
+## What the equation means analytically
+
+Before a statistical ceiling is reached, the expected stale-state bias after
+`N` fresh paths and retained weight `H` is
+
+```
+bias = H / (H + N) * (old_mean - new_mean)
+H <= N * epsilon / (abs(old_mean - new_mean) - epsilon)
+```
+
+The inequality applies only when the change exceeds epsilon, and only to bias:
+it excludes new-sample variance, display filtering and reconstruction. Distance
+does not determine the unknown change in lighting. The near equation is an
+**empirically selected prior**, not an analytically proven light bound or a
+globally optimal curve. Arbitrary emission strengths and occluders preclude
+promising a distance-only universal optimum. The inherited far equation is
+held fixed here; its .03 normalized bias allowance is not numerically the
+.02740 perceptual FLIP gate.
+
+Likewise, keep 2,048 as the current measured work anchor for the accepted cave
+quality, not a guarantee for every static scene. Recalibrating a better sampler
+against the **same** image-quality gate can change that work anchor. Scaling
+history with it preserves the analytical bias/work ratio; the perceptual
+response and null-noise tradeoff still need a focused recheck. Do not claim
+that halving sample variance automatically qualifies halving every history.
+
+## Determination
+
+Choose **power 4**, not power 2 or power 6, for the next runtime integration.
+Inside 48 blocks the selected equation simplifies to
+
+```
+H(d) = round(256 * (d / 48)^4)
+new_weight = min(old_weight, H(d))
+```
+
+Use the full equation above outside that interval. Examples are 0 at 8 blocks,
+3 at 16, 16 at 24, 51 at 32, and 256 at 48. These are examples of one equation,
+not distance bands. Preserve measured means, moments, path sequence and display
+history; a zero statistical weight lets the next native batch replace the
+estimator but does not immediately paint the face black. Never increase a
+face's weight to the curve: it is a cap, not invented evidence.
+
+The final comparison contains 23 qualified settled-start edit/window cases:
+9 hallway, 10 house and 4 cave. Twenty-one settle for both baseline and the
+shortlisted curves. Both new curves additionally resolve the closest hallway
+extinction failure; the cave-add tail remains unconfirmed for all three.
+
+| Policy | Qualified cases with sustained tail | Equal-family geometric work ratio | Worst measured slowdown |
+| --- | ---: | ---: | ---: |
+| Current 48/16 | 21 / 23 | 1.000 | 1.0x |
+| Power 4 | 22 / 23 | .800 | 4.0x |
+| Power 6 | 22 / 23 | .778 | 4.0x |
+
+The work ratio is computed only on the **same 21 jointly settled cases**, first
+within each scene family and then equally across families. It does not assign
+a fictional duration to failures or count a cold/null control as an edit win.
+It is an offline response-work score, not 20% faster gameplay. For power 4 the
+family ratios are hallway .550, house .933, cave 1.000. Cave settling speed is
+unchanged: reducing early sampling noise remains a separate improvement target.
+
+Power 6's aggregate advantage over power 4 is only about 2.8%, contributed by
+one additional faster hallway-removal observation. It has more doorway and
+null-control error and less favorable cave early error. With the user's
+established preference for a smooth response, choose power 4's less aggressive
+tradeoff. This is a measured compromise, **not** an all-cases improvement or a
+claim of a universal optimum. Power 2 was screened out before holdouts and is
+not ranked against the complete final set.
+
+Do not introduce emitter-versus-wall or brightening-versus-darkening rules.
+The occluder fixture demonstrates why geometry categories are not reliable
+impact categories. The sunlight test supplies a visible floor patch and
+checks both directions, but target sunlight is installed directly in these
+replays: it does not qualify changing the runtime's separate sunlight-event
+floor or notification mechanism.
+
+Keep the current maximum statistical weight of 65,536. Keep 2,048 as a
+human-calibrated quality/work anchor, not a perpetual ceiling or a scheduling
+switch. The original cave table, the harder occluded-hall warm-control failure,
+and the old strong-source stress case do not support certifying every static
+world at that count. No new GPU, memory or FPS saving is claimed by this choice.
+
+### Exclusions and integration boundary
+
+The extra offset-32 hallway replay completed native capture/geometry audits,
+but its positive reference is nearly black at normal exposure (mean sRGB
+.00849, standard deviation .00422). It fails the unchanged .01 variation guard.
+Its bracketing bright witnesses agree, but that does not make the dim reference
+a qualified visual result. No thresholds were relaxed; this run contributes
+**no** quality or performance pass. The queued offset-48 replay consequently
+did not run. The far equation is unchanged, not newly requalified by those
+stations. Evidence is retained at `target/decision-far-d32*` and
+`target/gi-validation/hallway-1792010324600602000-92822`.
+
+The next integration is bounded: apply the chosen curve to geometry retention,
+remove the current flat-near-zone early exit in `bounds_limit`, and qualify
+exact-event and compressed-journal enforcement under background streaming.
+The storage summary's distance bands are conservative compression, not the
+new policy's definition; their approximation must not silently replace the
+per-receiver equation tested here. Keep direct-sun event behavior and all
+transport/display settings fixed for that first gameplay comparison. This
+round does not qualify repeated live edits, active terrain event delivery,
+perceptual IR/radiation correctness or 60 FPS. No BVW changes were made.
+
+### Reproduction and verification
+
+`target/decision-final-paired.json` records the final input assessment hashes,
+all per-arm errors and pairwise work ratios. Each `decision-*-provenance.json`
+records its launch commit, tracked dirty diff, plan hash, native executable hash
+and complete GI launch environment. Recorded executables all hash to
+`3d150537301f1d422b02a8ab887df344cb1c71d764a5020db512e65c7ea6f7f8`.
+The baseline native implementation remains `423e188`; this round changes only
+measurement tools and documentation. Two static runs and twelve completed
+curve assessments are the accepted evidence, not the rejected far run.
+
+With NumPy/Pillow/FLIP 1.7 available and `tools` on `PYTHONPATH`:
+
+```sh
+python3 tools/near_history_run.py target/decision-repeat-d8-plan/plan.json --prefix target/decision-new-repeat-d8 --compact
+python3 tools/history_decision_analysis.py compare target/decision-curves-*-assessment.json target/decision-repeat-*-assessment.json --output target/decision-final-paired.json
+python3 -m unittest near_history_calibration.Tests history_distance_analysis.Tests history_decision_analysis.Tests distance_history_analysis.Tests
+```
+
+The final focused Python verification passes 24 tests across those modules.
+Successful replay launches use `cargo run --locked --offline`, native geometry
+and capture-count checks, valid offscreen targets and clean rendering logs;
+this is not a rerun of the unrelated full Rust suite. Reproducible intermediate
+PNGs were compacted only after assessment and hashing. Original static-sweep
+images, native tapes, references, metrics and selected trajectory images remain.
