@@ -53,7 +53,7 @@ impl Fixture {
             // Look down at the receiving floor, keeping the roof edit above
             // the frustum. Direct corner sunlight and its bounce are visible
             // without changing any of the captured raster geometry.
-            (Vec3::new(-3., 15.5, -21.), Vec3::new(2., 11., -16.), 55.)
+            (Vec3::new(0.5, 15.5, -18.), Vec3::new(2.5, 11., -16.5), 40.)
         } else if self.is_house() {
             // Tight upper-corner view excludes the existing low windows and
             // all edited geometry. Both states therefore share raster topology.
