@@ -8,6 +8,7 @@ per-face publication cadence, NOT measured gameplay latency or FPS.
 """
 import argparse
 import hashlib
+import importlib.metadata
 import json
 from pathlib import Path
 import unittest
@@ -423,6 +424,7 @@ def assess(args):
         if not within(flip_difference(*witness), gates):
             raise ValueError("bracketing material witnesses disagree")
     references = {}
+    reference_hashes = {}
     for state in ("before","after"):
         path = args.run / f"near-{state}-reference.png"
         rgb = load_rgb(path)
@@ -430,6 +432,7 @@ def assess(args):
         if rgb.shape != (profile["view"]["height"],profile["view"]["width"],3) or (np.std(rgb) < .01 and not known_dark):
             raise ValueError("invalid/blank capture dimensions")
         references[f"near-{state}-reference"] = rgb
+        reference_hashes[f"near-{state}-reference"] = digest(path)
     # Check residual reference noise against the SAME fixed perceptual limits.
     replicas = {}
     for state in ("before","after"):
@@ -438,16 +441,31 @@ def assess(args):
         if not within(replicas[state], gates):
             raise ValueError("reference replicas disagree beyond the visual gate")
     results = []
+    # Repeated policies can produce byte-identical material images. Reuse only
+    # exact content-addressed measurements, never approximate image matches.
+    # The script/version hashes invalidate the cache if metric code changes.
+    cache = Path("target/gi-perceptual-cache")
+    cache.mkdir(parents=True,exist_ok=True)
+    implementation = digest(Path(__file__)) + importlib.metadata.version("flip-evaluator")
     for frame in plan["frames"]:
         if frame.get("reference"):
             continue
-        image = load_rgb(args.run / (frame["name"] + ".png"))
-        difference = flip_difference(references[frame["target"]], image)
+        image_path = args.run / (frame["name"] + ".png")
         target = references[frame["target"]]
-        old_target = (references["near-after-reference" if frame.get("case") == "add" else "near-before-reference"]
-                      if frame.get("case") in ("add","remove") else target)
+        old_name = (("near-after-reference" if frame.get("case") == "add" else "near-before-reference")
+                    if frame.get("case") in ("add","remove") else frame["target"])
+        signature = implementation + digest(image_path) + reference_hashes[frame["target"]] + reference_hashes[old_name]
+        cached = cache / (hashlib.sha256(signature.encode()).hexdigest()+".json")
+        if cached.exists():
+            measured = json.loads(cached.read_text())
+        else:
+            image = load_rgb(image_path)
+            measured = dict(difference=flip_difference(target,image),
+                            luminance=brightness_statistics(image,target,references[old_name]))
+            cached.write_text(json.dumps(measured,allow_nan=False))
+        difference = measured["difference"]
         row = dict(frame, **difference, accepted=within(difference,gates),
-                   luminance=brightness_statistics(image,target,old_target))
+                   luminance=measured["luminance"])
         results.append(row)
         print(frame["name"], round(difference["flip"]["mean"],5),
               round(difference["flip_32px_tile_means"]["max"],5), row["accepted"], flush=True)
