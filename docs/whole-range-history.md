@@ -74,3 +74,42 @@ Evidence: `target/whole-fit-screen.json`, `whole-fit-far-filter.json`,
 moment hashes identify reused native tapes. The mean/display screen is
 committed at `6f8ef47`; the distant replay/screen at `6948894`. Runtime Rust,
 transport, shaders and BVW are unchanged from the preserved baseline.
+
+## Native screening and exact reuse
+
+The first whole-curve cave run rejects the proxy-only ranking. `(d/64)^4`
+does not finish cave edits sooner but raises peak mean FLIP on removal/addition
+from .05132/.05360 to .07509/.07753. `(d/14)^6` lowers early error but delays
+the sustained checkpoints from 2,560/3,072 to 3,584/3,584. Its large diffuse-roof
+control also needs 6,048 rather than 480 fresh paths to the existing raw 5%
+transport criterion. That is not a FLIP timing measurement, but is a real
+stale-light response weakness. Neither extreme is the selected balance.
+
+The two remaining whole curves `(d/12)^4` and `(d/16)^4` preserve the cave's
+window-0 2,560/3,072 checkpoints. Their null-control peak mean FLIP is
+.03772 / .05051, respectively, versus baseline .04766. At hallway offset 16,
+the more aggressive `(d/16)^4` removes light in 256 rather than 512 paths, but
+both brighten in 2,048 rather than the baseline's 2,560. The final comparison
+keeps this speed/noise tradeoff explicit.
+
+No new house captures are needed for these finalists. At **every** recorded
+house receiver, the whole-curve frame inputs exactly match previously rendered
+ones: `(d/12)^4` matches the old near-power4 arm, and `(d/16)^4` matches the old
+near-power6 arm. `whole_history_reuse.py` regenerates every observed full
+RGB/confidence buffer and requires byte equality with the file supplied to the
+native renderer. Across five house assessments, all 390 buffers match.
+The original plans, image names, metrics and provenance are retained alongside
+explicit alias proofs. This is reused evidence, not a claimed rerun.
+
+Negative checks reject both an incorrect house alias and a hallway alias whose
+distant donor buffers differ. Thus reuse does not rely on guessing which
+receivers might be visible. The source house checks cover emitter removal/addition
+in both windows, the visible sunlight patch in both windows, and the doorway.
+
+New native executables hash to
+`b783a60f8703b6fbddbc52292c62fbc5fb4f006722c6f661a065918e7682cc78`
+after rebuilding the shared Cargo cache. No Rust/shader source changed.
+Old/new cave references differ by at most one 8-bit channel step, with mean
+FLIP about .000014; new runs include their own paired baseline. Hardware and
+presentation remain M4/16 GiB, Metal, macOS 26.6.2, optimized development,
+2560x1440 offscreen, corner sun/reconstructed indirect, textures on, AO off.
