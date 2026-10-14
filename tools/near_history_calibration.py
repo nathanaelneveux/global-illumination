@@ -14,7 +14,7 @@ import unittest
 
 import numpy as np
 
-from cave_sample_analysis import load_rgb, perceptual_difference
+from cave_sample_analysis import load_rgb
 from visual_quality import within
 
 PROFILE = Path(__file__).parent / "quality_profiles/cave-user-2048.json"
@@ -30,6 +30,23 @@ def digest(path):
         for block in iter(lambda: f.read(1024 * 1024), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def flip_difference(reference, candidate):
+    """Only the two fixed acceptance statistics; do not spend sweep time on
+    unused per-pixel OKLab/FLIP percentiles. Same official LDR FLIP evaluator.
+    """
+    import flip_evaluator as flip
+    if reference.shape != candidate.shape or reference.shape != (1440,2560,3):
+        raise ValueError("capture dimensions differ from the calibrated view")
+    error, _, _ = flip.evaluate(reference,candidate,"LDR",applyMagma=False,
+                               parameters={"ppd":67.})
+    error = np.asarray(error).reshape(1440,2560)
+    if not np.all(np.isfinite(error)):
+        raise ValueError("nonfinite FLIP map")
+    tiles = error.reshape(45,32,80,32).mean((1,3))
+    return dict(flip=dict(mean=float(np.mean(error,dtype=np.float64))),
+                flip_32px_tile_means=dict(max=float(tiles.max())))
 
 
 def load_tape(folder):
@@ -102,7 +119,9 @@ def replay(tape, window, case, radius, near, dt, every):
     # Zero is the explicitly named retain control, not a zero-history reset.
     now = 0
     checkpoints = REPEAT_CHECKPOINTS if every else SINGLE_CHECKPOINTS
-    yield 0, sides[0] is after, mean.copy(), display.copy(), confidence.copy(), weight.copy()
+    # Time zero is immediately AFTER the event: compare the retained old
+    # display to the NEW target, not to the previously correct scene.
+    yield 0, sides[1] is after, mean.copy(), display.copy(), confidence.copy(), weight.copy()
     for step in range(tape["steps"]):
         event = step == 0 or (every and (step * batch) % every == 0)
         if event:
@@ -122,6 +141,13 @@ def replay(tape, window, case, radius, near, dt, every):
 
 def make_plan(args):
     tape = load_tape(args.tape)
+    if not np.isfinite(args.dt) or args.dt <= 0:
+        raise ValueError("publication cadence must be positive and finite")
+    if any(h < 0 or h > 65536 for h in args.histories) or any(r < 0 for r in args.radii):
+        raise ValueError("invalid retained history/radius")
+    for values in (args.histories,args.radii,args.windows,args.cases):
+        if len(set(values)) != len(values):
+            raise ValueError("duplicate sweep arguments would overwrite frame identities")
     if args.every and (args.every < 16 or args.every % 16):
         raise ValueError("event spacing must be a positive multiple of the native batch")
     args.output.mkdir(parents=True, exist_ok=False)
@@ -139,6 +165,13 @@ def make_plan(args):
     for w in args.windows:
         if not 0 <= w < len(tape["starts"]):
             raise ValueError("missing native sequence window")
+        for state in tape["states"]:
+            warm = state["data"][w,0].astype(np.float64)
+            weight = np.full(len(tape["sites"]),float(tape["warm_paths"]))
+            confidence = np.clip(weight/(weight+8)/(1+relative_error(warm[:,:3],warm[:,3:],weight,.02)),.125,1.)
+            save(f"warm-{state['name']}-w{w}",warm[:,:3],confidence,
+                 case=f"warm-{state['name']}",radius=0,history=tape["warm_paths"],window=w,
+                 fresh_paths=0,replay_seconds=0,target=f"near-{state['name']}-reference")
         for case in args.cases:
             for radius in args.radii:
                 for history in args.histories:
@@ -185,8 +218,8 @@ def assess(args):
     # Check residual reference noise against the SAME fixed perceptual limits.
     replicas = {}
     for state in ("before","after"):
-        replicas[state] = perceptual_difference(load_rgb(args.run / f"near-{state}-replica-0.png"),
-                                               load_rgb(args.run / f"near-{state}-replica-1.png"),67)
+        replicas[state] = flip_difference(load_rgb(args.run / f"near-{state}-replica-0.png"),
+                                         load_rgb(args.run / f"near-{state}-replica-1.png"))
         if not within(replicas[state], gates):
             raise ValueError("reference replicas disagree beyond the visual gate")
     results = []
@@ -194,7 +227,7 @@ def assess(args):
         if frame.get("reference"):
             continue
         image = load_rgb(args.run / (frame["name"] + ".png"))
-        difference = perceptual_difference(references[frame["target"]], image,67)
+        difference = flip_difference(references[frame["target"]], image)
         row = dict(frame, **difference, accepted=within(difference,gates))
         results.append(row)
         print(frame["name"], round(difference["flip"]["mean"],5),
@@ -218,6 +251,18 @@ def assess(args):
 
 
 class Tests(unittest.TestCase):
+    def test_zero_time_compares_old_display_to_new_target(self):
+        a=np.ones((1,257,1,6))
+        b=np.zeros((1,257,1,6))
+        tape=dict(states=[dict(data=a),dict(data=b)],batch_paths=16,warm_paths=4096,
+                  sites=[[[0,0,0],0]],edit=[0,0,0],steps=256)
+        start=next(replay(tape,0,"remove",48,16,.1,0))
+        self.assertTrue(start[1])
+        np.testing.assert_array_equal(start[3],[[1,1,1]])
+        start=next(replay(tape,0,"add",48,16,.1,0))
+        self.assertFalse(start[1])
+        np.testing.assert_array_equal(start[3],[[0,0,0]])
+
     def test_existing_near_and_distant_curve_is_reproduced(self):
         got = limits(np.array([0.,48.,96.,128.,192.,256.,384.]),48,16)
         np.testing.assert_equal(got,[16,16,256,256,316,1986,65536])
@@ -256,7 +301,8 @@ def main():
     p.add_argument("--radii",type=int,nargs="+",default=[48])
     p.add_argument("--windows",type=int,nargs="+",default=[0])
     p.add_argument("--cases",choices=["null","remove","add"],nargs="+",default=["null","remove","add"])
-    p.add_argument("--dt",type=float,default=.1)
+    p.add_argument("--dt",type=float,default=.85,
+                   help="uniform seconds per 16-path face publication, not frame time")
     p.add_argument("--every",type=int,default=0,help="repeat edit every N fresh paths; 0 is one edit")
     a = sub.add_parser("assess")
     a.add_argument("plan",type=Path)
