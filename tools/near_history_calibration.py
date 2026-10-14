@@ -127,6 +127,22 @@ def power_limits(distances, power):
     return np.where(distances ** 2 >= 76800., 65536., curved)
 
 
+def whole_limits(distances, scale, exponent):
+    """One free power law over all distances, bounded only by stored evidence.
+
+    Scale is the distance at which unrounded weight equals one, not an edit
+    radius. Neither coefficient inherits the legacy 48/256 anchor or cutoff.
+    The ceiling avoids overflow and cannot cut any supported existing weight.
+    """
+    distance = np.asarray(distances, dtype=float)
+    if (not np.isfinite([scale, exponent]).all() or scale <= 0 or exponent <= 0
+            or not np.isfinite(distance).all() or np.any(distance < 0)):
+        raise ValueError("finite nonnegative distances and positive curve coefficients required")
+    with np.errstate(divide="ignore"):
+        logarithm = exponent * (np.log(distance) - np.log(scale))
+    return np.floor(np.exp(np.minimum(logarithm, np.log(65536.))) + .5)
+
+
 def edit_distances(tape):
     sites = np.asarray([s[0] for s in tape["sites"]])
     edits = np.asarray(tape.get("edits", [tape["edit"]]))
@@ -155,7 +171,7 @@ def display_step(display, confidence, mean, second, weight, dt):
 
 
 def replay(tape, window, case, radius, near, dt, every, checkpoints=None, literal=False,
-           power=None, maximum=65536):
+           power=None, maximum=65536, whole=None):
     before, after = [s["data"][window] for s in tape["states"]]
     sides = (before, after) if case != "add" else (after, before)
     if case == "null" or case.endswith("before"):
@@ -176,7 +192,8 @@ def replay(tape, window, case, radius, near, dt, every, checkpoints=None, litera
         display.fill(0.)
         confidence.fill(.125)
     distance = edit_distances(tape)
-    cap = (power_limits(distance, power) if power is not None else
+    cap = (whole_limits(distance, *whole) if whole is not None else
+           power_limits(distance, power) if power is not None else
            np.full(n, float(near)) if literal else
            limits(distance, radius, near) if near else np.full(n, 65536.))
     # Legacy h0 is retain-all. Literal mode bypasses BOTH the prior-derived
@@ -242,25 +259,36 @@ def make_plan(args):
         view = (tape.get("views") or {}).get(args.view)
         if view is None:
             raise ValueError("requested view is not an authored tape station")
-    if args.equations:
+    whole_curves = getattr(args, "whole_curves", None)
+    if args.equations or whole_curves:
         if args.histories is not None or args.radii is not None or args.policies is not None or args.literal:
             raise ValueError("equations cannot be combined with literal/legacy history options")
-        if len(set(args.equations)) != len(args.equations):
+        equations = args.equations or []
+        if len(set(equations)) != len(equations):
             raise ValueError("duplicate equation")
         pairs = []
-        for equation in args.equations:
+        for equation in equations:
             if equation == "baseline":
-                pairs.append((48,16,None,"baseline-"))
+                pairs.append((48,16,None,"baseline-",None))
             elif equation == "near16":
-                pairs.append((16,16,None,"near16-"))
+                pairs.append((16,16,None,"near16-",None))
             elif equation.startswith("power"):
                 power = int(equation[5:])
                 power_limits(np.array([0.]), power)
-                pairs.append((48,256,power,equation+"-"))
+                pairs.append((48,256,power,equation+"-",None))
             else:
                 raise ValueError("equations: baseline, near16 or power<positive integer>")
+        for curve in whole_curves or []:
+            coefficients = tuple(map(float, curve.split(":")))
+            if len(coefficients) != 2:
+                raise ValueError("whole curves must be scale:exponent")
+            whole_limits(np.array([0.]), *coefficients)
+            tag = "whole-s{}-p{}-".format(*(format(v,"g").replace(".","d") for v in coefficients))
+            if any(p[3] == tag for p in pairs):
+                raise ValueError("duplicate whole curve")
+            pairs.append((0,0,None,tag,coefficients))
     else:
-        pairs = [(r,h,None,"") for r,h in policy_pairs(args.histories,args.radii,args.policies)]
+        pairs = [(r,h,None,"",None) for r,h in policy_pairs(args.histories,args.radii,args.policies)]
     if args.maximum < tape["batch_paths"] or args.maximum > 65536:
         raise ValueError("maximum must be in [native batch size, 65536]")
     if args.checkpoints is not None and (len(set(args.checkpoints)) != len(args.checkpoints)
@@ -332,15 +360,15 @@ def make_plan(args):
         for case in args.cases:
             every = args.null_every if case == "null" and args.null_every is not None else args.every
             # Cold/steady controls do not apply edit equations; render once.
-            for radius, history, power, prefix in (pairs[:1] if case.startswith(("cold-","static-")) else pairs):
+            for radius, history, power, prefix, whole in (pairs[:1] if case.startswith(("cold-","static-")) else pairs):
                 for paths, after, raw, display, confidence, weight in replay(
                         tape, w, case, radius, history, args.dt, every, args.checkpoints, args.literal,
-                        power, args.maximum):
+                        power, args.maximum, whole):
                     name = f"{prefix}{case}-r{radius}-h{history}-w{w}-p{paths}"
                     target = "after" if after else "before"
                     save(name, display, confidence, case=case, radius=radius, history=history,
                          policy=prefix.rstrip('-') or f"r{radius}-h{history}",
-                         curve_power=power, maximum_weight=args.maximum,
+                         curve_power=power, whole_curve=whole, maximum_weight=args.maximum,
                          window=w, fresh_paths=paths, replay_seconds=paths / 16 * args.dt,
                          event_interval_paths=every,
                          target=f"near-{target}-reference", weight_p50=float(np.median(weight)),
@@ -481,6 +509,25 @@ def assess(args):
 
 
 class Tests(unittest.TestCase):
+    def test_whole_curve_has_no_legacy_anchor_or_spatial_handoff(self):
+        np.testing.assert_equal(whole_limits([0,8,16,32,48,64,128,256,512],16,4),
+                                [0,0,1,16,81,256,4096,65536,65536])
+        for scale in (4,10,20,32):
+            for power in (1,2.5,6):
+                self.assertTrue(np.all(np.diff(whole_limits(np.arange(1024),scale,power)) >= 0))
+        for distance,scale,power in [([-1],2,4),([1],0,4),([1],2,float("nan"))]:
+            with self.assertRaises(ValueError):
+                whole_limits(distance,scale,power)
+
+    def test_whole_curve_only_reduces_existing_evidence(self):
+        a = np.ones((1,2,2,6))
+        b = np.zeros_like(a)
+        tape = dict(states=[dict(data=a),dict(data=b)],batch_paths=16,warm_paths=4096,
+                    sites=[[[0,0,0],0],[[512,0,0],0]],edit=[0,0,0],steps=1)
+        row = list(replay(tape,0,"remove",0,0,.85,0,[16],whole=(16,4)))[-1]
+        np.testing.assert_equal(row[5],[16,4112])
+        np.testing.assert_allclose(row[2][:,0],[0,4096/4112])
+
     def test_power_equation_anchors_and_unchanged_far_policy(self):
         distances = np.array([0.,1.,8.,16.,24.,32.,48.,96.,192.,256.,384.])
         np.testing.assert_equal(power_limits(distances,4),[0,0,0,3,16,51,256,256,316,1986,65536])
@@ -642,6 +689,7 @@ def main():
     p.add_argument("--radii",type=int,nargs="+",help="default: 48")
     p.add_argument("--policies",nargs="+",help="explicit radius:history shortlist, instead of histories/radii")
     p.add_argument("--equations",nargs="+",help="baseline, near16, power2, power4, power6; no literal/history flags")
+    p.add_argument("--whole-curves",nargs="+",help="free scale:exponent power laws over all distances; may include equation controls")
     p.add_argument("--maximum",type=int,default=65536,help="statistical weight ceiling, independent of edit caps")
     p.add_argument("--windows",type=int,nargs="+",default=[0])
     p.add_argument("--cases",choices=["null","remove","add","cold-before","cold-after",
