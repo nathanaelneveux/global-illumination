@@ -1,0 +1,502 @@
+SOURCE REVIEW — VOXEL GLOBAL ILLUMINATION
+2026-10-13
+
+Purpose: code-based handoff to the agent with project history.
+
+ASSESSMENT
+
+The transport code has useful internal boundaries and substantial correctness
+machinery. The project is nevertheless a demo application with an embedded GI
+subsystem, not yet a reusable library. The main architectural problem is ownership
+across host adaptation, runtime state, diagnostics, and rendering. Splitting large
+files or adding src/lib.rs alone would not resolve it.
+
+The clearest performance opportunities are outside the ray estimator: collider
+candidate discovery, repeated scene-change discovery, live per-voxel ingestion,
+and a topology publication path that bypasses the ordinary value-upload budget.
+These are source-level cost findings; this review does not establish their
+relative frame-time impact or claim measured speedups.
+
+I found specific cleanup candidates, not evidence that a large portion of the
+production solver is dead. Much of the apparent duplication is reference,
+research, or parity-test code that should survive a library extraction.
+
+SCOPE AND EVIDENCE
+
+- No repository documentation or AGENTS.md file was opened. Findings come from
+  source, manifests, compiler output, focused tests, and relevant installed
+  dependency implementation source. Existing comments were treated as claims
+  to check against implementation, not as project-history authority.
+- Reviewed the runtime wiring, scene ingestion/storage, scheduling/publication,
+  source adaptation, CPU/GPU transport boundaries, GPU packing/display, shaders,
+  colliders, diagnostics coupling, and representative tests/analysis tools.
+  This is not a claim of line-by-line inspection of every research/test module.
+- Other work was being committed concurrently. Review began at
+  56e4589757ce33ed486e14aadbf92803728b3e0a. References below were checked against
+  the source snapshot at a68a1d820f3dd83caa2fe51c9edcb941342ab69b, when the tree
+  was clean. The snapshot contains 104 Rust/WGSL/Python/manifest files; a local
+  copy and SHA-256 manifest are in ignored target/code-review-2026-10-13/.
+  Use symbol names as well as line numbers when applying this to a later tree.
+- No implementation was changed for this review. No gameplay, window capture,
+  native GPU performance run, or visual-quality comparison was performed.
+- Build/test results below were collected during the moving review window;
+  they are supporting evidence, not a full CI signoff of the final snapshot.
+
+Priority meanings: P1 = address before presenting this as a reusable library;
+P2 = concrete issue or material scaling risk worth a focused change;
+P3 = cleanup or profiling candidate. Confidence distinguishes observed code
+behavior from its unmeasured practical impact.
+
+PRIORITIZED FINDINGS
+
+F1. P1 — The GI subsystem cannot be consumed independently of the demo
+Confidence: high. Category: architecture/API.
+
+Evidence:
+  Cargo.toml:1-36; src/main.rs:13;
+  src/voxel_gi/mod.rs:84-111;
+  src/voxel_gi/bvw.rs:10,26-28,77-81;
+  src/voxel_gi/display.rs:195-209;
+  src/voxel_gi/render.rs:22-51.
+
+Cargo exposes only a binary target. pub mod voxel_gi does not provide a library
+crate. More importantly, the plugin unconditionally installs systems using the
+demo's PrototypeWorld, its concrete chunk messages, generator, and VoxelWorld
+resources. Display publication obtains a BVW-specific material handle, and the
+material extension hardcodes BVW's vertex layout. Terrain and asset preparation
+also reach into GI's private rendering module. Diagnostics reaches back into
+the player/application, while production paths call diagnostics/validation.
+
+The display shader is an AssetServer path, shaders/voxel_transport.wgsl, whereas
+the compute shader is embedded with include_str!. A downstream consumer would
+need an explicit shader provisioning contract; depending on the crate alone
+would not install that asset. Cargo also makes the demo's physics, controller,
+inspector, and asset-loading dependencies mandatory, with development/dynamic
+linking features enabled by default.
+
+Recommended direction:
+  Establish one real library boundary before multiplying crates. Give the core
+  an explicit immutable page/region snapshot or delta input, source/material
+  input, settings, and query/output contract. Put PrototypeWorld adaptation and
+  the demo controls in the application or a named optional adapter. Keep Bevy
+  integration if Bevy is the intended platform; a completely engine-independent
+  rewrite is not necessary. Make renderer/vertex-layout requirements explicit,
+  and register/embed the library-owned shader. Move demo-only dependencies out
+  of the library dependency surface. Export the smallest useful API.
+
+Acceptance check:
+  A small separately compiled consumer can instantiate the supported plugin,
+  supply a tiny world, publish an edit, and query freshness without importing
+  PrototypeWorld, copying private modules, or copying the demo asset directory.
+  Separately check rendering with the supported mesh/material adapter. Keep the
+  existing app building at each extraction checkpoint.
+
+F2. P1 — Display-cache allocation has no device-limit failure path
+Confidence: high for the missing checks; failure requires sufficient residency.
+Category: robustness/capacity.
+
+Evidence:
+  src/voxel_gi/render.rs:28,696-741,748-800;
+  src/voxel_gi/render.rs:37-40;
+  compare src/voxel_gi/gpu.rs:170-179.
+
+Display capacity is resident_count + max(resident_count / 2, 16,384). Each slot
+uses 208 bytes. CPU mirrors are allocated first; prepare_buffers then allocates
+and maps GPU buffers and returns Self, without checking max_buffer_size or
+max_storage_buffer_binding_size. The entire storage buffer is bound by the
+material. Hash growth can also repeatedly double its allocation. The compute
+UploadBuffer path already checks both limits and returns a recoverable error.
+
+For example, 500,000 resident probes reserve 750,000 slots, or 156,000,000 bytes
+for the probe buffer alone. That exceeds a device configured with a 128 MiB
+storage-binding limit. This is a conditional example, not a claim about the
+current machine's limit. Failure can reach GPU validation/allocation rather
+than a controlled capacity response. Selecting CPU transport does not solve
+the display storage constraint.
+
+Recommended direction:
+  Calculate probe/hash sizes with checked arithmetic and validate both device
+  limits before large allocation. Return a structured failure while preserving
+  the live cache generation. Define an explicit supported residency/capacity
+  policy; multi-buffer paging can be a later architecture decision. Headroom
+  must fit the same limits as occupied records.
+
+Acceptance check:
+  Pure boundary tests around configured limits, growth headroom, hash growth,
+  and arithmetic overflow. If GPU allocation/upload changes, add a focused
+  restricted-limit/native upload check and verify the old generation survives
+  rejection. Do not silently drop receivers to make allocation succeed.
+
+F3. P2 — A small topology edit can drain the entire value backlog synchronously
+Confidence: high. Category: frame-budget enforcement.
+
+Evidence:
+  src/voxel_gi/display.rs:271-287;
+  src/voxel_gi/render.rs:999-1028,1045-1087.
+
+The regular value path uses try_lock and a time budget, leaving unconsumed
+dirty keys queued. The topology path passes all runtime.gpu_value_dirty.keys()
+to patch_gpu_topology, takes a blocking mutex, calls patch_values_locked over
+the entire set, and then clears that queue.
+
+Consequently, one topology edit during an accumulated ordinary lighting backlog
+can perform world-sized value encoding under the shared publication lock on
+the main thread. The bounded scene-page publication and normal value-upload
+budget do not bound this work. Atomic donor retirement/new-face publication is
+necessary, but unrelated old dirty values need not join that transaction.
+
+Recommended direction:
+  Track the values required by the topology transaction separately from ordinary
+  value dirtiness. Publish topology plus its required values atomically; leave
+  unrelated values for the bounded path. Preserve generation/slot consistency.
+
+Acceptance check:
+  Seed a large ordinary value backlog and one local topology delta. Verify
+  topology-required values are coherent and unrelated backlog remains queued.
+  Reuse the targeted render-generation/publication regressions. Profile the
+  main-thread tail with this trigger before claiming a frame-time improvement.
+
+F4. P2 — Collider discovery repeats unbounded work even with all workers occupied
+Confidence: high for repeated work; timing impact not measured.
+Category: gameplay performance.
+
+Evidence: src/chunk_colliders.rs:115-120,155-199.
+
+Every invocation scans all chunk entities, including already-ready chunks,
+collects pending candidates, and sorts the full pending list by distance. For
+each pending LOD-0 candidate it looks up/clones chunk data and checks the cache
+before checking the two-worker limit. A cache miss with both workers occupied
+continues to the next candidate instead of ending candidate discovery.
+
+The job/publication limits therefore do not bound scheduling overhead. With C
+loaded chunks and P pending chunks this includes O(C + P log P) work each frame,
+plus potentially P chunk lookups, while no new worker can start. A fully ready
+world still incurs the initial all-chunk scan.
+
+Recommended direction:
+  Separate job-validation queries from a Without<ChunkColliderReady> candidate
+  query. Maintain pending candidates from relevant lifecycle events, or use a
+  bounded scan and select only available nearest work. Cache hits/empty chunks
+  still deserve progress when workers are full, so an unconditional early
+  return would be an incomplete fix. Bound that cheap publication search too.
+
+Acceptance check:
+  Cover full worker slots, large pending sets, cache-hit progress, edits during
+  in-flight work, and nearest eligible selection. Preserve the existing stale
+  result/hash checks and old colliders until replacements are ready. Measure
+  this scheduler separately from collider construction.
+
+F5. P2 — One edited page performs tens of thousands of live locked voxel reads
+Confidence: high for cost; mixed-time snapshot consequence is a risk to test.
+Category: ingestion performance and snapshot contract.
+
+Evidence:
+  src/voxel_gi/bvw.rs:39-43,60-65,119-152,200-213;
+  src/terrain.rs:175-200,260-283;
+  dependency bevy_voxel_world 0.17.0, src/voxel_world.rs:159-190.
+
+Chunk updates and explicit individual edits both request full page resampling.
+For each 32-cubed page, the worker calls get_voxel_fn 32,768 times. Inspection of
+the dependency implementation shows that each lookup first linearly searches
+a captured write buffer, then consults the shared modified-voxel store, then
+usually takes a chunk-map read lock and clones a chunk handle. These are not
+32,768 reads from an already captured immutable dense page. If fallback terrain
+generation is needed, generated_voxel also repeats noise work which the normal
+chunk generator amortizes by column.
+
+This runs on a worker, so it is chiefly an edit-response/throughput and lock
+contention issue, not automatically a main-thread frame spike. The closure also
+retains shared live stores: the completed TransportScene is immutable, but the
+input sampling is not demonstrably a single immutable world generation. Rapid
+edits may produce a transient mixed-time page; persistent incorrect publication
+was not reproduced in this review.
+
+Recommended direction:
+  Capture immutable chunk data and an edited-voxel overlay once per affected
+  page, or apply exact edit deltas to the previous immutable page when those
+  deltas are authoritative. Keep full resampling for coarse/unknown changes.
+  Respect the timing of ChunkWillUpdate: blindly replacing live lookups with
+  the previous chunk snapshot can lose pending edits.
+
+Acceptance check:
+  Compare resulting pages against the current sampler for boundary edits,
+  multiple edits in one frame, edits during worker execution, unloaded/reloaded
+  pages, and generator fallback. Count per-page store acquisitions and measure
+  edit-to-publication latency; retain stale-result rejection.
+
+F6. P2 — Multiple caches independently rediscover the same scene delta
+Confidence: high for scaling structure; prioritize using measured stage cost.
+Category: duplicated work and architecture.
+
+Evidence:
+  src/voxel_gi/world.rs:356-388;
+  src/voxel_gi/geometry.rs:30-104,180-214;
+  src/voxel_gi/gpu_scene.rs:54-98;
+  src/voxel_gi/sky_cache.rs:250-307;
+  src/voxel_gi/emission.rs:61-103.
+
+The scene builder already knows changed/removed pages, but downstream consumers
+repeatedly compare old/new region maps. SceneChanges scans both residency maps;
+GeometryChange compares every occupied page against every changed bound;
+PackedScene collects and sorts all region entries on each scene update;
+SkyCache rediscovers changed regions, then visits all buckets and tests changed
+blockers against lights; emitter invalidation does another dependency scan.
+
+Arc identity avoids repacking unchanged payloads, but does not eliminate these
+discovery passes. Representative upper bounds include O(P*D) for page/bound
+checks, O(R log R) for packing order, and O(B*D*L) for bucket/blocker/light tests,
+where P=occupied pages, D=changed bounds/regions, R=regions, B=cached buckets,
+and L=directional lights. Early exits improve typical cases. Much of this is
+worker work and affects lighting freshness even when frame dispatch is cheap.
+
+Recommended direction:
+  Produce a canonical actual region delta once, after determining which input
+  notifications changed content/residency. Pass it to packing, geometry-history,
+  emitter, and sky-cache maintenance. Keep stable allocation ordering without
+  sorting the entire unchanged world. Spatially restrict changed-bound/bucket
+  checks where justified. Top-level skip bounds and long sun occlusion paths can
+  change beyond edited regions; preserve those dependencies explicitly.
+
+Acceptance check:
+  Hold a single edit fixed while increasing resident world size; measure scene
+  preprocessing, packing, sky invalidation, and edit freshness separately.
+  Assert unchanged payload/slot reuse and correct distant sunlight invalidation.
+  Do not promise all work becomes O(delta), and do not begin with a wholesale
+  persistent-map or acceleration-structure rewrite.
+
+F7. P2 — Bevy light visibility does not participate in the transport source state
+Confidence: high for behavior; desired source policy needs a deliberate choice.
+Category: host-integration correctness.
+
+Evidence: src/voxel_gi/sources.rs:83-150.
+Dependency comparison: bevy_pbr 0.19.1, src/render/light.rs, extract_lights.
+
+The adapter queries light, GlobalTransform, and optional EnergyEmitter only.
+Explicitly hiding a light or its parent changes none of those values. The
+transport source list remains equal, so its contribution and source revision
+remain unchanged. Bevy's raster extraction filters lights using visibility.
+Thus hiding a Bevy light can remove its raster contribution while its GI
+contribution persists and is still considered current.
+
+Recommended direction:
+  Define explicit enable/visibility semantics for imported Bevy lights and for
+  standalone EnergyEmitter entities. Respect explicit inherited hiding if that
+  is the intended adapter contract, or expose a clearly separate GI enable flag.
+  Do not simply copy camera ViewVisibility culling: an offscreen emitter must
+  still illuminate the persistent world field.
+
+Acceptance check:
+  Hide/unhide a light, hide/unhide its parent, remove the light component, and
+  move the camera away while keeping the light enabled. Check source revisions,
+  relighting, and continued offscreen transport. Include non-visible bands.
+
+F8. P2 — Core behavior is configured through process-global diagnostic state
+Confidence: high. Category: library configuration/testability.
+
+Evidence:
+  src/voxel_gi/mod.rs:36-37,113-131;
+  src/voxel_gi/work.rs:147;
+  src/voxel_gi/dispatch.rs:407-408;
+  src/voxel_gi/world.rs:511;
+  src/voxel_gi/validation.rs and validation/retention_audit.rs.
+
+The main plugin reads environment variables for continuous mode, retention,
+summary policy, and backend choice. Invalid retention launch values can panic
+inside plugin construction. In debug builds, ordinary transport/history code
+calls into validation for history limits/audit decisions, independently of
+whether the host installed the diagnostics plugin. Some diagnostic settings
+are cached globally with OnceLock.
+
+This makes two App instances in one process harder to configure independently,
+makes host-visible behavior depend on inherited shell state, and makes debug
+versus release semantics harder to reason about. An optional HUD/plugin is not
+a complete isolation boundary when its policy is called from the solver.
+
+Recommended direction:
+  Parse environment/CLI settings at the demo boundary and supply typed backend,
+  retention, and diagnostic configuration. Keep valid algorithm policies in
+  the core; give diagnostics explicit observation hooks or a feature boundary.
+  Return configuration errors at the application boundary instead of panicking
+  from a library plugin. Preserve current defaults during extraction.
+
+Acceptance check:
+  Two independent configurations can coexist without changing process globals.
+  Normal debug and release runs use the same transport policy when given equal
+  settings. Diagnostic overrides are opt-in and identified in output evidence.
+
+F9. P2 — Zero-energy sources still incur shadow rays; static source lists are
+          rebuilt and sorted each frame
+Confidence: high for work performed; importance depends on source count.
+Category: straightforward performance cleanup.
+
+Evidence:
+  src/voxel_gi/sources.rs:98-141,153-160;
+  src/voxel_gi/tracer.rs:651-688;
+  assets/shaders/voxel_trace.wgsl:377-399.
+
+Source filtering checks positions, directions, and range, but retains sources
+with zero energy. CPU and GPU direct-light evaluation trace their shadows before
+multiplying by zero. A zero/default EnergyEmitter or zero-intensity Bevy light
+can therefore add per-receiver/per-bounce ray work with no contribution.
+
+The synchronization system also clears, rebuilds, canonicalizes, and compares
+the full source list every Update, even for an entirely static scene. The Local
+vectors reuse capacity, so this is repeated traversal/sorting rather than an
+assertion of fresh vector allocation every frame.
+
+Recommended direction:
+  Drop sources with zero contribution in every transported band and in
+  custom_visible. Preserve infrared-only and ionizing-only sources. Then use
+  source/transform/environment/visibility change and removal tracking to avoid
+  normalization when nothing relevant changed. Do not introduce edit debounce.
+
+Acceptance check:
+  Zero visible + zero non-visible sources contribute no work; non-visible-only
+  emitters still transport correctly. Test component removal/despawn as well
+  as changes, and verify the normalized source snapshot remains equivalent.
+
+SMALLER CLEANUP AND DESIGN DEBT
+
+C1. Release-only unused items (P3, compiler-confirmed during review)
+  A release check reported EYE/TARGET in src/canyon_scene.rs:9-10,
+  ProbeStore::keys in field.rs:143, validation_mirror in render.rs:158, and
+  MAIN_STAGE_NAMES/DISPLAY_STAGE_NAMES in telemetry.rs:10,31. Gate helpers with
+  the configurations that use them or remove them if their callers are gone.
+  This is six warnings, not proof of a large dead production subsystem. Avoid
+  blanket allow(dead_code). Removing unreachable helpers may not change binary
+  size because optimization already removes them.
+
+C2. State duplicated across ownership boundaries (P3)
+  SurfaceProbe.trace_mask (world.rs:435) is written by production publication,
+  but its reads are in test/reference paths. Distinguish it from the necessary
+  ProbeWork.trace_mask. Move the probe-side reference state into test fixtures
+  or gate it if no production consumer is intended; do not claim a struct-size
+  reduction without checking padding.
+
+  VoxelGiRuntime.enabled is a diagnostic toggle mirror of material display state
+  (diagnostics.rs:224-226; diagnostics/tuning.rs:126-134). It does not control
+  transport. Read/write one canonical display setting rather than having UI
+  state inside the transport owner.
+
+  GpuTransportCache has two coordinate-keyed maps, slots and hash_slots
+  (render.rs:145-147), with the same membership. One map to a record containing
+  both indices could remove repeated key/hash metadata and synchronization
+  obligations. Check access patterns and measured memory before prioritizing.
+
+C3. Runtime ownership is too broad; file count is not the problem (P2 design debt)
+  VoxelGiRuntime (mod.rs:218-290) owns ingestion, histories, work selection,
+  workers/backends, statistics, and the display publication lifecycle. Display
+  preparation is spread across gpu_task/gpu_snapshot/gpu_prepared Options,
+  flags, and journals. Split this into named internal state owners with methods
+  that preserve invariants; encode mutually exclusive display preparation
+  phases explicitly. Keep the live generation independent from its replacement.
+  Scene construction and scene publication deliberately overlap, so do not
+  force every pair of Options into a mutually exclusive enum. Do not scatter
+  everything into separate ECS Resources just to reduce struct size.
+
+C4. Python verification needs a reproducible entry point (P3)
+  Analysis scripts import NumPy/Pillow, but no Python dependency manifest was
+  found in the file inventory. The available system Python could not import
+  them. Several unittest classes live in ordinary scripts, outside the default
+  test*.py discovery pattern. Provide an explicit tool environment/dependency
+  manifest and one test command that includes those tests. This is a harness
+  reproducibility issue, not evidence that the numerical analysis is wrong.
+
+C5. Lower-priority shader work (P3; profile before investing)
+  assets/shaders/voxel_transport.wgsl:269-270 computes sky_irradiance before a
+  light-id/enable_diffuse guard. Moving the guard first expresses the intended
+  skipped work more clearly; a shader compiler may already eliminate it.
+  The normal reconstructed path performs center/neighbor lookups and later
+  performs another center lookup for emission. Consider reuse if it fits the
+  shader boundaries. Do not weaken corner reconstruction merely to reduce
+  lookups, and do not claim a gain without GPU evidence.
+
+WHAT TO KEEP / WHAT NOT TO CALL DEAD
+
+- Immutable Arc-backed regions, explicit scene/source revisions, late-result
+  rejection, and the distinction between freshness, sample coverage, and
+  convergence are valuable contracts.
+- Display priors/history are separated from simulation measurements. Preserve
+  that separation during extraction and performance work.
+- Compact worker face records, reused scratch storage, bounded CPU work, and
+  reuse of Bevy's GPU device already address substantial avoidable overhead.
+- GPU cache generations, topology preflight, atomic probe/hash publication,
+  and release of the shared lock before driver submission are worth retaining.
+- CPU/GPU estimator duplication and independent reference tests are useful
+  verification. The two implementations need shared fixtures/parity checks,
+  not necessarily a generated common algorithm or premature abstraction.
+- reconstruction/research and several study modules are test-only. Count their
+  maintenance cost separately from shipped runtime work. Keep valuable oracles;
+  use project history to decide whether any experiment has actually expired.
+- naga_oil has no obvious application call sites but enables override_any used
+  by the material's shader overrides through dependency feature unification.
+  It is not safely removable based on an unused-import search.
+- The CPU byte mirrors and GPU buffers have distinct publication/lifetime
+  roles. They are not interchangeable copies to delete casually.
+- Similar FIFO-plus-set queues have differing capture/removal semantics. Share
+  an implementation only after verifying identical invariants. A small amount
+  of explicit duplication is preferable to a policy-heavy generic queue.
+- Do not replace shared-corner sunlight or corner-reconstructed indirect GI,
+  change the transport model, or drop all-loaded-world fairness as part of
+  cleanup. These findings do not supply evidence for such changes.
+
+VERIFICATION PERFORMED
+
+1. cargo check --all-targets --no-default-features --message-format=short
+   Passed without warnings at the time run.
+
+2. cargo clippy --all-targets --no-default-features --message-format=short
+   Passed; five warnings in concurrently added near_history calibration tests
+   (excessive float precision and a constant assertion). These are minor test
+   cleanup, not runtime defects. Source line numbers changed during the review.
+
+3. cargo check --release --no-default-features --message-format=short
+   Passed with the six unused-item warnings listed in C1.
+
+4. cargo test --no-default-features voxel_gi::work::tests -- --nocapture
+   Passed: 6 tests. Covers compact publication/reference equivalence and
+   retention/freshness behavior among the focused checks; 276 filtered out.
+
+5. cargo test --no-default-features
+     terrain_shader_composes_with_bevys_real_pbr_modules_without_a_window
+     -- --nocapture
+   Passed: 1 test. Shader composition/validation, not a rendered-image test.
+
+6. cargo test --no-default-features
+     live_values_never_wait_for_render_and_resume_without_losing_dirty_keys
+     -- --nocapture
+   Passed: 1 test. Confirms the existing ordinary bounded value path; does not
+   cover the topology-backlog bypass described in F3.
+
+7. python3 -m unittest discover -s tools -p '*.py'
+   Unsuccessful: unittest reported 40 entries, comprising 30 passing tests and
+   10 module-import errors from missing NumPy/Pillow in the system Python.
+   This was not a complete passing Python suite. No packages were installed.
+
+No full test suite or stress profile was run. No benchmark gain, visual pass,
+interactive frame-pacing claim, or absence-of-bugs claim follows from these
+checks. Compilation used --no-default-features; default development dynamic
+linking and other platform/feature combinations were not validated.
+
+SUGGESTED HANDOFF SEQUENCE
+
+1. Reconcile these findings against the current branch and project history.
+   Decide the supported host/renderer contract and explicit light-enable
+   semantics. Keep the existing rendering defaults as the behavioral baseline.
+2. Make small independent fixes for device-limit handling, zero-energy sources,
+   and obvious configuration-specific dead helpers. Verify only affected paths.
+3. Fix the topology/value budget boundary and collider discovery in separate
+   changes. Preserve atomicity/stale-job rejection and test the exact triggers.
+4. Introduce a coherent immutable ingestion/delta contract, then use it to
+   remove duplicated change discovery. Measure preprocessing time, frame-time
+   tails, and lighting/edit freshness together at a fixed scene and settings.
+5. Extract the public library and optional/demo adapters with a minimal external
+   consumer test. Move environment parsing and diagnostic ownership outward.
+   Refactor state ownership incrementally, preserving buildable checkpoints.
+6. Improve Python test/dependency discovery separately from algorithm changes.
+
+Each commit should explain the invariant it preserves and the focused check
+actually performed. Keep performance experiments separate from architecture
+and presentation changes. Use history to choose among alternatives, not to
+dismiss directly observable costs or to assume that removing a reference path
+is safe.
