@@ -18,7 +18,7 @@ from cave_sample_analysis import load_rgb
 from visual_quality import within
 
 PROFILE = Path(__file__).parent / "quality_profiles/cave-user-2048.json"
-SINGLE_CHECKPOINTS = (0, 16, 32, 64, 128, 256, 512, 1024, 2048, 3072, 4096)
+SINGLE_CHECKPOINTS = (0, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048, 3072, 3584, 4096)
 # Include the early part of consecutive late cycles, not only their best ends.
 REPEAT_CHECKPOINTS = (0, 16, 64, 128, 512, 1024, 2048, 2064, 2080, 2112,
                       2176, 2192, 2208, 2240, 2304, 3072, 4096)
