@@ -216,6 +216,32 @@ def sustained(rows):
     return None
 
 
+def summarize(results):
+    """Keep an observed recovery separate from a qualified settled-start edit.
+
+    A noisy pre-edit image can recover, but cannot establish response latency
+    from an already settled scene. Warm controls use their old-state target.
+    """
+    temporal = [r for r in results if "kind" not in r]
+    warm = {(r["case"], r["window"]): r["accepted"] for r in temporal
+            if r["case"].startswith("warm-")}
+    keys = sorted({(r["case"], r["radius"], r["history"], r["window"]) for r in temporal})
+    summary = []
+    for case, radius, history, window in keys:
+        rows = [r for r in temporal if (r["case"], r["radius"], r["history"], r["window"])
+                == (case, radius, history, window)]
+        recovery = sustained(rows)
+        settled_start = warm.get(("warm-after" if case == "add" else "warm-before", window), False)
+        summary.append(dict(case=case, radius=radius, history=history, window=window,
+                            sustained=recovery,
+                            settled_start=settled_start if not case.startswith("warm-") else None,
+                            response_qualified=not case.startswith("warm-") and settled_start and recovery is not None,
+                            failed_captures=sum(not r["accepted"] for r in rows),
+                            peak_flip=max(r["flip"]["mean"] for r in rows),
+                            peak_tile=max(r["flip_32px_tile_means"]["max"] for r in rows)))
+    return summary
+
+
 def assess(args):
     plan = json.loads(args.plan.read_text())
     profile = json.loads(PROFILE.read_text())
@@ -250,15 +276,7 @@ def assess(args):
         # Checkpoint expensive analysis so a later interruption is recoverable.
         args.output.write_text(json.dumps(dict(profile_id=profile["id"], complete=False,
                                                measurements=results),allow_nan=False))
-    temporal=[r for r in results if "kind" not in r]
-    keys = sorted({(r["case"],r["radius"],r["history"],r["window"]) for r in temporal})
-    summary = []
-    for key in keys:
-        rows = [r for r in temporal if (r["case"],r["radius"],r["history"],r["window"]) == key]
-        summary.append(dict(case=key[0],radius=key[1],history=key[2],window=key[3],
-                            sustained=sustained(rows), failed_captures=sum(not r["accepted"] for r in rows),
-                            peak_flip=max(r["flip"]["mean"] for r in rows),
-                            peak_tile=max(r["flip_32px_tile_means"]["max"] for r in rows)))
+    summary = summarize(results)
     output = dict(complete=True, profile_id=profile["id"], plan_sha256=digest(args.plan),
                   plan=plan, reference_replica_difference=replicas, measurements=results, summary=summary,
                   note="Fixed FLIP goal, actual 2560x1440 material captures at 67 PPD. Sustained means all captured later checkpoints pass, with two later checkpoints required; unobserved intervals are not certified. Replay seconds assume the declared per-face cadence, not measured gameplay response.")
@@ -267,6 +285,18 @@ def assess(args):
 
 
 class Tests(unittest.TestCase):
+    def test_noisy_warm_image_cannot_qualify_settled_start_response(self):
+        base = dict(radius=48, history=16, window=0, replay_seconds=0.,
+                    flip=dict(mean=.01), flip_32px_tile_means=dict(max=.02))
+        rows = [dict(base, case="warm-before", fresh_paths=0, accepted=False),
+                dict(base, case="warm-after", fresh_paths=0, accepted=True)]
+        for case in ("remove", "add"):
+            rows.extend(dict(base, case=case, fresh_paths=n, accepted=True) for n in (0,16,32))
+        arms = {r["case"]: r for r in summarize(rows)}
+        self.assertIsNotNone(arms["remove"]["sustained"])
+        self.assertFalse(arms["remove"]["response_qualified"])
+        self.assertTrue(arms["add"]["response_qualified"])
+
     def test_zero_time_compares_old_display_to_new_target(self):
         a=np.ones((1,257,1,6))
         b=np.zeros((1,257,1,6))
