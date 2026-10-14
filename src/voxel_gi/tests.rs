@@ -639,8 +639,8 @@ fn urgent_work_cannot_starve_loaded_world_sweep() {
 #[test]
 fn late_sun_evidence_wakes_a_current_receiver_without_resetting_distant_history() {
     for (changed, expected_samples) in [
-        (IVec3::ZERO, 256),
-        (IVec3::new(308, 40, 0), 4096), // wake-only: no retained bounds record
+        (IVec3::ZERO, 0),
+        (IVec3::new(31 + retention::INFLUENCE_RADIUS, 0, 0), 4096), // wake-only
     ] {
         let voxel = IVec3::ZERO;
         let mut probe = SurfaceProbe::new(voxel, 4);

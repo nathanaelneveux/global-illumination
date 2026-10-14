@@ -36,10 +36,14 @@ def analyze(folder):
     summary = report.get("retention_summary", "floors")
     if audit.get("retention_summary", "floors") != summary:
         raise ValueError("summary identity differs between report and audit")
-    if (report["profile"] != "cave" or report["spatial_retention"] != "calibrated-cave-user-2048-v1"
+    policy = report["spatial_retention"]
+    if audit.get("spatial_retention", "calibrated-cave-user-2048-v1") != policy:
+        raise ValueError("retention policy differs between report and audit")
+    if (report["profile"] != "cave" or policy not in (
+            "calibrated-cave-user-2048-v1", "whole-range-power4-scale12-v1")
             or not report["background_terrain"]["enabled"]
             or temporal["end_s"] < 180 or len(audit["sites"]) != 36):
-        raise ValueError("require complete calibrated cave with background terrain")
+        raise ValueError("require complete spatial-retention cave with background terrain")
     if audit["sites"] != reference["sites"]:
         raise ValueError("oracle and attribution receivers differ")
     if len(reference["checkpoints"]) != 6 or reference["paths_per_replicate"] != 65536:
@@ -136,7 +140,7 @@ def analyze(folder):
             note="Fixed brighter-across-checkpoints RGB normalization with .02 norm floor. Common sequence windows; paired-delta disagreement is not a formal confidence bound.",
         )
 
-    return dict(run=str(folder), summary=summary, intervals=intervals, corner_target_motion=target_motion(corners),
+    return dict(run=str(folder), policy=policy, summary=summary, intervals=intervals, corner_target_motion=target_motion(corners),
                 face_target_motion=target_motion(faces), traced_paths=report["traced_paths"],
                 max_pages=report["max_loaded_pages"], background=report["background_terrain"],
                 note="Mechanism attribution is event-complete at 36 faces; oracle samples six scene checkpoints, not every event. Counterfactuals are one-step at observed weights, not alternative trajectories. No FPS claim.")

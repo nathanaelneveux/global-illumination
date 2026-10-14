@@ -105,6 +105,20 @@ class RetentionAttributionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incomplete retention reference"):
             checkpoint_reference(ref)
 
+    def test_whole_range_policy_is_identified_without_relabeling_old_evidence(self):
+        docs = self.documents()
+        policy = "whole-range-power4-scale12-v1"
+        docs["report.json"]["spatial_retention"] = policy
+        with self.assertRaisesRegex(ValueError, "retention policy differs"):
+            self.run_analysis(docs)
+        docs["retention-audit.json"]["spatial_retention"] = policy
+        docs["retention-audit.json"]["schema_version"] = 4
+        self.assertEqual(self.run_analysis(docs)["policy"], policy)
+        for name in ["report.json", "retention-audit.json"]:
+            docs[name]["spatial_retention"] = "unknown"
+        with self.assertRaisesRegex(ValueError, "require complete"):
+            self.run_analysis(docs)
+
 
 if __name__ == "__main__":
     unittest.main()

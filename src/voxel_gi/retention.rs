@@ -1,4 +1,4 @@
-//! Sampling-calibrated statistical retention. This is a change
+//! Whole-range statistical retention. This is a measured change
 //! prior, not a transport bound or a convergence certificate. Only weights are
 //! capped; measured means, moments, sequences and display priors stay intact.
 //!
@@ -10,35 +10,41 @@ use std::sync::Arc;
 
 use bevy::{platform::collections::HashMap, prelude::*};
 
-use super::geometry::{Bounds, GeometryChange, NEAR_HISTORY, RELIGHT_RADIUS};
+use super::geometry::{Bounds, GeometryChange};
+use super::tracer::HISTORY_LIMIT;
 
-/// Calibrated against tools/quality_profiles/cave-user-2048.json. Recalibrate
-/// work against the same fixed appearance goal when changing the estimator.
-/// Moving the quality goal itself must also move the baseline work anchor.
-pub(super) const QUALITY_PATHS: f64 = 2048.0;
-const BASELINE_QUALITY_PATHS: f64 = 2048.0;
-const STALE_ERROR: f64 = 0.03;
-pub(super) const INFLUENCE_RADIUS: i32 = 278; // ceil(48 / sqrt(.03))
+/// Selected by native-material comparisons, not anchored to a near/far floor.
+/// Requalify against the fixed appearance goal when changing the estimator.
+const DISTANCE_SCALE: i64 = 12;
+#[cfg(debug_assertions)]
+pub(super) const POLICY_NAME: &str = "whole-range-power4-scale12-v1";
+
+/// Conservative binning reach: beyond this radius H(d) cannot reduce any
+/// supported history. This is derived from the statistical ceiling, not a
+/// transport/light range. Later changed sunlight contributes its own origins.
+pub(super) const INFLUENCE_RADIUS: i32 = {
+    let threshold = HISTORY_LIMIT as i64 * DISTANCE_SCALE.pow(4);
+    let mut distance = 0_i64;
+    while distance.pow(4) < threshold {
+        distance += 1;
+    }
+    distance as i32
+};
 const PAGE_EVENTS: usize = 8;
 
-/// Eight-voxel bands, with exact edges at the near-floor discontinuity and
-/// the current prior's no-cut boundary. The summary stores distances, not
-/// sample caps: recalibrating estimator work does not bake in old weights.
-const BAND_COUNT: usize = 37;
+/// Eight-voxel distance compression, with the final edge at the derived reach.
+/// These are conservative journal bins, not steps in the retention equation.
+/// Distances rather than sample caps keep summary storage policy-independent.
+const BAND_COUNT: usize = (INFLUENCE_RADIUS as usize).div_ceil(8) + 1;
 const BAND_STARTS: [i64; BAND_COUNT] = {
     let mut starts = [0; BAND_COUNT];
     let mut index = 0;
-    let mut distance = 0;
-    while distance <= 272 {
+    while index < BAND_COUNT - 1 {
+        let distance = index as i64 * 8;
         starts[index] = distance * distance;
         index += 1;
-        if distance == 48 {
-            starts[index] = 48 * 48 + 1;
-            index += 1;
-        }
-        distance += 8;
     }
-    starts[index] = 76800; // 48² / STALE_ERROR
+    starts[index] = (INFLUENCE_RADIUS as i64).pow(2);
     starts
 };
 
@@ -88,11 +94,7 @@ impl Summary {
     fn fold(&mut self, event: &Event) {
         let distance = event.page_distance_squared;
         let stamp = match self {
-            Self::Floors(stamps) => {
-                let near = matches!(event.origin, Origin::Geometry)
-                    && distance <= i64::from(RELIGHT_RADIUS).pow(2);
-                &mut stamps[usize::from(!near)]
-            }
+            Self::Floors(stamps) => &mut stamps[event.origin as usize],
             Self::DistanceBands(stamps) => {
                 let band = BAND_STARTS.partition_point(|start| *start <= distance) - 1;
                 let stamps = stamps.get_or_insert_with(|| Box::new([[0; BAND_COUNT]; 2]));
@@ -110,16 +112,16 @@ impl Summary {
         let mut caps = [u32::MAX; 2];
         match self {
             Self::Floors(stamps) => {
-                for (i, origin) in [Origin::Geometry, Origin::Sunlight].into_iter().enumerate() {
-                    if stamps[i] > since {
-                        caps[i] = floor(origin, 0);
+                for (cap, revision) in caps.iter_mut().zip(stamps) {
+                    if *revision > since {
+                        *cap = limit(0);
                     }
                 }
             }
             Self::DistanceBands(Some(stamps)) => {
-                for (i, origin) in [Origin::Geometry, Origin::Sunlight].into_iter().enumerate() {
+                for i in 0..caps.len() {
                     if let Some(band) = stamps[i].iter().position(|revision| *revision > since) {
-                        caps[i] = limit(origin, BAND_STARTS[band]);
+                        caps[i] = limit(BAND_STARTS[band]);
                     }
                 }
             }
@@ -133,10 +135,11 @@ impl Summary {
 /// environment, and an invalid choice must not silently benchmark another arm.
 pub(super) fn launch_enabled(value: Option<&str>) -> Result<bool, String> {
     match value {
-        None | Some("calibrated") => Ok(true),
+        // Preserve the previous spelling as an alias, not the old equation.
+        None | Some("whole-range" | "calibrated") => Ok(true),
         Some("baseline") => Ok(false),
         Some(value) => Err(format!(
-            "unknown VOXEL_GI_RETENTION={value:?}; choose calibrated or baseline"
+            "unknown VOXEL_GI_RETENTION={value:?}; choose whole-range or baseline (calibrated is an alias)"
         )),
     }
 }
@@ -147,26 +150,18 @@ pub(super) enum Origin {
     Sunlight,
 }
 
-fn floor(origin: Origin, distance_squared: i64) -> u32 {
-    let baseline = match origin {
-        Origin::Geometry if distance_squared <= i64::from(RELIGHT_RADIUS).pow(2) => NEAR_HISTORY,
-        _ => 256,
-    };
-    (f64::from(baseline) * QUALITY_PATHS / BASELINE_QUALITY_PATHS).ceil() as u32
-}
-
-fn change_prior(distance_squared: i64) -> f64 {
-    (f64::from(RELIGHT_RADIUS).powi(2) / (distance_squared as f64).max(2304.0)).min(1.0)
-}
-
-fn limit(origin: Origin, distance_squared: i64) -> u32 {
-    let change = change_prior(distance_squared);
-    if change <= STALE_ERROR {
-        return u32::MAX;
+/// H(d) = round((d / 12)^4), using squared distance without a square root.
+/// Geometry and changed illumination share this law. Unlimited is a sentinel
+/// so callers do not mark already-consumed/no-cut evidence as a new reset.
+fn limit(distance_squared: i64) -> u32 {
+    debug_assert!(distance_squared >= 0);
+    let scaled = distance_squared as f64 / DISTANCE_SCALE.pow(2) as f64;
+    let cap = (scaled * scaled).round();
+    if cap >= f64::from(HISTORY_LIMIT) {
+        u32::MAX
+    } else {
+        cap as u32
     }
-    // Ceil rounds toward retention, preserving the qualified baseline floor.
-    let bias = ((QUALITY_PATHS / 6.0) * STALE_ERROR / (change - STALE_ERROR)).ceil() as u32;
-    bias.max(floor(origin, distance_squared))
 }
 
 #[derive(Clone)]
@@ -249,11 +244,8 @@ impl SpatialHistory {
             history.latest_revision = self.revision;
             // The page separation lower-bounds every receiver's distance. If
             // even that distance permits unlimited history, this event cannot
-            // contribute a cap and must not evict useful exact evidence. Keep
-            // the old floor-summary arm unchanged as an explicit control.
-            if self.mode == SummaryMode::DistanceBands
-                && change_prior(changes.minimum_distance_squared) <= STALE_ERROR
-            {
+            // contribute a cap and must not evict useful exact evidence.
+            if limit(changes.minimum_distance_squared) == u32::MAX {
                 continue;
             }
             if history.events.len() == PAGE_EVENTS {
@@ -361,8 +353,8 @@ impl Snapshot {
             }
             cap = page.summary.caps(since).into_iter().min().unwrap();
             for event in page.events.iter().rev().take_while(|e| e.revision > since) {
-                cap = cap.min(bounds_limit(event.origin, voxel, &event.bounds));
-                if cap == floor(Origin::Geometry, 0) {
+                cap = cap.min(bounds_limit(voxel, &event.bounds));
+                if cap == 0 {
                     break;
                 }
             }
@@ -375,7 +367,7 @@ impl Snapshot {
 impl Event {
     fn explain(&self, voxel: IVec3, result: &mut super::validation::retention_audit::Decision) {
         let index = usize::from(matches!(self.origin, Origin::Sunlight));
-        result.caps[index] = result.caps[index].min(bounds_limit(self.origin, voxel, &self.bounds));
+        result.caps[index] = result.caps[index].min(bounds_limit(voxel, &self.bounds));
         for bounds in self.bounds.iter() {
             result.distance_squared[index] =
                 result.distance_squared[index].min(bounds.distance_squared(Bounds::point(voxel)));
@@ -384,7 +376,7 @@ impl Event {
             for point in evidence.iter() {
                 let distance = Bounds::point(point.position).distance_squared(Bounds::point(voxel));
                 let index = 4 + point.kind as usize;
-                result.caps[index] = result.caps[index].min(limit(Origin::Sunlight, distance));
+                result.caps[index] = result.caps[index].min(limit(distance));
                 result.distance_squared[index - 2] =
                     result.distance_squared[index - 2].min(distance);
             }
@@ -392,16 +384,17 @@ impl Event {
     }
 }
 
-fn bounds_limit(origin: Origin, voxel: IVec3, bounds: &[Bounds]) -> u32 {
+fn bounds_limit(voxel: IVec3, bounds: &[Bounds]) -> u32 {
     let mut nearest = i64::MAX;
     for bound in bounds {
         nearest = nearest.min(bound.distance_squared(Bounds::point(voxel)));
-        // No other bound can lower this event below its calibrated floor.
-        if nearest <= i64::from(RELIGHT_RADIUS).pow(2) {
-            return floor(origin, 0);
+        // Only zero distance is an unconditional minimum. The old flat-near
+        // shortcut would incorrectly erase the curve's within-48 variation.
+        if nearest == 0 {
+            return 0;
         }
     }
-    limit(origin, nearest)
+    limit(nearest)
 }
 
 #[cfg(test)]
@@ -411,6 +404,7 @@ mod tests {
     #[test]
     fn qualified_policy_is_default_and_control_is_explicit() {
         assert_eq!(launch_enabled(None), Ok(true));
+        assert_eq!(launch_enabled(Some("whole-range")), Ok(true));
         assert_eq!(launch_enabled(Some("calibrated")), Ok(true));
         assert_eq!(launch_enabled(Some("baseline")), Ok(false));
         assert!(launch_enabled(Some("typo")).is_err());
@@ -421,17 +415,24 @@ mod tests {
         let bounds: Vec<_> = (-16..=16)
             .map(|i| Bounds::point(IVec3::new(i * 31, i * 7, i * 19)))
             .collect();
-        for origin in [Origin::Geometry, Origin::Sunlight] {
-            for x in -320..=320 {
-                let voxel = IVec3::new(x, 32, -48);
-                let expected = bounds
-                    .iter()
-                    .map(|b| limit(origin, b.distance_squared(Bounds::point(voxel))))
-                    .min()
-                    .unwrap();
-                assert_eq!(bounds_limit(origin, voxel, &bounds), expected);
-            }
+        for x in -320..=320 {
+            let voxel = IVec3::new(x, 32, -48);
+            let expected = bounds
+                .iter()
+                .map(|b| limit(b.distance_squared(Bounds::point(voxel))))
+                .min()
+                .unwrap();
+            assert_eq!(bounds_limit(voxel, &bounds), expected);
         }
+        // A first bound inside 48 is not a floor; a later nearer bound wins.
+        assert_eq!(
+            bounds_limit(
+                IVec3::ZERO,
+                &[Bounds::point(IVec3::X * 32), Bounds::point(IVec3::X * 16)]
+            ),
+            3
+        );
+        assert_eq!(bounds_limit(IVec3::ZERO, &[]), u32::MAX);
     }
 
     fn event(page: IVec3, point: IVec3) -> GeometryChange {
@@ -447,31 +448,48 @@ mod tests {
     #[test]
     fn worker_snapshots_preserve_the_selected_epoch_across_publication_and_retirement() {
         let mut history = SpatialHistory::default();
-        history.record(event(IVec3::ZERO, IVec3::new(192, 0, 0)), Origin::Geometry);
+        history.record(event(IVec3::ZERO, IVec3::new(64, 0, 0)), Origin::Geometry);
         let snapshot = history.snapshot(IVec3::ZERO);
         assert!(snapshot.pending(0));
         history.record(event(IVec3::ZERO, IVec3::ZERO), Origin::Sunlight);
-        assert_eq!(snapshot.limit(IVec3::ZERO, 0), 316);
-        assert_eq!(history.query(IVec3::ZERO, snapshot.revision).1, 256);
+        assert_eq!(snapshot.limit(IVec3::ZERO, 0), 809);
+        assert_eq!(history.query(IVec3::ZERO, snapshot.revision).1, 0);
         history.retire(IVec3::ZERO);
-        assert_eq!(snapshot.limit(IVec3::ZERO, 0), 316);
+        assert_eq!(snapshot.limit(IVec3::ZERO, 0), 809);
         assert!(!history.snapshot(IVec3::ZERO).pending(0));
     }
 
     #[test]
-    fn native_rounding_preserves_qualified_curve_and_sun_floor() {
+    fn native_rounding_matches_the_selected_whole_range_curve() {
         for (d, expected) in [
-            (0, 16),
-            (48, 16),
-            (96, 256),
-            (128, 256),
-            (192, 316),
-            (256, 1986),
+            (0, 0),
+            (8, 0),
+            (16, 3),
+            (24, 16),
+            (32, 51),
+            (48, 256),
+            (64, 809),
+            (96, 4096),
+            (128, 12945),
+            (192, u32::MAX),
             (384, u32::MAX),
         ] {
-            assert_eq!(limit(Origin::Geometry, d * d), expected);
+            assert_eq!(limit(d * d), expected);
         }
-        assert_eq!(limit(Origin::Sunlight, 0), 256);
+        assert_eq!(limit(i64::MAX), u32::MAX);
+        // Full integer-distance domain parity with the replay equation, not
+        // only its example anchors. No square root is needed in production.
+        for d2 in 0..=100_000 {
+            let expected = ((d2 as f64).sqrt() / 12.0).powi(4).round() as u32;
+            assert_eq!(
+                limit(d2),
+                if expected >= HISTORY_LIMIT {
+                    u32::MAX
+                } else {
+                    expected
+                }
+            );
+        }
     }
 
     #[test]
@@ -516,9 +534,9 @@ mod tests {
         history.record(change, Origin::Sunlight);
         let result = history.snapshot(IVec3::ZERO).explain(IVec3::ZERO, 0);
         assert_eq!(result.revision, 1);
-        assert_eq!(result.cap, 256);
+        assert_eq!(result.cap, 0);
         assert_eq!(result.caps[4], u32::MAX);
-        assert_eq!(result.caps[5], 256);
+        assert_eq!(result.caps[5], 0);
         assert_eq!(result.caps[0], u32::MAX);
     }
 
@@ -527,21 +545,21 @@ mod tests {
         let old = Event {
             revision: 1,
             origin: Origin::Geometry,
-            bounds: Arc::new(vec![Bounds::point(IVec3::new(256, 0, 0))]),
-            page_distance_squared: 225 * 225,
+            bounds: Arc::new(vec![Bounds::point(IVec3::new(128, 0, 0))]),
+            page_distance_squared: 97 * 97,
             audit_sun: None,
         };
         let latest = Event {
             revision: 2,
             origin: Origin::Geometry,
-            bounds: Arc::new(vec![Bounds::point(IVec3::new(300, 0, 0))]),
-            page_distance_squared: 269 * 269,
+            bounds: Arc::new(vec![Bounds::point(IVec3::new(200, 0, 0))]),
+            page_distance_squared: 169 * 169,
             audit_sun: None,
         };
         let mut page = PageHistory {
             latest_revision: 2,
             events: VecDeque::from([latest.clone()]),
-            summary: Summary::Floors([0, 1]),
+            summary: Summary::Floors([1, 0]),
             audit_events: VecDeque::from([old, latest]),
             audit_dropped: 0,
         };
@@ -550,9 +568,9 @@ mod tests {
             page: Some(Arc::new(page.clone())),
         };
         let decision = snapshot.explain(IVec3::ZERO, 0);
-        assert_eq!(decision.cap, 256);
-        assert_eq!(decision.unfolded.unwrap().cap, 1986);
-        assert_eq!(snapshot.limit(IVec3::ZERO, 0), 256);
+        assert_eq!(decision.cap, 0);
+        assert_eq!(decision.unfolded.unwrap().cap, 12945);
+        assert_eq!(snapshot.limit(IVec3::ZERO, 0), 0);
         page.audit_dropped = 1;
         let snapshot = Snapshot {
             revision: 2,
@@ -564,21 +582,21 @@ mod tests {
     #[test]
     fn unrelated_streaming_never_evicts_local_evidence_but_local_overflow_is_conservative() {
         let mut history = SpatialHistory::default();
-        history.record(event(IVec3::ZERO, IVec3::new(192, 0, 0)), Origin::Geometry);
+        history.record(event(IVec3::ZERO, IVec3::new(64, 0, 0)), Origin::Geometry);
         for _ in 0..100 {
             history.record(
                 event(IVec3::splat(100), IVec3::splat(3200)),
                 Origin::Geometry,
             );
         }
-        assert_eq!(history.query(IVec3::ZERO, 0).1, 316);
+        assert_eq!(history.query(IVec3::ZERO, 0).1, 809);
         let (at, _) = history.query(IVec3::ZERO, 0);
         assert_eq!(history.query(IVec3::ZERO, at).1, u32::MAX);
         for _ in 0..9 {
             history.record(event(IVec3::ZERO, IVec3::ZERO), Origin::Sunlight);
         }
-        assert_eq!(history.query(IVec3::ZERO, at).1, 256);
-        assert_eq!(history.query(IVec3::ZERO, 0).1, 256);
+        assert_eq!(history.query(IVec3::ZERO, at).1, 0);
+        assert_eq!(history.query(IVec3::ZERO, 0).1, 0);
         history.retire(IVec3::ZERO);
         assert_eq!(history.query(IVec3::ZERO, 0).1, u32::MAX);
     }
@@ -601,7 +619,7 @@ mod tests {
         let mut control = SpatialHistory::new(SummaryMode::Floors);
         let mut candidate = SpatialHistory::new(SummaryMode::DistanceBands);
         for i in 0..PAGE_EVENTS {
-            let point = IVec3::new(287 + i as i32, 0, 0);
+            let point = IVec3::new(199 + i as i32, 0, 0);
             control.record(event(voxel, point), Origin::Geometry);
             candidate.record(event(voxel, point), Origin::Geometry);
             assert!(matches!(
@@ -613,34 +631,34 @@ mod tests {
             }
         }
         let snapshot = candidate.snapshot(voxel);
-        candidate.record(event(voxel, IVec3::new(300, 0, 0)), Origin::Geometry);
+        candidate.record(event(voxel, IVec3::new(212, 0, 0)), Origin::Geometry);
         assert!(matches!(
             candidate.pages[&voxel].summary,
             Summary::DistanceBands(Some(_))
         ));
         assert_eq!(snapshot.limit(voxel, 0), u32::MAX);
-        assert_eq!(candidate.query(voxel, 0).1, 1986);
+        assert_eq!(candidate.query(voxel, 0).1, 38416);
         assert_eq!(candidate.query(voxel, 1).1, u32::MAX);
     }
 
     #[test]
     fn replacing_the_eighth_exact_event_with_its_summary_can_lower_retention() {
         // Page [0,31] is 48 voxels from the change, but this receiver is 79
-        // away. Folding one event earlier changes its near/far classification.
+        // away. Folding one event earlier reduces its distance lower bound.
         let voxel = IVec3::ZERO;
         let mut history = SpatialHistory::new(SummaryMode::DistanceBands);
         history.record(event(voxel, IVec3::new(79, 0, 0)), Origin::Geometry);
         for _ in 1..PAGE_EVENTS {
-            history.record(event(voxel, IVec3::new(300, 0, 0)), Origin::Geometry);
+            history.record(event(voxel, IVec3::new(200, 0, 0)), Origin::Geometry);
         }
-        assert_eq!(history.query(voxel, 0).1, 256);
+        assert_eq!(history.query(voxel, 0).1, 1878);
         let eight = history.snapshot(voxel);
         let page = Arc::make_mut(history.pages.get_mut(&voxel).unwrap());
         let oldest = page.events.pop_front().unwrap();
         page.summary.fold(&oldest);
         assert_eq!(page.events.len(), PAGE_EVENTS - 1);
-        assert_eq!(history.query(voxel, 0).1, 16);
-        assert_eq!(eight.limit(voxel, 0), 256);
+        assert_eq!(history.query(voxel, 0).1, 256);
+        assert_eq!(eight.limit(voxel, 0), 1878);
     }
 
     #[test]
@@ -677,16 +695,15 @@ mod tests {
 
     #[test]
     fn no_cut_events_preserve_wakeups_without_evicting_exact_history() {
-        // Inside the coarse radius (278), outside the curve's no-cut edge.
-        // This is a real binning boundary, not an impossible far-away record.
+        // At the derived binning boundary, no supported weight can be cut.
         for origin in [Origin::Geometry, Origin::Sunlight] {
             let voxel = IVec3::ZERO;
-            let distant = IVec3::new(308, 40, 0);
+            let distant = IVec3::new(31 + INFLUENCE_RADIUS, 0, 0);
             let distance = Bounds::point(distant).distance_squared(Bounds::page(voxel));
             assert!(distance <= i64::from(INFLUENCE_RADIUS).pow(2));
-            assert_eq!(limit(origin, distance), u32::MAX);
+            assert_eq!(limit(distance), u32::MAX);
             let mut history = SpatialHistory::default();
-            history.record(event(voxel, IVec3::new(192, 0, 0)), origin);
+            history.record(event(voxel, IVec3::new(64, 0, 0)), origin);
             let before = history.snapshot(voxel);
             for _ in 0..32 {
                 history.record(event(voxel, distant), origin);
@@ -697,7 +714,7 @@ mod tests {
                 history.pages[&voxel].summary,
                 Summary::DistanceBands(None)
             ));
-            assert_eq!(snapshot.limit(voxel, 0), 316);
+            assert_eq!(snapshot.limit(voxel, 0), 809);
             assert_eq!(snapshot.limit(voxel, 1), u32::MAX);
             assert!(snapshot.pending(32));
             assert!(!snapshot.pending(33));
@@ -719,7 +736,7 @@ mod tests {
             let voxel = page * 32;
             let mut history = SpatialHistory::default();
             history.record(
-                event(page, voxel + IVec3::new(308, 40, 0)),
+                event(page, voxel + IVec3::new(31 + INFLUENCE_RADIUS, 0, 0)),
                 Origin::Sunlight,
             );
             assert!(history.pages[&page].events.is_empty());
@@ -740,29 +757,30 @@ mod tests {
         let page = IVec3::ZERO;
         let near_side = IVec3::new(31, 0, 0);
         let mut history = SpatialHistory::default();
-        history.record(event(page, IVec3::new(287, 0, 0)), Origin::Geometry);
+        history.record(event(page, IVec3::new(200, 0, 0)), Origin::Geometry);
         assert_eq!(history.pages[&page].events.len(), 1);
         assert_eq!(history.query(IVec3::ZERO, 0).1, u32::MAX);
-        assert_eq!(history.query(near_side, 0).1, 1986);
+        assert_eq!(history.query(near_side, 0).1, 39339);
     }
 
     #[test]
-    fn bands_preserve_monotonic_caps_and_both_policy_boundaries() {
+    fn bands_conservatively_quantize_distance_not_the_policy() {
         assert!(BAND_STARTS.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(BAND_STARTS[0], 0);
-        assert_eq!(*BAND_STARTS.last().unwrap(), 76800);
-        for origin in [Origin::Geometry, Origin::Sunlight] {
-            let mut previous = 0;
-            for d2 in 0..=100_000 {
-                let band = BAND_STARTS.partition_point(|start| *start <= d2) - 1;
-                let cap = limit(origin, BAND_STARTS[band]);
-                assert!(previous <= cap);
-                assert!(floor(origin, d2) <= cap && cap <= limit(origin, d2));
-                previous = cap;
-            }
+        assert_eq!(BAND_COUNT, 25);
+        assert_eq!(
+            *BAND_STARTS.last().unwrap(),
+            i64::from(INFLUENCE_RADIUS).pow(2)
+        );
+        let mut previous = 0;
+        for d2 in 0..=100_000 {
+            let band = BAND_STARTS.partition_point(|start| *start <= d2) - 1;
+            let cap = limit(BAND_STARTS[band]);
+            assert!(previous <= cap && cap <= limit(d2));
+            previous = cap;
         }
-        assert_eq!(limit(Origin::Geometry, BAND_STARTS[7]), 256);
-        assert_eq!(limit(Origin::Sunlight, 76800), u32::MAX);
+        assert_eq!(limit(BAND_STARTS[7]), 474);
+        assert_eq!(limit(i64::from(INFLUENCE_RADIUS).pow(2)), u32::MAX);
     }
 
     #[test]
@@ -789,9 +807,8 @@ mod tests {
                                 let full = exact
                                     .iter()
                                     .skip(since as usize)
-                                    .map(|(o, p)| {
+                                    .map(|(_, p)| {
                                         limit(
-                                            *o,
                                             Bounds::point(*p)
                                                 .distance_squared(Bounds::point(voxel)),
                                         )
@@ -817,17 +834,17 @@ mod tests {
         history.record(event(voxel, voxel), Origin::Geometry);
         let before = history.snapshot(voxel);
         for _ in 0..20 {
-            history.record(event(voxel, IVec3::new(287, 0, 0)), Origin::Geometry);
+            history.record(event(voxel, IVec3::new(200, 0, 0)), Origin::Geometry);
         }
         let snapshot = history.snapshot(voxel);
-        assert_eq!(snapshot.limit(voxel, 0), 16);
-        assert_eq!(snapshot.limit(voxel, 1), 1986); // page edge is 256 away
+        assert_eq!(snapshot.limit(voxel, 0), 0);
+        assert_eq!(snapshot.limit(voxel, 1), 38416); // page edge is 169, rounded to 168
         assert_eq!(snapshot.limit(voxel, 21), u32::MAX);
         history.record(event(voxel, voxel), Origin::Sunlight);
-        assert_eq!(history.query(voxel, 21).1, 256);
+        assert_eq!(history.query(voxel, 21).1, 0);
         history.retire(voxel);
-        assert_eq!(before.limit(voxel, 0), 16);
-        assert_eq!(snapshot.limit(voxel, 1), 1986);
+        assert_eq!(before.limit(voxel, 0), 0);
+        assert_eq!(snapshot.limit(voxel, 1), 38416);
         assert_eq!(history.query(voxel, 1).1, u32::MAX);
     }
 }

@@ -300,7 +300,7 @@ mod tests {
             GeometryChange {
                 nearby: bevy::platform::collections::HashMap::from_iter([(
                     IVec3::ZERO,
-                    PageChanges::new(IVec3::ZERO, vec![Bounds::point(IVec3::new(192, 0, 0))]),
+                    PageChanges::new(IVec3::ZERO, vec![Bounds::point(IVec3::new(64, 0, 0))]),
                 )]),
                 ..default()
             },
@@ -308,7 +308,7 @@ mod tests {
         );
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
         probe.samples = [4096; 6];
-        for (source_cap, expected) in [(u32::MAX, 316), (64, 64)] {
+        for (source_cap, expected) in [(u32::MAX, 809), (64, 64), (0, 0)] {
             let mut work = TraceWork::default();
             work.push(&probe, 4, 1, 1, false, u32::MAX, source_cap);
             work.defer_retention(0, history.snapshot(probe.voxel));
@@ -348,6 +348,51 @@ mod tests {
         assert_eq!(probe.fresh_mask, 1);
         assert_eq!(probe.radiance, [EnergySpectrum::ONE; 6]);
         assert_eq!(probe.second_moment, [EnergySpectrum::ONE * 2.0; 6]);
+    }
+
+    #[test]
+    fn zero_retention_preserves_unselected_display_moments_and_sequences() {
+        let mut probe = SurfaceProbe::new(IVec3::ZERO, 63);
+        probe.samples = [4096; 6];
+        probe.radiance = [EnergySpectrum::ONE; 6];
+        probe.second_moment = [EnergySpectrum::ONE * 2.0; 6];
+        probe.sequence = [9000; 6];
+        for display in &mut probe.display {
+            display.indirect = Vec3::splat(0.7);
+            display.confidence = 0.75;
+        }
+        let mut history = super::super::retention::SpatialHistory::default();
+        history.record(
+            super::super::geometry::GeometryChange {
+                nearby: bevy::platform::collections::HashMap::from_iter([(
+                    IVec3::ZERO,
+                    super::super::geometry::PageChanges::new(
+                        IVec3::ZERO,
+                        vec![super::super::geometry::Bounds::point(IVec3::ZERO)],
+                    ),
+                )]),
+                ..default()
+            },
+            super::super::retention::Origin::Geometry,
+        );
+        let mut work = TraceWork::default();
+        work.push(&probe, 1, 1, 0, false, u32::MAX, u32::MAX);
+        work.defer_retention(0, history.snapshot(probe.voxel));
+        work.apply_retention();
+        assert_eq!(work.faces[0].samples, 0);
+        assert_eq!(work.faces[0].radiance, EnergySpectrum::ONE);
+        assert_eq!(work.faces[0].sequence, 9000);
+        work.faces[0].samples = 16;
+        work.faces[0].sequence += 16;
+        work.probes[0].publish(&work.faces, &mut probe, Instant::now(), &default());
+        assert_eq!(probe.samples, [16, 0, 0, 0, 0, 0]);
+        for face in 1..6 {
+            assert_eq!(probe.display[face].indirect, Vec3::splat(0.7));
+            assert_eq!(probe.display[face].confidence, 0.75);
+            assert_eq!(probe.radiance[face], EnergySpectrum::ONE);
+            assert_eq!(probe.second_moment[face], EnergySpectrum::ONE * 2.0);
+            assert_eq!(probe.sequence[face], 9000);
+        }
     }
 
     #[test]
