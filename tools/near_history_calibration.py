@@ -102,7 +102,7 @@ def display_step(display, confidence, mean, second, weight, dt):
     return display, confidence
 
 
-def replay(tape, window, case, radius, near, dt, every):
+def replay(tape, window, case, radius, near, dt, every, checkpoints=None):
     before, after = [s["data"][window] for s in tape["states"]]
     sides = (before, after) if case != "add" else (after, before)
     if case == "null":
@@ -118,7 +118,8 @@ def replay(tape, window, case, radius, near, dt, every):
     cap = limits(distance, radius, near) if near else np.full(n, 65536.)
     # Zero is the explicitly named retain control, not a zero-history reset.
     now = 0
-    checkpoints = REPEAT_CHECKPOINTS if every else SINGLE_CHECKPOINTS
+    if checkpoints is None:
+        checkpoints = REPEAT_CHECKPOINTS if every else SINGLE_CHECKPOINTS
     # Time zero is immediately AFTER the event: compare the retained old
     # display to the NEW target, not to the previously correct scene.
     yield 0, sides[1] is after, mean.copy(), display.copy(), confidence.copy(), weight.copy()
@@ -159,6 +160,10 @@ def policy_pairs(histories=None, radii=None, policies=None):
 def make_plan(args):
     tape = load_tape(args.tape)
     pairs = policy_pairs(args.histories, args.radii, args.policies)
+    if args.checkpoints is not None and (len(set(args.checkpoints)) != len(args.checkpoints)
+            or any(n < 0 or n > tape["steps"] * tape["batch_paths"] or n % tape["batch_paths"]
+                   for n in args.checkpoints)):
+        raise ValueError("checkpoints must be distinct native batch boundaries within the tape")
     if not np.isfinite(args.dt) or args.dt <= 0:
         raise ValueError("publication cadence must be positive and finite")
     for values in (args.windows,args.cases):
@@ -205,7 +210,7 @@ def make_plan(args):
             every = args.null_every if case == "null" and args.null_every is not None else args.every
             for radius, history in pairs:
                 for paths, after, raw, display, confidence, weight in replay(
-                        tape, w, case, radius, history, args.dt, every):
+                        tape, w, case, radius, history, args.dt, every, args.checkpoints):
                     name = f"{case}-r{radius}-h{history}-w{w}-p{paths}"
                     target = "after" if after else "before"
                     save(name, display, confidence, case=case, radius=radius, history=history,
@@ -379,6 +384,8 @@ def main():
     p.add_argument("--null-every",type=int,help="separate event interval for unchanged-lighting pressure control")
     p.add_argument("--analytic",action="store_true",
                    help="render noise-free residual-bias and ideal update-radius controls")
+    p.add_argument("--checkpoints",type=int,nargs="+",
+                   help="explicit fresh-path observations; zero is always captured")
     a = sub.add_parser("assess")
     a.add_argument("plan",type=Path)
     a.add_argument("run",type=Path)
