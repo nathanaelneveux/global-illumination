@@ -61,8 +61,11 @@ def key(row):
 
 def paired_summary(rows):
     baseline = {key(r):r for r in rows if r["policy"] == "baseline"}
+    required = {k for k,r in baseline.items() if r["case"] != "null" and r["settled_start"]}
     output = []
     for policy in sorted({r["policy"] for r in rows}):
+        available = {key(r) for r in rows if r["policy"] == policy and r["settled_start"]}
+        missing = required - available
         paired = []
         for r in rows:
             if r["policy"] != policy or key(r) not in baseline or r["case"] == "null":
@@ -89,8 +92,9 @@ def paired_summary(rows):
                 newly_unresolved=sum(p["baseline"] is not None and p["candidate"] is None for p in group)))
         valid = [f["geometric_work_ratio"] for f in families if f["geometric_work_ratio"] is not None]
         output.append(dict(policy=policy,families=families,pairs=paired,
-            equal_family_unresolved_fraction=float(np.mean([f["unresolved_fraction"] for f in families])) if families else None,
-            equal_family_geometric_work_ratio=float(np.exp(np.log(valid).mean())) if valid else None))
+            comparison_complete=not missing,missing_baseline_cases=len(missing),
+            equal_family_unresolved_fraction=float(np.mean([f["unresolved_fraction"] for f in families])) if families and not missing else None,
+            equal_family_geometric_work_ratio=float(np.exp(np.log(valid).mean())) if valid and not missing else None))
     return output
 
 
@@ -146,6 +150,17 @@ class Tests(unittest.TestCase):
         self.assertEqual(summary["equal_family_unresolved_fraction"],0)
         self.assertIsNone(summary["equal_family_geometric_work_ratio"])
         self.assertEqual(summary["families"][0]["resolved_baseline_failures"],1)
+
+    def test_missing_hard_cases_cannot_improve_the_aggregate(self):
+        base = dict(fixture="hallway-emitter",view="one",tape_sha256="same",case="remove",
+                    window=0,family="hallway",settled_start=True,early_flip=.1,upper_endpoint_tile=.01)
+        rows = [dict(base,policy="baseline",sustained_paths=1024),
+                dict(base,policy="baseline",sustained_paths=1024,window=1),
+                dict(base,policy="power4",sustained_paths=128)]
+        summary = paired_summary(rows)[1]
+        self.assertFalse(summary["comparison_complete"])
+        self.assertEqual(summary["missing_baseline_cases"],1)
+        self.assertIsNone(summary["equal_family_geometric_work_ratio"])
 
 
 if __name__ == "__main__":
