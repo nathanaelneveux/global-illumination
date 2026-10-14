@@ -246,7 +246,8 @@ def sustained(rows):
     ordered = sorted(rows, key=lambda r:r["fresh_paths"])
     for i, row in enumerate(ordered[:-2]):
         if all(r["accepted"] for r in ordered[i:]):
-            return dict(paths=row["fresh_paths"], replay_seconds=row["replay_seconds"])
+            return dict(paths=row["fresh_paths"], replay_seconds=row["replay_seconds"],
+                        previous_failure_paths=ordered[i-1]["fresh_paths"] if i else None)
     return None
 
 
@@ -265,9 +266,11 @@ def summarize(results):
         rows = [r for r in temporal if (r["case"], r["radius"], r["history"], r["window"])
                 == (case, radius, history, window)]
         recovery = sustained(rows)
+        passes = [r["fresh_paths"] for r in rows if r["accepted"]]
         settled_start = warm.get(("warm-after" if case == "add" else "warm-before", window), False)
         summary.append(dict(case=case, radius=radius, history=history, window=window,
                             sustained=recovery,
+                            first_pass_paths=min(passes) if passes else None,
                             settled_start=settled_start if not case.startswith("warm-") else None,
                             response_qualified=not case.startswith("warm-") and settled_start and recovery is not None,
                             failed_captures=sum(not r["accepted"] for r in rows),
@@ -313,7 +316,7 @@ def assess(args):
     summary = summarize(results)
     output = dict(complete=True, profile_id=profile["id"], plan_sha256=digest(args.plan),
                   plan=plan, reference_replica_difference=replicas, measurements=results, summary=summary,
-                  note="Fixed FLIP goal, actual 2560x1440 material captures at 67 PPD. Sustained means all captured later checkpoints pass, with two later checkpoints required; unobserved intervals are not certified. Replay seconds assume the declared per-face cadence, not measured gameplay response.")
+                  note="Fixed cave-calibrated FLIP goal, transferred to other fixtures as an engineering gate, not independent human calibration. Actual 2560x1440 material captures at 67 PPD. Sustained means all captured later checkpoints pass, with two later checkpoints required; unobserved intervals are not certified. Previous failure brackets observed settling. Replay seconds assume the declared per-face cadence, not measured gameplay response.")
     args.output.write_text(json.dumps(output, indent=2, allow_nan=False) + "\n")
     print(json.dumps(summary,indent=2))
 
@@ -397,6 +400,7 @@ class Tests(unittest.TestCase):
         rows[1]["accepted"]=False
         rows[-2]["accepted"]=True
         self.assertEqual(sustained(rows)["paths"],32)
+        self.assertEqual(sustained(rows)["previous_failure_paths"],16)
 
 
 def main():
