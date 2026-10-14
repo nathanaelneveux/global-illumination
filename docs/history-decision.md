@@ -142,19 +142,29 @@ cost separately rather than demanding the edit equation fix cold-start noise.
 The original static cave sweep was reanalyzed for endpoint luminance using all
 76 retained full-resolution sample images; existing qualified FLIP measurements
 were reused. `target/decision-original-static-cave.json` records every count and
-window. Representative worst-window mean / worst-tile FLIP:
+window. Worst-window FLIP and maximum positive 32px-tile luminance error:
 
-| Fresh paths | Mean FLIP | Worst tile |
-| ---: | ---: | ---: |
-| 16 | .18008 | .50576 |
-| 64 | .10301 | .31540 |
-| 256 | .06029 | .16118 |
-| 512 | .04625 | .12367 |
-| 1,024 | .03668 | .10453 |
-| 1,536 | .03061 | .08128 |
-| 2,048 | .02740 | .07296 |
-| 4,096 | .02104 | .06865 |
-| 8,192 | .01704 | .06170 |
+| Fresh paths | Mean FLIP | Worst tile FLIP | Positive tile delta Y |
+| ---: | ---: | ---: | ---: |
+| 16 | .18008 | .50576 | .07679 |
+| 32 | .13629 | .40969 | .05279 |
+| 64 | .10301 | .31540 | .04261 |
+| 128 | .07985 | .24249 | .02170 |
+| 256 | .06029 | .16118 | .02469 |
+| 384 | .04987 | .15126 | .01157 |
+| 512 | .04625 | .12367 | .01007 |
+| 768 | .04116 | .10946 | .00773 |
+| 1,024 | .03668 | .10453 | .00637 |
+| 1,536 | .03061 | .08128 | .00559 |
+| 2,048 | .02740 | .07296 | .00404 |
+| 3,072 | .02318 | .06539 | .00367 |
+| 4,096 | .02104 | .06865 | .00341 |
+| 6,144 | .01842 | .06562 | .00332 |
+| 8,192 | .01704 | .06170 | .00228 |
+| 12,288 | .01470 | .04989 | .00178 |
+| 16,384 | .01338 | .04048 | .00138 |
+| 24,576 | .01115 | .03614 | .00125 |
+| 32,768 | .01013 | .03051 | .00106 |
 
 Whole-image brightness is a poor overshoot detector: even the 16-path cave
 means are within about 1.03% of reference, while bright and dark local errors
@@ -162,3 +172,65 @@ cancel. Maximum 32px-tile **positive linear-display-luminance error** drops from
 .07679 at 16 paths to .00404 at 2,048. These are absolute normalized display
 luminance units, not percentages of physical radiance. The hallway's uniform
 close-up makes its mean-brightness ratio more informative than the cave's.
+
+## Complete-equation screening, native window 0
+
+Each exposed corner donor uses its own nearest changed-voxel distance, not the
+central pixel's distance or a uniform history. The geometry-event floor is
+the variable under test; deterministic target-state sunlight is applied at
+time zero. This is not a replay of the live event journal, sunlight notification
+delivery, source-revision handling or streaming scheduler.
+
+| Qualified edit | Current 48/16 | Power 4 | Power 6 |
+| --- | ---: | ---: | ---: |
+| Hallway offset 1, lamp off | >4,096 | 128 | 128 |
+| Hallway offset 1, lamp on | 1,024 | 1,024 | 1,024 |
+| Hallway offset 8, lamp off | 1,024 | 128 | 128 |
+| Hallway offset 8, lamp on | 3,072 | 512 | 512 |
+| Hallway offset 16, lamp off | 512 | 512 | 256 |
+| Hallway offset 16, lamp on | 2,560 | 2,048 | 2,048 |
+| House emitter off | 1,536 | 1,024 | 1,024 |
+| House emitter on | 2,560 | 2,560 | 2,560 |
+| Visible roof opening / closing | 256 / 256 | 256 / 256 | 256 / 256 |
+| Small doorway opening / closing | 1,024 / 1,024 | 1,024 / 1,024 | 1,024 / 1,024 |
+| Cave moderate source off / on | 2,560 / 3,072 | 2,560 / 3,072 | 2,560 / 3,072 |
+| Hallway screen insertion | 1,536 | 1,536 | 1,536 |
+
+Numbers are sustained **observed checkpoints**, not exact minima or elapsed
+seconds. This screen uses 512-path spacing in the later range. The earlier
+finer cave baseline measured removal at 2,304; its 2,560 entry here is the same
+unchanged trajectory observed on this screen's grid, not a runtime regression.
+All arms within this screen share the grid. Screen removal in the hallway
+still has a failing pre-edit warm control, so its encouraging recovery is not
+counted as qualified settled-start response.
+
+The squared curve resolves the closest extinction failure, but needs 1,024
+paths for offset-16 lamp removal versus the baseline's 512, and is slower than
+the steeper curves at offset 8. Shortlist powers 4 and 6 for new window-1 paired
+checks rather than exhaust more constants. A policy missing those holdouts
+cannot receive a final aggregate ranking from the decision tool.
+
+The sixth-power curve's extra speed at offset 16 comes with a measured noise
+cost. On the small doorway opening, its peak mean FLIP is .05382 versus
+.04051 for both baseline and power 4, with the same 1,024 settling checkpoint.
+In the offset-16 null control its peak is .05559 versus .05013 for power 4 and
+.03931 for baseline. Both new curves do re-noise nearby unchanged lighting;
+that is reported, not hidden or used as an automatic veto.
+
+In the cave, power 4 lowers the removal peak worst-tile FLIP from .19076 to
+.14127 (about 26%) without changing this screen's settling checkpoint. Addition
+peak tile changes .17048 to .16323, a smaller benefit. Power 6 is slightly
+noisier there. These are appearance error peaks, not measurements of physical
+energy overshoot or video flicker. Endpoint luminance excursions are recorded
+separately in each assessment.
+
+Evidence: `target/decision-curves-*-assessment.json`, corresponding native logs
+and provenance, and `tools/history_decision_analysis.py`. Native Rust/rendering
+remains the `423e188` baseline; all recorded executable hashes agree. Plans use
+the committed common-path replay at `7f10dfb`; later changes add content-addressed
+metric reuse and decision aggregation, not different lighting calculations.
+Apple M4, Metal, 16 GiB, macOS 26.6.2 / 25G83, Rust 1.95.0, Bevy 0.19.1;
+development optimized/debuginfo, 2560x1440 offscreen, preferred corner look,
+textures on and AO off. Background terrain streams during each normal prelude,
+then the measurement field is frozen. Some CPU assessments overlap another
+run's prelude; no frame-pacing or gameplay-latency claims are made.
