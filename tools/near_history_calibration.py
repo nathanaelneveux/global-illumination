@@ -55,6 +55,32 @@ def flip_difference(reference, candidate):
     return flip_statistics(flip_map(reference, candidate))
 
 
+def luminance(rgb):
+    linear = np.where(rgb <= .04045, rgb / 12.92, ((rgb + .055) / 1.055) ** 2.4)
+    return linear @ np.array([.2126, .7152, .0722], dtype=np.float32)
+
+
+def brightness_statistics(image, reference, old_reference):
+    """Rendered linear-sRGB diagnostics, not physical flux or FLIP thresholds.
+
+    Above a dark new target during a falling transition is not overshoot. Only
+    excursions outside BOTH endpoint references count as transition overshoot.
+    Cold/static cases pass their target as both endpoints for sampling error.
+    """
+    y = luminance(image)
+    target, old = luminance(reference), luminance(old_reference)
+    upper = np.maximum(y - np.maximum(target, old), 0.)
+    lower = np.maximum(np.minimum(target, old) - y, 0.)
+    target_mean = float(target.mean(dtype=np.float64))
+    mean = float(y.mean(dtype=np.float64))
+    return dict(mean=mean, reference_mean=target_mean,
+                mean_ratio=mean / target_mean if target_mean > 1e-6 else None,
+                positive_target_error_p99=float(np.quantile(np.maximum(y-target,0),.99)),
+                upper_endpoint_excursion_p99=float(np.quantile(upper,.99)),
+                upper_endpoint_tile_max=float(upper.reshape(45,32,80,32).mean((1,3)).max()),
+                lower_endpoint_tile_max=float(lower.reshape(45,32,80,32).mean((1,3)).max()))
+
+
 def load_tape(folder):
     data = json.loads((folder / "near-history.json").read_text())
     if data["schema"] != 1 or data["batch_paths"] != 16:
@@ -87,6 +113,19 @@ def limits(distances, radius, near):
     return np.where(prior <= .03, 65536., np.maximum(bias, floor))
 
 
+def power_limits(distances, power):
+    """Continuous near equation; preserve the qualified far prior exactly.
+
+    Rounding only quantizes to the runtime's integer statistical weight. This
+    is a policy experiment, not an inverse-square law for light transport.
+    """
+    if not np.isfinite(power) or power <= 0:
+        raise ValueError("curve power must be positive and finite")
+    far = np.minimum(limits(distances, 0, 256), 65536.)
+    curved = np.floor(far * np.minimum(distances / 48., 1.) ** power + .5)
+    return np.where(distances ** 2 >= 76800., 65536., curved)
+
+
 def edit_distances(tape):
     sites = np.asarray([s[0] for s in tape["sites"]])
     edits = np.asarray(tape.get("edits", [tape["edit"]]))
@@ -114,20 +153,30 @@ def display_step(display, confidence, mean, second, weight, dt):
     return display, confidence
 
 
-def replay(tape, window, case, radius, near, dt, every, checkpoints=None, literal=False):
+def replay(tape, window, case, radius, near, dt, every, checkpoints=None, literal=False,
+           power=None, maximum=65536):
     before, after = [s["data"][window] for s in tape["states"]]
     sides = (before, after) if case != "add" else (after, before)
-    if case == "null":
+    if case == "null" or case.endswith("before"):
         sides = (before, before)
+    if case.endswith("after"):
+        sides = (after, after)
     batch, warm = tape["batch_paths"], tape["warm_paths"]
     n = len(tape["sites"])
     mean, second = np.split(sides[0][0].astype(np.float64).copy(), 2, axis=1)
-    weight = np.full(n, float(warm))
+    weight = np.full(n, float(min(warm, maximum)))
     display = mean.copy()
     confidence = np.clip(weight / (weight + 8.) /
                          (1. + relative_error(mean, second, weight, .02)), .125, 1.)
+    if case.startswith("cold-"):
+        mean.fill(0.)
+        second.fill(0.)
+        weight.fill(0.)
+        display.fill(0.)
+        confidence.fill(.125)
     distance = edit_distances(tape)
-    cap = (np.full(n, float(near)) if literal else
+    cap = (power_limits(distance, power) if power is not None else
+           np.full(n, float(near)) if literal else
            limits(distance, radius, near) if near else np.full(n, 65536.))
     # Legacy h0 is retain-all. Literal mode bypasses BOTH the prior-derived
     # lower bound (11 nearby) and distance curve; h0 then truly retains nothing.
@@ -138,12 +187,13 @@ def replay(tape, window, case, radius, near, dt, every, checkpoints=None, litera
     # display to the NEW target, not to the previously correct scene.
     yield 0, sides[1] is after, mean.copy(), display.copy(), confidence.copy(), weight.copy()
     for step in range(tape["steps"]):
-        event = step == 0 or (every and (step * batch) % every == 0)
+        event = not case.startswith(("cold-", "static-")) and (
+            step == 0 or (every and (step * batch) % every == 0))
         if event:
             now = 1 - now
             weight = np.minimum(weight, cap)
         incoming = sides[now][step + 1].astype(np.float64)
-        retained = np.minimum(weight, 65536. - batch)
+        retained = np.minimum(weight, maximum - batch)
         weight = retained + batch
         alpha = batch / weight[:, None]
         mean += (incoming[:, :3] - mean) * alpha
@@ -191,7 +241,27 @@ def make_plan(args):
         view = (tape.get("views") or {}).get(args.view)
         if view is None:
             raise ValueError("requested view is not an authored tape station")
-    pairs = policy_pairs(args.histories, args.radii, args.policies)
+    if args.equations:
+        if args.histories is not None or args.radii is not None or args.policies is not None or args.literal:
+            raise ValueError("equations cannot be combined with literal/legacy history options")
+        if len(set(args.equations)) != len(args.equations):
+            raise ValueError("duplicate equation")
+        pairs = []
+        for equation in args.equations:
+            if equation == "baseline":
+                pairs.append((48,16,None,"baseline-"))
+            elif equation == "near16":
+                pairs.append((16,16,None,"near16-"))
+            elif equation.startswith("power"):
+                power = int(equation[5:])
+                power_limits(np.array([0.]), power)
+                pairs.append((48,256,power,equation+"-"))
+            else:
+                raise ValueError("equations: baseline, near16 or power<positive integer>")
+    else:
+        pairs = [(r,h,None,"") for r,h in policy_pairs(args.histories,args.radii,args.policies)]
+    if args.maximum < tape["batch_paths"] or args.maximum > 65536:
+        raise ValueError("maximum must be in [native batch size, 65536]")
     if args.checkpoints is not None and (len(set(args.checkpoints)) != len(args.checkpoints)
             or any(n < 0 or n > tape["steps"] * tape["batch_paths"] or n % tape["batch_paths"]
                    for n in args.checkpoints)):
@@ -260,12 +330,16 @@ def make_plan(args):
                  fresh_paths=0,replay_seconds=0,target=f"near-{state['name']}-reference")
         for case in args.cases:
             every = args.null_every if case == "null" and args.null_every is not None else args.every
-            for radius, history in pairs:
+            # Cold/steady controls do not apply edit equations; render once.
+            for radius, history, power, prefix in (pairs[:1] if case.startswith(("cold-","static-")) else pairs):
                 for paths, after, raw, display, confidence, weight in replay(
-                        tape, w, case, radius, history, args.dt, every, args.checkpoints, args.literal):
-                    name = f"{case}-r{radius}-h{history}-w{w}-p{paths}"
+                        tape, w, case, radius, history, args.dt, every, args.checkpoints, args.literal,
+                        power, args.maximum):
+                    name = f"{prefix}{case}-r{radius}-h{history}-w{w}-p{paths}"
                     target = "after" if after else "before"
                     save(name, display, confidence, case=case, radius=radius, history=history,
+                         policy=prefix.rstrip('-') or f"r{radius}-h{history}",
+                         curve_power=power, maximum_weight=args.maximum,
                          window=w, fresh_paths=paths, replay_seconds=paths / 16 * args.dt,
                          event_interval_paths=every,
                          target=f"near-{target}-reference", weight_p50=float(np.median(weight)),
@@ -279,7 +353,7 @@ def make_plan(args):
                     moments_sha256={s["moments"]:digest(args.tape / s["moments"]) for s in tape["states"]},
                     policies=pairs, literal_history=args.literal,
                     arguments={k:str(v) if isinstance(v, Path) else v for k,v in vars(args).items()},
-                    note="Frozen edited integrands, retained existing receivers, actual production display resolve at explicit uniform per-face cadence. Warm display starts at the 4096-path mean, not a perfectly converged oracle. No scheduling/new-face/interactive latency claim. In literal mode h0 discards statistical history and h65536 retains it, with no distance curve. Otherwise h0 is retain control and radius changes only the floor boundary, not the distant prior.")
+                    note="Frozen integrands, actual production display resolve at explicit uniform per-face cadence. Warm display starts at the recorded warm mean, not an oracle. Cold controls start with zero RGB/weight and .125 reconstruction confidence, use fresh tape batches only, and are not a simulation of runtime neighbor seeding. Static controls retain the recorded warm mean with weight clamped to maximum; the warm prefix itself was not capped. No scheduling/new-face/interactive latency claim. Literal h0 discards statistical history; legacy h0 retains all. Equations use each donor's own distance. Maximum is independent of the edit cap.")
     (args.output / "plan.json").write_text(json.dumps(metadata, indent=2, allow_nan=False) + "\n")
     print(json.dumps(dict(plan=str(args.output.resolve() / "plan.json"), frames=len(frames))))
 
@@ -303,19 +377,21 @@ def summarize(results):
     temporal = [r for r in results if "kind" not in r]
     warm = {(r["case"], r["window"]): r["accepted"] for r in temporal
             if r["case"].startswith("warm-")}
-    keys = sorted({(r["case"], r["radius"], r["history"], r["window"]) for r in temporal})
+    def identity(r):
+        return (r["case"], r.get("policy", "legacy"), r["radius"], r["history"], r["window"])
+    keys = sorted({identity(r) for r in temporal})
     summary = []
-    for case, radius, history, window in keys:
-        rows = [r for r in temporal if (r["case"], r["radius"], r["history"], r["window"])
-                == (case, radius, history, window)]
+    for case, policy, radius, history, window in keys:
+        rows = [r for r in temporal if identity(r) == (case,policy,radius,history,window)]
         recovery = sustained(rows)
         passes = [r["fresh_paths"] for r in rows if r["accepted"]]
         settled_start = warm.get(("warm-after" if case == "add" else "warm-before", window), False)
-        summary.append(dict(case=case, radius=radius, history=history, window=window,
+        edit = case in ("remove", "add", "null")
+        summary.append(dict(case=case, policy=policy, radius=radius, history=history, window=window,
                             sustained=recovery,
                             first_pass_paths=min(passes) if passes else None,
                             settled_start=settled_start if not case.startswith("warm-") else None,
-                            response_qualified=not case.startswith("warm-") and settled_start and recovery is not None,
+                            response_qualified=edit and settled_start and recovery is not None,
                             failed_captures=sum(not r["accepted"] for r in rows),
                             peak_flip=max(r["flip"]["mean"] for r in rows),
                             peak_tile=max(r["flip_32px_tile_means"]["max"] for r in rows)))
@@ -367,7 +443,11 @@ def assess(args):
             continue
         image = load_rgb(args.run / (frame["name"] + ".png"))
         difference = flip_difference(references[frame["target"]], image)
-        row = dict(frame, **difference, accepted=within(difference,gates))
+        target = references[frame["target"]]
+        old_target = (references["near-after-reference" if frame.get("case") == "add" else "near-before-reference"]
+                      if frame.get("case") in ("add","remove") else target)
+        row = dict(frame, **difference, accepted=within(difference,gates),
+                   luminance=brightness_statistics(image,target,old_target))
         results.append(row)
         print(frame["name"], round(difference["flip"]["mean"],5),
               round(difference["flip_32px_tile_means"]["max"],5), row["accepted"], flush=True)
@@ -383,6 +463,44 @@ def assess(args):
 
 
 class Tests(unittest.TestCase):
+    def test_power_equation_anchors_and_unchanged_far_policy(self):
+        distances = np.array([0.,1.,8.,16.,24.,32.,48.,96.,192.,256.,384.])
+        np.testing.assert_equal(power_limits(distances,4),[0,0,0,3,16,51,256,256,316,1986,65536])
+        for power in (2,4,6):
+            curve = power_limits(np.arange(0,385.),power)
+            self.assertTrue(np.all(np.diff(curve) >= 0))
+            np.testing.assert_equal(curve[48:],np.minimum(limits(np.arange(48,385.),0,256),65536))
+        for power in (0,-1,float('nan')):
+            with self.assertRaises(ValueError):
+                power_limits(distances,power)
+
+    def test_cold_matches_zero_history_raw_samples_and_zero_display_seed(self):
+        a = np.ones((1,257,1,6))
+        b = np.zeros_like(a)
+        tape = dict(states=[dict(data=a),dict(data=b)],batch_paths=16,warm_paths=4096,
+                    sites=[[[0,0,0],0]],edit=[0,0,0],steps=256)
+        cold = list(replay(tape,0,"cold-before",48,0,.85,0,[16,2048,4096],literal=True))
+        edit = list(replay(tape,0,"add",48,0,.85,0,[16,2048,4096],literal=True))
+        for fresh, reset in zip(cold,edit):
+            np.testing.assert_equal(fresh[2],reset[2])
+            np.testing.assert_equal(fresh[3],reset[3])
+            if fresh[0]:
+                np.testing.assert_equal(fresh[5],reset[5])
+        self.assertEqual(cold[0][4][0],.125)
+        self.assertGreater(edit[0][4][0],.99)
+
+    def test_maximum_is_ongoing_ema_not_a_periodic_reset(self):
+        a = np.ones((1,257,1,6))
+        b = np.zeros_like(a)
+        tape = dict(states=[dict(data=a),dict(data=b)],batch_paths=16,warm_paths=4096,
+                    sites=[[[0,0,0],0]],edit=[0,0,0],steps=256)
+        rows = list(replay(tape,0,"remove",48,65536,.85,0,[16,2048,4096],literal=True,maximum=2048))
+        for row in rows[1:]:
+            np.testing.assert_equal(row[5],[2048])
+            np.testing.assert_allclose(row[2],(1-16/2048)**(row[0]/16))
+        default = list(replay(tape,0,"remove",48,65536,.85,0,[16],literal=True))
+        np.testing.assert_allclose(default[1][2],4096/(4096+16))
+
     def test_zero_control_requires_complete_native_evidence_not_a_blank_image(self):
         tape = dict(fixture="hallway-emitter",sites=[[[0,0,0],2]],states=[{},
                     dict(name="after",mean=[[0]*5],replicas=[[[0]*5],[[0]*5]])])
@@ -505,8 +623,11 @@ def main():
     p.add_argument("--view",help="select a named equal-footprint camera station recorded in the tape")
     p.add_argument("--radii",type=int,nargs="+",help="default: 48")
     p.add_argument("--policies",nargs="+",help="explicit radius:history shortlist, instead of histories/radii")
+    p.add_argument("--equations",nargs="+",help="baseline, near16, power2, power4, power6; no literal/history flags")
+    p.add_argument("--maximum",type=int,default=65536,help="statistical weight ceiling, independent of edit caps")
     p.add_argument("--windows",type=int,nargs="+",default=[0])
-    p.add_argument("--cases",choices=["null","remove","add"],nargs="+",default=["null","remove","add"])
+    p.add_argument("--cases",choices=["null","remove","add","cold-before","cold-after",
+                                    "static-before","static-after"],nargs="+",default=["null","remove","add"])
     p.add_argument("--dt",type=float,default=.85,
                    help="uniform seconds per 16-path face publication, not frame time")
     p.add_argument("--every",type=int,default=0,help="repeat edit every N fresh paths; 0 is one edit")
