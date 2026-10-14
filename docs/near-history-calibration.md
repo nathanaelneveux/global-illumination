@@ -5,6 +5,15 @@ Experiment branch: `codex/gi-near-history-calibration`, based on the preserved
 The inherited 48-voxel near boundary and 16-sample floor are not analytically
 qualified constants. This study separates their effects before replacing them.
 
+**Decision:** do not promote a new constant from this study. A 256 floor is a
+better isolated-cave-edit noise/response compromise than 16 in the ordinary and
+moderate controls, but it still fails repeated-cap pressure. The 2,048 floor
+that passes that pressure delays genuine changes. Neither changing the near
+radius nor globally retaining more history establishes a faster general
+solution. Preserve the runtime baseline and use these measured response/noise
+curves when qualifying early-sample improvements. No windowed FPS or measured
+gameplay-latency win is claimed.
+
 ## Objective and measurement
 
 Minimize fresh paths, then measured gameplay time, until the post-edit image is
@@ -150,6 +159,71 @@ The moderate-source control is deliberately separate: a 64x stress light
 whose own 4,096-path warm image is noisy cannot select ordinary near-edit
 defaults by itself.
 
+## Moderate-source recovery and confirmation
+
+An 8x edited torch gives a settled change of mean FLIP 0.04103 / tile 0.10407,
+above both limits. Reference-replica disagreement is 0.00807 / 0.02078, and all
+four warm controls (two states, two windows) pass. This is the valid
+settled-start genuine-change comparison missing from the 64x stress control.
+
+Lowest recorded passing checkpoint with no later failure, in fresh paths:
+
+| Policy | Removal, windows 0 / 1 | Addition, windows 0 / 1 |
+| --- | ---: | ---: |
+| Near floor 16, R=48 | 3,072 / 3,072 | 3,072 / 3,584* |
+| Near floor 256, R=48 | 3,072 / 3,072 | 3,072 / 3,584* |
+| Uniform floor 1,024 | 3,072 / 3,072 | 3,584* / 4,096* |
+| Uniform floor 2,048 | 3,584* / 4,096* | No pass / no pass |
+
+`*` Too few later observations for the predeclared sustained-tail rule. These
+are observed crossings, **not** qualified sustained responses. The common
+3,072 removal result has later 3,584 and 4,096 confirmations in both windows;
+the preceding 2,048 checkpoint fails. Thus the measured crossing bracket is
+(2,048, 3,072], not an exact claim that 3,071 would fail. Full retention never
+passes in window 0 through 4,096; it was not repeated in window 1.
+
+The 256 floor reduces peak worst-tile error versus 16:
+
+| Transition | Floor 16, windows 0 / 1 | Floor 256, windows 0 / 1 | Reduction |
+| --- | ---: | ---: | ---: |
+| Removal | 0.19076 / 0.21648 | 0.12091 / 0.12761 | 36.6% / 41.1% |
+| Addition | 0.17048 / 0.18556 | 0.12965 / 0.13980 | 23.9% / 24.7% |
+
+This is an early **image-error peak**, not a measurement of energy overshoot or
+a perceptual video-flicker score. It is a useful improvement at the same
+observed crossing checkpoints, not a 2x settling-speed win. Source strength,
+occlusion/skylight edits, new faces and actual scheduling are not universally
+qualified by these two views of one off-camera torch edit.
+
+The first-window radius controls keep H=16 and change R to 32 or 64. Both
+directions still sustain at 3,072. R=32 reduces peak error somewhat; R=64 raises
+peak whole-image error (removal 0.06569 versus 0.05132 at R=48; addition 0.06868
+versus 0.05360) without a speed benefit. No radius candidate earns promotion,
+and these controls were not redundantly repeated in the second window.
+
+For the moderate change, the reference-blend half-old/half-new image passes
+(removal 0.02564 / 0.06525; addition 0.02542 / 0.06373). All audited receivers
+are within 80.88 voxels, so the 256-floor arm has cap 256 everywhere. Its
+bias-only reference model would therefore meet that tested fraction after 256
+fresh paths, yet the actual displayed removal needs the observed 3,072
+checkpoint. The gap implicates incoming-sample error and display response,
+not just residual old-lighting bias. It is not an additive attribution or a
+promise that removing the display filter would improve appearance.
+
+The reference-only spatial control fails at R=48 (mean 0.02869, tile 0.07179)
+and passes at R=64 (0.00465 / 0.05515), in both directions. In contrast, the
+ordinary torch needs no update to pass and the 64x torch still fails at R=64.
+**Source-independent distance alone cannot analytically determine a universal
+near radius from these results.** Actual runtime receivers outside the near
+floor boundary still receive updates through the wider retention curve.
+
+These measurements give the next sampling experiment two independent gates:
+reduce work to the unchanged FLIP goal after a real edit, and avoid repeatedly
+taking a settled image out of tolerance under unchanged-lighting pressure.
+Recalibrate weights against the new sampler only after passing both. A blanket
+larger history, a larger aggressive-reset radius, or a looser threshold is not
+an evidence-backed substitute.
+
 ## Provenance and reproduction
 
 Hardware: Apple M4 integrated GPU, Metal, 16 GiB, macOS 26.6.2; Rust 1.95,
@@ -181,6 +255,20 @@ may overlap diagnostic rendering; these are not frame-pacing measurements.
 - Analyzer `dcc2e09` adds explicit settled-start qualification and a fifth
   focused passing test. It leaves earlier image measurements unchanged; the
   bright warm-start limitation above was checked directly in the older report.
+- Moderate tape: `target/gi-validation/cave-1791939958286106000-77130`, recorded
+  at `a638230` with unchanged native code from `a68a1d8`, scale 8. First-window
+  plan `target/near-history-moderate-plan/plan.json`, render
+  `target/gi-validation/cave-1791940628008696000-77385`, result
+  `target/near-history-moderate-analysis.json`. Confirmation plan
+  `target/near-history-moderate-confirm-plan/plan.json`, render
+  `target/gi-validation/cave-1791940981405782000-78049`, result
+  `target/near-history-moderate-confirm-analysis.json`. Both use analyzer
+  `d5faa7d`, no dirty algorithm diff. All native logs are clean; capture status,
+  target dimensions, geometry audit and nonblank images pass. The first
+  window's 128-path floor-16/floor-256 removal images were visually inspected.
+- `d5faa7d` adds explicit policy shortlists to avoid duplicate Cartesian arms;
+  all six focused Python tests pass. No native rebuild was needed for the
+  analyzer-only changes. Native applications exited normally after capture.
 - Native verification: two focused near-history Rust tests, production
   Clippy with warnings denied and dev build at `a68a1d8`. Four focused Python
   tests also pass at `20a92a9`. Runtime code has not changed since those checks.
