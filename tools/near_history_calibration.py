@@ -81,6 +81,12 @@ def limits(distances, radius, near):
     return np.where(prior <= .03, 65536., np.maximum(bias, floor))
 
 
+def edit_distances(tape):
+    sites = np.asarray([s[0] for s in tape["sites"]])
+    edits = np.asarray(tape.get("edits", [tape["edit"]]))
+    return np.linalg.norm(sites[:, None, :] - edits[None, :, :], axis=2).min(axis=1)
+
+
 def relative_error(mean, second, weight, floor):
     variance = np.maximum(second - mean * mean, 0.)
     return np.minimum(8., np.max(np.sqrt(variance / weight[:, None]) /
@@ -114,7 +120,7 @@ def replay(tape, window, case, radius, near, dt, every, checkpoints=None):
     display = mean.copy()
     confidence = np.clip(weight / (weight + 8.) /
                          (1. + relative_error(mean, second, weight, .02)), .125, 1.)
-    distance = np.linalg.norm(np.array([s[0] for s in tape["sites"]]) - tape["edit"], axis=1)
+    distance = edit_distances(tape)
     cap = limits(distance, radius, near) if near else np.full(n, 65536.)
     # Zero is the explicitly named retain control, not a zero-history reset.
     now = 0
@@ -174,10 +180,16 @@ def make_plan(args):
             raise ValueError("event spacing must be a positive multiple of the native batch")
     args.output.mkdir(parents=True, exist_ok=False)
     frames = []
+    skies = {s["name"]:s["sky"] for s in tape["states"] if s.get("sky") is not None}
 
     def save(name, values, confidence, **metadata):
         values = np.column_stack((np.asarray(values)[:, :3], confidence)).astype("<f4")
         values.tofile(args.output / f"{name}.bin")
+        # Opening/closing geometry changes deterministic direct sunlight too.
+        # Use the target state's sky at t=0, before indirect history responds.
+        state = metadata.get("target", name).split("-")[1]
+        if state in skies:
+            metadata["sky_state"] = state
         frames.append(dict(name=name, **metadata))
 
     for state in tape["states"]:
@@ -185,7 +197,7 @@ def make_plan(args):
         for i, replica in enumerate(state["replicas"]):
             save(f"near-{state['name']}-replica-{i}", replica, np.ones(len(tape["sites"])), reference=True)
     if args.analytic:
-        distance=np.linalg.norm(np.array([s[0] for s in tape["sites"]])-tape["edit"],axis=1)
+        distance=edit_distances(tape)
         for case, old, new in (("remove",0,1),("add",1,0)):
             a,b=[np.asarray(tape["states"][i]["mean"])[:,:3] for i in (old,new)]
             target=f"near-{tape['states'][new]['name']}-reference"
@@ -218,7 +230,8 @@ def make_plan(args):
                          event_interval_paths=every,
                          target=f"near-{target}-reference", weight_p50=float(np.median(weight)),
                          raw_rgb_rmse=float(np.sqrt(np.mean((raw - np.asarray(tape["states"][int(after)]["mean"])[:, :3]) ** 2))))
-    metadata = dict(schema=1, sites=tape["sites"], frames=frames,
+    metadata = dict(schema=1, fixture=tape.get("fixture", "cave-torch"),
+                    view=tape.get("view"), skies=skies, sites=tape["sites"], frames=frames,
                     tape=str(args.tape.resolve()), tape_sha256=digest(args.tape / "near-history.json"),
                     moments_sha256={s["moments"]:digest(args.tape / s["moments"]) for s in tape["states"]},
                     policies=pairs,
@@ -306,6 +319,25 @@ def assess(args):
 
 
 class Tests(unittest.TestCase):
+    def test_extra_observations_do_not_change_the_replayed_estimator(self):
+        before = np.ones((1,257,1,6))
+        after = np.zeros_like(before)
+        tape = dict(states=[dict(data=before), dict(data=after)], batch_paths=16,
+                    warm_paths=4096, sites=[[[0,0,0],0]], edit=[0,0,0], steps=256)
+        original = list(replay(tape,0,"remove",48,256,.85,0))
+        extra = dict((r[0],r) for r in replay(tape,0,"remove",48,256,.85,0,
+                                            tuple(SINGLE_CHECKPOINTS)+(2304,2560,2816)))
+        for row in original:
+            for value, other in zip(row[2:],extra[row[0]][2:]):
+                np.testing.assert_array_equal(value,other)
+        self.assertIn(2304,extra)
+
+    def test_multi_voxel_edit_uses_the_closest_changed_voxel(self):
+        tape = dict(sites=[[[0,0,0],0], [[10,0,0],0]],edit=[0,0,0])
+        np.testing.assert_equal(edit_distances(tape),[0,10])
+        tape["edits"] = [[0,0,0],[9,0,0]]
+        np.testing.assert_equal(edit_distances(tape),[0,1])
+
     def test_explicit_shortlist_preserves_legacy_defaults_and_frame_identity(self):
         self.assertEqual(policy_pairs(), [(48,16), (48,256)])
         self.assertEqual(policy_pairs(policies=["48:16", "278:2048"]), [(48,16), (278,2048)])

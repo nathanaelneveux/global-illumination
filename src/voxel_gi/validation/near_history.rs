@@ -1,7 +1,8 @@
-//! Offline near-history calibration on the audited, composed cave. Record
+//! Offline near-history calibration on audited, composed-world fixtures. Record
 //! common native paths once; replay policy candidates without retracing them.
-//! An off-camera torch edit isolates retained receivers from mesh replacement.
+//! Off-camera edits isolate retained receivers from mesh replacement.
 //! This is a cache-response experiment, not a gameplay/frame-pacing benchmark.
+use super::near_fixture::Fixture;
 use super::*;
 use crate::voxel_gi::{naadf::linear_index, world::PAGE_SIZE};
 use std::io::{BufWriter, Write};
@@ -98,7 +99,10 @@ fn render_plan(path: &str, sites: &[(IVec3, usize)]) -> Result<VecDeque<Referenc
             .collect::<Vec<_>>()
     );
     if manifest["schema"] != 1 || manifest["sites"] != expected {
-        return Err("Replay receiver identity/order differs from the audited cave".into());
+        return Err("Replay receiver identity/order differs from the audited fixture".into());
+    }
+    if manifest["fixture"].as_str().unwrap_or("cave-torch") != Fixture::selected()?.name() {
+        return Err("Replay fixture differs from the active scene".into());
     }
     let mut frames = VecDeque::new();
     for frame in manifest["frames"]
@@ -106,6 +110,9 @@ fn render_plan(path: &str, sites: &[(IVec3, usize)]) -> Result<VecDeque<Referenc
         .ok_or("Replay has no frames")?
     {
         let name = frame["name"].as_str().ok_or("Frame has no name")?;
+        if Fixture::selected()?.is_house() && frame["sky_state"].as_str().is_none() {
+            return Err("House replay must specify its target-state sunlight".into());
+        }
         if name.is_empty() || !name.bytes().all(|v| v.is_ascii_alphanumeric() || v == b'-') {
             return Err("Unsafe replay frame name".into());
         }
@@ -130,6 +137,16 @@ fn render_plan(path: &str, sites: &[(IVec3, usize)]) -> Result<VecDeque<Referenc
             name: name.into(),
             values,
             confidence: Some(confidence),
+            sky: if let Some(state) = frame["sky_state"].as_str() {
+                let sky: Vec<[u32; 4]> = serde_json::from_value(manifest["skies"][state].clone())
+                    .map_err(|e| e.to_string())?;
+                if sky.len() != sites.len() {
+                    return Err("Replay sky receiver count differs".into());
+                }
+                Some(sky)
+            } else {
+                None
+            },
             pending: default(),
         });
     }
@@ -144,10 +161,17 @@ pub(super) fn start(
     device: GpuTransportDevice,
     output: PathBuf,
     origin: IVec3,
-    sites: Vec<(IVec3, usize)>,
+    mut sites: Vec<(IVec3, usize)>,
     base: ProbeMap,
 ) -> Result<ReferenceImage, String> {
     let mode = std::env::var("VOXEL_GI_VALIDATE_NEAR_HISTORY").unwrap();
+    let fixture = Fixture::selected()?;
+    let edits = fixture.edits(origin);
+    if fixture.is_house() {
+        // Keep only persistent receivers. Preserve historical cave tape identity;
+        // its edited receiver is behind the camera and cannot affect the image.
+        sites.retain(|(p, _)| !edits.contains(p));
+    }
     let progress = Arc::new(AtomicU64::new(0));
     let total_paths = sites.len() as u64
         * 2
@@ -159,7 +183,37 @@ pub(super) fn start(
     let sources = runtime.sources.clone();
     let mut materials = runtime.materials.clone();
     let generation = runtime.generation;
-    let (changed, edit) = remove_torch(&scene, origin)?;
+    let edit = edits[0];
+    let mut changed = scene.clone();
+    if fixture == Fixture::CaveTorch {
+        changed = remove_torch(&scene, origin)?.0;
+    } else if fixture == Fixture::HouseEmitter {
+        if scene.material_at(edit) != Some(AIR) {
+            return Err("House test emitter location is not empty".into());
+        }
+        if scene
+            .regions
+            .values()
+            .any(|r| r.contains_any_material(&[0, 0, 0, 1 << 58]))
+        {
+            return Err("Diagnostic material 250 is already in use".into());
+        }
+        Arc::make_mut(&mut materials).set(
+            250,
+            MaterialTransport {
+                diffuse: EnergySpectrum::new(Vec3::splat(0.2), 0.1, 0.01),
+                emission: EnergySpectrum::new(Vec3::new(12., 3., 0.3), 4., 1.),
+            },
+        );
+        scene = replace_voxel(&scene, edit, 250)?;
+    } else {
+        for &voxel in &edits {
+            if scene.material_at(voxel).is_none_or(|v| v == AIR) {
+                return Err("House opening edit has no authored solid voxel".into());
+            }
+            changed = replace_voxel(&changed, voxel, AIR)?;
+        }
+    }
     let scale = std::env::var("VOXEL_GI_NEAR_EMITTER_SCALE")
         .unwrap_or_else(|_| "1".into())
         .parse::<f32>()
@@ -168,6 +222,9 @@ pub(super) fn start(
         return Err("NEAR_EMITTER_SCALE must be finite and in [1,1024]".into());
     }
     if scale != 1.0 {
+        if fixture != Fixture::CaveTorch {
+            return Err("Emitter scaling is only defined for cave-torch".into());
+        }
         // One diagnostic host material, never a change to the global torch
         // palette. A bright-source control prevents tiny edits below the FLIP
         // gate from making a slow response policy look universally superior.
@@ -183,20 +240,10 @@ pub(super) fn start(
         Arc::make_mut(&mut materials).set(250, optical);
         scene = replace_voxel(&scene, edit, 250)?;
     }
-    // All modified voxel corners are behind the calibrated camera's eye plane.
-    // Thus both states render the same receiving geometry; no missing-object
-    // pixels contaminate the image-space lighting comparison.
-    let (eye, target) = crate::voxel_gi::validation::cave::view();
-    let forward = (target - eye).normalize();
-    for z in 0..=1 {
-        for y in 0..=1 {
-            for x in 0..=1 {
-                if (edit.as_vec3() + Vec3::new(x as f32, y as f32, z as f32) - eye).dot(forward)
-                    >= 0.
-                {
-                    return Err("Calibration edit is not entirely behind the camera".into());
-                }
-            }
+    let (eye, target, fov) = fixture.view();
+    for &voxel in &edits {
+        if !fixture.edit_is_offscreen(voxel) {
+            return Err("Calibration edit intersects the captured view".into());
         }
     }
     let task = AsyncComputeTaskPool::get().spawn(async move {
@@ -210,6 +257,12 @@ pub(super) fn start(
         let mut states = Vec::new();
         let mut frames = VecDeque::new();
         for (name, scene) in [("before",scene),("after",changed)] {
+            let sky = if fixture.is_house() {
+                let mut work = jobs(&sites, [0]);
+                for probe in &mut work.probes { probe.sky_requested = true; }
+                crate::voxel_gi::tracer::trace_sky_batch(&scene, &sources, &mut work.probes, &mut default());
+                Some(work.probes.iter().zip(&sites).map(|(p,(_,face))| p.sky[*face]).collect::<Vec<_>>())
+            } else { None };
             let emitters = Arc::new(EmissionDistribution::build(&scene,&materials));
             let mut replicas = Vec::new();
             for replica in 0..2 {
@@ -235,13 +288,13 @@ pub(super) fn start(
                     }
                 }
                 frames.push_back(ReferenceFrame { name:format!("near-{name}-replica-{replica}"),
-                    values:means.clone(),pending:default(),confidence:None });
+                    values:means.clone(),pending:default(),confidence:None,sky:sky.clone() });
                 replicas.push(means);
             }
             let mean:Means=replicas[0].iter().zip(&replicas[1])
                 .map(|(a,b)| std::array::from_fn(|i|(a[i]+b[i])*0.5)).collect();
             frames.push_back(ReferenceFrame { name:format!("near-{name}-reference"),
-                values:mean.clone(),pending:default(),confidence:None });
+                values:mean.clone(),pending:default(),confidence:None,sky:sky.clone() });
             let file_name=format!("near-{name}-moments.bin");
             let mut writer=BufWriter::new(std::fs::File::create(worker_output.join(&file_name)).map_err(|e|e.to_string())?);
             // Binary layout: window, face chunk (<=512), warm then groups of
@@ -268,14 +321,14 @@ pub(super) fn start(
                 }
             }
             writer.flush().map_err(|e|e.to_string())?;
-            states.push(json!({"name":name,"replicas":replicas,"mean":mean,"moments":file_name}));
+            states.push(json!({"name":name,"replicas":replicas,"mean":mean,"moments":file_name,"sky":sky}));
         }
         let metadata=json!({"schema":1,"kind":"near_history_tape","compiled_manifest_dir":env!("CARGO_MANIFEST_DIR"),
-            "scene_generation":generation,"origin":origin.to_array(),"view":{"eye":eye.to_array(),"target":target.to_array()},"transport":crate::voxel_gi::TransportSettings::default(),
+            "scene_generation":generation,"fixture":fixture.name(),"origin":origin.to_array(),"view":{"eye":eye.to_array(),"target":target.to_array(),"fov_degrees":fov},"transport":crate::voxel_gi::TransportSettings::default(),
             "warm_paths":WARM,"batch_paths":BATCH,"steps":STEPS,"starts":STARTS,"chunk_faces":CHUNK_FACES,
-            "reference_paths_per_replica":REFERENCE_PATHS,"edit":edit.to_array(),"emitter_scale":scale,
+            "reference_paths_per_replica":REFERENCE_PATHS,"edit":edit.to_array(),"edits":edits.iter().map(|p|p.to_array()).collect::<Vec<_>>(),"emitter_scale":scale,
             "sites":sites.iter().map(|(v,f)|json!([v.to_array(),f])).collect::<Vec<_>>(),"states":states,
-            "note":"Existing off-camera cave torch removed/restored, plus exact unchanged-lighting control. Same frozen composed-world geometry and sources; common native path windows. Only retained receivers are calibrated, not newly exposed topology. No scheduling, display smoothing or gameplay seconds in this tape. Binary little-endian f32 moments layout is documented in near_history.rs."});
+            "note":"Off-camera authored edit removed/restored, plus exact unchanged-lighting control. Frozen composed-world geometry and sources with common native path windows. House direct-sun corners are solved separately for each state. Only retained receivers are calibrated, not newly exposed topology. No scheduling, display smoothing or gameplay seconds in this tape. Binary little-endian f32 moments layout is documented in near_history.rs."});
         std::fs::write(worker_output.join("near-history.json"),serde_json::to_vec(&metadata).unwrap()).map_err(|e|e.to_string())?;
         Ok(Bake {frames,base,sites,accepted:true,qualification:json!({"kind":"near_history_tape",
             "measurement_complete":true,"quality_pass_claimed":false})})

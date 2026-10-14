@@ -53,6 +53,14 @@ impl HouseRun {
                 commands
                     .entity(camera)
                     .remove::<bevy_ahoy::prelude::CharacterControllerCameraOf>();
+                if let Some((_, _, fov)) = super::reference_image::calibration_house_view() {
+                    commands.entity(camera).insert(Projection::Perspective(
+                        PerspectiveProjection {
+                            fov: fov.to_radians(),
+                            ..default()
+                        },
+                    ));
+                }
             }
             self.initialized = true;
         }
@@ -68,7 +76,13 @@ impl HouseRun {
         };
         for camera in cameras {
             if let Ok(mut transform) = transforms.get_mut(camera) {
-                *transform = Transform::from_xyz(0.5, 14.0, -17.5).looking_at(target, Vec3::Y);
+                *transform = if let Some((eye, target, _)) =
+                    super::reference_image::calibration_house_view()
+                {
+                    Transform::from_translation(eye).looking_at(target, Vec3::Y)
+                } else {
+                    Transform::from_xyz(0.5, 14.0, -17.5).looking_at(target, Vec3::Y)
+                };
             }
         }
         if edits {

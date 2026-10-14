@@ -24,8 +24,15 @@ const CHUNK_FACES: usize = 512;
 
 #[path = "model_comparison.rs"]
 mod model_comparison;
+#[path = "near_fixture.rs"]
+mod near_fixture;
 #[path = "near_history.rs"]
 mod near_history;
+
+pub(super) fn calibration_house_view() -> Option<(Vec3, Vec3, f32)> {
+    let fixture = near_fixture::Fixture::selected().ok()?;
+    (near_history::requested() && fixture.is_house()).then(|| fixture.view())
+}
 
 type ProbeMap = HashMap<IVec3, SurfaceProbe>;
 type Means = Vec<[f64; 5]>;
@@ -64,6 +71,7 @@ struct ReferenceFrame {
     values: Means,
     pending: VecDeque<IVec3>,
     confidence: Option<Vec<f32>>,
+    sky: Option<Vec<[u32; 4]>>,
 }
 
 struct Bake {
@@ -100,6 +108,9 @@ pub(super) fn install(app: &mut App) {
 /// workload, placed near the floor; the geometry audit still verifies every
 /// chamber voxel. This changes only the opt-in offline fixture's residency.
 fn setup_residency(mut commands: Commands, evidence: Res<CaptureEvidence>) {
+    if calibration_house_view().is_some() {
+        return;
+    }
     let origin = if crate::cave_scene::enabled() {
         Vec3::ZERO
     } else {
@@ -129,18 +140,30 @@ fn chamber_sites(
     scene: &super::super::world::TransportScene,
     origin: IVec3,
 ) -> Vec<(IVec3, usize)> {
+    interior_sites(
+        scene,
+        origin + IVec3::splat(4),
+        origin + IVec3::new(59, 43, 59),
+    )
+}
+
+fn interior_sites(
+    scene: &super::super::world::TransportScene,
+    min: IVec3,
+    max: IVec3,
+) -> Vec<(IVec3, usize)> {
     let mut sites = HashSet::new();
-    for z in 4..=59 {
-        for y in 4..=43 {
-            for x in 4..=59 {
-                let voxel = origin + IVec3::new(x, y, z);
+    for z in min.z..=max.z {
+        for y in min.y..=max.y {
+            for x in min.x..=max.x {
+                let voxel = IVec3::new(x, y, z);
                 if scene.material_at(voxel).is_none_or(|m| m == AIR) {
                     continue;
                 }
                 for (face, normal) in FACE_OFFSETS.into_iter().enumerate() {
-                    let air = voxel + normal - origin;
-                    if air.cmpge(IVec3::splat(5)).all()
-                        && air.cmple(IVec3::new(58, 42, 58)).all()
+                    let air = voxel + normal;
+                    if air.cmpge(min + IVec3::ONE).all()
+                        && air.cmple(max - IVec3::ONE).all()
                         && exposed(scene, voxel, face)
                     {
                         let (u, v) = match face / 2 {
@@ -179,12 +202,19 @@ impl ReferenceImage {
         profile: Profile,
         output: PathBuf,
     ) -> Result<Self, String> {
-        if profile != Profile::Cave
+        let fixture = if near_history::requested() {
+            near_fixture::Fixture::selected()?
+        } else {
+            near_fixture::Fixture::CaveTorch
+        };
+        let house = near_history::requested() && fixture.is_house();
+        if profile != (if house { Profile::House } else { Profile::Cave })
             || !crate::headless_validation()
             || std::env::var_os("VOXEL_GI_VALIDATE_EXIT").is_none()
         {
             return Err(
-                "Reference image requires headless cave validation with EXIT enabled".into(),
+                "Reference image requires its matching headless scene profile with EXIT enabled"
+                    .into(),
             );
         }
         let paths: u32 = std::env::var("VOXEL_GI_REFERENCE_PATHS")
@@ -208,10 +238,11 @@ impl ReferenceImage {
         let mut mismatched = 0;
         let mut samples = Vec::new();
         let mut pages: HashMap<IVec3, (usize, usize)> = default();
-        for z in 4..=59 {
-            for y in 4..=43 {
-                for x in 4..=59 {
-                    let voxel = origin + IVec3::new(x, y, z);
+        let (min, max) = fixture.bounds(origin);
+        for z in min.z..=max.z {
+            for y in min.y..=max.y {
+                for x in min.x..=max.x {
+                    let voxel = IVec3::new(x, y, z);
                     let expected = match generator.generated_voxel(voxel) {
                         WorldVoxel::Solid(id) => u16::from(id),
                         _ => AIR,
@@ -241,8 +272,8 @@ impl ReferenceImage {
             json!({"page":page.to_array(),"unknown":unknown,"mismatched":mismatched,
                 "bvw_chunk_present":chunk.is_some(),"bvw_chunk_empty":chunk.as_ref().map(|c| c.is_empty())})
         }).collect();
-        let audit = json!({"unknown_voxels":unknown,"mismatched_voxels":mismatched,
-            "pages":pages,"samples":samples,"note":"Unedited cave profile: compare every authored chamber voxel against the host generator and sample BVW values at mismatches. Unknown and wrong-material cells invalidate a complete-chamber reference."});
+        let audit = json!({"fixture":fixture.name(),"unknown_voxels":unknown,"mismatched_voxels":mismatched,
+            "pages":pages,"samples":samples,"note":"Unedited fixture: compare every bounded voxel against the host generator and sample BVW values at mismatches. Unknown and wrong-material cells invalidate the reference."});
         std::fs::write(
             output.join("cave-geometry-audit.json"),
             serde_json::to_vec_pretty(&audit).unwrap(),
@@ -253,7 +284,11 @@ impl ReferenceImage {
                 "Cave GI snapshot differs from generated geometry: {unknown} unknown and {mismatched} wrong-material voxels; see cave-geometry-audit.json"
             ));
         }
-        let sites = chamber_sites(&runtime.scene, origin);
+        let sites = if house {
+            interior_sites(&runtime.scene, min, max)
+        } else {
+            chamber_sites(&runtime.scene, origin)
+        };
         if sites.is_empty() || !cache.ready {
             return Err("Reference image has no chamber receivers or live display cache".into());
         }
@@ -274,7 +309,9 @@ impl ReferenceImage {
         }
         if near_history::requested() {
             if settings.transport != super::super::TransportSettings::default() {
-                return Err("Near-history calibration requires the baseline transport model".into());
+                return Err(
+                    "Near-history calibration requires the baseline transport model".into(),
+                );
             }
             return near_history::start(runtime, device, output, origin, sites, base);
         }
@@ -410,14 +447,14 @@ impl ReferenceImage {
                 ("cave-reference", &mean),
                 ("cave-reference-held", &mean),
             ].into_iter().map(|(name, values)| {
-                ReferenceFrame { name:name.into(), values:values.clone(), pending:default(), confidence:None }
+                ReferenceFrame { name:name.into(), values:values.clone(), pending:default(), confidence:None, sky:None }
             }).collect();
             for (window, data) in sweep.into_iter().enumerate() {
                 for prefix in data.prefixes {
                     frames.push_back(ReferenceFrame {
                         name:format!("samples-{}-window-{window}",prefix.paths),
                         values:prefix.means, pending:default(),
-                        confidence:None,
+                        confidence:None, sky:None,
                     });
                 }
             }
@@ -519,6 +556,9 @@ fn tick(
                 p.display[face].indirect =
                     Vec3::new(value[0] as f32, value[1] as f32, value[2] as f32);
                 p.display[face].confidence = frame.confidence.as_ref().map_or(1.0, |c| c[i]);
+                if let Some(sky) = &frame.sky {
+                    p.display[face].sky = sky[i];
+                }
             }
             frame.pending = reference.base.keys().copied().collect();
             reference.current = Some(frame);
