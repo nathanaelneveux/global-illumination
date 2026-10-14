@@ -6,6 +6,7 @@ use super::*;
 pub(super) enum Fixture {
     CaveTorch,
     HouseSkylight,
+    HouseSunPatch,
     HouseDoor,
     HouseEmitter,
 }
@@ -15,6 +16,7 @@ impl Fixture {
         match std::env::var("VOXEL_GI_NEAR_FIXTURE").as_deref() {
             Err(_) | Ok("cave-torch") => Ok(Self::CaveTorch),
             Ok("house-skylight") => Ok(Self::HouseSkylight),
+            Ok("house-sun-patch") => Ok(Self::HouseSunPatch),
             Ok("house-door") => Ok(Self::HouseDoor),
             Ok("house-emitter") => Ok(Self::HouseEmitter),
             Ok(value) => Err(format!("Unknown near-history fixture {value:?}")),
@@ -25,6 +27,7 @@ impl Fixture {
         match self {
             Self::CaveTorch => "cave-torch",
             Self::HouseSkylight => "house-skylight",
+            Self::HouseSunPatch => "house-sun-patch",
             Self::HouseDoor => "house-door",
             Self::HouseEmitter => "house-emitter",
         }
@@ -46,7 +49,12 @@ impl Fixture {
     }
 
     pub fn view(self) -> (Vec3, Vec3, f32) {
-        if self.is_house() {
+        if self == Self::HouseSunPatch {
+            // Look down at the receiving floor, keeping the roof edit above
+            // the frustum. Direct corner sunlight and its bounce are visible
+            // without changing any of the captured raster geometry.
+            (Vec3::new(-3., 15.5, -21.), Vec3::new(2., 11., -16.), 55.)
+        } else if self.is_house() {
             // Tight upper-corner view excludes the existing low windows and
             // all edited geometry. Both states therefore share raster topology.
             (Vec3::new(0.5, 14., -17.5), Vec3::new(5.5, 17., -12.5), 25.)
@@ -60,6 +68,9 @@ impl Fixture {
         match self {
             Self::CaveTorch => vec![cave_origin + IVec3::new(5, 10, 56)],
             Self::HouseSkylight => vec![IVec3::new(0, 17, -18)],
+            Self::HouseSunPatch => (-19..=-17)
+                .flat_map(|z| (-1..=1).map(move |x| IVec3::new(x, 17, z)))
+                .collect(),
             Self::HouseDoor => (11..=13).map(|y| IVec3::new(-6, y, -18)).collect(),
             Self::HouseEmitter => vec![IVec3::new(-4, 13, -21)],
         }
@@ -113,5 +124,14 @@ mod tests {
             );
             assert!(!fixture.edit_is_offscreen(IVec3::new(5, 17, -13)));
         }
+        let fixture = Fixture::HouseSunPatch;
+        assert_eq!(fixture.edits(IVec3::ZERO).len(), 9);
+        assert!(
+            fixture
+                .edits(IVec3::ZERO)
+                .iter()
+                .all(|&p| fixture.edit_is_offscreen(p))
+        );
+        assert!(!fixture.edit_is_offscreen(IVec3::new(3, 10, -16)));
     }
 }
