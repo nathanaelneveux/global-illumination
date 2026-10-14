@@ -148,8 +148,9 @@ def make_plan(args):
     for values in (args.histories,args.radii,args.windows,args.cases):
         if len(set(values)) != len(values):
             raise ValueError("duplicate sweep arguments would overwrite frame identities")
-    if args.every and (args.every < 16 or args.every % 16):
-        raise ValueError("event spacing must be a positive multiple of the native batch")
+    for spacing in (args.every,args.null_every):
+        if spacing and (spacing < 16 or spacing % 16):
+            raise ValueError("event spacing must be a positive multiple of the native batch")
     args.output.mkdir(parents=True, exist_ok=False)
     frames = []
 
@@ -173,14 +174,16 @@ def make_plan(args):
                  case=f"warm-{state['name']}",radius=0,history=tape["warm_paths"],window=w,
                  fresh_paths=0,replay_seconds=0,target=f"near-{state['name']}-reference")
         for case in args.cases:
+            every = args.null_every if case == "null" and args.null_every is not None else args.every
             for radius in args.radii:
                 for history in args.histories:
                     for paths, after, raw, display, confidence, weight in replay(
-                            tape, w, case, radius, history, args.dt, args.every):
+                            tape, w, case, radius, history, args.dt, every):
                         name = f"{case}-r{radius}-h{history}-w{w}-p{paths}"
                         target = "after" if after else "before"
                         save(name, display, confidence, case=case, radius=radius, history=history,
                              window=w, fresh_paths=paths, replay_seconds=paths / 16 * args.dt,
+                             event_interval_paths=every,
                              target=f"near-{target}-reference", weight_p50=float(np.median(weight)),
                              raw_rgb_rmse=float(np.sqrt(np.mean((raw - np.asarray(tape["states"][int(after)]["mean"])[:, :3]) ** 2))))
     metadata = dict(schema=1, sites=tape["sites"], frames=frames,
@@ -304,6 +307,7 @@ def main():
     p.add_argument("--dt",type=float,default=.85,
                    help="uniform seconds per 16-path face publication, not frame time")
     p.add_argument("--every",type=int,default=0,help="repeat edit every N fresh paths; 0 is one edit")
+    p.add_argument("--null-every",type=int,help="separate event interval for unchanged-lighting pressure control")
     a = sub.add_parser("assess")
     a.add_argument("plan",type=Path)
     a.add_argument("run",type=Path)
