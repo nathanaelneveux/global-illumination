@@ -1,5 +1,9 @@
 # History policy decision
 
+**Superseded selection:** the user requires one whole-range curve with no
+privileged 48/256 anchor. The near-only choice below is not the final policy.
+Its evidence remains valid; see [the whole-range decision](whole-range-history.md).
+
 Branch `codex/gi-history-decision`, baseline `423e188`. This round separates
 three decisions: maximum statistical weight, the near-edit distance equation,
 and whether source-type rules are justified. **Decision: select power 4 as the
