@@ -2,24 +2,27 @@ SOURCE REVIEW — VOXEL GLOBAL ILLUMINATION
 2026-10-13
 
 Purpose: code-based handoff to the agent with project history.
+Scope: GI implementation, its integration adapters, rendering, and GI validation.
+The prototype world is the host scaffold and is outside the review scope.
 
 ASSESSMENT
 
-The transport code has useful internal boundaries and substantial correctness
-machinery. The project is nevertheless a demo application with an embedded GI
-subsystem, not yet a reusable library. The main architectural problem is ownership
-across host adaptation, runtime state, diagnostics, and rendering. Splitting large
-files or adding src/lib.rs alone would not resolve it.
+The GI code has useful internal boundaries and substantial correctness machinery.
+The main architectural work is clarifying ownership across GI's input adapter,
+runtime state, diagnostics, and rendering. Using a prototype world as the host is
+expected. The host's binary target, gameplay dependencies, and implementation are
+not defects in the GI subsystem. Library-quality GI code can be developed within
+this application before any separate crate is extracted.
 
-The clearest performance opportunities are outside the ray estimator: collider
-candidate discovery, repeated scene-change discovery, live per-voxel ingestion,
-and a topology publication path that bypasses the ordinary value-upload budget.
+The clearest GI performance opportunities are outside the ray estimator:
+repeated scene-change discovery, live per-voxel ingestion, and a topology
+publication path that bypasses the ordinary value-upload budget.
 These are source-level cost findings; this review does not establish their
 relative frame-time impact or claim measured speedups.
 
 I found specific cleanup candidates, not evidence that a large portion of the
 production solver is dead. Much of the apparent duplication is reference,
-research, or parity-test code that should survive a library extraction.
+research, or parity-test code that should survive GI refactoring.
 
 SCOPE AND EVIDENCE
 
@@ -27,9 +30,13 @@ SCOPE AND EVIDENCE
   source, manifests, compiler output, focused tests, and relevant installed
   dependency implementation source. Existing comments were treated as claims
   to check against implementation, not as project-history authority.
-- Reviewed the runtime wiring, scene ingestion/storage, scheduling/publication,
+- This report is scoped to GI following the user's clarification. Prototype
+  terrain generation, colliders, player/controller code, and application-level
+  dependency choices are excluded. Host/dependency implementation is used only
+  where needed to understand how GI consumes it; recommendations target GI.
+- Reviewed the GI runtime wiring, ingestion/storage, scheduling/publication,
   source adaptation, CPU/GPU transport boundaries, GPU packing/display, shaders,
-  colliders, diagnostics coupling, and representative tests/analysis tools.
+  diagnostics coupling, and representative GI tests/analysis tools.
   This is not a claim of line-by-line inspection of every research/test module.
 - Other work was being committed concurrently. Review began at
   56e4589757ce33ed486e14aadbf92803728b3e0a. References below were checked against
@@ -41,55 +48,54 @@ SCOPE AND EVIDENCE
   native GPU performance run, or visual-quality comparison was performed.
 - Build/test results below were collected during the moving review window;
   they are supporting evidence, not a full CI signoff of the final snapshot.
+- This scope revision changes only the report. Earlier verification is recorded
+  as historical evidence; builds/tests were not rerun for this text-only edit.
 
-Priority meanings: P1 = address before presenting this as a reusable library;
-P2 = concrete issue or material scaling risk worth a focused change;
+Priority meanings: P1 = high-priority robustness issue;
+P2 = concrete correctness, scaling, or ownership issue worth a focused change;
 P3 = cleanup or profiling candidate. Confidence distinguishes observed code
 behavior from its unmeasured practical impact.
 
 PRIORITIZED FINDINGS
 
-F1. P1 — The GI subsystem cannot be consumed independently of the demo
+F1. P2 — GI input adaptation and runtime initialization need a clearer boundary
 Confidence: high. Category: architecture/API.
 
 Evidence:
-  Cargo.toml:1-36; src/main.rs:13;
   src/voxel_gi/mod.rs:84-111;
   src/voxel_gi/bvw.rs:10,26-28,77-81;
   src/voxel_gi/display.rs:195-209;
   src/voxel_gi/render.rs:22-51.
 
-Cargo exposes only a binary target. pub mod voxel_gi does not provide a library
-crate. More importantly, the plugin unconditionally installs systems using the
-demo's PrototypeWorld, its concrete chunk messages, generator, and VoxelWorld
-resources. Display publication obtains a BVW-specific material handle, and the
-material extension hardcodes BVW's vertex layout. Terrain and asset preparation
-also reach into GI's private rendering module. Diagnostics reaches back into
-the player/application, while production paths call diagnostics/validation.
+The GI plugin unconditionally installs systems using PrototypeWorld, its concrete
+chunk messages, generator, and VoxelWorld resources. Display publication obtains
+a BVW-specific material handle, and the material extension uses BVW's vertex
+layout. Those dependencies are appropriate in the current adapter. The ownership
+issue is that adapter installation, transport initialization, and renderer
+integration are selected together by the main GI plugin, while ordinary runtime
+paths also call diagnostics/validation. bvw.rs already provides a useful start
+on separating these responsibilities.
 
 The display shader is an AssetServer path, shaders/voxel_transport.wgsl, whereas
-the compute shader is embedded with include_str!. A downstream consumer would
-need an explicit shader provisioning contract; depending on the crate alone
-would not install that asset. Cargo also makes the demo's physics, controller,
-inspector, and asset-loading dependencies mandatory, with development/dynamic
-linking features enabled by default.
+the compute shader is embedded with include_str!. This is valid in the prototype
+host. If GI is later packaged separately, shader provisioning and the supported
+vertex/material interface need an explicit integration contract.
 
 Recommended direction:
-  Establish one real library boundary before multiplying crates. Give the core
-  an explicit immutable page/region snapshot or delta input, source/material
-  input, settings, and query/output contract. Put PrototypeWorld adaptation and
-  the demo controls in the application or a named optional adapter. Keep Bevy
-  integration if Bevy is the intended platform; a completely engine-independent
-  rewrite is not necessary. Make renderer/vertex-layout requirements explicit,
-  and register/embed the library-owned shader. Move demo-only dependencies out
-  of the library dependency surface. Export the smallest useful API.
+  Define the GI-owned immutable page/region snapshot or delta input, source and
+  material input, settings, and query/output contract. Keep PrototypeWorld
+  support in the current adapter, with explicit installation/wiring around that
+  boundary. Separate diagnostic policy from ordinary transport initialization.
+  Preserve the Bevy/BVW renderer integration where it is intentional. Focus on
+  internal ownership and testability; no prototype rewrite, engine-independent
+  abstraction framework, or immediate crate extraction is required.
 
 Acceptance check:
-  A small separately compiled consumer can instantiate the supported plugin,
-  supply a tiny world, publish an edit, and query freshness without importing
-  PrototypeWorld, copying private modules, or copying the demo asset directory.
-  Separately check rendering with the supported mesh/material adapter. Keep the
-  existing app building at each extraction checkpoint.
+  A GI-only harness can initialize transport, provide a tiny in-memory input,
+  publish an edit, and query freshness without installing prototype gameplay or
+  diagnostics. The existing prototype adapter feeds the same input boundary.
+  If crate extraction becomes a separate task, add a downstream consumer and
+  shader-provisioning smoke test then.
 
 F2. P1 — Display-cache allocation has no device-limit failure path
 Confidence: high for the missing checks; failure requires sufficient residency.
@@ -156,43 +162,12 @@ Acceptance check:
   Reuse the targeted render-generation/publication regressions. Profile the
   main-thread tail with this trigger before claiming a frame-time improvement.
 
-F4. P2 — Collider discovery repeats unbounded work even with all workers occupied
-Confidence: high for repeated work; timing impact not measured.
-Category: gameplay performance.
-
-Evidence: src/chunk_colliders.rs:115-120,155-199.
-
-Every invocation scans all chunk entities, including already-ready chunks,
-collects pending candidates, and sorts the full pending list by distance. For
-each pending LOD-0 candidate it looks up/clones chunk data and checks the cache
-before checking the two-worker limit. A cache miss with both workers occupied
-continues to the next candidate instead of ending candidate discovery.
-
-The job/publication limits therefore do not bound scheduling overhead. With C
-loaded chunks and P pending chunks this includes O(C + P log P) work each frame,
-plus potentially P chunk lookups, while no new worker can start. A fully ready
-world still incurs the initial all-chunk scan.
-
-Recommended direction:
-  Separate job-validation queries from a Without<ChunkColliderReady> candidate
-  query. Maintain pending candidates from relevant lifecycle events, or use a
-  bounded scan and select only available nearest work. Cache hits/empty chunks
-  still deserve progress when workers are full, so an unconditional early
-  return would be an incomplete fix. Bound that cheap publication search too.
-
-Acceptance check:
-  Cover full worker slots, large pending sets, cache-hit progress, edits during
-  in-flight work, and nearest eligible selection. Preserve the existing stale
-  result/hash checks and old colliders until replacements are ready. Measure
-  this scheduler separately from collider construction.
-
-F5. P2 — One edited page performs tens of thousands of live locked voxel reads
+F4. P2 — GI resamples one edited page through thousands of live locked voxel reads
 Confidence: high for cost; mixed-time snapshot consequence is a risk to test.
 Category: ingestion performance and snapshot contract.
 
 Evidence:
   src/voxel_gi/bvw.rs:39-43,60-65,119-152,200-213;
-  src/terrain.rs:175-200,260-283;
   dependency bevy_voxel_world 0.17.0, src/voxel_world.rs:159-190.
 
 Chunk updates and explicit individual edits both request full page resampling.
@@ -200,9 +175,9 @@ For each 32-cubed page, the worker calls get_voxel_fn 32,768 times. Inspection o
 the dependency implementation shows that each lookup first linearly searches
 a captured write buffer, then consults the shared modified-voxel store, then
 usually takes a chunk-map read lock and clones a chunk handle. These are not
-32,768 reads from an already captured immutable dense page. If fallback terrain
-generation is needed, generated_voxel also repeats noise work which the normal
-chunk generator amortizes by column.
+32,768 reads from an already captured immutable dense page. The finding concerns
+GI's bulk use of this host lookup API; it does not call for changing the host's
+general-purpose lookup implementation or terrain generator.
 
 This runs on a worker, so it is chiefly an edit-response/throughput and lock
 contention issue, not automatically a main-thread frame spike. The closure also
@@ -224,7 +199,7 @@ Acceptance check:
   pages, and generator fallback. Count per-page store acquisitions and measure
   edit-to-publication latency; retain stale-result rejection.
 
-F6. P2 — Multiple caches independently rediscover the same scene delta
+F5. P2 — Multiple caches independently rediscover the same scene delta
 Confidence: high for scaling structure; prioritize using measured stage cost.
 Category: duplicated work and architecture.
 
@@ -264,7 +239,7 @@ Acceptance check:
   Do not promise all work becomes O(delta), and do not begin with a wholesale
   persistent-map or acceleration-structure rewrite.
 
-F7. P2 — Bevy light visibility does not participate in the transport source state
+F6. P2 — Bevy light visibility does not participate in the transport source state
 Confidence: high for behavior; desired source policy needs a deliberate choice.
 Category: host-integration correctness.
 
@@ -290,7 +265,7 @@ Acceptance check:
   move the camera away while keeping the light enabled. Check source revisions,
   relighting, and continued offscreen transport. Include non-visible bands.
 
-F8. P2 — Core behavior is configured through process-global diagnostic state
+F7. P2 — Core behavior is configured through process-global diagnostic state
 Confidence: high. Category: library configuration/testability.
 
 Evidence:
@@ -317,14 +292,14 @@ Recommended direction:
   retention, and diagnostic configuration. Keep valid algorithm policies in
   the core; give diagnostics explicit observation hooks or a feature boundary.
   Return configuration errors at the application boundary instead of panicking
-  from a library plugin. Preserve current defaults during extraction.
+  from GI initialization. Preserve current defaults during refactoring.
 
 Acceptance check:
   Two independent configurations can coexist without changing process globals.
   Normal debug and release runs use the same transport policy when given equal
   settings. Diagnostic overrides are opt-in and identified in output evidence.
 
-F9. P2 — Zero-energy sources still incur shadow rays; static source lists are
+F8. P2 — Zero-energy sources still incur shadow rays; static source lists are
           rebuilt and sorted each frame
 Confidence: high for work performed; importance depends on source count.
 Category: straightforward performance cleanup.
@@ -358,11 +333,11 @@ Acceptance check:
 SMALLER CLEANUP AND DESIGN DEBT
 
 C1. Release-only unused items (P3, compiler-confirmed during review)
-  A release check reported EYE/TARGET in src/canyon_scene.rs:9-10,
-  ProbeStore::keys in field.rs:143, validation_mirror in render.rs:158, and
+  A release check reported four unused GI items: ProbeStore::keys in field.rs:143,
+  validation_mirror in render.rs:158, and
   MAIN_STAGE_NAMES/DISPLAY_STAGE_NAMES in telemetry.rs:10,31. Gate helpers with
   the configurations that use them or remove them if their callers are gone.
-  This is six warnings, not proof of a large dead production subsystem. Avoid
+  These are specific helpers, not proof of a large dead production subsystem. Avoid
   blanket allow(dead_code). Removing unreachable helpers may not change binary
   size because optimization already removes them.
 
@@ -417,7 +392,7 @@ WHAT TO KEEP / WHAT NOT TO CALL DEAD
   rejection, and the distinction between freshness, sample coverage, and
   convergence are valuable contracts.
 - Display priors/history are separated from simulation measurements. Preserve
-  that separation during extraction and performance work.
+  that separation during refactoring and performance work.
 - Compact worker face records, reused scratch storage, bounded CPU work, and
   reuse of Bevy's GPU device already address substantial avoidable overhead.
 - GPU cache generations, topology preflight, atomic probe/hash publication,
@@ -451,7 +426,8 @@ VERIFICATION PERFORMED
    cleanup, not runtime defects. Source line numbers changed during the review.
 
 3. cargo check --release --no-default-features --message-format=short
-   Passed with the six unused-item warnings listed in C1.
+   Passed with six unused-item warnings: four GI items listed in C1 and two
+   prototype-host items excluded from this review's recommendations.
 
 4. cargo test --no-default-features voxel_gi::work::tests -- --nocapture
    Passed: 6 tests. Covers compact publication/reference equivalence and
@@ -485,14 +461,14 @@ SUGGESTED HANDOFF SEQUENCE
    semantics. Keep the existing rendering defaults as the behavioral baseline.
 2. Make small independent fixes for device-limit handling, zero-energy sources,
    and obvious configuration-specific dead helpers. Verify only affected paths.
-3. Fix the topology/value budget boundary and collider discovery in separate
-   changes. Preserve atomicity/stale-job rejection and test the exact triggers.
+3. Fix the topology/value budget boundary. Preserve atomicity and generation
+   consistency, and test the large-backlog/local-topology trigger.
 4. Introduce a coherent immutable ingestion/delta contract, then use it to
    remove duplicated change discovery. Measure preprocessing time, frame-time
    tails, and lighting/edit freshness together at a fixed scene and settings.
-5. Extract the public library and optional/demo adapters with a minimal external
-   consumer test. Move environment parsing and diagnostic ownership outward.
-   Refactor state ownership incrementally, preserving buildable checkpoints.
+5. Clarify GI input/adapter and diagnostic ownership, and refactor internal state
+   incrementally with a minimal GI-only harness. Keep the prototype world as
+   the host. Treat separate crate packaging as a later task if needed.
 6. Improve Python test/dependency discovery separately from algorithm changes.
 
 Each commit should explain the invariant it preserves and the focused check
