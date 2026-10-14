@@ -302,6 +302,7 @@ mod tests {
             Profile::Sources,
             Profile::Cave,
             Profile::Structures,
+            Profile::Hallway,
         ] {
             for tick in 0..720 {
                 let mut settings = GpuTransportSettings {

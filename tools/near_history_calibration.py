@@ -175,17 +175,20 @@ def native_zero_control(tape, skies):
     if tape.get("fixture") != "hallway-emitter" or len(tape["states"]) != 2:
         return False
     after = tape["states"][1]
+    n = len(tape["sites"])
     return (after["name"] == "after" and len(after["replicas"]) == 2
-            and all(np.count_nonzero(v) == 0 for v in [after["mean"], *after["replicas"]])
+            and all(np.asarray(v).shape == (n,5) and np.count_nonzero(v) == 0
+                    for v in [after["mean"], *after["replicas"]])
+            and np.asarray(skies.get("after", [])).shape == (n,4)
             and np.all(np.asarray(skies.get("after", [])) == 1)
-            and len(skies.get("after", [])) == len(tape["sites"]) > 0)
+            and n > 0)
 
 
 def make_plan(args):
     tape = load_tape(args.tape)
     view = tape.get("view")
     if args.view is not None:
-        view = tape.get("views", {}).get(args.view)
+        view = (tape.get("views") or {}).get(args.view)
         if view is None:
             raise ValueError("requested view is not an authored tape station")
     pairs = policy_pairs(args.histories, args.radii, args.policies)
@@ -386,6 +389,7 @@ class Tests(unittest.TestCase):
         self.assertTrue(native_zero_control(tape,{"after":[[1]*4]}))
         self.assertFalse(native_zero_control(tape,{}))
         self.assertFalse(native_zero_control(tape,{"after":[[0]*4]}))
+        self.assertFalse(native_zero_control(tape,{"after":[[1]*3]}))
         tape["states"][1]["replicas"][1][0][0] = .001
         self.assertFalse(native_zero_control(tape,{"after":[[1]*4]}))
 
