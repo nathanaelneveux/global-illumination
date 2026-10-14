@@ -171,8 +171,23 @@ def policy_pairs(histories=None, radii=None, policies=None):
     return pairs
 
 
+def native_zero_control(tape, skies):
+    if tape.get("fixture") != "hallway-emitter" or len(tape["states"]) != 2:
+        return False
+    after = tape["states"][1]
+    return (after["name"] == "after" and len(after["replicas"]) == 2
+            and all(np.count_nonzero(v) == 0 for v in [after["mean"], *after["replicas"]])
+            and np.all(np.asarray(skies.get("after", [])) == 1)
+            and len(skies.get("after", [])) == len(tape["sites"]) > 0)
+
+
 def make_plan(args):
     tape = load_tape(args.tape)
+    view = tape.get("view")
+    if args.view is not None:
+        view = tape.get("views", {}).get(args.view)
+        if view is None:
+            raise ValueError("requested view is not an authored tape station")
     pairs = policy_pairs(args.histories, args.radii, args.policies)
     if args.checkpoints is not None and (len(set(args.checkpoints)) != len(args.checkpoints)
             or any(n < 0 or n > tape["steps"] * tape["batch_paths"] or n % tape["batch_paths"]
@@ -189,6 +204,11 @@ def make_plan(args):
     args.output.mkdir(parents=True, exist_ok=False)
     frames = []
     skies = {s["name"]:s["sky"] for s in tape["states"] if s.get("sky") is not None}
+    # A fully enclosed unlit hallway has a known zero-energy target. This is
+    # NOT a black gameplay capture pass: bracket offline replay with positive
+    # material witnesses, and require both native reference replicas and sky
+    # corners to certify zero before treating the dark image as a control.
+    dark_control = native_zero_control(tape, skies)
 
     def save(name, values, confidence, **metadata):
         values = np.column_stack((np.asarray(values)[:, :3], confidence)).astype("<f4")
@@ -200,6 +220,9 @@ def make_plan(args):
             metadata.setdefault("sky_state", state)
         frames.append(dict(name=name, **metadata))
 
+    if dark_control:
+        save("witness-before", np.ones((len(tape["sites"]),3)), np.ones(len(tape["sites"])),
+             reference=True, sky_state="after")
     for state in tape["states"]:
         save(f"near-{state['name']}-reference", state["mean"], np.ones(len(tape["sites"])), reference=True)
         for i, replica in enumerate(state["replicas"]):
@@ -244,8 +267,11 @@ def make_plan(args):
                          event_interval_paths=every,
                          target=f"near-{target}-reference", weight_p50=float(np.median(weight)),
                          raw_rgb_rmse=float(np.sqrt(np.mean((raw - np.asarray(tape["states"][int(after)]["mean"])[:, :3]) ** 2))))
-    metadata = dict(schema=1, fixture=tape.get("fixture", "cave-torch"),
-                    view=tape.get("view"), skies=skies, sites=tape["sites"], frames=frames,
+    if dark_control:
+        save("witness-after", np.ones((len(tape["sites"]),3)), np.ones(len(tape["sites"])),
+             reference=True, sky_state="after")
+    metadata = dict(schema=1, fixture=tape.get("fixture", "cave-torch"), dark_zero_control=dark_control,
+                    view=view, skies=skies, sites=tape["sites"], frames=frames,
                     tape=str(args.tape.resolve()), tape_sha256=digest(args.tape / "near-history.json"),
                     moments_sha256={s["moments"]:digest(args.tape / s["moments"]) for s in tape["states"]},
                     policies=pairs, literal_history=args.literal,
@@ -299,12 +325,30 @@ def assess(args):
     status = json.loads((args.run / "cave-model-comparison-status.json").read_text())
     if status["status"] != "completed" or not status["geometry_audit_passed"]:
         raise ValueError("incomplete rendering or failed geometry audit")
+    if (Path(status["qualification"]["plan"]).resolve() != args.plan.resolve()
+            or status["captures"] != len(plan["frames"]) + 1):
+        raise ValueError("completed run does not match this replay plan/capture count")
     gates = {s:profile["limits"][s] for s in ("flip","flip_32px_tile_means")}
+    if plan.get("dark_zero_control"):
+        # Never waive camera/assets/target/geometry checks or classify a blank
+        # gameplay screenshot as a pass. This narrowly qualifies a native-zero
+        # offline material control, with a bright same-geometry witness pair.
+        tape = load_tape(Path(plan["tape"]))
+        if (not native_zero_control(tape,plan["skies"])
+                or digest(Path(plan["tape"]) / "near-history.json") != plan["tape_sha256"]
+                or plan["skies"]["after"] != tape["states"][1]["sky"]):
+            raise ValueError("dark control lacks matching native zero-energy evidence")
+        witness = [load_rgb(args.run / f"witness-{s}.png") for s in ("before","after")]
+        if any(np.std(im) < .01 or np.mean(im) < .05 for im in witness):
+            raise ValueError("dark control has no positive material witness")
+        if not within(flip_difference(*witness), gates):
+            raise ValueError("bracketing material witnesses disagree")
     references = {}
     for state in ("before","after"):
         path = args.run / f"near-{state}-reference.png"
         rgb = load_rgb(path)
-        if rgb.shape != (profile["view"]["height"],profile["view"]["width"],3) or np.std(rgb) < .01:
+        known_dark = plan.get("dark_zero_control") and state == "after" and np.max(rgb) <= 1. / 255. + 1e-7
+        if rgb.shape != (profile["view"]["height"],profile["view"]["width"],3) or (np.std(rgb) < .01 and not known_dark):
             raise ValueError("invalid/blank capture dimensions")
         references[f"near-{state}-reference"] = rgb
     # Check residual reference noise against the SAME fixed perceptual limits.
@@ -336,6 +380,15 @@ def assess(args):
 
 
 class Tests(unittest.TestCase):
+    def test_zero_control_requires_complete_native_evidence_not_a_blank_image(self):
+        tape = dict(fixture="hallway-emitter",sites=[[[0,0,0],2]],states=[{},
+                    dict(name="after",mean=[[0]*5],replicas=[[[0]*5],[[0]*5]])])
+        self.assertTrue(native_zero_control(tape,{"after":[[1]*4]}))
+        self.assertFalse(native_zero_control(tape,{}))
+        self.assertFalse(native_zero_control(tape,{"after":[[0]*4]}))
+        tape["states"][1]["replicas"][1][0][0] = .001
+        self.assertFalse(native_zero_control(tape,{"after":[[1]*4]}))
+
     def test_literal_weights_bypass_the_bias_floor_and_keep_display_history(self):
         a = np.ones((1,257,1,6))
         b = np.zeros_like(a)
@@ -445,6 +498,7 @@ def main():
     p.add_argument("--histories",type=int,nargs="+",help="default: 16 256")
     p.add_argument("--literal",action="store_true",
                    help="use exact history weights everywhere, bypassing the prior floor; 0 discards, 65536 retains")
+    p.add_argument("--view",help="select a named equal-footprint camera station recorded in the tape")
     p.add_argument("--radii",type=int,nargs="+",help="default: 48")
     p.add_argument("--policies",nargs="+",help="explicit radius:history shortlist, instead of histories/radii")
     p.add_argument("--windows",type=int,nargs="+",default=[0])

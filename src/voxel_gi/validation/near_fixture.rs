@@ -9,6 +9,8 @@ pub(super) enum Fixture {
     HouseSunPatch,
     HouseDoor,
     HouseEmitter,
+    HallwayEmitter,
+    HallwayOccluder,
 }
 
 impl Fixture {
@@ -19,6 +21,8 @@ impl Fixture {
             Ok("house-sun-patch") => Ok(Self::HouseSunPatch),
             Ok("house-door") => Ok(Self::HouseDoor),
             Ok("house-emitter") => Ok(Self::HouseEmitter),
+            Ok("hallway-emitter") => Ok(Self::HallwayEmitter),
+            Ok("hallway-occluder") => Ok(Self::HallwayOccluder),
             Ok(value) => Err(format!("Unknown near-history fixture {value:?}")),
         }
     }
@@ -30,15 +34,36 @@ impl Fixture {
             Self::HouseSunPatch => "house-sun-patch",
             Self::HouseDoor => "house-door",
             Self::HouseEmitter => "house-emitter",
+            Self::HallwayEmitter => "hallway-emitter",
+            Self::HallwayOccluder => "hallway-occluder",
         }
     }
 
     pub fn is_house(self) -> bool {
-        self != Self::CaveTorch
+        matches!(
+            self,
+            Self::HouseSkylight | Self::HouseSunPatch | Self::HouseDoor | Self::HouseEmitter
+        )
+    }
+
+    pub fn is_hallway(self) -> bool {
+        matches!(self, Self::HallwayEmitter | Self::HallwayOccluder)
+    }
+
+    pub fn hallway_offsets(self) -> impl Iterator<Item = i32> {
+        crate::structures::hallway::OFFSETS
+            .into_iter()
+            .filter(move |&d| self != Self::HallwayOccluder || d >= 4)
     }
 
     pub fn bounds(self, cave_origin: IVec3) -> (IVec3, IVec3) {
-        if self.is_house() {
+        if self.is_hallway() {
+            let min = crate::structures::hallway::ORIGIN;
+            (
+                min,
+                min + crate::structures::hallway::SIZE.as_ivec3() - IVec3::ONE,
+            )
+        } else if self.is_house() {
             (IVec3::new(-6, 10, -24), IVec3::new(6, 17, -12))
         } else {
             (
@@ -49,7 +74,17 @@ impl Fixture {
     }
 
     pub fn view(self) -> (Vec3, Vec3, f32) {
-        if self == Self::HouseSunPatch {
+        if self.is_hallway() {
+            let offset = std::env::var("VOXEL_GI_HALLWAY_OFFSET")
+                .unwrap_or_else(|_| "8".into())
+                .parse::<i32>()
+                .expect("HALLWAY_OFFSET must be an integer station offset");
+            assert!(
+                self.hallway_offsets().any(|d| d == offset),
+                "unknown hallway station"
+            );
+            crate::structures::hallway::measurement_view(offset)
+        } else if self == Self::HouseSunPatch {
             // Look down at the receiving floor, keeping the roof edit above
             // the frustum. Direct corner sunlight and its bounce are visible
             // without changing any of the captured raster geometry.
@@ -73,13 +108,22 @@ impl Fixture {
                 .collect(),
             Self::HouseDoor => (11..=13).map(|y| IVec3::new(-6, y, -18)).collect(),
             Self::HouseEmitter => vec![IVec3::new(-4, 13, -21)],
+            Self::HallwayEmitter => vec![crate::structures::hallway::SOURCE],
+            Self::HallwayOccluder => (-2..=2)
+                .flat_map(|z| {
+                    (0..4).map(move |y| crate::structures::hallway::SOURCE + IVec3::new(1, y, z))
+                })
+                .collect(),
         }
     }
 
     /// A conservative box/frustum test: all eight corners must lie outside
     /// the same view half-space. A center-only test could hide edited pixels.
     pub fn edit_is_offscreen(self, voxel: IVec3) -> bool {
-        let (eye, target, fov) = self.view();
+        Self::outside_view(self.view(), voxel)
+    }
+
+    fn outside_view((eye, target, fov): (Vec3, Vec3, f32), voxel: IVec3) -> bool {
         let forward = (target - eye).normalize();
         let right = forward.cross(Vec3::Y).normalize();
         let up = right.cross(forward);
@@ -108,6 +152,27 @@ impl Fixture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hallway_station_views_exclude_source_and_include_receiver() {
+        use crate::structures::hallway::*;
+        for offset in OFFSETS {
+            let view = measurement_view(offset);
+            assert!(
+                Fixture::outside_view(view, SOURCE),
+                "source visible at {offset}"
+            );
+            assert!(!Fixture::outside_view(view, floor_receiver(offset)));
+        }
+        for offset in Fixture::HallwayOccluder.hallway_offsets() {
+            assert!(
+                Fixture::HallwayOccluder
+                    .edits(IVec3::ZERO)
+                    .iter()
+                    .all(|&p| Fixture::outside_view(measurement_view(offset), p))
+            );
+        }
+    }
 
     #[test]
     fn house_edits_are_outside_the_entire_fixed_view() {

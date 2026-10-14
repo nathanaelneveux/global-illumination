@@ -138,6 +138,11 @@ seconds are not gameplay latency. The inherited near 48/16 defaults remain
 unchanged pending response-time qualification, not assumed analytically valid.
 The [cross-scene follow-up](docs/history-cross-scene.md) tightens crossing
 observations and adds actual house skylight, doorway and emitter images.
+
+The [controlled hallway study](docs/hallway-history-study.md) measures equal-sized
+floor patches from the adjacent block out to 64 blocks, with literal retained
+weights below 16, matched source/occluder controls and native material captures.
+The hallway is also visitable west of the house; see the [route](docs/structures.md).
 Higher floors help small edits but can retain too much stale source brightness;
 no blanket replacement is promoted from the cave result alone.
 Its [distance and visible-sunlight follow-up](docs/history-cross-scene.md#distance-attribution-and-a-visible-sunlight-patch)

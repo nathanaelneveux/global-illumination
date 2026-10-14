@@ -104,14 +104,20 @@ fn render_plan(path: &str, sites: &[(IVec3, usize)]) -> Result<VecDeque<Referenc
     if manifest["fixture"].as_str().unwrap_or("cave-torch") != Fixture::selected()?.name() {
         return Err("Replay fixture differs from the active scene".into());
     }
+    if Fixture::selected()?.is_hallway() {
+        let (eye,target,fov) = Fixture::selected()?.view();
+        if manifest["view"] != json!({"eye":eye.to_array(),"target":target.to_array(),"fov_degrees":fov}) {
+            return Err("Replay camera differs from its declared hallway station".into());
+        }
+    }
     let mut frames = VecDeque::new();
     for frame in manifest["frames"]
         .as_array()
         .ok_or("Replay has no frames")?
     {
         let name = frame["name"].as_str().ok_or("Frame has no name")?;
-        if Fixture::selected()?.is_house() && frame["sky_state"].as_str().is_none() {
-            return Err("House replay must specify its target-state sunlight".into());
+        if (Fixture::selected()?.is_house() || Fixture::selected()?.is_hallway()) && frame["sky_state"].as_str().is_none() {
+            return Err("Replay must specify its target-state sunlight".into());
         }
         if name.is_empty() || !name.bytes().all(|v| v.is_ascii_alphanumeric() || v == b'-') {
             return Err("Unsafe replay frame name".into());
@@ -187,6 +193,29 @@ pub(super) fn start(
     let mut changed = scene.clone();
     if fixture == Fixture::CaveTorch {
         changed = remove_torch(&scene, origin)?.0;
+    } else if fixture == Fixture::HallwayOccluder {
+        for &voxel in &edits {
+            if scene.material_at(voxel) != Some(AIR) {
+                return Err("Hallway occluder requires empty authored space".into());
+            }
+            changed = replace_voxel(&changed, voxel,
+                u16::from(crate::terrain::TerrainMaterial::CaveRock.index()))?;
+        }
+    } else if fixture == Fixture::HallwayEmitter {
+        // Switch this source off without changing its diffuse solid geometry.
+        // This isolates history response, including the closest corner donors.
+        // Physical removal/new topology remains covered by house/cave fixtures.
+        let id = u16::from(crate::terrain::TerrainMaterial::Emissive.index());
+        if scene.material_at(edit) != Some(id) {
+            return Err("Hallway fixture requires its single ordinary lamp".into());
+        }
+        if scene.regions.values().any(|r| r.contains_any_material(&[0,0,0,1 << 58])) {
+            return Err("Diagnostic material 250 is already in use".into());
+        }
+        let mut optical = materials.get(id as u8);
+        optical.emission = EnergySpectrum::ZERO;
+        Arc::make_mut(&mut materials).set(250,optical);
+        changed = replace_voxel(&scene,edit,250)?;
     } else if fixture == Fixture::HouseEmitter {
         if scene.material_at(edit) != Some(AIR) {
             return Err("House test emitter location is not empty".into());
@@ -257,7 +286,7 @@ pub(super) fn start(
         let mut states = Vec::new();
         let mut frames = VecDeque::new();
         for (name, scene) in [("before",scene),("after",changed)] {
-            let sky = if fixture.is_house() {
+            let sky = if fixture.is_house() || fixture.is_hallway() {
                 let mut work = jobs(&sites, [0]);
                 for probe in &mut work.probes { probe.sky_requested = true; }
                 crate::voxel_gi::tracer::trace_sky_batch(&scene, &sources, &mut work.probes, &mut default());
@@ -323,7 +352,17 @@ pub(super) fn start(
             writer.flush().map_err(|e|e.to_string())?;
             states.push(json!({"name":name,"replicas":replicas,"mean":mean,"moments":file_name,"sky":sky}));
         }
+        let views: serde_json::Value = if fixture.is_hallway() {
+            fixture.hallway_offsets().map(|offset| {
+                let (eye,target,fov) = crate::structures::hallway::measurement_view(offset);
+                (format!("d{offset}"),json!({"eye":eye.to_array(),"target":target.to_array(),"fov_degrees":fov}))
+            }).collect::<serde_json::Map<_,_>>().into()
+        } else { serde_json::Value::Null };
         let metadata=json!({"schema":1,"kind":"near_history_tape","compiled_manifest_dir":env!("CARGO_MANIFEST_DIR"),
+            "views":views,"edit_kind":match fixture {
+                Fixture::HallwayEmitter => "single-voxel emission switch; solid geometry retained",
+                Fixture::HallwayOccluder => "insert/remove 5-wide, 4-high occluding wall beside lamp; source unchanged",
+                _ => "voxel removal/restoration"},
             "scene_generation":generation,"fixture":fixture.name(),"origin":origin.to_array(),"view":{"eye":eye.to_array(),"target":target.to_array(),"fov_degrees":fov},"transport":crate::voxel_gi::TransportSettings::default(),
             "warm_paths":WARM,"batch_paths":BATCH,"steps":STEPS,"starts":STARTS,"chunk_faces":CHUNK_FACES,
             "reference_paths_per_replica":REFERENCE_PATHS,"edit":edit.to_array(),"edits":edits.iter().map(|p|p.to_array()).collect::<Vec<_>>(),"emitter_scale":scale,

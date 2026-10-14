@@ -303,7 +303,7 @@ pub(super) fn run_validation(
     }
     if matches!(profile, Profile::Cave | Profile::Canyon | Profile::Hallway) && !run.cave_camera_initialized {
         let (eye, target, fov) = if profile == Profile::Hallway {
-            crate::structures::hallway::overview()
+            reference_image::hallway_view()
         } else if profile == Profile::Canyon {
             (crate::canyon_scene::EYE, crate::canyon_scene::TARGET, 65.)
         } else {

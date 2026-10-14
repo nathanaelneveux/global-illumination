@@ -34,6 +34,16 @@ pub(super) fn calibration_house_view() -> Option<(Vec3, Vec3, f32)> {
     (near_history::requested() && fixture.is_house()).then(|| fixture.view())
 }
 
+pub(super) fn hallway_view() -> (Vec3, Vec3, f32) {
+    if near_history::requested() {
+        near_fixture::Fixture::selected()
+            .expect("valid hallway fixture")
+            .view()
+    } else {
+        crate::structures::hallway::overview()
+    }
+}
+
 type ProbeMap = HashMap<IVec3, SurfaceProbe>;
 type Means = Vec<[f64; 5]>;
 
@@ -109,6 +119,19 @@ pub(super) fn install(app: &mut App) {
 /// chamber voxel. This changes only the opt-in offline fixture's residency.
 fn setup_residency(mut commands: Commands, evidence: Res<CaptureEvidence>) {
     if calibration_house_view().is_some() {
+        return;
+    }
+    if near_fixture::Fixture::selected().is_ok_and(|f| f.is_hallway()) {
+        for offset in [16, 64, 88] {
+            let eye = crate::structures::hallway::floor_receiver(offset).as_vec3()
+                + Vec3::Y * 4.;
+            super::background::spawn_loader(
+                &mut commands,
+                &evidence,
+                "Offline hallway residency (not rendered)",
+                Transform::from_translation(eye).looking_at(eye + Vec3::X, Vec3::Y),
+            );
+        }
         return;
     }
     let origin = if crate::cave_scene::enabled() {
@@ -208,7 +231,14 @@ impl ReferenceImage {
             near_fixture::Fixture::CaveTorch
         };
         let house = near_history::requested() && fixture.is_house();
-        if profile != (if house { Profile::House } else { Profile::Cave })
+        let expected_profile = if house {
+            Profile::House
+        } else if fixture.is_hallway() {
+            Profile::Hallway
+        } else {
+            Profile::Cave
+        };
+        if profile != expected_profile
             || !crate::headless_validation()
             || std::env::var_os("VOXEL_GI_VALIDATE_EXIT").is_none()
         {
@@ -284,7 +314,25 @@ impl ReferenceImage {
                 "Cave GI snapshot differs from generated geometry: {unknown} unknown and {mismatched} wrong-material voxels; see cave-geometry-audit.json"
             ));
         }
-        let sites = if house {
+        let sites = if fixture.is_hallway() {
+            // Only measured floor patches and their coplanar corner donors.
+            // The native paths still traverse the entire audited world.
+            let mut sites = HashSet::new();
+            for offset in fixture.hallway_offsets() {
+                let receiver = crate::structures::hallway::floor_receiver(offset);
+                for x in -1..=1 {
+                    for z in -1..=1 {
+                        let p = receiver + IVec3::new(x, 0, z);
+                        if exposed(&runtime.scene, p, 2) {
+                            sites.insert((p, 2));
+                        }
+                    }
+                }
+            }
+            let mut sites: Vec<_> = sites.into_iter().collect();
+            sites.sort_unstable_by_key(|(p, f)| (p.x, p.y, p.z, *f));
+            sites
+        } else if house {
             interior_sites(&runtime.scene, min, max)
         } else {
             chamber_sites(&runtime.scene, origin)
