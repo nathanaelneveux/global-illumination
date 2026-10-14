@@ -25,6 +25,7 @@ pub fn world_structures() -> Arc<StructureLayer> {
         // Normal play always uses the complete authored world.
         if !validation_house_only() {
             instances.extend(cave());
+            instances.extend(super::hallway::instances());
         }
         Arc::new(StructureLayer::new(instances, 32))
     })

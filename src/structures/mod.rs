@@ -4,6 +4,7 @@
 //! stable precedence. Explicit air carves terrain, while Keep is transparent.
 //! The host overlays player edits after generation; stamps are never reapplied
 //! to live chunks. This experiment currently supports translation, not rotation.
+pub mod hallway;
 pub mod showcase;
 
 use bevy::math::{IVec3, UVec3};

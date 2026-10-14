@@ -301,11 +301,14 @@ pub(super) fn run_validation(
         run.structures
             .tick(elapsed, player, &mut commands, &cameras, &mut lights);
     }
-    if matches!(profile, Profile::Cave | Profile::Canyon) && !run.cave_camera_initialized {
-        let (eye, target) = if profile == Profile::Canyon {
-            (crate::canyon_scene::EYE, crate::canyon_scene::TARGET)
+    if matches!(profile, Profile::Cave | Profile::Canyon | Profile::Hallway) && !run.cave_camera_initialized {
+        let (eye, target, fov) = if profile == Profile::Hallway {
+            crate::structures::hallway::overview()
+        } else if profile == Profile::Canyon {
+            (crate::canyon_scene::EYE, crate::canyon_scene::TARGET, 65.)
         } else {
-            cave::view()
+            let (eye, target) = cave::view();
+            (eye, target, 65.)
         };
         player.translation = eye - Vec3::Y * 1.62;
         for camera in &cameras {
@@ -314,7 +317,7 @@ pub(super) fn run_validation(
                 .remove::<bevy_ahoy::prelude::CharacterControllerCameraOf>()
                 .insert(Transform::from_translation(eye).looking_at(target, Vec3::Y))
                 .insert(Projection::Perspective(PerspectiveProjection {
-                    fov: 65.0_f32.to_radians(),
+                    fov: fov.to_radians(),
                     ..default()
                 }));
         }

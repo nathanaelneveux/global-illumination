@@ -8,6 +8,26 @@ turn left along the lava rim. The block stairs descend without a jump; climbing
 back up uses the normal jump controls. Lava and crystals currently demonstrate
 transport, not heat damage, fluid simulation or radiation dose.
 
+The single-emitter measurement hallway is west of the house. Walk around the
+house to **(-11, 11, -20)** and descend westward. At the bottom, weave through
+the two dark baffles, then continue west to the ordinary warm emitter at
+**(-124, -11, -20)**. The hallway floor is y=-12; the chamber spans
+x=-128..-33, z=-24..-16. There are no helper lights beyond the entrance: use
+the normal emitter-placement button if you want lighting while exploring.
+Adding those lights intentionally changes the controlled fixture.
+For a shortcut in the same normal world, run
+`VOXEL_GI_SPAWN=hallway cargo run --locked`. This changes only initial spawn,
+not world generation or lighting settings. The `hallway` validation profile
+provides a fixed interior overview with the preferred corner lighting.
+
+The hallway uses one neutral wall/floor material and one normal placeable
+emitter, not the cave's boosted diagnostic torch. Its fixed camera stations
+look closely at equal-sized floor patches at increasing distance from the
+lamp. These measure retained-history response without making far receivers
+look accurate merely by shrinking their screen footprint. Block-coordinate
+distance includes the one-block vertical offset; station offset 1 is therefore
+sqrt(2) from the edited block, not a claimed one-unit center distance.
+
 The chamber spans x=44..99, y=-36..3, z=-60..-5. Its authored skylight continues
 through terrain to the surface. It is a finite, deliberately legible lighting
 fixture embedded in terrain, not a natural-cave generator. The original isolated

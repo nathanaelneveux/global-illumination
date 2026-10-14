@@ -15,6 +15,7 @@ pub(super) enum Profile {
     Cave,
     Canyon,
     Structures,
+    Hallway,
     Compare,
     Stress,
 }
@@ -32,10 +33,11 @@ impl Profile {
             "cave" => Ok(Self::Cave),
             "canyon" => Ok(Self::Canyon),
             "structures" => Ok(Self::Structures),
+            "hallway" => Ok(Self::Hallway),
             "compare" => Ok(Self::Compare),
             "stress" => Ok(Self::Stress),
             _ => Err(format!(
-                "unknown validation profile {value:?}; choose gameplay, streaming, house, house-edits, response, edits, sources, cave, canyon, structures, compare, or stress"
+                "unknown validation profile {value:?}; choose gameplay, streaming, house, house-edits, response, edits, sources, cave, canyon, structures, hallway, compare, or stress"
             )),
         }
     }
@@ -52,6 +54,7 @@ impl Profile {
             Self::Cave => "cave",
             Self::Canyon => "canyon",
             Self::Structures => "structures",
+            Self::Hallway => "hallway",
             Self::Compare => "compare",
             Self::Stress => "stress",
         }
@@ -65,7 +68,7 @@ impl Profile {
             Self::Compare => 29.0,
             Self::Streaming => 35.0,
             Self::House => 90.0,
-            Self::Cave | Self::Canyon | Self::Structures => 62.0,
+            Self::Cave | Self::Canyon | Self::Structures | Self::Hallway => 62.0,
             Self::HouseEdits => 180.0,
             Self::Response | Self::Edits => 30.0,
             _ => 72.0,
@@ -81,6 +84,9 @@ impl Profile {
     }
 
     pub fn captures(self) -> &'static [(f32, &'static str)] {
+        if self == Self::Hallway {
+            return &[(15., "hallway-15s"), (30., "hallway-30s"), (60., "hallway-60s")];
+        }
         if self == Self::Canyon {
             return &[
                 (15.0, "canyon-15s"),
@@ -198,7 +204,7 @@ impl Profile {
             } else {
                 "cave"
             }
-        } else if matches!(self, Self::Cave | Self::Canyon) {
+        } else if matches!(self, Self::Cave | Self::Canyon | Self::Hallway) {
             if elapsed < 15.0 {
                 "startup"
             } else {

@@ -167,6 +167,9 @@ impl PrototypeWorld {
         if let Some(spawn) = self.scene.spawn() {
             return spawn;
         }
+        if std::env::var("VOXEL_GI_SPAWN").as_deref() == Ok("hallway") {
+            return Vec3::new(-111., -10., -19.5);
+        }
         Vec3::new(
             0.0,
             self.noise.player_spawn_height(0, 0) + self.config.player_spawn_height_offset,
