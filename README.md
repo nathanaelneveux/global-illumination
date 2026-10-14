@@ -139,16 +139,17 @@ unchanged pending response-time qualification, not assumed analytically valid.
 The [cross-scene follow-up](docs/history-cross-scene.md) tightens crossing
 observations and adds actual house skylight, doorway and emitter images.
 
-The [controlled hallway study](docs/hallway-history-study.md) measures equal-sized
-floor patches from the adjacent block out to 64 blocks, with literal retained
-weights below 16, matched source/occluder controls and native material captures.
-The hallway is also visitable west of the house; see the [route](docs/structures.md).
 Higher floors help small edits but can retain too much stale source brightness;
 no blanket replacement is promoted from the cave result alone.
 Its [distance and visible-sunlight follow-up](docs/history-cross-scene.md#distance-attribution-and-a-visible-sunlight-patch)
 adds a floor-facing 3x3 skylight and regional FLIP measurements. A 16-block
 low-history neighborhood preserves the tested near response and distant cave
 smoothness; the exact cutoff and runtime response remain unqualified.
+
+The [controlled hallway study](docs/hallway-history-study.md) supports equal-sized
+floor measurements from the adjacent block out to 64 blocks, with literal retained
+weights below 16, matched source/occluder controls and native material captures.
+The hallway is also visitable west of the house; see the [route](docs/structures.md).
 
 **Copy applied JSON** exports transport/work settings (not display toggles/gain).
 Paste JSON into the same panel to import, or save it to a file and launch with
