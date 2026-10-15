@@ -19,6 +19,8 @@ pub(crate) struct EmissionDistribution {
     pub faces: Vec<EmissiveFace>,
     pub total_weight: f32,
     pub tree: Vec<tree::LightNode>,
+    /// Sampling importance only; never scales transported energy.
+    pub importance: super::EnergySpectrum,
 }
 
 mod tree;
@@ -30,13 +32,15 @@ pub(crate) struct EmissionCache {
 }
 
 impl EmissionCache {
-    pub fn prepare(
+    pub fn prepare_with_importance(
         previous: Option<Self>,
         scene: Arc<TransportScene>,
         materials: Arc<VoxelMaterialTransportTable>,
+        importance: super::EnergySpectrum,
     ) -> Self {
         if let Some(mut previous) = previous
             && Arc::ptr_eq(&materials, &previous.materials)
+            && previous.distribution.importance == importance
             && (Arc::ptr_eq(&scene, &previous.scene)
                 || !emission_geometry_changed(&previous.scene, &scene, &materials))
         {
@@ -45,12 +49,24 @@ impl EmissionCache {
             previous.scene = scene;
             return previous;
         }
-        let distribution = Arc::new(EmissionDistribution::build(&scene, &materials));
+        let distribution = Arc::new(EmissionDistribution::with_importance(
+            &scene, &materials, importance,
+        ));
         Self {
             scene,
             materials,
             distribution,
         }
+    }
+
+    /// Historical equal-band control for the opt-in cache-cost studies.
+    #[cfg(test)]
+    pub fn prepare(
+        previous: Option<Self>,
+        scene: Arc<TransportScene>,
+        materials: Arc<VoxelMaterialTransportTable>,
+    ) -> Self {
+        Self::prepare_with_importance(previous, scene, materials, super::EnergySpectrum::ONE)
     }
 }
 
@@ -89,8 +105,22 @@ fn emission_geometry_changed(
 
 impl EmissionDistribution {
     pub fn build(scene: &TransportScene, materials: &VoxelMaterialTransportTable) -> Self {
-        let weights: [f32; 256] =
-            std::array::from_fn(|material| materials.get(material as u8).emission.max_component());
+        Self::with_importance(scene, materials, super::EnergySpectrum::ONE)
+    }
+
+    pub fn with_importance(
+        scene: &TransportScene,
+        materials: &VoxelMaterialTransportTable,
+        importance: super::EnergySpectrum,
+    ) -> Self {
+        assert!(
+            importance.visible.min_element() > 0.0
+                && importance.infrared > 0.0
+                && importance.ionizing > 0.0
+        );
+        let weights: [f32; 256] = std::array::from_fn(|material| {
+            (materials.get(material as u8).emission * importance).max_component()
+        });
         let mut emitting = [0_u64; 4];
         for (material, &weight) in weights.iter().enumerate() {
             if weight > 0.0 {
@@ -98,7 +128,10 @@ impl EmissionDistribution {
             }
         }
         if emitting == [0; 4] {
-            return Self::default();
+            return Self {
+                importance,
+                ..Self::default()
+            };
         }
         let mut faces = Vec::new();
         let mut total = 0.0_f64;
@@ -142,7 +175,10 @@ impl EmissionDistribution {
             }
         }
         if total == 0.0 {
-            return Self::default();
+            return Self {
+                importance,
+                ..Self::default()
+            };
         }
         let total_weight = total as f32;
         for face in &mut faces {
@@ -161,6 +197,7 @@ impl EmissionDistribution {
             faces,
             total_weight,
             tree,
+            importance,
         }
     }
 
@@ -194,7 +231,8 @@ impl EmissionDistribution {
         materials: &VoxelMaterialTransportTable,
     ) -> f32 {
         if self.tree.is_empty() {
-            return materials.get(material).emission.max_component() / self.total_weight.max(1e-20);
+            return (materials.get(material).emission * self.importance).max_component()
+                / self.total_weight.max(1e-20);
         }
         tree::probability(&self.tree, &self.faces, position, normal, voxel, face)
     }
@@ -218,6 +256,63 @@ mod tests {
     use crate::voxel_gi::naadf::{linear_index, volume_len};
     use crate::voxel_gi::world::PAGE_SIZE;
     use crate::voxel_gi::{EnergySpectrum, MaterialTransport};
+
+    #[test]
+    fn importance_changes_pdf_not_energy_and_refreshes_cached_distribution() {
+        let mut voxels = vec![AIR; volume_len(PAGE_SIZE)];
+        voxels[0] = 4;
+        voxels[3] = 5;
+        let scene = Arc::new(TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, voxels)],
+            &[],
+        ));
+        let mut materials = VoxelMaterialTransportTable::default();
+        materials.set(
+            4,
+            MaterialTransport {
+                emission: EnergySpectrum::new(Vec3::ZERO, 8., 0.),
+                ..default()
+            },
+        );
+        materials.set(
+            5,
+            MaterialTransport {
+                emission: EnergySpectrum::new(Vec3::ONE, 0., 0.),
+                ..default()
+            },
+        );
+        let materials = Arc::new(materials);
+        let old = EmissionCache::prepare(None, scene.clone(), materials.clone());
+        let original = old.distribution.clone();
+        let importance = EnergySpectrum::new(Vec3::ONE, 0.125, 0.125);
+        let next = EmissionCache::prepare_with_importance(
+            Some(old),
+            scene.clone(),
+            materials.clone(),
+            importance,
+        );
+        assert!(!Arc::ptr_eq(&original, &next.distribution));
+        assert_eq!(next.distribution.faces.len(), 12);
+        for face in &next.distribution.faces {
+            assert!((face.probability - 1. / 12.).abs() < 1e-6);
+            assert_eq!(
+                face.probability,
+                next.distribution.probability_at(
+                    Vec3::ZERO,
+                    Vec3::Y,
+                    face.voxel,
+                    face.face,
+                    face.material,
+                    &materials
+                )
+            );
+        }
+        assert_eq!(materials.get(4).emission.infrared, 8.);
+        let unchanged = next.distribution.clone();
+        let next = EmissionCache::prepare_with_importance(Some(next), scene, materials, importance);
+        assert!(Arc::ptr_eq(&unchanged, &next.distribution));
+    }
 
     #[test]
     fn distribution_reuses_unrelated_residency_but_tracks_emitter_changes() {

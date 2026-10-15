@@ -147,6 +147,7 @@ pub(super) fn start_trace_task(
     let mut gpu_tracer = runtime.gpu_tracer.take();
     let mut pending = std::mem::take(&mut runtime.gpu_pending);
     let emission_cache = runtime.emission_cache.take();
+    let sampling_importance = settings.sampling_importance();
     let mut cpu_sky_cache = runtime.cpu_sky_cache.take().unwrap_or_default();
     let gpu_device = gpu_device
         .filter(|_| !runtime.gpu_failed)
@@ -157,10 +158,11 @@ pub(super) fn start_trace_task(
         let emission_cache = if sky_only {
             emission_cache
         } else {
-            Some(emission::EmissionCache::prepare(
+            Some(emission::EmissionCache::prepare_with_importance(
                 emission_cache,
                 Arc::clone(&scene),
                 Arc::clone(&materials),
+                sampling_importance,
             ))
         };
         let emitters = emission_cache.as_ref().map_or_else(

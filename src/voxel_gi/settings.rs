@@ -10,6 +10,11 @@ pub struct VoxelGiSettings {
     /// New paths per selected face, not a lifetime sample limit. Smaller batches
     /// refresh more receivers sooner but pay more scheduling/transfer overhead.
     pub samples_per_dispatch: u32,
+    /// Relative importance of IR/ionizing emission when choosing light samples.
+    /// Changes variance, not physical energy, history validity or band delivery.
+    /// RGB always has importance one; nonvisual importance stays nonzero so all
+    /// sources retain support. Simulation need not meet the RGB visual threshold.
+    pub simulation_sampling_importance: f32,
     /// Disable for a same-kernel continuous-sampling A/B baseline.
     pub adaptive_updates: bool,
     pub trace_budget_ms: f32,
@@ -36,6 +41,7 @@ impl Default for VoxelGiSettings {
         Self {
             transport: TransportSettings::default(),
             samples_per_dispatch: 16,
+            simulation_sampling_importance: 1.0,
             adaptive_updates: true,
             trace_budget_ms: 4.0,
             max_probes_per_dispatch: 8192,
@@ -50,6 +56,14 @@ impl Default for VoxelGiSettings {
 }
 
 impl VoxelGiSettings {
+    pub(super) fn sampling_importance(&self) -> super::EnergySpectrum {
+        let weight = if self.simulation_sampling_importance.is_finite() {
+            self.simulation_sampling_importance.clamp(0.01, 1.0)
+        } else {
+            1.0
+        };
+        super::EnergySpectrum::new(Vec3::ONE, weight, weight)
+    }
     pub(super) fn batch_samples(&self) -> u32 {
         self.samples_per_dispatch.clamp(1, 64)
     }

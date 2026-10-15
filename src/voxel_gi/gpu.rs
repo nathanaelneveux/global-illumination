@@ -255,6 +255,7 @@ pub(crate) struct GpuTracer {
     cells: UploadBuffer,
     materials: UploadBuffer,
     material_table: Option<VoxelMaterialTransportTable>,
+    material_importance: super::EnergySpectrum,
     lights: UploadBuffer,
     sources: Option<TransportSources>,
     emitters: UploadBuffer,
@@ -403,6 +404,7 @@ impl GpuTracer {
             cells: UploadBuffer::new(device, "GI packed NAADF cells", storage),
             materials: UploadBuffer::new(device, "GI material transport", storage),
             material_table: None,
+            material_importance: super::EnergySpectrum::ONE,
             lights: UploadBuffer::new(device, "GI analytic sources", storage),
             sources: None,
             emitters: UploadBuffer::new(device, "GI emissive face distribution", storage),
@@ -635,7 +637,10 @@ impl GpuTracer {
             }
             self.scene = Some(Arc::clone(&scene));
         }
-        if !sky_only && self.material_table.as_ref() != Some(materials) {
+        if !sky_only
+            && (self.material_table.as_ref() != Some(materials)
+                || self.material_importance != emitters.importance)
+        {
             let gpu_materials: Vec<_> = (0..=255)
                 .map(|i| {
                     let material = materials.get(i);
@@ -643,7 +648,12 @@ impl GpuTracer {
                         diffuse: spectrum_vec(material.diffuse),
                         diffuse_extra: Vec4::new(material.diffuse.ionizing, 0.0, 0.0, 0.0),
                         emission: spectrum_vec(material.emission),
-                        emission_extra: Vec4::new(material.emission.ionizing, 0.0, 0.0, 0.0),
+                        emission_extra: Vec4::new(
+                            material.emission.ionizing,
+                            (material.emission * emitters.importance).max_component(),
+                            0.0,
+                            0.0,
+                        ),
                     }
                 })
                 .collect();
@@ -653,6 +663,7 @@ impl GpuTracer {
                 &ShaderBuffer::from(gpu_materials).data.unwrap(),
             )?;
             self.material_table = Some(materials.clone());
+            self.material_importance = emitters.importance;
         }
         let light_count = (sources.directional.len() + sources.points.len()) as u32;
         if self.sources.as_ref().is_none_or(|previous| {

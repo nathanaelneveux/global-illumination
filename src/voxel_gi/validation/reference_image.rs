@@ -380,12 +380,14 @@ impl ReferenceImage {
         let sources = runtime.sources.clone();
         let materials = runtime.materials.clone();
         let transport = settings.transport;
+        let importance = settings.sampling_importance();
         let generation = runtime.generation;
         let worker_progress = progress.clone();
         let worker_output = output.clone();
         let task = AsyncComputeTaskPool::get().spawn(async move {
             let mut gpu = GpuTracer::new(device.clone())?;
             let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
+            let prioritized = Arc::new(EmissionDistribution::with_importance(&scene, &materials, importance));
             let mut control_gpu = if super::sample_sweep::reuse_requested() {
                 let mut tracer=GpuTracer::new(device.clone())?;
                 tracer.enable_resident()?;
@@ -398,7 +400,7 @@ impl ReferenceImage {
             } else {None};
             let sweep = if sweep_requested {
                 super::sample_sweep::run(reuse.as_mut().unwrap_or(&mut gpu), &scene, &sources, &materials,
-                    transport, &emitters, &sites, &worker_progress, false)?
+                    transport, &prioritized, &sites, &worker_progress, false)?
             } else { Vec::new() };
             let control = if sweep_requested && reuse.is_some() {
                 super::sample_sweep::run(control_gpu.as_mut().unwrap(), &scene, &sources, &materials,
@@ -411,6 +413,7 @@ impl ReferenceImage {
                         "transport":transport,"face_count":sites.len(),
                         "sampler":if super::sample_sweep::reuse_requested() {"fresh-paired-reuse"} else {"independent-paths"},
                         "batch_faces":if super::sample_sweep::reuse_requested(){2048}else{512},
+                        "sampling_importance":[importance.visible.x,importance.visible.y,importance.visible.z,importance.infrared,importance.ionizing],
                         "windows":sweep,
                         "note":"Same exact frozen scene and sites as cave-reference.json. Unfiltered production estimator prefixes, disjoint unaligned sequence windows, no resets or scheduling. Equal-confidence connected corners; images use normal textures and tonemapping. Not an interactive timing or temporal-filter study."})).unwrap())
                     .map_err(|e| e.to_string())?;

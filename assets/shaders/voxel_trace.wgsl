@@ -496,7 +496,7 @@ fn sample_terminal_emission(position: vec3<f32>, normal: vec3<f32>, stream: u32,
     let hit = trace(position + normal * 0.002, direction, connection_reach());
     if hit.status != 1u { return result; }
     let material = materials[hit.material];
-    let power = max(max(max(material.emission.x, material.emission.y), max(material.emission.z, material.emission.w)), material.emission_extra.x);
+    let power = material.emission_extra.y;
     let delta = hit.position - position;
     let d2 = dot(delta, delta);
     if power == 0.0 || d2 < 0.0001 || d2 > connection_reach() * connection_reach() { return result; }
@@ -539,7 +539,7 @@ fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_norma
         if hit.status == 2u { break; }
         let material = materials[hit.material];
         let direct = direct_at(hit.position, hit.normal);
-        let emission_weight = max(max(max(material.emission.x, material.emission.y), max(material.emission.z, material.emission.w)), material.emission_extra.x);
+        let emission_weight = material.emission_extra.y;
         let cosine_pdf = max(dot(previous_normal, direction), 0.0) / 3.14159265359;
         let delta = hit.position - origin;
         var selection_pdf = emission_weight / max(params.extra.z, 1e-20);
@@ -589,7 +589,7 @@ fn evaluate_record(record: RecordedPath, origin: vec3<f32>, normal: vec3<f32>) -
     let material = materials[hit.material];
     let delta = hit.position - origin;
     let direction = normalize(delta);
-    let power = max(max(max(material.emission.x, material.emission.y), max(material.emission.z, material.emission.w)), material.emission_extra.x);
+    let power = material.emission_extra.y;
     var probability = power / max(params.extra.z, 1e-20);
     if power > 0.0 && params.extra.w > 0.0 && load_emitter(0u).sampling.w > 0.0 {
         probability = tree_probability(origin - normal * 0.001, normal, hit.voxel, hit.normal);

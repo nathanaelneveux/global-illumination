@@ -161,6 +161,17 @@ fn fixture(kind: u32) -> Fixture {
     }
 }
 
+/// Reuse the same controlled geometry in native sampler/ownership studies.
+pub(super) fn research_fixture(kind: u32) -> crate::voxel_gi::research::ResearchFixture {
+    let fixture = fixture(kind);
+    crate::voxel_gi::research::ResearchFixture {
+        scene: fixture.scene,
+        sources: fixture.sources,
+        materials: fixture.materials,
+        receivers: fixture.probes,
+    }
+}
+
 fn channels(energy: EnergySpectrum) -> [f32; 5] {
     [
         energy.visible.x,

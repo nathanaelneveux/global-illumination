@@ -43,6 +43,49 @@ fn percentile(mut xs: Vec<f32>, p: f32) -> f32 {
     xs[((xs.len() - 1) as f32 * p).round() as usize]
 }
 
+#[test]
+#[ignore = "native five-band CPU/GPU parity with unequal spectral sampling importance"]
+fn spectral_importance_preserves_cpu_gpu_energy_parity() {
+    let mut gpu = super::tests::native_tracer();
+    // A black room isolates the changed light-selection/MIS path from chaotic
+    // CPU/Metal multi-bounce floating-point divergence in the full cave.
+    let mut fixture = super::refinement::research_fixture(1);
+    fixture.materials.set(
+        4,
+        super::super::MaterialTransport {
+            diffuse: super::super::EnergySpectrum::ZERO,
+            emission: super::super::EnergySpectrum::new(Vec3::ZERO, 24., 12.),
+        },
+    );
+    for importance in [1.0, 0.125, 0.01] {
+        let emitters = Arc::new(EmissionDistribution::with_importance(
+            &fixture.scene,
+            &fixture.materials,
+            super::super::EnergySpectrum::new(Vec3::ONE, importance, importance),
+        ));
+        let mut a = fresh(&fixture.receivers[..17], 1, 19);
+        let mut b = fresh(&fixture.receivers[..17], 1, 19);
+        super::super::tracer::trace_work_batch(
+            &fixture.scene,
+            &fixture.sources,
+            &fixture.materials,
+            &mut a,
+            256,
+            &emitters,
+            &mut default(),
+        );
+        trace(&mut gpu, &fixture, &emitters, &mut b, 256);
+        for (a, b) in a.faces.iter().zip(&b.faces) {
+            for (a, b) in channels(a.radiance).into_iter().zip(channels(b.radiance)) {
+                assert!(
+                    (a - b).abs() < 1e-4 * (0.02 + a.abs()),
+                    "importance={importance}: {a} vs {b}"
+                );
+            }
+        }
+    }
+}
+
 fn corner_errors(work: &TraceWork, refs: &[[f32; 5]]) -> Vec<f32> {
     let indices: bevy::platform::collections::HashMap<_, _> = work
         .faces
@@ -235,12 +278,23 @@ fn zero_energy_reconnection_pruning_is_exact() {
 #[ignore = "native five-band recorded-path and compatible reuse study"]
 fn compatible_reuse_native_study() {
     let mut baseline = super::tests::native_tracer();
+    let mut prioritized_control = GpuTracer::new(baseline.context.clone()).unwrap();
+    prioritized_control.enable_resident().unwrap();
     let mut candidate = GpuTracer::new(baseline.context.clone()).unwrap();
     candidate.enable_reuse().unwrap();
     let mut fixture = cave();
     let emitters = Arc::new(EmissionDistribution::build(
         &fixture.scene,
         &fixture.materials,
+    ));
+    let importance = std::env::var("VOXEL_GI_STUDY_SIM_IMPORTANCE")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(1.0);
+    let prioritized = Arc::new(EmissionDistribution::with_importance(
+        &fixture.scene,
+        &fixture.materials,
+        super::super::EnergySpectrum::new(Vec3::ONE, importance, importance),
     ));
     // Sparse, unpaired receivers verify recording/reconnection does not change
     // the original estimator, including terminal emission and all five bands.
@@ -325,7 +379,11 @@ fn compatible_reuse_native_study() {
         .collect();
     eprintln!("REUSE_REFERENCE faces={} samples=65536", refs.len());
     for spp in [16u32, 64, 256, 1024, 2048, 8192] {
-        for (mode, tracer) in [("baseline", &mut baseline), ("reuse", &mut candidate)] {
+        for (mode, tracer) in [
+            ("baseline", &mut baseline),
+            ("priority", &mut prioritized_control),
+            ("reuse", &mut candidate),
+        ] {
             let mut errors = Vec::new();
             let mut corners = Vec::new();
             let mut gpu_ms = Vec::new();
@@ -339,7 +397,17 @@ fn compatible_reuse_native_study() {
                 );
                 let mut cost = 0.0;
                 for _ in 0..spp / 16 {
-                    trace(tracer, &fixture, &emitters, &mut work, 16);
+                    trace(
+                        tracer,
+                        &fixture,
+                        if mode != "baseline" {
+                            &prioritized
+                        } else {
+                            &emitters
+                        },
+                        &mut work,
+                        16,
+                    );
                     cost += tracer.last_gpu_ms.unwrap();
                 }
                 paired = work.faces.iter().filter(|f| f.neighbor != 0).count();

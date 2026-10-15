@@ -68,6 +68,7 @@ fn parse_settings(json: &str) -> Result<VoxelGiSettings, String> {
     let mut settings: VoxelGiSettings = serde_json::from_str(json).map_err(|e| e.to_string())?;
     settings.transport = settings.transport.normalized();
     settings.samples_per_dispatch = settings.batch_samples();
+    settings.simulation_sampling_importance = settings.sampling_importance().infrared;
     settings.trace_budget_ms = settings.budget_ms();
     settings.max_probes_per_dispatch = settings.batch_limit();
     settings.stable_min_samples = settings.stable_samples();
