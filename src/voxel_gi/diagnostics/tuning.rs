@@ -195,7 +195,9 @@ fn contents(
             ui.add(egui::Slider::new(&mut settings.trace_budget_ms, 0.25..=16.0).logarithmic(true).text("Batch target (ms)"))
                 .on_hover_text("Adaptive compute target per completed batch, not a hard per-frame GPU cap. Includes sky work; asynchronous queue timing varies.");
             ui.add(egui::Slider::new(&mut settings.samples_per_dispatch, 1..=64).text("Paths / face / batch"))
-                .on_hover_text("Four GPU lanes cooperate below 16 paths, eight otherwise. Larger batches refresh fewer faces per dispatch. Measure settling, frame time and data age together.");
+                .on_hover_text("Cooperative lane count depends on the backend. Larger batches refresh fewer faces per dispatch. Measure settling, frame time and data age together.");
+            ui.add(egui::Slider::new(&mut settings.simulation_sampling_importance, 0.01..=1.0).logarithmic(true).text("IR / radiation sampling importance"))
+                .on_hover_text("RGB importance stays one. Lower values prioritize visible emitter sampling while retaining nonzero support for invisible sources. Changes uncertainty, not physical energy or retained history. Simulation bands may take longer to settle.");
             ui.checkbox(&mut settings.adaptive_updates, "Let settled faces sleep between audits");
             ui.add(egui::Slider::new(&mut settings.stable_relative_error, 0.01..=0.5).logarithmic(true).text("Settle error tolerance"))
                 .on_hover_text("All-band heuristic, not guaranteed convergence. Lower is stricter; already settled faces reassess on their next audit.");
