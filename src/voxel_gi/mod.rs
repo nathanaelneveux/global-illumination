@@ -29,6 +29,7 @@ mod settings;
 mod sky;
 mod sky_cache;
 mod sources;
+mod spatial;
 mod spectrum;
 mod startup;
 mod statistics;

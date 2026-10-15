@@ -36,13 +36,17 @@ pub(super) struct ResidentAccumulator {
     inputs: UploadBuffer,
     seeds: UploadBuffer,
     control: UploadBuffer,
+    spatial_jobs: UploadBuffer,
+    spatial_bytes: Vec<u8>,
     input_bytes: Vec<u8>,
     cap_bytes: Vec<u8>,
     seed_bytes: Vec<u8>,
     prepare: ComputePipeline,
     accumulate: ComputePipeline,
+    spatial: ComputePipeline,
     prepare_bindings: Option<CachedBindings<5>>,
     accumulate_bindings: Option<CachedBindings<4>>,
+    spatial_bindings: Option<CachedBindings<3>>,
 }
 
 impl ResidentAccumulator {
@@ -67,6 +71,7 @@ impl ResidentAccumulator {
         };
         let prepare = pipeline("prepare");
         let accumulate = pipeline("accumulate");
+        let spatial = pipeline("reconstruct_spatial");
         if let Some(error) = bevy::tasks::block_on(scope.pop()) {
             return Err(error.to_string());
         }
@@ -96,13 +101,17 @@ impl ResidentAccumulator {
                 "GI resident controls",
                 BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             ),
+            spatial_jobs: UploadBuffer::new(device, "GI connected spatial neighborhoods", storage),
+            spatial_bytes: Vec::new(),
             input_bytes: Vec::new(),
             cap_bytes: Vec::new(),
             seed_bytes: Vec::new(),
             prepare,
             accumulate,
+            spatial,
             prepare_bindings: None,
             accumulate_bindings: None,
+            spatial_bindings: None,
         })
     }
 
@@ -252,6 +261,32 @@ impl ResidentAccumulator {
             debug!(target: "voxel_gi_reuse", faces=work.faces.len(), paired=work.faces.iter().filter(|f| f.neighbor != 0).count(), "fresh path neighbors");
         }
         self.input_bytes.extend_from_slice(&self.cap_bytes);
+        self.spatial_bytes.clear();
+        let spatial_strength = if work.spatial_reconstruction.is_finite() {
+            work.spatial_reconstruction.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if spatial_strength > 0.0 {
+            for (index, face) in work.faces.iter().enumerate() {
+                for word in [face.resident.x, face.resident.y, index as u32, 0] {
+                    self.spatial_bytes.extend_from_slice(&word.to_le_bytes());
+                }
+                for address in super::super::spatial::neighbors(face.voxel, face.face, |p, f| {
+                    self.slots
+                        .get(&(p, f))
+                        .map(|slot| UVec2::new(slot.index, slot.incarnation))
+                }) {
+                    self.spatial_bytes.extend(
+                        address
+                            .unwrap_or(UVec2::ZERO)
+                            .to_array()
+                            .into_iter()
+                            .flat_map(u32::to_le_bytes),
+                    );
+                }
+            }
+        }
         let device = &context.device;
         let queue = &context.queue;
         let previous = self.state.buffer.clone();
@@ -268,6 +303,10 @@ impl ResidentAccumulator {
         }
         self.inputs.upload(device, queue, &self.input_bytes)?;
         self.seeds.upload(device, queue, &self.seed_bytes)?;
+        if !self.spatial_bytes.is_empty() {
+            self.spatial_jobs
+                .upload(device, queue, &self.spatial_bytes)?;
+        }
         let milliseconds = self.origin.elapsed().as_millis() as u32;
         #[cfg(test)]
         let milliseconds = self.clock_ms.unwrap_or(milliseconds);
@@ -278,7 +317,7 @@ impl ResidentAccumulator {
             HISTORY_LIMIT,
             work.response_seconds.max(0.001).to_bits(),
             (self.input_bytes.len() / 16) as u32,
-            0,
+            spatial_strength.to_bits(),
             0,
         ];
         self.control.upload(
@@ -349,6 +388,20 @@ impl ResidentAccumulator {
                 (4, &self.inputs),
             ],
         );
+        let spatial_bindings = if self.spatial_bytes.is_empty() {
+            None
+        } else {
+            Some(cached_bindings(
+                &mut self.spatial_bindings,
+                device,
+                || self.spatial.get_bind_group_layout(0).into(),
+                [
+                    (0, &self.control),
+                    (3, &self.state),
+                    (6, &self.spatial_jobs),
+                ],
+            ))
+        };
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("GI resident accumulation"),
             timestamp_writes: timestamps.map(|query_set| wgpu::ComputePassTimestampWrites {
@@ -360,6 +413,11 @@ impl ResidentAccumulator {
         pass.set_pipeline(&self.accumulate);
         pass.set_bind_group(0, &**bindings, &[]);
         pass.dispatch_workgroups((count as u32).div_ceil(64), 1, 1);
+        if let Some(bindings) = spatial_bindings {
+            pass.set_pipeline(&self.spatial);
+            pass.set_bind_group(0, &**bindings, &[]);
+            pass.dispatch_workgroups((count as u32).div_ceil(64), 1, 1);
+        }
     }
 }
 
@@ -393,6 +451,11 @@ fn encode_seed(
         words[24 + i] = value.to_bits();
     }
     words[28] = incarnation;
+    // Initialize final presentation even before the first accumulation pass.
+    words[7] = words[24];
+    words[13] = words[25];
+    words[14] = words[26];
+    words[15] = words[27];
     if let Some(time) = face.updated_at {
         words[29] = if time >= origin {
             time.duration_since(origin).as_millis() as u32
@@ -407,6 +470,126 @@ fn encode_seed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn read_state(gpu: &GpuTracer) -> Vec<u32> {
+        let resident = gpu.resident.as_ref().unwrap();
+        let device = &gpu.context.device;
+        let size = resident.high_water as u64 * RECORD_BYTES as u64;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Spatial reconstruction test snapshot"),
+            size,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&default());
+        encoder.copy_buffer_to_buffer(&resident.state.buffer, 0, &buffer, 0, size);
+        let submission = gpu.context.queue.submit([encoder.finish()]);
+        let (tx, rx) = mpsc::sync_channel(1);
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            tx.send(r).unwrap();
+        });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(Duration::from_secs(5)),
+            })
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
+        let mapped = buffer.slice(..).get_mapped_range();
+        let words = mapped
+            .chunks_exact(4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        drop(mapped);
+        buffer.unmap();
+        words
+    }
+
+    #[test]
+    #[ignore = "native spatial CPU/GPU oracle, unchanged transport/temporal snapshots, partial jobs and disable"]
+    fn spatial_reconstruction_matches_oracle_without_feedback() {
+        use super::super::super::spatial::{self, Sample};
+        let mut control = super::super::tests::native_tracer();
+        control.enable_resident().unwrap();
+        let mut gpu = GpuTracer::new(control.context.clone()).unwrap();
+        gpu.enable_resident().unwrap();
+        let fixture = super::super::refinement::research_fixture(2);
+        let emitters = Arc::new(EmissionDistribution::build(
+            &fixture.scene,
+            &fixture.materials,
+        ));
+        let probes: Vec<_> = (6..13)
+            .flat_map(|z| (6..15).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
+            .collect();
+        let mut a = TraceWork::from_probes(&probes, false);
+        let mut b = TraceWork::from_probes(&probes, false);
+        let mut changed = false;
+        for step in 0..5 {
+            b.spatial_reconstruction = if step == 4 { 0.0 } else { 1.0 };
+            for (tracer, work) in [(&mut control, &mut a), (&mut gpu, &mut b)] {
+                tracer.resident.as_mut().unwrap().clock_ms = Some(1000 + step * 50);
+                tracer
+                    .trace_compact(
+                        fixture.scene.clone(),
+                        &fixture.sources,
+                        &fixture.materials,
+                        work,
+                        16,
+                        &emitters,
+                        false,
+                    )
+                    .unwrap();
+            }
+            for (a, b) in a.faces.iter().zip(&b.faces) {
+                assert_eq!(a.radiance, b.radiance);
+                assert_eq!(a.second_moment, b.second_moment);
+                assert_eq!(a.samples, b.samples);
+                assert_eq!(a.sequence, b.sequence);
+                assert_eq!(
+                    a.presentation, b.presentation,
+                    "spatial filtering must not feed CPU scheduling or temporal history"
+                );
+            }
+            let words = read_state(&gpu);
+            let sample = |slot: &Slot| {
+                let base = slot.index as usize * 32;
+                let vec = |offset| {
+                    Vec3::new(
+                        f32::from_bits(words[base + offset]),
+                        f32::from_bits(words[base + offset + 1]),
+                        f32::from_bits(words[base + offset + 2]),
+                    )
+                };
+                Sample {
+                    mean: vec(0),
+                    second: vec(8),
+                    count: words[base + 5],
+                    display: vec(24),
+                }
+            };
+            let slots = &gpu.resident.as_ref().unwrap().slots;
+            for (key, slot) in slots {
+                let center = sample(slot);
+                let expected = spatial::reconstruct(
+                    center,
+                    spatial::neighbors(key.0, key.1, |p, f| slots.get(&(p, f)).map(sample)),
+                    b.spatial_reconstruction,
+                );
+                let base = slot.index as usize * 32;
+                let actual = Vec3::new(
+                    f32::from_bits(words[base + 7]),
+                    f32::from_bits(words[base + 13]),
+                    f32::from_bits(words[base + 14]),
+                );
+                assert!(
+                    (expected - actual).abs().max_element() < 1e-5,
+                    "{expected:?} vs {actual:?}"
+                );
+                changed |= (actual - center.display).length() > 1e-5;
+            }
+        }
+        assert!(changed, "exercise a nontrivial spatial resolve");
+    }
 
     #[test]
     fn resident_shader_validates() {

@@ -139,7 +139,9 @@ fn resolved_face(index: u32, face: u32) -> vec4<f32> {
     let base = address.x * 8u;
     if fallback.w > 0.0 && address.y != 0u && base + 7u < arrayLength(&resident_faces) {
         if resident_faces[base + 7u].x == address.y {
-            let display = bitcast<vec4<f32>>(resident_faces[base + 6u]);
+            // Final presentation is separate from the unfiltered temporal
+            // resolve at record six. Spatial reconstruction never feeds back.
+            let display = bitcast<vec4<f32>>(vec4(resident_faces[base + 1u].w, resident_faces[base + 3u].yzw));
             let custom = bitcast<vec4<f32>>(resident_faces[base + 5u]).yzw;
             return vec4(display.rgb + custom, max(display.a, 0.03125));
         }

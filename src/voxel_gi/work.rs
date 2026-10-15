@@ -13,6 +13,7 @@ pub(crate) struct TraceWork {
     /// Immutable model snapshot for this batch, shared by both backends.
     pub transport: super::TransportSettings,
     pub response_seconds: f32,
+    pub spatial_reconstruction: f32,
     pub probes: Vec<ProbeWork>,
     pub faces: Vec<FaceWork>,
     pub(super) pending_retention: Vec<RetentionWork>,

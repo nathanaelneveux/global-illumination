@@ -19,6 +19,10 @@ pub struct VoxelGiSettings {
     /// Defaults to 0.125 on every backend, independently of path reuse; use one
     /// for equal-band sampling. This is not a fixed ratio of sample counts.
     pub simulation_sampling_importance: f32,
+    /// Experimental resident-only, nonrecursive spatial RGB reconstruction.
+    /// Zero is the unchanged corner display; one enables uncertainty-weighted
+    /// connected-surface filtering. Never changes transport or simulation data.
+    pub spatial_reconstruction: f32,
     /// Disable for a same-kernel continuous-sampling A/B baseline.
     pub adaptive_updates: bool,
     pub trace_budget_ms: f32,
@@ -46,6 +50,7 @@ impl Default for VoxelGiSettings {
             transport: TransportSettings::default(),
             samples_per_dispatch: 16,
             simulation_sampling_importance: DEFAULT_SIMULATION_SAMPLING_IMPORTANCE,
+            spatial_reconstruction: 0.0,
             adaptive_updates: true,
             trace_budget_ms: 4.0,
             max_probes_per_dispatch: 8192,

@@ -644,6 +644,8 @@ pub(super) fn run_validation(
         "retention_summary": runtime.spatial_history.as_ref().map(|h| h.summary_mode().name()),
         "settings": {"transport": settings.transport, "samples_per_dispatch": settings.batch_samples(),
             "simulation_sampling_importance": settings.sampling_importance().infrared,
+            "spatial_reconstruction": settings.spatial_reconstruction,
+            "temporal_trace_scope": "pre-spatial temporal face estimates; use captures for spatial presentation",
             "trace_budget_ms": settings.trace_budget_ms, "max_probes_per_dispatch": settings.max_probes_per_dispatch,
             "scene_publish_budget_ms": settings.scene_publish_budget.as_secs_f32() * 1000.0,
             "adaptive_updates": settings.adaptive_updates, "display_response_ms": settings.display_response.as_secs_f32() * 1000.0,
