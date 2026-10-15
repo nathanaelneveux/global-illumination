@@ -6,6 +6,7 @@ use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 
 use super::world::{AIR, PAGE_EDGE, REGION_EDGE, TransportScene};
+#[cfg(debug_assertions)]
 use std::sync::Arc;
 
 pub(super) const RELIGHT_RADIUS: i32 = 48;
@@ -28,6 +29,13 @@ impl SceneChanges {
     }
 
     pub fn with_radius(previous: &TransportScene, next: &TransportScene, radius: i32) -> Self {
+        let changed = next.changed_regions(previous);
+        if changed.is_empty() {
+            return Self {
+                changed: false,
+                transport: None,
+            };
+        }
         let mut occupied_min = IVec3::MAX;
         let mut occupied_max = IVec3::MIN;
         for (&coordinate, region) in &previous.regions {
@@ -41,17 +49,9 @@ impl SceneChanges {
             transport: None,
         };
         let mut bounds = Vec::new();
-        for coordinate in next.regions.keys().chain(
-            previous
-                .regions
-                .keys()
-                .filter(|p| !next.regions.contains_key(*p)),
-        ) {
+        for coordinate in &changed {
             let before = previous.regions.get(coordinate);
             let after = next.regions.get(coordinate);
-            if before.zip(after).is_some_and(|(a, b)| Arc::ptr_eq(a, b)) {
-                continue;
-            }
             result.changed = true;
             let origin = *coordinate * REGION_EDGE as i32;
             let entire = Bounds {

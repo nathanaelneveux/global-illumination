@@ -250,23 +250,13 @@ impl SkyCache {
         if let Some(old) = &self.scene {
             // Region identity is stable across unchanged page notifications.
             // Air-only streaming changes cannot change display visibility.
-            let mut changed = Vec::new();
+            let changed = scene.changed_regions(old);
             let mut blockers = Vec::new();
-            for (&key, region) in &old.regions {
-                let next = scene.regions.get(&key);
-                if next.is_none_or(|next| !Arc::ptr_eq(region, next)) {
-                    changed.push(key);
-                    if region.any_solid || next.is_some_and(|region| region.any_solid) {
-                        blockers.push(key);
-                    }
-                }
-            }
-            for (&key, region) in &scene.regions {
-                if !old.regions.contains_key(&key) {
-                    changed.push(key);
-                    if region.any_solid {
-                        blockers.push(key);
-                    }
+            for &key in &changed {
+                if old.regions.get(&key).is_some_and(|r| r.any_solid)
+                    || scene.regions.get(&key).is_some_and(|r| r.any_solid)
+                {
+                    blockers.push(key);
                 }
             }
             for (&bucket, positions) in &mut self.buckets {
@@ -595,6 +585,28 @@ mod tests {
             cache.prepare(&distant, &sources, &probes).is_empty(),
             "occluders beyond the tracer's reach cannot invalidate"
         );
+    }
+
+    #[test]
+    fn distant_sun_blocker_survives_skipped_scene_versions_and_expired_lineage() {
+        for skipped in [3, 10] {
+            let scene = floor(&[IVec3::ZERO]);
+            let probes = square(IVec3::new(4, 4, 4), 2);
+            let sources = sun(Vec3::Y);
+            let mut cache = SkyCache::default();
+            let pending = cache.prepare(&scene, &sources, &probes);
+            finish(&mut cache, &scene, pending);
+            let mut blocked = TransportScene::with_page_delta(
+                &scene,
+                vec![(IVec3::new(0, 4, 0), vec![2; volume_len(PAGE_SIZE)])],
+                &[],
+            );
+            for _ in 0..skipped {
+                blocked = TransportScene::with_page_delta(&blocked, vec![], &[]);
+            }
+            let blocked = Arc::new(blocked);
+            assert_eq!(cache.prepare(&blocked, &sources, &probes).len(), 9);
+        }
     }
 
     #[test]

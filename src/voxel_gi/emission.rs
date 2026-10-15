@@ -72,35 +72,19 @@ fn emission_geometry_changed(
     if emitting == [0; 4] {
         return false;
     }
-    next.regions
-        .keys()
-        .chain(
-            previous
-                .regions
-                .keys()
-                .filter(|p| !next.regions.contains_key(*p)),
-        )
-        .any(|coordinate| {
-            if previous
-                .regions
-                .get(coordinate)
-                .zip(next.regions.get(coordinate))
-                .is_some_and(|(a, b)| Arc::ptr_eq(a, b))
-            {
-                return false;
-            }
-            std::iter::once(IVec3::ZERO)
-                .chain(FACE_OFFSETS)
-                .any(|offset| {
-                    let neighbor = *coordinate + offset;
-                    [previous, next].into_iter().any(|scene| {
-                        scene
-                            .regions
-                            .get(&neighbor)
-                            .is_some_and(|region| region.contains_any_material(&emitting))
-                    })
+    next.changed_regions(previous).iter().any(|coordinate| {
+        std::iter::once(IVec3::ZERO)
+            .chain(FACE_OFFSETS)
+            .any(|offset| {
+                let neighbor = *coordinate + offset;
+                [previous, next].into_iter().any(|scene| {
+                    scene
+                        .regions
+                        .get(&neighbor)
+                        .is_some_and(|region| region.contains_any_material(&emitting))
                 })
-        })
+            })
+    })
 }
 
 impl EmissionDistribution {

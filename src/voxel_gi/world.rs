@@ -8,6 +8,8 @@ use bevy::prelude::*;
 
 use super::naadf::{Aadf, build_aadf, linear_index, volume_len};
 use super::spectrum::EnergySpectrum;
+mod delta;
+pub(crate) use delta::SceneStamp;
 
 /// Transport-only sentinel outside the complete `u8` material index range.
 pub const AIR: u16 = u8::MAX as u16 + 1;
@@ -287,6 +289,12 @@ pub struct TopLevelAadf {
 }
 
 impl TopLevelAadf {
+    pub(crate) fn shares_field(&self, other: &Self) -> bool {
+        self.minimum == other.minimum
+            && self.size == other.size
+            && Arc::ptr_eq(&self.fields, &other.fields)
+    }
+
     fn build(regions: &HashMap<IVec3, Arc<NaadfRegion>>) -> Self {
         let Some(minimum) = regions.keys().copied().reduce(IVec3::min) else {
             return Self::default();
@@ -343,9 +351,42 @@ impl TopLevelAadf {
 pub struct TransportScene {
     pub regions: HashMap<IVec3, Arc<NaadfRegion>>,
     pub top_level: TopLevelAadf,
+    journal: delta::SceneJournal,
 }
 
 impl TransportScene {
+    pub(crate) fn stamp(&self) -> SceneStamp {
+        self.journal.stamp.clone()
+    }
+
+    pub(crate) fn region_delta_since(&self, stamp: &SceneStamp) -> Option<Vec<IVec3>> {
+        self.journal.since(stamp)
+    }
+
+    /// Canonical region identity delta. Lineage avoids whole-world discovery;
+    /// independent scenes and consumers older than the journal compare safely.
+    pub(crate) fn changed_regions(&self, previous: &Self) -> Vec<IVec3> {
+        let mut keys = self
+            .region_delta_since(&previous.stamp())
+            .unwrap_or_else(|| {
+                self.regions
+                    .keys()
+                    .chain(previous.regions.keys())
+                    .copied()
+                    .collect()
+            });
+        keys.retain(
+            |key| match (previous.regions.get(key), self.regions.get(key)) {
+                (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+                (None, None) => false,
+                _ => true,
+            },
+        );
+        keys.sort_unstable_by_key(|p| (p.z, p.y, p.x));
+        keys.dedup();
+        keys
+    }
+
     #[cfg(test)]
     pub(crate) fn transport_changed_from(&self, previous: &Self) -> bool {
         super::geometry::SceneChanges::between(previous, self)
@@ -359,9 +400,13 @@ impl TransportScene {
         removed_pages: &[IVec3],
     ) -> Self {
         let mut regions = previous.regions.clone();
+        let mut touched = HashSet::new();
         for page in removed_pages {
             for offset in page_region_offsets() {
-                regions.remove(&(page * 2 + offset));
+                let key = page * 2 + offset;
+                if regions.remove(&key).is_some() {
+                    touched.insert(key);
+                }
             }
         }
 
@@ -373,25 +418,44 @@ impl TransportScene {
             .flat_map(|(page, materials)| build_page_regions(page, &materials, previous))
             .collect();
         for region in built {
+            if previous
+                .regions
+                .get(&region.coordinate)
+                .is_none_or(|old| !Arc::ptr_eq(old, &region))
+            {
+                touched.insert(region.coordinate);
+            }
             regions.insert(region.coordinate, region);
         }
+
+        touched.retain(|key| match (previous.regions.get(key), regions.get(key)) {
+            (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+            (None, None) => false,
+            _ => true,
+        });
 
         // A voxel/material edit inside a still-occupied region changes rays,
         // but not this level's skip bounds. Reuse only the acceleration field;
         // region identities still drive normal transport/source invalidation.
-        let topology_unchanged = regions.len() == previous.regions.len()
-            && regions.iter().all(|(key, region)| {
-                previous
-                    .regions
-                    .get(key)
-                    .is_some_and(|old| old.any_solid == region.any_solid)
-            });
+        let topology_unchanged = touched.iter().all(|key| {
+            previous
+                .regions
+                .get(key)
+                .zip(regions.get(key))
+                .is_some_and(|(old, region)| old.any_solid == region.any_solid)
+        });
         let top_level = if topology_unchanged {
             previous.top_level.clone()
         } else {
             TopLevelAadf::build(&regions)
         };
-        Self { regions, top_level }
+        let mut keys: Vec<_> = touched.into_iter().collect();
+        keys.sort_unstable_by_key(|p| (p.z, p.y, p.x));
+        Self {
+            regions,
+            top_level,
+            journal: previous.journal.advance(keys),
+        }
     }
 
     /// Returns `None` outside the loaded scene, `Some(AIR)` for loaded air, or

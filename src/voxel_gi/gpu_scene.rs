@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::naadf::Aadf;
 use super::sampling::pcg;
-use super::world::{AIR, NaadfRegion, TransportScene};
+use super::world::{AIR, NaadfRegion, SceneStamp, TopLevelAadf, TransportScene};
 use bevy::prelude::*;
 
 const BRICK_WORDS: usize = 32; // Two 16-bit voxel cells per word.
@@ -16,6 +16,10 @@ const TABLE_WORDS: usize = 64;
 pub(crate) struct PackedScene {
     #[cfg(test)]
     pub(super) revisit_unchanged_for_benchmark: bool,
+    #[cfg(test)]
+    full_discovery_for_benchmark: bool,
+    stamp: Option<SceneStamp>,
+    top_level: Option<TopLevelAadf>,
     regions: HashMap<IVec3, RegionAllocation>,
     free_headers: Vec<usize>,
     free_tables: Vec<usize>,
@@ -52,9 +56,39 @@ pub(crate) struct SceneDelta {
 
 impl PackedScene {
     pub fn update(&mut self, scene: &TransportScene) -> SceneDelta {
-        let removed: Vec<_> = self
-            .regions
-            .keys()
+        #[cfg(not(test))]
+        let reuse_enabled = true;
+        #[cfg(test)]
+        let reuse_enabled = !self.revisit_unchanged_for_benchmark;
+        #[cfg(not(test))]
+        let use_lineage = true;
+        #[cfg(test)]
+        let use_lineage = !self.full_discovery_for_benchmark;
+        let mut changed = (reuse_enabled && use_lineage)
+            .then(|| {
+                self.stamp
+                    .as_ref()
+                    .and_then(|stamp| scene.region_delta_since(stamp))
+            })
+            .flatten()
+            .unwrap_or_else(|| {
+                scene
+                    .regions
+                    .keys()
+                    .chain(
+                        self.regions
+                            .keys()
+                            .filter(|key| !scene.regions.contains_key(*key)),
+                    )
+                    .copied()
+                    .collect()
+            });
+        // Only the delta needs stable allocation ordering. Lagging consumers
+        // without complete lineage take the same full discovery fallback.
+        changed.sort_unstable_by_key(|p| (p.z, p.y, p.x));
+        changed.dedup();
+        let removed: Vec<_> = changed
+            .iter()
             .filter(|key| !scene.regions.contains_key(*key))
             .copied()
             .collect();
@@ -63,7 +97,9 @@ impl PackedScene {
             ..default()
         };
         for key in removed {
-            let allocation = self.regions.remove(&key).unwrap();
+            let Some(allocation) = self.regions.remove(&key) else {
+                continue;
+            };
             self.free_headers.push(allocation.header);
             self.release_bricks(&allocation.bricks);
             if let Some(offset) = allocation.payload {
@@ -71,17 +107,13 @@ impl PackedScene {
             }
         }
         let mut dirty = Vec::new();
-        // Stable ordering makes new allocations and regression tests reproducible.
-        let mut ordered: Vec<_> = scene.regions.iter().collect();
-        ordered.sort_unstable_by_key(|(key, _)| (key.z, key.y, key.x));
-        for (&key, source) in ordered {
+        for key in changed {
+            let Some(source) = scene.regions.get(&key) else {
+                continue;
+            };
             let top = scene.top_level.field(key);
             let negative = pack_bytes(top.negative());
             let positive = pack_bytes(top.positive());
-            #[cfg(not(test))]
-            let reuse_enabled = true;
-            #[cfg(test)]
-            let reuse_enabled = !self.revisit_unchanged_for_benchmark;
             let reusable = if reuse_enabled {
                 self.regions
                     .get(&key)
@@ -186,11 +218,32 @@ impl PackedScene {
             allocation.source = Arc::clone(source);
             self.regions.insert(key, allocation);
         }
+        // Region content and acceleration dependencies are different deltas.
+        // A remote residency/occupancy change may alter an unchanged region's
+        // skip bounds. Only reuse the headers when the shared field is identical.
+        if self
+            .top_level
+            .as_ref()
+            .is_none_or(|old| !old.shares_field(&scene.top_level))
+        {
+            for (&key, allocation) in &self.regions {
+                let top = scene.top_level.field(key);
+                let header = &mut self.headers[allocation.header];
+                let (negative, positive) = (pack_bytes(top.negative()), pack_bytes(top.positive()));
+                if header.z != negative || header.w != positive {
+                    header.z = negative;
+                    header.w = positive;
+                    delta.headers.push(allocation.header..allocation.header + 1);
+                }
+            }
+        }
         if delta.directory_changed {
             self.rebuild_directory();
         }
         delta.cells = merge_ranges(dirty);
         delta.headers = merge_ranges(delta.headers);
+        self.stamp = Some(scene.stamp());
+        self.top_level = Some(scene.top_level.clone());
         delta
     }
 
@@ -294,6 +347,90 @@ mod tests {
     use super::super::naadf::{linear_index, volume_len};
     use super::super::world::PAGE_SIZE;
     use super::*;
+
+    #[test]
+    fn lineage_packing_matches_full_discovery_through_skips_eviction_and_topology_changes() {
+        let mut scene = TransportScene::default();
+        let mut incremental = PackedScene::default();
+        let mut control = PackedScene {
+            full_discovery_for_benchmark: true,
+            ..default()
+        };
+        for step in 0..48 {
+            let page = IVec3::new(step % 4 - 2, 0, -1);
+            let mut values = vec![AIR; volume_len(PAGE_SIZE)];
+            if step % 3 != 0 {
+                values[linear_index(UVec3::splat(8), PAGE_SIZE)] = (step % 7) as u16;
+            }
+            scene = if step % 7 == 0 {
+                TransportScene::with_page_delta(&scene, vec![], &[page])
+            } else {
+                TransportScene::with_page_delta(&scene, vec![(page, values)], &[])
+            };
+            // Consumers can miss both a few versions and more than the ledger.
+            if step < 5 || step == 17 || step >= 31 {
+                let a = incremental.update(&scene);
+                let b = control.update(&scene);
+                assert_eq!(incremental.directory, control.directory);
+                assert_eq!(incremental.headers, control.headers);
+                assert_eq!(incremental.cells, control.cells);
+                assert_eq!(a.directory_changed, b.directory_changed);
+                assert_eq!(a.headers, b.headers);
+                assert_eq!(a.cells, b.cells);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "paired scene packing scaling study; no concurrent workloads"]
+    fn scene_delta_discovery_cost_study() {
+        for pages in [32, 256, 1024] {
+            let mut scene = TransportScene::with_page_delta(
+                &TransportScene::default(),
+                (0..pages)
+                    .map(|x| (IVec3::new(x, 0, 0), vec![1; volume_len(PAGE_SIZE)]))
+                    .collect(),
+                &[],
+            );
+            let mut fast = PackedScene::default();
+            let mut full = PackedScene {
+                full_discovery_for_benchmark: true,
+                ..default()
+            };
+            fast.update(&scene);
+            full.update(&scene);
+            let mut times: [Vec<f64>; 2] = default();
+            for round in 0..24 {
+                let mut material = vec![1; volume_len(PAGE_SIZE)];
+                material[linear_index(UVec3::splat(8), PAGE_SIZE)] = 2 + (round % 2) as u16;
+                scene = TransportScene::with_page_delta(&scene, vec![(IVec3::ZERO, material)], &[]);
+                for mode in [round % 2, 1 - round % 2] {
+                    let start = std::time::Instant::now();
+                    let delta = if mode == 0 {
+                        full.update(&scene)
+                    } else {
+                        fast.update(&scene)
+                    };
+                    if round >= 4 {
+                        times[mode].push(start.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    std::hint::black_box(delta);
+                }
+                assert_eq!(fast.headers, full.headers);
+                assert_eq!(fast.cells, full.cells);
+                assert_eq!(fast.directory, full.directory);
+            }
+            for t in &mut times {
+                t.sort_by(f64::total_cmp);
+            }
+            println!(
+                "DELTA_PACK regions={} changed=1 control_ms={:.4} candidate_ms={:.4} exact=true",
+                scene.regions.len(),
+                times[0][10],
+                times[1][10]
+            );
+        }
+    }
 
     fn decoded_material(packed: &PackedScene, voxel: IVec3) -> u16 {
         let key = voxel.div_euclid(IVec3::splat(16));

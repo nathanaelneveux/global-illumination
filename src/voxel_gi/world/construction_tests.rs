@@ -278,7 +278,7 @@ fn rebuild_on_any_change(
     } else {
         TopLevelAadf::build(&regions)
     };
-    TransportScene { regions, top_level }
+    TransportScene { regions, top_level, ..default() }
 }
 
 fn assert_same_scene(actual: &TransportScene, reference: &TransportScene) {
@@ -439,7 +439,7 @@ fn terrain_scene() -> (TransportScene, Vec<u16>) {
             }
         }
     }
-    (TransportScene { regions, top_level }, page)
+    (TransportScene { regions, top_level, ..default() }, page)
 }
 
 #[test]
