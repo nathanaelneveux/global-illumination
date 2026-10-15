@@ -230,7 +230,12 @@ impl ResidentAccumulator {
                 let voxel = work.faces[index].voxel;
                 let orientation = work.faces[index].face;
                 let normal = FACE_OFFSETS[orientation];
-                for offset in FACE_OFFSETS {
+                // Prefer donors outside the immediate corner reconstruction
+                // footprint, so sharing contributes new paths to that footprint.
+                for offset in [3, 1]
+                    .into_iter()
+                    .flat_map(|distance| FACE_OFFSETS.map(|v| v * distance))
+                {
                     if offset.dot(normal) != 0 {
                         continue;
                     }

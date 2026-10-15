@@ -620,12 +620,12 @@ fn record_visible(record: RecordedPath, origin: vec3<f32>) -> bool {
     return trace(origin, delta / distance, max(distance - 0.008, 0.0)).status == 0u;
 }
 
-// Reject ill-conditioned shifts symmetrically in both terms of the MIS
-// partition. The original sample retains weight one when reuse is rejected;
-// no radiance clipping or sample-dependent energy selection is introduced.
+// Balanced proposal weights are bounded without a Jacobian-ratio cutoff.
+// Reject only zero-support or occluded connections, symmetrically for both
+// receivers. No radiance clipping or energy-dependent selection is introduced.
 fn compatible_pdf(record: RecordedPath, origin: vec3<f32>, normal: vec3<f32>, reference_pdf: f32) -> f32 {
     let other_pdf = record_pdf(record, origin, normal);
-    if min(reference_pdf, other_pdf) < 0.25 * max(reference_pdf, other_pdf) || other_pdf <= 0.0 { return 0.0; }
+    if other_pdf <= 0.0 { return 0.0; }
     if !record_visible(record, origin) { return 0.0; }
     return other_pdf;
 }

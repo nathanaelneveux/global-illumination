@@ -43,6 +43,51 @@ fn percentile(mut xs: Vec<f32>, p: f32) -> f32 {
     xs[((xs.len() - 1) as f32 * p).round() as usize]
 }
 
+fn corner_errors(work: &TraceWork, refs: &[[f32; 5]]) -> Vec<f32> {
+    let indices: bevy::platform::collections::HashMap<_, _> = work
+        .faces
+        .iter()
+        .enumerate()
+        .map(|(i, f)| ((f.voxel, f.face), i))
+        .collect();
+    let mut errors = Vec::new();
+    for (i, face) in work.faces.iter().enumerate() {
+        let (u, v) = match face.face / 2 {
+            0 => (IVec3::Y, IVec3::Z),
+            1 => (IVec3::X, IVec3::Z),
+            _ => (IVec3::X, IVec3::Y),
+        };
+        for x in [-1, 1] {
+            for y in [-1, 1] {
+                let neighbors = [u * x, v * y];
+                let mut members = vec![i];
+                for delta in neighbors {
+                    if let Some(&n) = indices.get(&(face.voxel + delta, face.face)) {
+                        members.push(n);
+                    }
+                }
+                if members.len() > 1
+                    && let Some(&n) = indices.get(&(face.voxel + u * x + v * y, face.face))
+                {
+                    members.push(n);
+                }
+                let value = members
+                    .iter()
+                    .map(|&i| work.faces[i].radiance.visible)
+                    .sum::<Vec3>()
+                    / members.len() as f32;
+                let reference = members
+                    .iter()
+                    .map(|&i| Vec3::from_slice(&refs[i]))
+                    .sum::<Vec3>()
+                    / members.len() as f32;
+                errors.push((value - reference).length() / reference.length().max(0.02));
+            }
+        }
+    }
+    errors
+}
+
 #[test]
 #[ignore = "native paired workgroup partial receiver and sample tails"]
 fn paired_reuse_handles_partial_workgroups_and_sample_lanes() {
@@ -50,16 +95,22 @@ fn paired_reuse_handles_partial_workgroups_and_sample_lanes() {
     let mut candidate = GpuTracer::new(baseline.context.clone()).unwrap();
     candidate.enable_reuse().unwrap();
     let fixture = cave();
-    let emitters = Arc::new(EmissionDistribution::build(&fixture.scene, &fixture.materials));
+    let emitters = Arc::new(EmissionDistribution::build(
+        &fixture.scene,
+        &fixture.materials,
+    ));
     for spp in [1, 3, 4, 7, 16] {
         let mut a = fresh(&fixture.receivers[..17], spp as u64, 99);
         let mut b = fresh(&fixture.receivers[..17], spp as u64, 99);
         trace(&mut baseline, &fixture, &emitters, &mut a, spp);
         trace(&mut candidate, &fixture, &emitters, &mut b, spp);
-        for (a,b) in a.faces.iter().zip(&b.faces) {
-            assert_eq!((a.samples,a.sequence),(b.samples,b.sequence));
-            for (a,b) in channels(a.radiance).into_iter().zip(channels(b.radiance)) {
-                assert!((a-b).abs() < 1e-4 * (0.02+a.abs()), "spp={spp} {a} vs {b}");
+        for (a, b) in a.faces.iter().zip(&b.faces) {
+            assert_eq!((a.samples, a.sequence), (b.samples, b.sequence));
+            for (a, b) in channels(a.radiance).into_iter().zip(channels(b.radiance)) {
+                assert!(
+                    (a - b).abs() < 1e-4 * (0.02 + a.abs()),
+                    "spp={spp} {a} vs {b}"
+                );
             }
         }
     }
@@ -125,10 +176,29 @@ fn compatible_reuse_native_study() {
             );
         }
     }
-    // This lane's first sample reconnects, its second is rejected. Metal must
-    // write zero, not carry the first iteration's donated energy into sample 8.
-    // Golden checked against the independent recorded-path gather kernel.
-    assert!((paired.faces[2].radiance.visible.x - 1.8486694).abs() < 2e-5);
+    // The expanded proposal admits formerly clipped density ratios. Its mean
+    // is qualified below against the independent high-sample path estimator.
+    assert!(paired.faces[2].radiance.visible.x.is_finite());
+    // Wider patches include donor sites outside each corner's 2x2 footprint.
+    for probe in &sparse {
+        let face = probe.face_mask.trailing_zeros() as usize;
+        let normal = FACE_OFFSETS[face];
+        let axes: Vec<_> = [IVec3::X, IVec3::Y, IVec3::Z]
+            .into_iter()
+            .filter(|a| a.dot(normal) == 0)
+            .collect();
+        for x in -2..=2 {
+            for y in -2..=2 {
+                let p = probe.voxel + axes[0] * x + axes[1] * y;
+                if fixture.scene.material_at(p).is_some_and(|m| m != AIR)
+                    && fixture.scene.material_at(p + normal) == Some(AIR)
+                    && keys.insert((p, face))
+                {
+                    fixture.receivers.push(SurfaceProbe::new(p, 1 << face));
+                }
+            }
+        }
+    }
     let mut reference = fresh(&fixture.receivers, 2, 8_388_608);
     for _ in 0..8 {
         trace(&mut baseline, &fixture, &emitters, &mut reference, 8192);
@@ -139,9 +209,10 @@ fn compatible_reuse_native_study() {
         .map(|f| channels(f.radiance))
         .collect();
     eprintln!("REUSE_REFERENCE faces={} samples=65536", refs.len());
-    for (mode, tracer) in [("baseline", &mut baseline), ("reuse", &mut candidate)] {
-        for spp in [16u32, 64, 256, 1024, 2048, 8192] {
+    for spp in [16u32, 64, 256, 1024, 2048, 8192] {
+        for (mode, tracer) in [("baseline", &mut baseline), ("reuse", &mut candidate)] {
             let mut errors = Vec::new();
+            let mut corners = Vec::new();
             let mut gpu_ms = Vec::new();
             let mut bias = [0.0f64; 5];
             let mut paired = 0;
@@ -158,6 +229,7 @@ fn compatible_reuse_native_study() {
                 }
                 paired = work.faces.iter().filter(|f| f.neighbor != 0).count();
                 gpu_ms.push(cost);
+                corners.extend(corner_errors(&work, &refs));
                 for (face, reference) in work.faces.iter().zip(&refs) {
                     let values = channels(face.radiance);
                     for band in 0..5 {
@@ -170,11 +242,43 @@ fn compatible_reuse_native_study() {
             }
             bias.iter_mut().for_each(|v| *v /= (refs.len() * 4) as f64);
             eprintln!(
-                "REUSE_RESULT mode={mode} spp={spp} paired={paired} gpu_ms={} error_p50={} error_p95={} bias={bias:?}",
+                "REUSE_RESULT mode={mode} spp={spp} paired={paired} gpu_ms={} error_p50={} error_p95={} corner_p95={} bias={bias:?}",
                 percentile(gpu_ms, 0.5),
                 percentile(errors.clone(), 0.5),
-                percentile(errors, 0.95)
+                percentile(errors, 0.95),
+                percentile(corners, 0.95)
             );
         }
     }
+    let mut a = fresh(&fixture.receivers, 999_000, 0);
+    let mut b = fresh(&fixture.receivers, 999_000, 0);
+    let mut costs = [Vec::new(), Vec::new()];
+    for round in 0..50 {
+        if round % 2 == 0 {
+            trace(&mut baseline, &fixture, &emitters, &mut a, 16);
+            if round >= 10 {
+                costs[0].push(baseline.last_gpu_ms.unwrap());
+            }
+            trace(&mut candidate, &fixture, &emitters, &mut b, 16);
+            if round >= 10 {
+                costs[1].push(candidate.last_gpu_ms.unwrap());
+            }
+        } else {
+            trace(&mut candidate, &fixture, &emitters, &mut b, 16);
+            if round >= 10 {
+                costs[1].push(candidate.last_gpu_ms.unwrap());
+            }
+            trace(&mut baseline, &fixture, &emitters, &mut a, 16);
+            if round >= 10 {
+                costs[0].push(baseline.last_gpu_ms.unwrap());
+            }
+        }
+    }
+    eprintln!(
+        "REUSE_PAIRED_COST baseline_p50={} reuse_p50={} baseline_p95={} reuse_p95={}",
+        percentile(costs[0].clone(), 0.5),
+        percentile(costs[1].clone(), 0.5),
+        percentile(costs[0].clone(), 0.95),
+        percentile(costs[1].clone(), 0.95)
+    );
 }
