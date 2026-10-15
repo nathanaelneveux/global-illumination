@@ -608,6 +608,15 @@ to obtain the current render-frame value. Acceptable age, exposure integration,
 and material-state transitions belong to the future host simulation. Filtered
 display RGB never becomes simulation energy.
 
+RGB perceptual quality and simulation accuracy are separate requirements.
+`simulation_sampling_importance` changes emitter proposal weights, not emitted
+energy: RGB has weight one and IR/ionizing have a configurable positive weight.
+CPU and GPU MIS use the same weighted power. Nonzero support preserves physical
+expectation, while lower simulation importance can increase its sampling noise.
+Proposal-cache changes preserve valid lighting history. Display confidence and
+smoothing remain RGB-only; the current conservative sleep heuristic still checks
+all bands. Demand-specific simulation tolerances/ticks remain future host work.
+
 The resident record is 128 bytes per allocated face, plus the CPU scheduling/
 simulation snapshot and ownership index. Render probes grow from 208 to 256 bytes
 to carry six addresses. These are deliberate memory costs, not a claim that GPU
@@ -712,6 +721,6 @@ before substantially larger worlds. Current buffer validation prevents stale
 generation writes, not unlimited allocation or out-of-memory failure.
 
 The next architecture changes should preserve these boundaries: a replaceable
-sampling distribution, optional GPU-resident accumulation with explicit simulation
-readback demand, and a host-independent scene-input API. None requires abandoning
+sampling distribution, demand-driven snapshots from resident accumulation,
+and a host-independent scene-input API. None requires abandoning
 the current traversal, revision or presentation contracts.

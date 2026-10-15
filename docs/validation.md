@@ -4,6 +4,22 @@ Use the smallest check that answers the current question. The purpose is faster,
 stable gameplay and useful simulation measurements, not maximizing test minutes.
 The full suite is an integration checkpoint, not the default for every tweak.
 
+For resident transport, distinguish `snapshot_latency_ms` (submission to CPU
+delivery) from worker occupancy and GPU timestamps. It is not a blocking wait.
+Temporal corner diagnostics must use `validation_snapshot`; resident display
+does not refresh the old CPU upload mirror. Simulation accuracy is not gated by
+RGB FLIP: check five-band energy/PDF correctness and measurement freshness, and
+report nonvisual sampling importance separately.
+
+The paired image study uses `VOXEL_GI_VALIDATE_REUSE_SWEEP=1` with the existing
+headless cave/reference/sample-sweep flags. It records a resident independent
+control in the same frozen scene. Analyze it with `cave_sample_analysis.py
+RUN --perceptual --control`, and analyze the candidate without `--control`.
+Both require the independent reference's qualification and completed capture
+status; neither relaxes the user-calibrated RGB gates. The
+[resident/path-reuse results](resident-path-reuse.md) document exact commits,
+settings and evidence. These opt-in studies are not routine toggle stress.
+
 Current appearance acceptance is the user's [2,048-path cave target](cave-sampling.md#user-calibrated-visual-target),
 with 1,536 and 1,024 as visible-failure controls. Use the fixed, versioned profile
 for sampler comparisons; do not turn 2,048 into a history cap, use a raw RGB

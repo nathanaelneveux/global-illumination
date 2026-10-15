@@ -1,5 +1,9 @@
 # GI performance experiment results
 
+The [October 15 resident/path-reuse study](resident-path-reuse.md) records the
+current runtime-ownership and early-sample experiments, including spectral
+sampling priorities, qualified RGB images and rejected variants.
+
 Retained changes improve emitter sampling, avoid repeated sky work, accelerate
 geometry construction and traversal, and reduce geometry preparation/uploads.
 Other candidates remain on separate local branches. The preferred shared
