@@ -222,15 +222,24 @@ impl ResidentAccumulator {
             // another hash table. Selection is geometric, never radiometric.
             for face in &mut work.faces {
                 face.neighbor = 0;
-                let normal = FACE_OFFSETS[face.face];
+            }
+            for index in 0..work.faces.len() {
+                if work.faces[index].neighbor != 0 {
+                    continue;
+                }
+                let voxel = work.faces[index].voxel;
+                let orientation = work.faces[index].face;
+                let normal = FACE_OFFSETS[orientation];
                 for offset in FACE_OFFSETS {
                     if offset.dot(normal) != 0 {
                         continue;
                     }
-                    if let Some(slot) = self.slots.get(&(face.voxel + offset, face.face))
+                    if let Some(slot) = self.slots.get(&(voxel + offset, orientation))
                         && slot.task_epoch == self.task_epoch
+                        && work.faces[slot.task_index as usize].neighbor == 0
                     {
-                        face.neighbor = slot.task_index + 1;
+                        work.faces[index].neighbor = slot.task_index + 1;
+                        work.faces[slot.task_index as usize].neighbor = index as u32 + 1;
                         break;
                     }
                 }

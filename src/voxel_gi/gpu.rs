@@ -743,7 +743,7 @@ impl GpuTracer {
             }
             face_count
                 .checked_mul(samples as usize)
-                .and_then(|n| n.checked_mul(80))
+                .and_then(|n| n.checked_mul(48))
                 .ok_or("path record size overflow")?
         } else {
             0

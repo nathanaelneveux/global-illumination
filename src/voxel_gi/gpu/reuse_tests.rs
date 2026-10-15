@@ -43,6 +43,33 @@ fn percentile(mut xs: Vec<f32>, p: f32) -> f32 {
     xs[((xs.len() - 1) as f32 * p).round() as usize]
 }
 
+fn scratch(tracer: &GpuTracer, start: u64, bytes: u64) -> Vec<u32> {
+    let device = &tracer.context.device;
+    let read = device.create_buffer(&BufferDescriptor {
+        label: None,
+        size: bytes,
+        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&default());
+    encoder.copy_buffer_to_buffer(&tracer.output.buffer, start, &read, 0, bytes);
+    tracer.context.queue.submit([encoder.finish()]);
+    let (send, receive) = std::sync::mpsc::channel();
+    read.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+        send.send(r).unwrap();
+    });
+    device
+        .wgpu_device()
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    receive.recv().unwrap().unwrap();
+    read.slice(..)
+        .get_mapped_range()
+        .chunks_exact(4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        .collect()
+}
+
 #[test]
 #[ignore = "native five-band recorded-path and compatible reuse study"]
 fn compatible_reuse_native_study() {
@@ -93,6 +120,26 @@ fn compatible_reuse_native_study() {
         }
     }
     fixture.receivers = dense;
+    let mut paired = fresh(&fixture.receivers, 888, 0);
+    trace(&mut candidate, &fixture, &emitters, &mut paired, 16);
+    for (i, face) in paired.faces.iter().enumerate() {
+        if face.neighbor > 0 {
+            assert_eq!(
+                paired.faces[face.neighbor as usize - 1].neighbor,
+                i as u32 + 1
+            );
+        }
+    }
+    // This lane's first sample reconnects, its second is rejected. Metal must
+    // write zero, not carry the first iteration's donated energy into sample 8.
+    let rejected = scratch(
+        &candidate,
+        (paired.faces.len() * 96 + (5 * 16 + 8) * 48) as u64,
+        48,
+    );
+    assert!(f32::from_bits(rejected[0]) > 0.0);
+    assert_eq!(&rejected[4..8], &[0; 4]);
+    assert_eq!(rejected[9], 0);
     let mut reference = fresh(&fixture.receivers, 2, 8_388_608);
     for _ in 0..8 {
         trace(&mut baseline, &fixture, &emitters, &mut reference, 8192);

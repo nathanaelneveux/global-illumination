@@ -630,33 +630,10 @@ fn compatible_pdf(record: RecordedPath, origin: vec3<f32>, normal: vec3<f32>, re
     return other_pdf;
 }
 
-// Five uint4s per generated path, in a bounded scratch tail that never crosses
-// the CPU boundary. Integer hit coordinates survive floating-origin scale.
+// Reciprocal pairs evaluate each first-vertex reconnection once, then publish
+// the two weighted energies. Three uint4s per path; no geometry readback.
 fn path_offset(face: u32, sample: u32) -> u32 {
-    return params.counts.x * 6u + u32(params.minimum.w) * 2u + (face * params.counts.y + sample) * 5u;
-}
-fn normal_index(normal: vec3<f32>) -> u32 {
-    if abs(normal.x) > 0.5 { return select(1u, 0u, normal.x > 0.0); }
-    if abs(normal.y) > 0.5 { return select(3u, 2u, normal.y > 0.0); }
-    return select(5u, 4u, normal.z > 0.0);
-}
-fn store_record(face: u32, sample: u32, record: RecordedPath) {
-    let offset = path_offset(face, sample);
-    // Scalar casts avoid Metal's packed-vec3 struct ABI mismatch in Naga.
-    results[offset] = vec4(bitcast<u32>(record.first.voxel.x), bitcast<u32>(record.first.voxel.y), bitcast<u32>(record.first.voxel.z), record.first.material);
-    results[offset + 1u] = vec4(bitcast<u32>(record.first.position.x), bitcast<u32>(record.first.position.y), bitcast<u32>(record.first.position.z), record.first.status);
-    results[offset + 2u] = vec4(normal_index(record.first.normal), bitcast<vec3<u32>>(record.direction));
-    results[offset + 3u] = bitcast<vec4<u32>>(record.suffix.value);
-    results[offset + 4u] = vec4(bitcast<u32>(record.suffix.radiation), 0u, 0u, 0u);
-}
-fn load_record(face: u32, sample: u32) -> RecordedPath {
-    let offset = path_offset(face, sample);
-    let a = results[offset];
-    let b = results[offset + 1u];
-    let c = results[offset + 2u];
-    let hit = RayResult(bitcast<vec3<i32>>(a.xyz), a.w, bitcast<vec3<f32>>(b.xyz), b.w, face_normal(c.x));
-    return RecordedPath(hit, bitcast<vec3<f32>>(c.yzw),
-        Energy(bitcast<vec4<f32>>(results[offset + 3u]), bitcast<f32>(results[offset + 4u].x), vec3(0.0)));
+    return params.counts.x * 6u + u32(params.minimum.w) * 2u + (face * params.counts.y + sample) * 3u;
 }
 @compute @workgroup_size(64)
 fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -708,10 +685,32 @@ fn trace_paths_recorded(@builtin(global_invocation_id) id: vec3<u32>,
     let normal = face_normal(task.face);
     let origin = vec3<f32>(task.voxel) + vec3(0.5) + normal * 0.501;
     let stream = hash_voxel(task.voxel) ^ pcg(task.face + 1u);
+    let has_partner = task.padding0 > 0u && task.padding0 <= params.counts.x;
+    var other_origin = origin;
+    if has_partner { other_origin = vec3<f32>(tasks[task.padding0 - 1u].voxel) + vec3(0.5) + normal * 0.501; }
     for (var i = local % PATH_LANES; i < params.counts.y; i += PATH_LANES) {
         let sequence = task.sequence + i;
         let direction = hemisphere(normal, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
-        store_record(face, i, trace_path_record(origin, direction, normal, stream, sequence, true));
+        let record = trace_path_record(origin, direction, normal, stream, sequence, true);
+        var own = evaluate_record(record, origin, normal);
+        var shifted = Energy(vec4(0.0), 0.0, vec3(0.0));
+        if has_partner {
+            let q = record_pdf(record, origin, normal);
+            if q > 0.0 {
+                let other_q = compatible_pdf(record, other_origin, normal, q);
+                own.value *= q / (q + other_q);
+                own.radiation *= q / (q + other_q);
+                if other_q > 0.0 {
+                    shifted = evaluate_record(record, other_origin, normal);
+                    shifted.value *= other_q / (q + other_q);
+                    shifted.radiation *= other_q / (q + other_q);
+                }
+            }
+        }
+        let offset = path_offset(face, i);
+        results[offset] = bitcast<vec4<u32>>(own.value);
+        results[offset+1u] = bitcast<vec4<u32>>(shifted.value);
+        results[offset+2u] = vec4(bitcast<u32>(own.radiation), bitcast<u32>(shifted.radiation), 0u, 0u);
     }
 }
 
@@ -729,29 +728,13 @@ fn resolve_reused_faces(@builtin(global_invocation_id) id: vec3<u32>,
         let stream = hash_voxel(task.voxel) ^ pcg(task.face + 1u);
         let has_partner = task.padding0 > 0u && task.padding0 <= params.counts.x;
         let partner = task.padding0 - 1u;
-        var other_origin = origin;
-        if has_partner { other_origin = vec3<f32>(tasks[partner].voxel) + vec3(0.5) + normal * 0.501; }
         for (var i = lane; i < params.counts.y; i += PATH_LANES) {
-            let record = load_record(face, i);
-            var energy = evaluate_record(record, origin, normal);
+            let offset = path_offset(face, i);
+            var energy = Energy(bitcast<vec4<f32>>(results[offset]), bitcast<f32>(results[offset+2u].x), vec3(0.0));
             if has_partner {
-                let q = record_pdf(record, origin, normal);
-                if q > 0.0 {
-                    let other_q = compatible_pdf(record, other_origin, normal, q);
-                    energy.value *= q / (q + other_q);
-                    energy.radiation *= q / (q + other_q);
-                }
-                let borrowed = load_record(partner, i);
-                let donor_q = record_pdf(borrowed, other_origin, normal);
-                if donor_q > 0.0 {
-                    let receiver_q = compatible_pdf(borrowed, origin, normal, donor_q);
-                    if receiver_q > 0.0 {
-                        let shifted = evaluate_record(borrowed, origin, normal);
-                        let weight = receiver_q / (receiver_q + donor_q);
-                        energy.value += shifted.value * weight;
-                        energy.radiation += shifted.radiation * weight;
-                    }
-                }
+                let donated = path_offset(partner, i);
+                energy.value += bitcast<vec4<f32>>(results[donated+1u]);
+                energy.radiation += bitcast<f32>(results[donated+2u].y);
             }
             let nee = sample_emitter(center + normal * 0.5, normal, stream, task.sequence + i, 0u);
             let value = energy.value + nee.value;
