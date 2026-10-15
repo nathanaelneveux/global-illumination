@@ -233,3 +233,52 @@ Clippy pass, including real Bevy PBR shader composition; 73 native/research
 tests remain explicitly ignored rather than falsely reported as run. Four
 Python analysis tests pass. No routine toggle stress was run. Failed candidates remain local branches and
 do not replace the qualified baseline merely because their implementation runs.
+
+## Target-evidence display footprint (`159e37e`)
+
+`VOXEL_GI_SETTINGS=config/gi-display-evidence.json` selects a target of 512
+weighted samples for presentation. `spatial_evidence_target: 0` retains the
+fixed-neighbor experiment; `spatial_reconstruction: 0` disables both. These
+controls do not change physical accumulation, history retention, direct sun,
+simulation snapshots, or transport sampling. Stable defaults remain unchanged.
+
+The worker walks unique, connected coplanar faces in breadth-first order. It
+cannot jump a gap or borrow around a solid corner. Radius is bounded at 16
+voxels and candidate count at 1024; the receiver's predicted retained history
+limits work to at most twice `ceil(target/history)` candidates. Mature receivers
+skip neighborhood lookup. The GPU reads current retained counts and the same
+raw statistics/temporal RGB used by the fixed filter, not filtered neighbors.
+
+For donor history `n` and geometry/radiance compatibility `g`, its weight is
+`w = n*g`. Approximate support is `(sum w)^2 / sum(w*w/n)`, including the local
+estimate. The spatial Gaussian widens with `target/local_history`. Borrowing
+stops when support reaches the target; a partial final donor makes its influence
+vanish continuously as local history approaches 512. Missing or incompatible
+donors can prevent reaching the target. Capped histories and correlated surface
+lighting make this a **footprint heuristic**, not 512 independent rays or an
+accuracy certificate. At 512 local history the output is ordinary temporal RGB.
+
+GPU results occupy existing presentation words in the 128-byte resident record.
+The variable neighborhood uses a 16-byte header per selected face plus 16 bytes
+per candidate, in reused worker/GPU scratch. It adds no persistent per-face
+measurement state. A bounded gather can still be expensive during cold start;
+runtime worker cost and transport freshness must be qualified, not inferred
+from the unchanged ray count.
+
+The native oracle covers unequal histories (1, 16, 128, 511, 2048), subsequent
+edit caps, partial jobs, and disabling. Physical five-band means, moments,
+counts, sequence, temporal state and CPU snapshots match the independent control
+exactly. This establishes separation, not edit-image quality.
+
+Matched image protocol (`0f59dd5`): add
+`VOXEL_GI_VALIDATE_EVIDENCE_SWEEP=1` to the headless cave reference command.
+It captures raw, fixed-neighbor and target-evidence presentation from the same
+1–2048 path prefixes in four sequence windows. `cave-evidence-support.json`
+records support/footprint separately from the FLIP gate. Use
+`tools/spatial_quality.py --labels samples spatial evidence` with the desired
+`--counts`; `tools/cave_sample_contact_sheet.py` accepts the same label/count
+selection for matched visual rows. Real edit checks use `house-edits` and
+`response`, with background loading and the production distance/history curve.
+`tools/spatial_edit_quality.py CONTROL CANDIDATE` compares final captures to
+both a common observed tail and each run's own tail. Neither is certified truth;
+tail disagreement must accompany response measurements.
