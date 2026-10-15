@@ -766,6 +766,98 @@ fn resolve_reused_faces(@builtin(global_invocation_id) id: vec3<u32>,
     results[offset + 5u] = bitcast<vec4<u32>>(vec4(direct.radiation, direct.custom_visible));
 }
 
+var<workgroup> pair_own: array<vec4<f32>, 64>;
+var<workgroup> pair_donated: array<vec4<f32>, 64>;
+var<workgroup> pair_radiation: array<vec2<f32>, 64>;
+
+// A compact root list assigns adjacent lane groups to reciprocal receivers.
+// Each path and reconnection is evaluated once. Sharing stays in workgroup
+// memory; no global path records, second dispatch, or CPU face permutation.
+@compute @workgroup_size(64)
+fn trace_paired_faces(@builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(local_invocation_index) local: u32) {
+    let pair = id.x / (2u * PATH_LANES);
+    let lane = local % PATH_LANES;
+    let side = (local / PATH_LANES) % 2u;
+    let pair_valid = pair < u32(params.transport.y);
+    var face = 0u;
+    var partner = 0u;
+    var paired = false;
+    if pair_valid {
+        let root = tasks[pair].padding1;
+        paired = tasks[root].padding0 > 0u;
+        face = root;
+        partner = tasks[root].padding0 - 1u;
+        if side == 1u && paired { face = partner; partner = root; }
+    }
+    let valid = pair_valid && (side == 0u || paired);
+    var moment: PathMoments;
+    // Every lane reaches both barriers even for a short/nonmultiple tail.
+    for (var base = 0u; base < params.counts.y; base += PATH_LANES) {
+        let i = base + lane;
+        var own = Energy(vec4(0.0), 0.0, vec3(0.0));
+        var donated = Energy(vec4(0.0), 0.0, vec3(0.0));
+        var nee = Energy(vec4(0.0), 0.0, vec3(0.0));
+        if valid && i < params.counts.y {
+            let task = tasks[face];
+            let normal = face_normal(task.face);
+            let center = vec3<f32>(task.voxel) + vec3(0.5);
+            let origin = center + normal * 0.501;
+            let stream = hash_voxel(task.voxel) ^ pcg(task.face + 1u);
+            let sequence = task.sequence + i;
+            let direction = hemisphere(normal, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
+            let record = trace_path_record(origin, direction, normal, stream, sequence, true);
+            own = evaluate_record(record, origin, normal);
+            if paired {
+                let other_origin = vec3<f32>(tasks[partner].voxel) + vec3(0.5) + normal * 0.501;
+                let q = record_pdf(record, origin, normal);
+                if q > 0.0 {
+                    let other_q = compatible_pdf(record, other_origin, normal, q);
+                    own.value *= q / (q + other_q);
+                    own.radiation *= q / (q + other_q);
+                    if other_q > 0.0 {
+                        donated = evaluate_record(record, other_origin, normal);
+                        donated.value *= other_q / (q + other_q);
+                        donated.radiation *= other_q / (q + other_q);
+                    }
+                }
+            }
+            nee = sample_emitter(center + normal * 0.5, normal, stream, sequence, 0u);
+        }
+        pair_own[local] = own.value;
+        pair_donated[local] = donated.value;
+        pair_radiation[local] = vec2(own.radiation, donated.radiation);
+        workgroupBarrier();
+        let other = local ^ PATH_LANES;
+        let value = pair_own[local] + pair_donated[other] + nee.value;
+        let radiation = pair_radiation[local].x + pair_radiation[other].y + nee.radiation;
+        moment.mean += value;
+        moment.second += value * value;
+        moment.radiation += vec2(radiation, radiation * radiation);
+        workgroupBarrier();
+    }
+    path_moments[local] = moment;
+    workgroupBarrier();
+    if lane != 0u || !valid { return; }
+    var total: PathMoments;
+    for (var i = 0u; i < PATH_LANES; i += 1u) {
+        total.mean += path_moments[local + i].mean;
+        total.second += path_moments[local + i].second;
+        total.radiation += path_moments[local + i].radiation;
+    }
+    let task = tasks[face];
+    let normal = face_normal(task.face);
+    let direct = direct_at(vec3<f32>(task.voxel) + vec3(0.5) + normal * 0.5, normal);
+    let inverse = 1.0 / f32(params.counts.y);
+    let offset = face * 6u;
+    results[offset] = bitcast<vec4<u32>>(total.mean * inverse);
+    results[offset + 1u] = bitcast<vec4<u32>>(vec4(total.radiation.x * inverse, 0.0, 0.0, 0.0));
+    results[offset + 2u] = bitcast<vec4<u32>>(total.second * inverse);
+    results[offset + 3u] = bitcast<vec4<u32>>(vec4(total.radiation.y * inverse, 0.0, 0.0, 0.0));
+    results[offset + 4u] = bitcast<vec4<u32>>(direct.value);
+    results[offset + 5u] = bitcast<vec4<u32>>(vec4(direct.radiation, direct.custom_visible));
+}
+
 // Cooperative layout: four or eight lanes share a receiver, each tracing
 // an independent subsequence. Identical paths and moments, not sample reuse.
 // The serial entry point remains the paired throughput/correctness reference.

@@ -299,7 +299,7 @@ impl GpuTracer {
     pub(super) fn enable_reuse(&mut self) -> Result<(), String> {
         self.enable_resident()?;
         self.resident.as_mut().unwrap().reuse = true;
-        self.entry = "trace_paths_recorded";
+        self.entry = "trace_paired_faces";
         self.quality_pipelines.clear();
         self.pipeline_key = (0, false, 0);
         Ok(())
@@ -699,6 +699,19 @@ impl GpuTracer {
             encode_tasks(&mut self.task_bytes, work, &sky_pending);
         }
         let transport = work.transport.normalized();
+        let mut pair_count = 0;
+        if self.entry == "trace_paired_faces" {
+            // Compact root indices into unused task words. Face order and all
+            // readback identities remain unchanged; no sort/permutation buffer.
+            for (index, face) in work.faces.iter().enumerate() {
+                if face.neighbor == 0 || index < face.neighbor as usize - 1 {
+                    let offset = pair_count * TASK_BYTES + 24;
+                    self.task_bytes[offset..offset + 4]
+                        .copy_from_slice(&(index as u32).to_le_bytes());
+                    pair_count += 1;
+                }
+            }
+        }
         let params = GpuParams {
             counts: UVec4::new(
                 face_count as u32,
@@ -718,7 +731,7 @@ impl GpuTracer {
                 emitters.total_weight,
                 emitters.faces.len() as f32,
             ),
-            transport: Vec4::new(transport.reach, 0.0, 0.0, 0.0),
+            transport: Vec4::new(transport.reach, pair_count as f32, 0.0, 0.0),
         };
         self.params.upload(
             device,
@@ -861,7 +874,11 @@ impl GpuTracer {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &**bindings, &[]);
                 pass.dispatch_workgroups(
-                    (face_count as u32).div_ceil(self.faces_per_workgroup),
+                    if self.entry == "trace_paired_faces" {
+                        (pair_count as u32).div_ceil(64 / (2 * self.pipeline_key.2))
+                    } else {
+                        (face_count as u32).div_ceil(self.faces_per_workgroup)
+                    },
                     1,
                     1,
                 );
