@@ -174,6 +174,64 @@ fn reuse_lane_cost_sweep() {
 }
 
 #[test]
+#[ignore = "native exact zero-energy reconnection pruning and alternating cost"]
+fn zero_energy_reconnection_pruning_is_exact() {
+    let device = super::tests::native_tracer().context;
+    let original = SHADER.replace("if paired && record_has_energy(record)", "if paired");
+    assert_ne!(original, SHADER);
+    let mut a = GpuTracer::with_shader(device.clone(), true, &original).unwrap();
+    let mut b = GpuTracer::new(device).unwrap();
+    a.enable_reuse().unwrap();
+    b.enable_reuse().unwrap();
+    let fixture = cave();
+    let emitters = Arc::new(EmissionDistribution::build(
+        &fixture.scene,
+        &fixture.materials,
+    ));
+    let probes: Vec<_> = (7..40)
+        .flat_map(|y| (7..57).map(move |z| SurfaceProbe::new(IVec3::new(4, y, z), 1)))
+        .collect();
+    let mut left = fresh(&probes, 1, 319);
+    let mut right = fresh(&probes, 1, 319);
+    let mut costs = [Vec::new(), Vec::new()];
+    for round in 0..48 {
+        for mode in [round % 2, 1 - round % 2] {
+            let (gpu, work) = if mode == 0 {
+                (&mut a, &mut left)
+            } else {
+                (&mut b, &mut right)
+            };
+            trace(gpu, &fixture, &emitters, work, 16);
+            if round >= 8 {
+                costs[mode].push(gpu.last_gpu_ms.unwrap());
+            }
+        }
+        for (a, b) in left.faces.iter().zip(&right.faces) {
+            assert_eq!((a.samples, a.sequence), (b.samples, b.sequence));
+            for (a, b) in channels(a.radiance).into_iter().zip(channels(b.radiance)) {
+                assert!((a - b).abs() <= 1e-6 * (0.02 + a.abs()), "mean {a} vs {b}");
+            }
+            for (a, b) in channels(a.second_moment)
+                .into_iter()
+                .zip(channels(b.second_moment))
+            {
+                assert!(
+                    (a - b).abs() <= 1e-6 * (0.02 + a.abs()),
+                    "moment {a} vs {b}"
+                );
+            }
+        }
+    }
+    eprintln!(
+        "REUSE_ZERO original_p50={} pruned_p50={} original_p95={} pruned_p95={}",
+        percentile(costs[0].clone(), 0.5),
+        percentile(costs[1].clone(), 0.5),
+        percentile(costs[0].clone(), 0.95),
+        percentile(costs[1].clone(), 0.95)
+    );
+}
+
+#[test]
 #[ignore = "native five-band recorded-path and compatible reuse study"]
 fn compatible_reuse_native_study() {
     let mut baseline = super::tests::native_tracer();

@@ -770,6 +770,17 @@ var<workgroup> pair_own: array<vec4<f32>, 64>;
 var<workgroup> pair_donated: array<vec4<f32>, 64>;
 var<workgroup> pair_radiation: array<vec2<f32>, 64>;
 
+// A zero suffix can still reconnect to an emissive first vertex: split-first
+// recording deliberately leaves that emission out for receiver-specific MIS.
+// Otherwise a connection contributes zero in every band, regardless of its PDF
+// or visibility. Skipping that visibility ray does not alter sample weights.
+fn record_has_energy(record: RecordedPath) -> bool {
+    if any(record.suffix.value != vec4(0.0)) || record.suffix.radiation != 0.0 { return true; }
+    if record.first.status != 1u { return false; }
+    let material = materials[record.first.material];
+    return any(material.emission != vec4(0.0)) || material.emission_extra.x != 0.0;
+}
+
 // A compact root list assigns adjacent lane groups to reciprocal receivers.
 // Each path and reconnection is evaluated once. Sharing stays in workgroup
 // memory; no global path records, second dispatch, or CPU face permutation.
@@ -808,7 +819,7 @@ fn trace_paired_faces(@builtin(global_invocation_id) id: vec3<u32>,
             let direction = hemisphere(normal, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
             let record = trace_path_record(origin, direction, normal, stream, sequence, true);
             own = evaluate_record(record, origin, normal);
-            if paired {
+            if paired && record_has_energy(record) {
                 let other_origin = vec3<f32>(tasks[partner].voxel) + vec3(0.5) + normal * 0.501;
                 let q = record_pdf(record, origin, normal);
                 if q > 0.0 {
