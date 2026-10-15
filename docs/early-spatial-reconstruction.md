@@ -87,7 +87,7 @@ temporal response or adaptive scheduling. Worst across four windows:
 | 4096 | .019053 | .018893 | .057628 | .055603 |
 
 Mean error improves 28% at 16 and 22% at 64. The worst local tile is slightly
-worse at 64. **Both first pass the unchanged user-calibrated FLIP gate at 2048**,
+worse at 64. **Both first pass the unchanged user-calibrated FLIP gate at the tested 2048 checkpoint**,
 not a demonstrated reduction in the required settled sample count. Coarse
 64-pixel OKLab residual RMS improves .010132→.007635 at 16 and
 .005330→.003850 at 64. This checks broad incorrect patches as well as grain;
@@ -318,7 +318,8 @@ is worse than the fixed filter. One inspected worst target tile at 16/window 3
 is near the green ceiling lighting (pixel 512,32); its green component is
 underestimated, not merely noisy. At one path there is essentially no benefit:
 zero empirical variance cannot reliably guide compatibility. Raw, fixed and
-target all first pass the calibrated sustained image gate at **2048**.
+target all first pass the calibrated sustained image gate at the tested **2048**
+checkpoint; this sweep did not include 1280 or 1536.
 
 Average borrowing across the cave is approximately 132 faces at 4 local paths,
 32.4 at 16, 3.94 at 128, 1.98 at 256, and zero at 512. At 16 about 95% of faces
@@ -388,3 +389,41 @@ All 263 regular Rust tests and strict all-target Clippy passed; 74 tests remain
 explicitly ignored. Targeted native fixed/adaptive display oracles, resident
 growth/retirement/parity and unselected-face cap ownership passed separately.
 Four Python analysis tests passed and actual final captures were inspected.
+
+## Interpreting weights, confidence and quality targets
+
+These are separate quantities; do not label all of them "samples":
+
+- **Path sequence** records actual tracing progress. It keeps advancing across
+  edits and is not increased by spatial reconstruction.
+- **Retained history weight** controls the influence of new measurements on the
+  physical mean. It initially follows the sample count, but edit retention and
+  the history ceiling make it different from lifetime rays traced.
+- **Display confidence** is a smoothed reliability heuristic, not a confidence
+  interval. Its target is `clamp(n/(n+8)/(1+uncertainty), .125, 1)`, where
+  uncertainty is derived from RGB moments and retained weight. Ordinary corner
+  reconstruction weights its connected face values by this scalar.
+- **Display evidence target** sizes the optional wider spatial footprint. It
+  combines donor history, distance and variance-aware radiance compatibility.
+  It does not multiply by the display-confidence scalar or raise that scalar
+  after borrowing. Estimated variance therefore influences sharing, but there
+  is no independent statistical-confidence certificate behind the target.
+
+In the matched prefix images, confidence is deliberately equal for all faces
+to isolate the spatial filter. Real edit captures use actual runtime confidence
+and uneven retained histories. Both are needed; a static prefix is not evidence
+of response to edits.
+
+The four-path target-512 image borrows from approximately 132 neighboring faces
+on average, not four rays total. At 128 paths it borrows from about four. The
+rapidly narrowing footprint can make the early image look smoother even while
+the later image is numerically closer to the reference. Preserve both visual
+review and error measurements instead of equating smoothness with accuracy.
+
+The earlier **1280-path** full-image qualification belongs to **RGB priority
+plus paired path reuse**, documented in [resident path reuse](resident-path-reuse.md#qualified-full-images).
+Only RGB priority is integrated by default; paired reuse remains opt-in. The
+spatial experiments use independent RGB-prioritized paths. The calibrated FLIP
+limits remain fixed when an estimator improves; 2048 is their original visual
+calibration checkpoint, not a universal minimum or a new limit to recalibrate
+for every candidate.
