@@ -13,18 +13,17 @@ host chunks / edits / sources / material table
                    |
     main world: bounded receiver publication + revision journals
                    |
-    scheduler -> compact worker jobs -> GPU compute or CPU reference
-                   |                          |
-                   +---- validated results ---+
-                   |
-         authoritative face measurements
-              /                 \
-    simulation estimates     temporal RGB display history
-                                    |
-                       generation-owned GPU display cache
-                                    |
-                   connected virtual-corner reconstruction
+    scheduler -> compact worker jobs -> resident GPU measurements
+         ^                              /                  \
+    validated async snapshots <--------+           GPU temporal RGB
+         |                                                 |
+    CPU simulation estimates                     generation-checked rendering
+                                                           |
+                                          connected virtual-corner reconstruction
 ```
+
+The synchronous GPU control and independent CPU reference retain CPU-owned
+accumulation. The default resident path does not wait for CPU delivery to render.
 
 | Responsibility | Owner / source |
 | --- | --- |
@@ -39,6 +38,7 @@ host chunks / edits / sources / material table
 | Thread-transfer payload and result merge | `work.rs` |
 | Source model and Bevy light adaptation | `sources.rs` |
 | Sampling, emitters and transport | `sampling.rs`, `emission.rs`, `tracer.rs`, `gpu.rs`, `voxel_trace.wgsl` |
+| Stable GPU ownership, accumulation and bounded snapshots | `gpu/resident.rs`, `gpu/readback.rs`, `voxel_accumulate.wgsl` |
 | Shared uncertainty heuristic | `statistics.rs` |
 | Direct-sun visibility cache | `sky.rs`, `sky_cache.rs` |
 | Temporal display and initialization | `history.rs` |
@@ -573,7 +573,7 @@ never writes filtered RGB back into these measurements.
 
 ### Resident measurements and asynchronous simulation delivery
 
-The opt-in `Resident` backend implements runtime GPU ownership, not only a
+The default `Auto` / explicit `Resident` backend implements runtime GPU ownership, not only a
 fixed-slot prototype. Stable `(voxel, face)` slots own five-band means, second
 moments, direct energy, effective count, advancing sequence, and filtered display
 RGB. Slot incarnations separate allocation identity from scene freshness.
@@ -630,8 +630,8 @@ display evidence.
 ### Construction configuration
 
 Insert `VoxelGiStartup` before adding `VoxelGiPlugin`. It selects
-`TransportBackend::Auto` (compute where available, CPU fallback), `Cpu`, or the
-opt-in `Resident`/`Reuse` experimental backends, and
+`TransportBackend::Auto` (resident compute where available, CPU fallback), `Cpu`,
+explicit `Resident`, opt-in `Reuse`, or the `Synchronous` comparison, and
 `RetentionPolicy::WholeRange(RetentionSummary)` or the legacy comparison.
 Defaults preserve whole-range retention with distance-band overflow summaries.
 These are per-App construction choices, not live switches. Runtime controls

@@ -39,10 +39,11 @@ fn parse_startup(
         None | Some("auto" | "gpu") => TransportBackend::Auto,
         Some("cpu") => TransportBackend::Cpu,
         Some("resident") => TransportBackend::Resident,
+        Some("sync") => TransportBackend::Synchronous,
         Some("reuse") => TransportBackend::Reuse,
         Some(other) => {
             return Err(format!(
-                "unknown VOXEL_GI_BACKEND={other:?}; choose auto, gpu, resident, reuse or cpu"
+                "unknown VOXEL_GI_BACKEND={other:?}; choose auto, gpu, resident, sync, reuse or cpu"
             ));
         }
     };
@@ -78,6 +79,12 @@ mod launch_tests {
                 super::super::TransportBackend::Auto
             );
         }
+        assert_eq!(
+            parse_startup(|key| (key == "VOXEL_GI_BACKEND").then(|| "sync".into()))
+                .unwrap()
+                .backend,
+            super::super::TransportBackend::Synchronous
+        );
         for key in [
             "VOXEL_GI_BACKEND",
             "VOXEL_GI_RETENTION",

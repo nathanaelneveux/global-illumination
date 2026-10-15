@@ -277,6 +277,16 @@ pub(crate) struct GpuTracer {
 }
 
 impl GpuTracer {
+    pub(super) fn backend_name(&self) -> &'static str {
+        if self.entry == "trace_paired_faces" {
+            "gpu-reuse"
+        } else if self.resident.is_some() {
+            "gpu-resident"
+        } else {
+            "gpu-sync"
+        }
+    }
+
     pub(super) fn take_resident_bindings(&mut self) -> Vec<ResidentBinding> {
         self.resident
             .as_mut()

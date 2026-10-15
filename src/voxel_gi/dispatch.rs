@@ -85,7 +85,7 @@ pub(super) fn start_trace_task(
     let reuse = startup
         .as_ref()
         .is_some_and(|s| s.backend == super::TransportBackend::Reuse);
-    let resident = reuse || startup.is_some_and(|s| s.backend == super::TransportBackend::Resident);
+    let resident = startup.is_none_or(|s| s.backend.resident_accumulation());
     let requested = std::mem::take(&mut field.requested);
     enqueue_urgent(
         &mut runtime,
@@ -572,11 +572,10 @@ pub(super) fn apply_trace_task(
         let retry: Vec<_> = runtime.trace_pending.drain().collect();
         enqueue_urgent(&mut runtime, retry);
     }
-    stats.backend = if result.gpu_tracer.is_some() {
-        "gpu"
-    } else {
-        "cpu"
-    };
+    stats.backend = result
+        .gpu_tracer
+        .as_ref()
+        .map_or("cpu", gpu::GpuTracer::backend_name);
     let measured_ms = result
         .batch
         .as_ref()

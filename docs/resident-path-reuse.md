@@ -5,6 +5,22 @@ Baseline `e3b46be` is preserved as
 retention, finite path depth/reach and the 75-ms RGB display filter are unchanged.
 Sampling coverage/history is not visual convergence.
 
+## Running the qualified variants
+
+On `codex/gi-resident-qualified`, ordinary `cargo run` uses asynchronous resident
+accumulation with the independent path sampler and equal-band importance. The
+historical synchronous control is `VOXEL_GI_BACKEND=sync cargo run`; CPU fallback
+remains available. Reuse is deliberately opt-in because its cost/benefit varies:
+
+```sh
+VOXEL_GI_BACKEND=reuse VOXEL_GI_SETTINGS=config/gi-rgb-priority.json cargo run
+```
+
+The same preset also works with the independent backend. The tuning panel's
+IR/radiation importance slider is live and preserves lighting history. No preset
+changes physical source strength, history retention, bounce depth, reach or
+display smoothing.
+
 ## Ownership and simulation
 
 Runtime residency (`fc5757b`, `4d4d22d`, `cf0001e`) owns live five-band means,
@@ -208,3 +224,51 @@ kernel and tests are retained; obsolete two-pass scratch/pipelines were removed
 at `1e60213`. 255 regular tests and strict all-target Clippy pass; native zero
 pruning preserves five-band means/moments after cleanup. Cost of that exact
 pruning optimization varies across short runs; no separate speedup is claimed.
+
+## Background-streaming gameplay pair and default decision
+
+Native `be21e2e` with documentation-only dirty changes. Same preferred look,
+resolution, hardware and limits as above, no reference-only residency loader.
+Resident control uses importance one; candidate uses reuse/.125. These paired
+runs qualify the combination; the independent native study separates its parts.
+All captures are valid/nonblank, assets present and render logs clean.
+
+| Cave measure | Independent resident | RGB-prioritized reuse |
+| --- | ---: | ---: |
+| Paths in 62-second workload | 190.07M | 158.78M |
+| Near age p95, ms | 854 | 856 |
+| Far age p95, ms | 16482 | 21189 |
+| Worker p95, ms | 2.198 | 2.620 |
+| Offscreen frame p95 / p99, ms | 25.038 / 30.356 | 24.363 / 29.887 |
+| 10–30s corner excess variation p95 | .06227 | .04129 |
+| 30–60s corner excess variation p95 | .04610 | .02873 |
+
+The cave's corner oscillation falls 34–38%, with continuing fresh samples and
+essentially unchanged near-camera age, but distant refresh is slower. In the
+90-second house-turn workload, paths are 241.95M versus 206.16M. Corner excess
+variation p95 improves .02665→.01987 (30–50s), .01503→.01286 (50–70s), and
+.01194→.00983 (70–90s). All 100 house corners / 144 cave corners are complete;
+neither run is scored by starving transport. House frame/age tails are mixed.
+Excess variation is a compressed solver-space stability measure, **not FLIP**
+or proof of convergence. No windowed 60-FPS claim is made.
+
+Evidence directories under `target/gi-validation/`:
+`cave-1792081181637146000-21640`, `cave-1792081244172305000-21732`,
+`house-1792081306798925000-21763`, `house-1792081397408083000-21837`.
+Analyses: `target/final-{resident,reuse}-{cave,house}-temporal.json`.
+House final captures were inspected together; both show the correct textured
+corner composition, without a presentation-mode switch.
+
+Decision: promote **independent resident accumulation** to `Auto`, preserving
+`sync` and CPU controls. Retain RGB-prioritized reuse as a qualified opt-in for
+complex lighting, not a claim of universal throughput superiority. Its next
+performance opportunity is avoiding work on already-clean regions, not relaxing
+visual gates or altering history. This is separate from simulation tick policy.
+
+Default-selection verification: 256 regular tests pass, strict all-target
+Clippy and application build pass. The no-backend-override offscreen edit smoke
+`edits-1792081570658921000-22054` reports `gpu-resident`, 18 valid captures and
+all five scripted edit stages in `response.json`, with clean logs. Its generic
+`report.json` edit counters cover another workload and are not the event ledger
+for this response fixture. No toggle stress was repeated; native buffer-generation
+and slot-lifetime regressions were verified earlier for the residency changes.

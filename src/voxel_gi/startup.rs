@@ -6,15 +6,23 @@ pub use super::retention::SummaryMode as RetentionSummary;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TransportBackend {
-    /// Use the renderer's compute device if available; retain the CPU fallback.
+    /// GPU-resident accumulation and asynchronous snapshots; retain CPU fallback.
     #[default]
     Auto,
-    /// Experimental persistent GPU measurements; preserve CPU fallback.
+    /// Explicit alias for persistent GPU measurements with CPU fallback.
     Resident,
+    /// Historical CPU-owned accumulation and blocking worker readback control.
+    Synchronous,
     /// Experimental fresh-path sharing on top of resident measurements.
     Reuse,
     /// Keep GPU display, but run transport through the independent CPU reference.
     Cpu,
+}
+
+impl TransportBackend {
+    pub(super) fn resident_accumulation(self) -> bool {
+        matches!(self, Self::Auto | Self::Resident | Self::Reuse)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +64,15 @@ pub(super) fn initialize(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resident_is_default_with_explicit_independent_controls() {
+        assert!(TransportBackend::default().resident_accumulation());
+        assert!(TransportBackend::Reuse.resident_accumulation());
+        assert!(TransportBackend::Resident.resident_accumulation());
+        assert!(!TransportBackend::Synchronous.resident_accumulation());
+        assert!(!TransportBackend::Cpu.resident_accumulation());
+    }
 
     #[test]
     fn independent_apps_keep_independent_startup_policy() {

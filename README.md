@@ -43,6 +43,18 @@ depends on greedy-mesh vertices or screen resolution.
 cargo run --locked
 ```
 
+The default uses GPU-resident accumulation with asynchronous simulation snapshots.
+The qualified RGB-prioritized path-reuse experiment is opt-in:
+
+```sh
+VOXEL_GI_BACKEND=reuse VOXEL_GI_SETTINGS=config/gi-rgb-priority.json cargo run --locked
+```
+
+It reaches the cave's calibrated visual threshold at 1280 rather than 2048
+samples, but costs more per batch and is not a universal throughput win. See
+[measurements and tradeoffs](docs/resident-path-reuse.md). `VOXEL_GI_BACKEND=sync`
+keeps the historical synchronous control available.
+
 The many-emitter cave is now in the regular world. Walk toward the house, then
 follow the pale stone path to its right to the lit entrance near **(20, 11, -18)**.
 The passage and interior stairs lead down to the lava rim.
