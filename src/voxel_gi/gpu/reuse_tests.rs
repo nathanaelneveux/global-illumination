@@ -117,6 +117,63 @@ fn paired_reuse_handles_partial_workgroups_and_sample_lanes() {
 }
 
 #[test]
+#[ignore = "native cooperative lane-layout cost sweep for fresh path sharing"]
+fn reuse_lane_cost_sweep() {
+    let mut baseline = super::tests::native_tracer();
+    let fixture = cave();
+    let emitters = Arc::new(EmissionDistribution::build(
+        &fixture.scene,
+        &fixture.materials,
+    ));
+    let mut probes = Vec::new();
+    for y in 7..40 {
+        for z in 7..57 {
+            probes.push(SurfaceProbe::new(IVec3::new(4, y, z), 1));
+        }
+    }
+    let mut candidates: Vec<_> = [1, 2, 4, 8, 16, 32]
+        .into_iter()
+        .map(|lanes| {
+            let mut tracer = GpuTracer::new(baseline.context.clone()).unwrap();
+            tracer.enable_reuse().unwrap();
+            tracer.fixed_path_lanes = Some(lanes);
+            tracer
+        })
+        .collect();
+    let mut works: Vec<_> = (0..7).map(|_| fresh(&probes, 1, 0)).collect();
+    let mut times: Vec<Vec<f32>> = (0..7).map(|_| Vec::new()).collect();
+    for round in 0..24 {
+        for k in 0..7 {
+            let mode = (k + round) % 7;
+            let tracer = if mode == 0 {
+                &mut baseline
+            } else {
+                &mut candidates[mode - 1]
+            };
+            trace(tracer, &fixture, &emitters, &mut works[mode], 16);
+            if round >= 4 {
+                times[mode].push(tracer.last_gpu_ms.unwrap());
+            }
+        }
+    }
+    for (mode, ms) in times.into_iter().enumerate() {
+        eprintln!(
+            "REUSE_LANES lanes={} p50={} p95={}",
+            [0, 1, 2, 4, 8, 16, 32][mode],
+            percentile(ms.clone(), 0.5),
+            percentile(ms, 0.95)
+        );
+    }
+    for candidate in &works[2..] {
+        for (a, b) in works[1].faces.iter().zip(&candidate.faces) {
+            for (a, b) in channels(a.radiance).into_iter().zip(channels(b.radiance)) {
+                assert!((a - b).abs() < 1e-4 * (0.02 + a.abs()));
+            }
+        }
+    }
+}
+
+#[test]
 #[ignore = "native five-band recorded-path and compatible reuse study"]
 fn compatible_reuse_native_study() {
     let mut baseline = super::tests::native_tracer();

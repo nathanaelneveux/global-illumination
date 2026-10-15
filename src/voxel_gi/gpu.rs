@@ -1055,7 +1055,15 @@ impl GpuTracer {
         // Larger batches benefit from more independent path lanes. Keep small
         // batches compact instead of allocating lanes with no samples to trace.
         let lanes = if self.adaptive_lanes {
-            if samples >= 16 { 8 } else { 4 }
+            if samples >= 16 {
+                if self.entry == "trace_paired_faces" {
+                    16
+                } else {
+                    8
+                }
+            } else {
+                4
+            }
         } else {
             self.pipeline_key.2
         };
