@@ -282,3 +282,109 @@ selection for matched visual rows. Real edit checks use `house-edits` and
 `tools/spatial_edit_quality.py CONTROL CANDIDATE` compares final captures to
 both a common observed tail and each run's own tail. Neither is certified truth;
 tail disagreement must accompany response measurements.
+
+### Qualification, 2026-10-15
+
+Native `0f59dd5` (algorithm `159e37e`), analysis `35827a4`, Apple M4/Metal,
+16 GiB, Rust 1.95, development profile, 2560×1440 offscreen, PPD 67. Preferred
+corners/textures/no baked AO, RGB sampling importance 1/nonvisual .125, 16 paths
+per dispatch, 3 bounces, reach 768. No path reuse or visible-refinement ranking.
+Only documentation/analysis files changed while the native runs were active.
+These timings are **not windowed FPS**. Production retention stayed
+`whole-range-power4-scale12-v1`; no distance or history thresholds changed.
+
+Frozen cave: `cave-1792092971027649000-28601`. All 149 reference/prefix captures
+completed with valid targets, nonblank images, verified assets and clean logs.
+Both 131072-path replicas and eight cosine checks qualified (RGB replica p99
+.008163, maximum .015107); the geometry audit has no unknown/mismatched voxels.
+Four-window worst results, fixed 20-neighbor filter versus target-512:
+
+| Local paths | Fixed FLIP mean | Target FLIP mean | Fixed worst tile | Target worst tile |
+|---:|---:|---:|---:|---:|
+| 2 | .265068 | .170434 | .736870 | .733848 |
+| 4 | .194065 | .144360 | .553852 | .649679 |
+| 8 | .150120 | .127865 | .402353 | .560265 |
+| 16 | .115862 | .105786 | .397465 | .458664 |
+| 64 | .074893 | .077138 | .294684 | .262844 |
+| 128 | .062834 | .067199 | .231214 | .246388 |
+| 256 | .048520 | .055659 | .159564 | .172156 |
+| 512 | .039253 | .042425 | .107136 | .120657 |
+| 2048 | .023629 | .024272 | .064411 | .067606 |
+
+The target clearly reduces very early average error and broad residual energy:
+at 16, 64-pixel OKLab residual RMS .007635→.006958. But it is not uniformly more
+accurate: at 16 the worst tile is 15% worse, and from 64 onward average error
+is worse than the fixed filter. One inspected worst target tile at 16/window 3
+is near the green ceiling lighting (pixel 512,32); its green component is
+underestimated, not merely noisy. At one path there is essentially no benefit:
+zero empirical variance cannot reliably guide compatibility. Raw, fixed and
+target all first pass the calibrated sustained image gate at **2048**.
+
+Average borrowing across the cave is approximately 132 faces at 4 local paths,
+32.4 at 16, 3.94 at 128, 1.98 at 256, and zero at 512. At 16 about 95% of faces
+reach the heuristic support goal; isolated/incompatible surfaces need not do
+so. At one path none reach it. Full metrics: `target/evidence-image-quality.json`
+and the run's `cave-evidence-support.json`. The matched overview is
+`samples-spatial-evidence-overview-window-0.png` in that run directory.
+
+#### Actual edits with background terrain
+
+Fixed/target house pair: `house-edits-1792093458682517000-28932` /
+`house-edits-1792093639640916000-29108`. Both 180-second runs applied all seven
+solid removals across the three openings, captured nine valid images and logged
+no render errors. Relative to the **same control 29-second observed tail**:
+
+| Edit, checkpoint | Fixed FLIP mean | Target FLIP mean |
+|---|---:|---:|
+| Skylight, 400 ms | .074187 | .062518 |
+| Skylight, 10 s | .023861 | .027709 |
+| West door, 400 ms | .028103 | .049834 |
+| East door + turn, 400 ms | .028448 | .050581 |
+| East door + turn, 10 s | .023985 | .040932 |
+
+Own-tail measurements retain the direction of the early door weakness.
+Cross-run tail FLIP means are .019574/.020081/.025872, so this is not a certified
+error/time-to-settle measurement or a perfectly isolated filter comparison.
+Transport was 389.69M→385.91M paths (-1.0%, one pair); startup worker p95
+4.974→7.054 ms, skylight 3.959→4.243 ms. Offscreen frame p99 mixed by phase
+(startup 29.084→29.677 ms; skylight 28.666→27.259 ms). No FPS win is claimed.
+
+Emitter pair: `response-1792093820455383000-29217` /
+`response-1792093850887483000-28931`, 30 seconds each, 14 valid captures each,
+cavity/add/remove events verified, clean logs. At one second, common-tail FLIP
+means were .034884→.044356 for the cavity, .231545→.332383 for emitter addition,
+and .260820→.364451 for removal. Own-tail measurements show the same weaknesses;
+cross-run tail differences are .021127/.047856/.033760. Transport fell
+77.93M→69.78M paths (-10.5%); emitter-added worker p95 3.894→5.371 ms.
+The extra gather cost and differing scheduling confound the display bias; do
+not attribute the entire response difference to stale-donor weighting alone.
+Results: `target/evidence-house-quality.json`, `target/evidence-response-quality.json`.
+
+Reverse-order repeat (target then fixed): target
+`response-1792094265294212000-29450`, fixed
+`response-1792094295805574000-29449`; same native binary/settings, valid captures,
+events and clean logs. At one second, fixed→target common-tail FLIP was
+.032147→.052019 (cavity), .221747→.179750 (emitter addition),
+.322415→.267075 (removal). Own-tail comparisons agree with those directions.
+Thus the emitter response ranking **reverses**, not a reproducible regression
+or win. Tail disagreements remain .024958/.050520/.035189. The cost repeats:
+78.94M→71.01M paths (-10.0%), added-phase worker p95 4.092→5.585 ms.
+Repeat analysis: `target/evidence-response-repeat-quality.json`.
+
+**Decision:** keep target evidence as an opt-in early-smoothing experiment,
+not a new default and not a transport-sampling win. The user-proposed footprint
+rule produces the intended wider early/narrower late behavior and attractive
+early images, but does not improve the settled sample threshold, worsens some
+local lighting detail, and costs throughput. Real edits do not establish a
+consistent response win. Do not retune the validated distance/history equation
+to hide these presentation limitations. Before promotion, reduce repeated
+neighborhood lookup/upload cost and qualify donor freshness/real lighting
+gradients explicitly. In particular, a donor's retained count is not proof
+that it has already measured the latest edit. Its contribution must not be
+mistaken for new evidence at the receiver. Current measurements do not isolate
+that possible source of bias from scheduling effects.
+
+All 263 regular Rust tests and strict all-target Clippy passed; 74 tests remain
+explicitly ignored. Targeted native fixed/adaptive display oracles, resident
+growth/retirement/parity and unselected-face cap ownership passed separately.
+Four Python analysis tests passed and actual final captures were inspected.
