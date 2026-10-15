@@ -11,13 +11,16 @@ outlier as a universal perceptual threshold, or waive temporal/FPS qualification
 Keep the original stricter engineering metrics alongside this human-calibrated
 target, and keep IR/ionizing tolerances independent.
 
-The [runtime retention qualification](runtime-retention.md) records the current
-streamed-cave policy, independent references and repeated windowed controls.
-Calibrated retention is the integrated default. Always specify
-`VOXEL_GI_RETENTION=baseline` or `calibrated` in A/B commands and check the report's
-`spatial_retention` field; absence of the variable selected the control in older
-commits. The separate `history_experiment` field describes the older retain-all
-ablation, not this policy. Coverage and retained weight are still not convergence.
+The [whole-range integration](whole-range-history.md#runtime-integration) records
+the current policy. The [earlier runtime qualification](runtime-retention.md)
+records the preceding calibration, independent references and windowed controls.
+Specify `VOXEL_GI_RETENTION=baseline` or `whole-range` in current A/B commands;
+`calibrated` is now an alias for whole-range, not the previous curve. Check the
+versioned `spatial_retention` value in the report: absence of the variable
+selected the legacy control in older commits. The separate `history_experiment`
+field describes the older retain-all ablation. Coverage and retained weight are
+still not convergence. Core integrations select the same policies with
+`VoxelGiStartup`; launch parsing belongs to the demo.
 
 For the [overflow compression experiment](distance-band-retention.md), keep
 `VOXEL_GI_RETENTION=calibrated` and select

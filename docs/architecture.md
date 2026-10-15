@@ -35,7 +35,7 @@ host chunks / edits / sources / material table
 | Change metadata and retention | `world/delta.rs`, `geometry.rs`, `retention.rs`, `sources.rs`, `revision.rs` |
 | Receiver page publication | `publication.rs` |
 | Eligibility, priority and dispatch | `scheduling.rs`, `dispatch.rs` |
-| Model/work configuration and revision synchronization | `settings.rs` |
+| Construction policy; model/work configuration and revision synchronization | `startup.rs`, `settings.rs` |
 | Thread-transfer payload and result merge | `work.rs` |
 | Source model and Bevy light adaptation | `sources.rs` |
 | Sampling, emitters and transport | `sampling.rs`, `emission.rs`, `tracer.rs`, `gpu.rs`, `voxel_trace.wgsl` |
@@ -153,7 +153,13 @@ changes can rebuild the top-level field. Packing then refreshes all affected
 top-level headers, including unchanged regions whose skip bounds changed. Sunlight
 still checks directional dependencies across receiver buckets: a distant blocker
 must not be discarded merely because indirect retention has a distance limit.
-Receiver influence scans and residency-directory rebuilds remain explicit costs.
+Receiver influence planning and residency-directory rebuilds remain explicit costs.
+History binning chooses between enumerating nearby page coordinates and scanning
+resident pages, using estimated work before allocation. Local enumeration checks
+actual occupied residency, memoizes overlapping occupancy lookups, and preserves
+the exact change bounds and page distances. Large brushes, sparse/disconnected
+worlds and saturated distance ranges retain the resident-scan fallback. This is
+only a broad-phase optimization, not a shorter lighting or retention radius.
 
 ## Receiver and transport model
 
@@ -257,7 +263,15 @@ Freshness, retained statistical weight, scheduling urgency and displayed values
 are independent. A revision can make an estimate stale without clearing its
 display, rewinding its sequence, or resetting the world sweep.
 
-Baseline control policy (the runtime candidate is described below):
+The default geometry/changed-sunlight policy is the selected
+[whole-range equation](whole-range-history.md): `H(d) = round((d / 12)^4)`, applied
+as `min(existing_weight, H(d))`. Distance is receiver-to-change distance. The
+65,536 statistical ceiling implies a 192-block history-binning horizon: past
+that distance the equation cannot reduce a supported weight. This is **not** a
+light or ray cutoff, and 2,048 remains a visual-reference sample count, not the
+statistical ceiling. Changed sunlight contributes its own spatial origins.
+
+Legacy geometry control and the unchanged non-geometry policies:
 
 | Change | Retained statistical weight on refresh |
 | --- | --- |
@@ -280,15 +294,20 @@ point-source deltas include both old and new influence volumes but exclude
 unchanged lights. Distance affects responsiveness, never visibility or eligibility.
 The adapter omits analytic lights with zero contribution in every transport band
 and custom visible output before either backend or the sunlight cache sees them.
-Infrared-only and ionizing-only sources remain active. Static source lists are
-still rebuilt/canonicalized each frame; change-driven synchronization is separate work.
+Infrared-only and ionizing-only sources remain active. Source inputs use ECS
+change detection before normalization/canonicalization. Environment, source or
+transform changes, component removal and despawn refresh the snapshot; unchanged
+inputs skip rebuilding it. The gate still scans source change ticks and may
+conservatively rebuild after an unrelated transform removal. Raster visibility
+is not a transport-enable switch; explicit multi-band enable semantics remain
+an integration decision. Voxel emission uses scene changes, not this light list.
 
 Removing, replacing or covering an emitting voxel uses ordinary spatial history:
 old energy decays as new paths arrive, rather than restarting every receiver.
 This trades a bounded history tail for stability; the measured local removal
 response is documented in the [scene-history audit](scene-history-audit.md).
 It is not an instantaneous extinction guarantee, especially at distant receivers
-retaining 256 samples or during frequent streaming. All five bands retain the
+retaining large weights or during frequent streaming. All five bands retain the
 same statistical weight. Distance is a response heuristic, not proof of weak
 lighting influence: a very bright distant source can still matter greatly.
 
@@ -299,20 +318,23 @@ compatible history, but rejects distance alone as a general influence bound.
 Spatial retention must also survive bounded-journal eviction; retaining
 more samples without that metadata is not a complete solution.
 
-The follow-up [sun-aware retention experiment](sun-aware-retention.md) separates
+The preceding [sun-aware retention experiment](sun-aware-retention.md) separates
 spatial evidence, measured sampler quality, stale-light budget and an empirical
 history floor. Changed shared-corner sunlight supplies secondary change origins;
 calibration remeasures paths to a fixed quality goal when sampling improves.
 The conservative offline arm preserves baseline edit responses while retaining
-remote evidence. The [runtime implementation](runtime-retention.md), now the
-integrated default (`VOXEL_GI_RETENTION=baseline` restores the control),
-uses per-page bounded journals with timestamped
+remote evidence. Its [runtime implementation](runtime-retention.md) introduced
+per-page bounded journals with timestamped
 conservative overflow, independent sun-evidence epochs, and immutable page
 snapshots for worker-side distance/weight queries. Selection checks page stamps;
 caps apply once before either backend merges new samples. Both known transitions
 and conservative unknown sky evidence count. This is not a complete dependency
 oracle or universal distance bound; the measured remaining limits are explicit.
-Analytic-source/model policies in the table remain unchanged.
+That infrastructure now applies the whole-range equation above rather than the
+older calibration curve. `VOXEL_GI_RETENTION=baseline` restores the legacy control;
+`whole-range` selects today's default explicitly (`calibrated` is a compatibility
+alias, not a way to restore the previous curve). Analytic-source/model policies
+in the table remain unchanged.
 
 The default [distance-band overflow summary](distance-band-retention.md) replaces
 the two fallback floors with revision stamps per distance band and origin. It
@@ -326,7 +348,7 @@ latest-change revision preserves existing refresh wakeups without storing its
 bounds; wakeup checks do not depend on the last retained journal entry.
 This avoids discarding all distance information at eviction, but page extent
 and downward distance quantization are still conservative approximations.
-The calibrated curve and its empirical quality target are unchanged.
+The summary does not change the whole-range equation or its empirical quality target.
 The page metadata supplies both retention caps and pending-change wakeups, not ray
 traversal or radiance storage. An older closer event cannot generally replace a
 newer farther one: a receiver may already have consumed the older revision.
@@ -580,6 +602,22 @@ retain the existing explicit-path estimator and reference/fallback; do not combi
 residency with recursive cache feedback or path guiding.
 
 ## Integration contract and limits
+
+### Construction configuration
+
+Insert `VoxelGiStartup` before adding `VoxelGiPlugin`. It selects
+`TransportBackend::Auto` (compute where available, CPU fallback) or `Cpu`, and
+`RetentionPolicy::WholeRange(RetentionSummary)` or the legacy comparison.
+Defaults preserve whole-range retention with distance-band overflow summaries.
+These are per-App construction choices, not live switches. Runtime controls
+remain in `VoxelGiSettings`; CPU transport still uses the normal GPU display.
+
+The demo parses backend/retention/continuous launch variables before installing
+the plugin and reports invalid choices at that boundary. Detailed timing is
+enabled by the optional validation adapter. Debug-only history-ablation/audit
+switches still use process-global state: embedding multiple independently
+configured validation worlds is not yet supported. This cleanup does not claim
+the prototype has become a standalone host-independent crate.
 
 ### Quality controls and model changes
 

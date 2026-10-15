@@ -769,3 +769,83 @@ freshness improvement or regression, and residency/scheduling are not identical.
 The data supports integration and continued transport progress, not a whole-game
 speedup claim. Offscreen app cadence is **not windowed FPS**; startup stalls and
 the always-60-FPS target are not solved by these two changes.
+
+## October 14 focused-review work removal
+
+Baseline **`aa664d7`**; analytic-source gate **`22bc667`**; local history bins
+**`22199bf`**; typed startup **`e5b5ef8`**; diagnostic ownership cleanup
+**`dbae7a0`**. No BVW, shader, estimator, history equation or display filter change.
+See [the focused audit](audit.md#october-14-focused-follow-up-review).
+
+### Paired CPU studies
+
+Apple M4 / 16 GiB, macOS 26.6.2, Rust 1.95, Bevy 0.19.1; default dev features,
+application opt1/dependencies opt3, shared Cargo build directory. No renderer,
+viewport, concurrent native app or other compiler in these timed tests. Each
+study alternates 24 rounds, discards four warmup rounds and checks exact data.
+Measurements were made with the corresponding code diff before committing it;
+later ownership/configuration changes were not present.
+
+| Workload | Previous path median | Candidate median |
+| --- | ---: | ---: |
+| 100 static analytic sources, source-only App update | 0.0191 ms | 0.0173 ms |
+| 10,000 static analytic sources, source-only App update | 0.1117 ms | 0.0331 ms |
+| 256 resident pages, one local change bound | 0.0225 ms | 0.0226 ms |
+| 256 pages, 256 overlapping bounds | 0.1630 ms | 0.1655 ms |
+| 4,096 pages, one local bound | 0.4470 ms | 0.0522 ms |
+| 4,096 pages, 256 overlapping bounds | 2.2514 ms | 1.9085 ms |
+
+Source control forces an equal-valued environment resource change so the old
+normalization/sorting work runs without changing the snapshot. The candidate
+still scans ECS change ticks: it is not O(1), and this does not accelerate voxel
+torch sampling. Source logs: `target/audit-source-{tests,cost}.log`.
+
+Binning uses occupied flat-page fixtures, with scene construction outside timing.
+Small fixtures retain the original resident-scan path. The large one-bound case
+is about 8.6× faster **for that planning operation**, not overall GI. Repeated
+large-fixture results were 0.4693→0.0573 ms and 2.399→1.8775 ms. Exact page bounds,
+order and minimum distances match. Selection of the broad phase is a performance
+heuristic; retention output is unchanged. Final log:
+`target/audit-binning-cost-final.log`; correctness logs:
+`target/audit-{binning-tests-final,retention-tests,sky-tests}.log`.
+
+### Native integration, not an FPS claim
+
+At **`dbae7a0`**, with only documentation dirty, the same 30-second headless
+`edits` recipe from the preceding section passed. Same hardware/profile,
+2560×1440 offscreen target, 60 Hz runner, preferred corner presentation, seed 7,
+background loading and default settings. Build finished before measurement;
+no concurrent compiler or second native app. Executable SHA-256:
+`2134a821f0a1a46ace236a95f547c138ae5f9bbd18504e34c1748bc092482c64`.
+Run: `target/gi-validation/edits-1792027419150301000-3792`;
+log: `target/audit-native-edits.log`.
+
+All 18 captures completed, were varied/nonblank and had valid 2560×1440 targets;
+assets verified and logs had no warnings/errors. Room, excavated cavity and
+surface-recovered images were inspected, alongside the earlier control's room.
+Five actual edits were recorded. All five new cavity faces had measurements
+165 ms after digging; cavity receivers were absent 148 ms after restoration.
+These are first-measurement/topology latencies, not visually-settled times.
+
+| Metric | Prior `f4f1847` final B | `dbae7a0` |
+| --- | ---: | ---: |
+| Traced paths | 62.30 M | 61.43 M |
+| Maximum loaded pages | 618 | 614 |
+| Underground edit app interval p99 | 27.76 ms | 27.57 ms |
+| Underground near-receiver age p99 | 539 ms | 588 ms |
+| Underground display-step p95 | 0.01642 | 0.01615 |
+| Surface edit app interval p99 | 28.12 ms | 29.27 ms |
+| Surface near-receiver age p99 | 1,457 ms | 995 ms |
+| Startup-inclusive maximum app interval | 595 ms | 726 ms |
+
+Capture/readback/cooldown frames are excluded from phase summaries, not from the
+startup-inclusive maximum. The earlier control is reused evidence from the
+preceding section, not a new interleaved performance pair. These mixed, short-run
+results support integration and continuing work; they do not establish a
+repeatable gameplay speedup, faster convergence or the absence of all flicker.
+Offscreen cadence is not windowed FPS. Startup stalls remain unsolved.
+
+Native independent CPU/GPU geometry-edit parity also passed, standard and
+enclosed-emissive fixtures reporting RMS 0.000000. Log:
+`target/audit-native-parity.log`. No full toggle-stress or new cave/reference
+sweep was needed for this execution/ownership-only checkpoint.

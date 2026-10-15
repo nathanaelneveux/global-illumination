@@ -10,6 +10,10 @@ from its paper's reported results. The vxpg entry uses the author's abstract,
 not an equation-by-equation paper audit. Solari's entry is explicitly versioned,
 not a claim about its latest implementation or platform compatibility.
 
+The [October 14 comparison](#october-14-focused-source-and-production-comparison)
+adds a versioned Solari 0.19.1 source check, production integration lessons and
+2025–2026 reuse research. It does not promote another estimator.
+
 The [October 9 many-emitter decision pass](research-2026-10-09.md) concludes the
 next five candidates. A spatial voxel-emitter hierarchy is now retained. GPU
 residency and guarded edit differences remain isolated directions; retained
@@ -182,6 +186,80 @@ Neither full method is implemented here; the coarse four-sector and shared
 distribution must have a known PDF, retain support for newly appearing sources, and preserve
 correct weighting. Reference implementation licenses must be reviewed separately;
 this audit copies no external implementation code.
+
+## October 14 focused source and production comparison
+
+This review compares contracts and measured costs, not renderer screenshots or
+published speedup factors. NAADF change handling was reread at the pinned revision
+above; the existing full-renderer source audit remains the basis for its reuse
+description. No external implementation code was copied.
+
+| Reference | Relevant mechanism | Decision for this codebase |
+| --- | --- | --- |
+| NAADF change handler / world-change shader | Bounded affected work; acceleration repair separate from lighting reuse | Preserve exact immutable accelerator snapshots. Local history-page binning removes a resident-world scan when cheaper; it is not their queued accelerator repair. |
+| vxray devlog | Stable sampling/cache identity; reuse index work; measured Apple GPU atomic/storage costs | Preserve stable slots and sparse publication. Measure allocations, bandwidth and synchronization before adopting a different cache or wavefront layout. |
+| Solari 0.19.1 | Active-cell compaction, staged direct/GI updates, recursive world-cache queries | Useful model for GPU residency, not a drop-in estimator or backend. Keep our explicit paths and simulation contract during a storage experiment. |
+| RTXGI DDGI integration | Explicit trace, blend, classification/variability and query responsibilities | Keep host scene/source ownership separate from measurement, scheduling and reconstruction. Do not equate its probe visibility representation with our surface cache. |
+| Unreal Lumen | Amortized surface-cache lighting, streaming and explicit reach/residency limits | Budget publication and document limits. Do not copy view-only residency/culling into an authoritative all-loaded-world simulation field. |
+
+The [vxray devlog](https://nelari.us/post/voxel-ray-tracing/) specifically records
+reusing reprojected hash indices and periodically touching cells to reduce hash
+insertion traffic. That is a reminder to measure metadata work, not proof that
+its timing or memory footprint transfers to this engine. Our current analytic
+source gate and local history bins remove CPU work; they do not implement that
+GPU algorithm. The dense wavefront candidate already rejected here stays rejected.
+
+### Versioned Solari source check
+
+Read the installed Bevy 0.19.1 `world_cache_update.wgsl` and
+`world_cache_compact.wgsl`, also available in the
+[versioned source tree](https://github.com/bevyengine/bevy/tree/v0.19.1/crates/bevy_solari/src/realtime).
+Its active cache compaction produces indirect dispatch work. Direct sampling,
+indirect sampling and new-sample blending are separate stages. Indirect paths
+query the world cache at hits, and blending adapts history using smoothed
+luminance changes. This is a recursive RGB cache with hardware ray-query
+requirements, not our five-band finite-path mean/moment estimator. Do not infer
+Mac compatibility, upgrade requirements or a safe history formula from it.
+
+### Production integration lessons
+
+The [RTXGI integration guide](https://github.com/NVIDIAGameWorks/RTXGI-DDGI/blob/main/docs/Integration.md)
+assigns acceleration structures, materials and ray tracing to the application;
+probe updates and sampling have explicit SDK stages. This supports keeping our
+host adapter and phase ownership clear rather than merging everything into one
+lighting system.
+
+[Lumen's technical details](https://dev.epicgames.com/documentation/en-us/unreal-engine/lumen-technical-details-in-unreal-engine)
+document amortized surface-cache updates and limitations involving propagation,
+small emissive meshes and insufficient reach in enclosed scenes. Those are
+useful warnings for our cave, not excuses to accept incorrect tails. Its view
+distance/residency policies cannot be adopted unchanged for offscreen heat or
+radiation queries. Neither comparison establishes our interactive frame pacing.
+
+### Newer reuse research: promising, not integrated
+
+- [ReSTIR PT Enhanced (May 2026)](https://research.nvidia.com/labs/rtr/publication/lin2026restirptenhanced/)
+  targets spatial reuse cost, reconnection and correlation. The
+  [official RTXDI path-tracing integration guide](https://github.com/NVIDIA-RTX/RTXDI/blob/main/Doc/RestirPT.md)
+  makes the necessary state explicit: retained path/RNG information, reconnection,
+  proposal accounting and current visibility. Duplication-aware reservoir history
+  is not interchangeable with lowering the weight of our averaged measurements.
+- [Compatibility-Guided Neighbor Selection (July 2026)](https://research.nvidia.com/labs/rtr/publication/junkins2026compatibility/)
+  investigates selecting compatible reuse neighbors. It is relevant to the poor
+  useful-pair rate in our earlier spatial experiment. Test geometry/connectivity
+  and temporal correlation, not just error at equal sample count.
+- [ReSTIR PG (December 2025)](https://research.nvidia.com/labs/rtr/publication/zeng2025restirpg/)
+  learns guiding from resampled paths. This differs from the raw fixed-bin guide
+  rejected here; it also requires state and probability accounting we do not yet
+  retain. It is not a cheap replacement for the current sampler.
+
+This round read the authors' publication summaries and the RTXDI integration
+guide, **not the complete three papers or an equation-by-equation implementation**.
+Reported improvements belong to those renderers. Treat these as candidate designs,
+not production-proven solutions for a voxel simulation cache. First integrate
+and qualify GPU-resident accumulation at unchanged transport; then isolate
+compatibility-aware path reuse at equal GPU time, FLIP response, overshoot,
+five-band error and player-thread tails. Keep current smoothing fixed.
 
 ## Why indirect corners are still an experiment
 

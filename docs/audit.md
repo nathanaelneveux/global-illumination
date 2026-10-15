@@ -6,6 +6,8 @@ evidence. The global voxel-emitter reset and its material-delta bookkeeping have
 been removed; analytic-source and model-replacement policies remain explicit.
 The [October 14 external-review follow-up](#october-14-external-review-follow-up)
 records later display-capacity/publication fixes and remaining review findings.
+The [focused follow-up review](#october-14-focused-follow-up-review) records the
+current readiness assessment and the next measured work-removal checkpoints.
 
 Baseline: `831931d`. Production cleanup and corner census: `8546ef3`. Final
 offscreen-harness correction: `ad6ba8e`. All commits are local. The estimator,
@@ -195,8 +197,9 @@ unchanged. Capacity checks prevent unsupported allocations; they are not general
 physical-memory exhaustion recovery. See the current display contract in
 [architecture](architecture.md#temporal-and-spatial-display).
 
-Subsequent input/delta work is recorded below. Other remaining findings are
-deliberately not called fixed:
+Subsequent input/delta work is recorded below. This table records disposition
+at that checkpoint; the [focused follow-up](#october-14-focused-follow-up-review)
+subsequently addresses F8 and parts of F7/C1. Other findings are not called fixed:
 
 | Findings | Disposition |
 | --- | --- |
@@ -247,3 +250,91 @@ Isolated work reductions and native background-streaming/edit evidence are in
 Transport, whole-range retention, display smoothing, preferred corner modes,
 existing coalescing windows and BVW are unchanged. This is not a claim of a
 whole-game speedup, faster convergence or a new 60-FPS guarantee.
+
+## October 14 focused follow-up review
+
+Baseline **`aa664d7`**, branch `codex/gi-whole-range-runtime`. This is an independent
+focused pass after the external-review fixes, not acceptance of every prior
+suggestion. Reviewed production ownership and hot paths in input, scene/delta
+construction, sources/materials, retention, scheduling, worker transfer/merge,
+packing, sunlight, display publication, diagnostics and the host integration.
+Checked those contracts against the primary sources recorded in
+[research](research.md#october-14-focused-source-and-production-comparison).
+No BVW, shader, estimator, history-curve, smoothing or debounce change.
+
+### Implemented findings
+
+- **`22bc667`: avoid rebuilding static analytic sources.** A change gate covers
+  environment, source components, transforms and removals before normalization
+  and canonical sorting. Reclassification and reactivation remain correct.
+  This addresses the rebuild part of F8, not visibility semantics or analytic
+  ray cost. ECS change-tick scanning remains; voxel torches use a different path.
+- **`22199bf`: bound local history-plan work.** Select local page enumeration
+  when estimated cheaper, share occupancy checks across overlapping changes,
+  and retain the full resident scan as a fallback. Exact bounds, ordering and
+  minimum distances match the prior implementation. This accelerates geometry
+  and measured-sunlight evidence without changing invalidation policy.
+- **`e5b5ef8`: typed per-application construction.** `VoxelGiStartup` owns backend
+  and retention choices. The demo parses launch flags; the plugin no longer
+  reads those variables or panics on their invalid values. Two independent App
+  instances test independent policy. This partially addresses F7, not every
+  debug-harness global or BVW/host assumption.
+- **`dbae7a0`: remove duplicate diagnostic state.** F4 and the panel share the
+  material's enable state; an external material edit can no longer leave the
+  keyboard mirror stale. Compact jobs own production selection masks; persistent
+  probe masks exist only for test oracles. Detailed timing is enabled by the
+  validation adapter, and diagnostic-only helpers are excluded from normal
+  release-gated code. Six existing test-only Clippy findings were corrected
+  without blanket allowances. No unmeasured memory saving is claimed.
+
+### Verification and evidence
+
+The final code checkpoint passes **251 regular tests** (60 opt-in native/large
+studies deliberately ignored), strict all-target Clippy, the dev build and
+private-item rustdoc with warnings denied. Application compilation with debug
+assertions disabled and warnings denied also passes; this uses dev dependencies
+and is not a release-performance build. Native CPU/GPU geometry-edit parity
+passes with reported RMS 0.000000 in standard and enclosed-emissive fixtures.
+Focused tests cover removals/reclassification, negative coordinates, empty and
+partial residency, overlapping bounds, extreme spans and large-brush fallback.
+The optional toggle-stress workload was not rerun; buffer lifetime was not changed.
+
+Stage costs and the native streamed-edit run are recorded in
+[performance](streaming-performance.md#october-14-focused-review-work-removal).
+Logs remain under ignored `target/audit-*`. Initial compilation/lint findings
+were repaired before these final passing checks; no failed run is counted as a
+pass. Documentation changes were in progress during final native checks.
+
+### Readiness and remaining limits
+
+**Solid base for the next controlled experiment; not a finished generic engine.**
+The production data flow has coherent owners and tests for stale work, unknown
+input, sparse updates, retention and renderer generations. Direct sun and diffuse
+transport intentionally have different estimators; CPU/GPU references and
+display/measurement separation are necessary duplication, not dead code.
+
+Remaining work is explicit and does not justify another unmeasured rewrite:
+
+- Full region-map cloning, occupancy-dependent top-level rebuilds, directional
+  sun dependency scans and some receiver planning still scale with residency.
+  Publication is cooperatively budgeted; one atomic page can exceed its budget.
+- GPU display uses two key-to-slot maps and monolithic capacities. Consolidating
+  indices or adding paging needs topology/generation qualification, not just a
+  smaller struct. GPU-resident measurement state with bounded tick delivery is
+  the best already-supported next architecture experiment; keep explicit paths.
+- Tracked overlays need authoritative host acknowledgment before safe retirement.
+  Runtime orchestration is still a broad state owner; the crate remains tied to
+  one axis-aligned BVW world, not arbitrary planets or multiple world IDs.
+- Analytic light enable semantics, CPU-visible/invisible-band policy and the
+  debug harness's process globals remain open contracts. Do not use camera
+  visibility to disable world simulation energy. Analytic evaluation is still
+  linear in source count after the snapshot optimization.
+- No renewed proof of every-world visual convergence or always-60-FPS gameplay
+  is claimed. Keep perceptual response, overshoot, sample freshness and frame
+  tails in the next experiment; coverage alone cannot validate it.
+
+Current architecture and validation docs now describe the actual whole-range
+equation and distinguish it from archived controls. Research docs identify which
+source versions were read and which newer papers were only screened by abstract
+and integration guide. This is the handoff point for further experiments, not a
+reason to restart history calibration or remove the stable presentation filter.
