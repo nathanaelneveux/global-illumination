@@ -11,6 +11,13 @@ does not refresh the old CPU upload mirror. Simulation accuracy is not gated by
 RGB FLIP: check five-band energy/PDF correctness and measurement freshness, and
 report nonvisual sampling importance separately.
 
+Normal runs now use nonvisual importance 0.125, independently of backend.
+Use `VOXEL_GI_SETTINGS=config/gi-equal-band.json` to reproduce the historical
+equal-band control; selecting `sync` alone changes ownership, not sampling
+priority. Hold importance fixed when isolating path reuse. The existing paired
+image sweep deliberately keeps its independent control and high-sample reference
+equal-band, so its combined result does not isolate reuse from RGB priority.
+
 The paired image study uses `VOXEL_GI_VALIDATE_REUSE_SWEEP=1` with the existing
 headless cave/reference/sample-sweep flags. It records a resident independent
 control in the same frozen scene. Analyze it with `cave_sample_analysis.py

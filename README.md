@@ -43,17 +43,24 @@ depends on greedy-mesh vertices or screen resolution.
 cargo run --locked
 ```
 
-The default uses GPU-resident accumulation with asynchronous simulation snapshots.
-The qualified RGB-prioritized path-reuse experiment is opt-in:
+The default uses GPU-resident accumulation with asynchronous simulation snapshots
+and RGB-prioritized emitter sampling (RGB importance 1, IR/radiation 0.125).
+All five bands keep receiving unfiltered physical estimates; simulation bands
+may be noisier. This sampling priority is independent of path reuse and applies
+to every backend. Use `VOXEL_GI_SETTINGS=config/gi-equal-band.json` for the old
+equal-band control. Explicit values in existing settings files remain respected.
+The qualified path-reuse experiment is still opt-in:
 
 ```sh
-VOXEL_GI_BACKEND=reuse VOXEL_GI_SETTINGS=config/gi-rgb-priority.json cargo run --locked
+VOXEL_GI_BACKEND=reuse cargo run --locked
 ```
 
-It reaches the cave's calibrated visual threshold at 1280 rather than 2048
-samples, but costs more per batch and is not a universal throughput win. See
-[measurements and tradeoffs](docs/resident-path-reuse.md). `VOXEL_GI_BACKEND=sync`
-keeps the historical synchronous control available.
+Reuse combined with RGB priority reaches the cave's calibrated visual threshold
+at 1280 rather than the earlier 2048-sample target; that threshold has not been
+measured for priority alone. Reuse costs more per batch and is not a universal
+throughput win. See [measurements and tradeoffs](docs/resident-path-reuse.md).
+`VOXEL_GI_BACKEND=sync` keeps the synchronous backend available; add the equal-band
+preset to reproduce its historical sampling priority too.
 
 The many-emitter cave is now in the regular world. Walk toward the house, then
 follow the pale stone path to its right to the lit entrance near **(20, 11, -18)**.

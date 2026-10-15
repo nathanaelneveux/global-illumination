@@ -611,6 +611,9 @@ display RGB never becomes simulation energy.
 RGB perceptual quality and simulation accuracy are separate requirements.
 `simulation_sampling_importance` changes emitter proposal weights, not emitted
 energy: RGB has weight one and IR/ionizing have a configurable positive weight.
+The default nonvisual weight is 0.125 on every backend, independently of path
+reuse; one restores equal-band proposals. This is a proposal preference, not an
+eight-to-one allocation of rays or a change to the five-band transport model.
 CPU and GPU MIS use the same weighted power. Nonzero support preserves physical
 expectation, while lower simulation importance can increase its sampling noise.
 Proposal-cache changes preserve valid lighting history. Display confidence and

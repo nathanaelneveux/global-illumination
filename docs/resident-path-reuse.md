@@ -8,16 +8,19 @@ Sampling coverage/history is not visual convergence.
 ## Running the qualified variants
 
 On `codex/gi-resident-qualified`, ordinary `cargo run` uses asynchronous resident
-accumulation with the independent path sampler and equal-band importance. The
-historical synchronous control is `VOXEL_GI_BACKEND=sync cargo run`; CPU fallback
-remains available. Reuse is deliberately opt-in because its cost/benefit varies:
+accumulation with the independent path sampler and RGB priority (nonvisual
+importance 0.125). The historical synchronous backend is `VOXEL_GI_BACKEND=sync`;
+add `VOXEL_GI_SETTINGS=config/gi-equal-band.json` to restore its old sampling
+priority too. CPU fallback remains available. Reuse is deliberately opt-in
+because its cost/benefit varies:
 
 ```sh
-VOXEL_GI_BACKEND=reuse VOXEL_GI_SETTINGS=config/gi-rgb-priority.json cargo run
+VOXEL_GI_BACKEND=reuse cargo run
 ```
 
-The same preset also works with the independent backend. The tuning panel's
-IR/radiation importance slider is live and preserves lighting history. No preset
+`config/gi-rgb-priority.json` still pins the qualified priority explicitly on any
+backend. The tuning panel's IR/radiation importance slider is live and preserves
+lighting history. Explicit imported settings override the default. No preset
 changes physical source strength, history retention, bounce depth, reach or
 display smoothing.
 
@@ -146,9 +149,9 @@ settling speedup. These compute times are not interactive latency. Analysis:
 
 `simulation_sampling_importance` is a sampling-quality control, not a change to
 the light's energy. RGB importance stays one; IR/ionizing importance is clamped
-to .01–1 so invisible sources retain support. Defaults remain one pending
-qualification. The proposal uses the maximum importance-weighted band. All
-CPU/GPU reverse PDFs use the same power; the five transported energy values are
+to .01–1 so invisible sources retain support. The integrated default is .125;
+one remains the explicit equal-band control. The proposal uses the maximum
+importance-weighted band. All CPU/GPU reverse PDFs use the same power; the five transported energy values are
 unchanged. Changing importance invalidates the proposal cache, not lighting
 history. It does not promise eight times fewer simulation samples at .125.
 
@@ -259,8 +262,8 @@ Analyses: `target/final-{resident,reuse}-{cave,house}-temporal.json`.
 House final captures were inspected together; both show the correct textured
 corner composition, without a presentation-mode switch.
 
-Decision: promote **independent resident accumulation** to `Auto`, preserving
-`sync` and CPU controls. Retain RGB-prioritized reuse as a qualified opt-in for
+Initial decision at `f35b197`: promote **independent resident accumulation** to
+`Auto`, preserving `sync` and CPU controls. Retain RGB-prioritized reuse as a qualified opt-in for
 complex lighting, not a claim of universal throughput superiority. Its next
 performance opportunity is avoiding work on already-clean regions, not relaxing
 visual gates or altering history. This is separate from simulation tick policy.
@@ -272,3 +275,23 @@ all five scripted edit stages in `response.json`, with clean logs. Its generic
 `report.json` edit counters cover another workload and are not the event ledger
 for this response fixture. No toggle stress was repeated; native buffer-generation
 and slot-lifetime regressions were verified earlier for the residency changes.
+
+## Independent RGB-priority promotion
+
+Following the user's acceptance, promote nonvisual importance 0.125 for all
+backends, leaving independent resident transport as the default and reuse
+opt-in. Baseline `f35b197` and the earlier experiment branches remain available.
+The algorithm, emitted energies, history policy, scheduler and GPU layout are
+unchanged. Invalid nonfinite importance now falls back to the same default;
+explicit settings at one still select equal-band proposals.
+
+The attribution study above isolates a roughly 15% reduction in 1024-path cave
+corner p95 error from priority alone (.03204 to .02720). That is a native
+field-error result, not a separately established full-image FLIP threshold or
+gameplay speedup. The 1280-path image pass and 12–21% lower GPU work belong to
+the **combined priority-plus-reuse** candidate. No new timing gain is claimed
+for changing this default. Existing native five-band parity at 1/.125/.01 and
+the recorded gameplay/image runs qualify the unchanged proposal implementation;
+the promotion reran three settings/preset tests and eight source/cache tests:
+all eleven pass. `git diff --check` passes. Native GPU/image studies were not
+rerun for this settings-only change.

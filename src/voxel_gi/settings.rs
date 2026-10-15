@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 use std::time::Duration;
 
+const DEFAULT_SIMULATION_SAMPLING_IMPORTANCE: f32 = 0.125;
+
 /// Quality and work limits. All loaded pages remain eligible.
 /// Insert before `VoxelGiPlugin` or change this resource at runtime.
 #[derive(Resource, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -14,6 +16,8 @@ pub struct VoxelGiSettings {
     /// Changes variance, not physical energy, history validity or band delivery.
     /// RGB always has importance one; nonvisual importance stays nonzero so all
     /// sources retain support. Simulation need not meet the RGB visual threshold.
+    /// Defaults to 0.125 on every backend, independently of path reuse; use one
+    /// for equal-band sampling. This is not a fixed ratio of sample counts.
     pub simulation_sampling_importance: f32,
     /// Disable for a same-kernel continuous-sampling A/B baseline.
     pub adaptive_updates: bool,
@@ -41,7 +45,7 @@ impl Default for VoxelGiSettings {
         Self {
             transport: TransportSettings::default(),
             samples_per_dispatch: 16,
-            simulation_sampling_importance: 1.0,
+            simulation_sampling_importance: DEFAULT_SIMULATION_SAMPLING_IMPORTANCE,
             adaptive_updates: true,
             trace_budget_ms: 4.0,
             max_probes_per_dispatch: 8192,
@@ -60,7 +64,7 @@ impl VoxelGiSettings {
         let weight = if self.simulation_sampling_importance.is_finite() {
             self.simulation_sampling_importance.clamp(0.01, 1.0)
         } else {
-            1.0
+            DEFAULT_SIMULATION_SAMPLING_IMPORTANCE
         };
         super::EnergySpectrum::new(Vec3::ONE, weight, weight)
     }
@@ -189,6 +193,47 @@ mod tests {
     }
 
     #[test]
+    fn rgb_priority_is_the_default_with_an_explicit_equal_band_control() {
+        let settings = VoxelGiSettings::default();
+        let expected = super::super::EnergySpectrum::new(Vec3::ONE, 0.125, 0.125);
+        assert_eq!(settings.sampling_importance(), expected);
+        for json in ["{}", include_str!("../../config/gi-rgb-priority.json")] {
+            assert_eq!(
+                serde_json::from_str::<VoxelGiSettings>(json)
+                    .unwrap()
+                    .sampling_importance(),
+                expected
+            );
+        }
+        let control: VoxelGiSettings =
+            serde_json::from_str(include_str!("../../config/gi-equal-band.json")).unwrap();
+        assert_eq!(
+            control.sampling_importance(),
+            super::super::EnergySpectrum::ONE
+        );
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(
+                VoxelGiSettings {
+                    simulation_sampling_importance: value,
+                    ..settings.clone()
+                }
+                .sampling_importance(),
+                expected
+            );
+        }
+        for (input, normalized) in [(0.0, 0.01), (2.0, 1.0)] {
+            assert_eq!(
+                VoxelGiSettings {
+                    simulation_sampling_importance: input,
+                    ..settings.clone()
+                }
+                .sampling_importance(),
+                super::super::EnergySpectrum::new(Vec3::ONE, normalized, normalized)
+            );
+        }
+    }
+
+    #[test]
     fn only_model_changes_restart_measurements_without_rebuilding_geometry_or_sky() {
         let mut app = App::new();
         app.init_resource::<VoxelGiSettings>()
@@ -206,6 +251,9 @@ mod tests {
         app.world_mut()
             .resource_mut::<VoxelGiSettings>()
             .samples_per_dispatch = 1;
+        app.world_mut()
+            .resource_mut::<VoxelGiSettings>()
+            .simulation_sampling_importance = 1.0;
         app.update();
         assert_eq!(
             app.world()
