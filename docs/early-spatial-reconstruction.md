@@ -97,6 +97,15 @@ Reproduce the analysis with `tools/spatial_quality.py RUN`. Dependencies are
 NumPy, Pillow and the official FLIP evaluator. Detailed results remain ignored
 at `target/spatial-quality.json`.
 
+Before trying stronger blending, `tools/spatial_field_sweep.py` reuses these
+saved means/moments. Scales .075, .05 and .025 keep borrowing longer than .15.
+They increase mid/late corner error: at 1024, worst-window corner p95 is .02636
+at .15, .03189 at .075 and .04176 at .05, versus .02803 unfiltered. At 256,
+.05 increases error to .08577 versus .06148 unfiltered. These are field errors,
+not image FLIP, but they reject a simple "blend harder for longer" promotion
+without another expensive render sweep. Smooth incorrect gradients remain a
+real risk. Topology/constant/missing-donor tests cover the screening tool.
+
 ## Total-light-aware refinement (`84c0558`)
 
 The host supplies `VoxelGiVisualWeights`, converting normalized direct and
@@ -146,6 +155,31 @@ prefixes; visible ranking needs more evidence before promotion.
 Runs: `cave-1792089195239319000-26085`, `cave-1792089307410473000-26176`,
 `cave-1792089370019437000-26175`. Analysis: `target/spatial-runtime-quality.json`.
 
+### House opening edits
+
+Native `0755465`, documentation-only dirty files, same offscreen settings,
+normal background terrain. Both 180-second `house-edits` runs completed with
+nine valid captures, all three openings applied, and clean logs. Control:
+`house-edits-1792090001202260000-26667`; spatial:
+`house-edits-1792090182323994000-26762`. Transport is 420.99M versus 401.35M paths
+(4.7% fewer); skylight-phase worker p95 is 2.139 versus 4.065 ms. Offscreen frame
+p95 is 24.341 versus 24.191 ms, p99 27.375 versus 28.846 ms: mixed tails, not an
+interactive frame-rate claim.
+
+Using each control 29-second image as a **shared observed tail**, not certified
+truth, 400-ms FLIP mean is .05078→.05814 for skylight, .03277→.03988 for west
+door, and .03024→.02632 for east door plus turn. The candidate/control tails
+also differ (.01855–.02485 mean FLIP). This does not establish either a general
+edit-response win or a statistically isolated regression; it prevents promoting
+the static-prefix result as a proven gameplay win. The temporal diagnostics
+cannot substitute for these final spatial captures.
+
+**Decision:** retain spatial reconstruction as a useful early-image experiment,
+but leave it opt-in. It improves very low-sample appearance without proving
+faster settling or uniformly better edits. Visible ranking likewise remains
+opt-in with no demonstrated gameplay quality win. Optimize/requalify before
+changing stable defaults; do not hide these tradeoffs behind sample coverage.
+
 ## Adaptive wider fresh sharing (`3131623`, study `0e3b7e0`)
 
 Up to four coplanar receivers share fresh suffixes below 256 history, two below
@@ -194,5 +228,8 @@ Spatial CPU/GPU oracle tests preserve raw/temporal snapshots exactly, constants,
 gap topology, partial batches and disabling. Native resident ownership parity
 still covers growth, retirement/recycling, caps and model restarts. The visual
 ranking tests cover colored/stale direct light and positive nonvisual support.
-No routine toggle stress was run. Failed candidates remain local branches and
+At the integration checkpoint, 260 regular Rust tests and strict all-target
+Clippy pass, including real Bevy PBR shader composition; 73 native/research
+tests remain explicitly ignored rather than falsely reported as run. Four
+Python analysis tests pass. No routine toggle stress was run. Failed candidates remain local branches and
 do not replace the qualified baseline merely because their implementation runs.
