@@ -69,6 +69,7 @@ pub(super) fn start_trace_task(
     cameras: Query<&GlobalTransform, With<Camera3d>>,
     gpu_device: Option<Res<gpu::GpuTransportDevice>>,
     settings: Res<VoxelGiSettings>,
+    startup: Option<Res<super::VoxelGiStartup>>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
     let _timing = timings.main_scope(super::telemetry::MainStage::TraceDispatch);
@@ -94,6 +95,7 @@ pub(super) fn start_trace_task(
     let mut selected = select_transport(&mut runtime, &field, &settings);
     selected.transport = runtime.transport;
     let samples = settings.batch_samples();
+    let resident = startup.is_some_and(|s| s.backend == super::TransportBackend::Resident);
     let transport_count = selected.probes.len();
     let sky_count = append_sky_work(&mut runtime, &field, &mut selected);
     let sky_only = transport_count == 0;
@@ -139,7 +141,13 @@ pub(super) fn start_trace_task(
             && let Some(device) = gpu_device
         {
             match gpu::GpuTracer::new(device) {
-                Ok(tracer) => gpu_tracer = Some(tracer),
+                Ok(mut tracer) => {
+                    if resident && let Err(error) = tracer.enable_resident() {
+                        gpu_error = Some(error);
+                    } else {
+                        gpu_tracer = Some(tracer);
+                    }
+                }
                 Err(error) => gpu_error = Some(error),
             }
         }

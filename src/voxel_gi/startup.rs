@@ -9,6 +9,8 @@ pub enum TransportBackend {
     /// Use the renderer's compute device if available; retain the CPU fallback.
     #[default]
     Auto,
+    /// Experimental persistent GPU measurements; preserve CPU fallback.
+    Resident,
     /// Keep GPU display, but run transport through the independent CPU reference.
     Cpu,
 }

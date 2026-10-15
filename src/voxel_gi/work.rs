@@ -121,6 +121,9 @@ pub(crate) struct FaceWork {
     pub direct: EnergySpectrum,
     pub custom_direct: Vec3,
     pub samples: u32,
+    /// A change constraint, not a copy of the CPU snapshot's possibly old count.
+    /// Resident accumulation applies this to its own latest statistical weight.
+    pub history_cap: u32,
     pub sequence: u32,
     pub updated_at: Option<Instant>,
 }
@@ -155,6 +158,7 @@ impl TraceWork {
             probe.retention = Some((pending.snapshot.revision, cap));
             for face in &mut self.faces[probe.faces()] {
                 face.samples = face.samples.min(cap);
+                face.history_cap = face.history_cap.min(cap);
             }
         }
     }
@@ -203,6 +207,11 @@ impl TraceWork {
                         .min(source_history_limit)
                 },
                 sequence: probe.sequence[face],
+                history_cap: if restart {
+                    0
+                } else {
+                    (if stale { stale_history_limit } else { u32::MAX }).min(source_history_limit)
+                },
                 updated_at: if restart {
                     None
                 } else {
@@ -253,6 +262,7 @@ impl TraceWork {
             header.sky = probe.display.map(|face| face.sky);
             for face in &mut work.faces[header.faces()] {
                 face.samples = probe.samples[face.face];
+                face.history_cap = u32::MAX;
             }
         }
         work

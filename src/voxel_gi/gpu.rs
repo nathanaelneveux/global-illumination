@@ -28,6 +28,8 @@ const RESULT_BYTES: usize = 96;
 const SKY_RESULT_BYTES: usize = 32;
 const TASK_BYTES: usize = 32;
 
+mod resident;
+
 #[cfg(test)]
 mod light_tree_experiment;
 #[cfg(test)]
@@ -210,6 +212,7 @@ impl UploadBuffer {
 }
 
 pub(crate) struct GpuTracer {
+    resident: Option<resident::ResidentAccumulator>,
     context: GpuTransportDevice,
     pipeline: ComputePipeline,
     module: wgpu::ShaderModule,
@@ -262,6 +265,13 @@ pub(crate) struct GpuTracer {
 }
 
 impl GpuTracer {
+    pub(super) fn enable_resident(&mut self) -> Result<(), String> {
+        if self.resident.is_none() {
+            self.resident = Some(resident::ResidentAccumulator::new(&self.context)?);
+        }
+        Ok(())
+    }
+
     pub fn new(context: GpuTransportDevice) -> Result<Self, String> {
         Self::with_kernel(context, true)
     }
@@ -324,6 +334,7 @@ impl GpuTracer {
                     })
             });
         Ok(Self {
+            resident: None,
             quality_pipelines: [((3, false, 64 / faces_per_workgroup), pipeline.clone())]
                 .into_iter()
                 .collect(),
@@ -477,6 +488,11 @@ impl GpuTracer {
             self.last_decode_ms = 0.0;
             self.sky_cache.apply(&mut work.probes);
             return Ok(());
+        }
+        if !work.faces.is_empty()
+            && let Some(resident) = &mut self.resident
+        {
+            resident.prepare_inputs(&self.context, &scene, work, samples)?;
         }
         let device = &self.context.device;
         let queue = &self.context.queue;
@@ -713,6 +729,11 @@ impl GpuTracer {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("GI bounded transport batch"),
         });
+        if face_count > 0
+            && let Some(resident) = &mut self.resident
+        {
+            resident.dispatch_prepare(device, &mut encoder, &self.tasks, face_count);
+        }
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("GI world-space rays"),
@@ -738,6 +759,11 @@ impl GpuTracer {
                 pass.set_bind_group(0, &**bindings, &[]);
                 pass.dispatch_workgroups((sky_pending.len() as u32).div_ceil(64), 1, 1);
             }
+        }
+        if face_count > 0
+            && let Some(resident) = &mut self.resident
+        {
+            resident.dispatch_accumulate(device, &mut encoder, &self.output, face_count);
         }
         encoder.copy_buffer_to_buffer(
             &self.output.buffer,
@@ -816,12 +842,19 @@ impl GpuTracer {
             let second = decode_spectrum(&values[8..12], values[12]);
             let count = face.samples.saturating_add(samples).min(HISTORY_LIMIT);
             let alpha = (samples as f32 / count as f32).min(1.0);
-            face.radiance += (mean - face.radiance) * alpha;
-            face.second_moment += (second - face.second_moment) * alpha;
+            if self.resident.is_some() {
+                face.radiance = mean;
+                face.second_moment = second;
+                face.samples = values[5].to_bits();
+                face.sequence = values[6].to_bits();
+            } else {
+                face.radiance += (mean - face.radiance) * alpha;
+                face.second_moment += (second - face.second_moment) * alpha;
+                face.samples = count;
+                face.sequence = face.sequence.wrapping_add(samples);
+            }
             face.direct = decode_spectrum(&values[16..20], values[20]);
             face.custom_direct = Vec3::new(values[21], values[22], values[23]);
-            face.samples = count;
-            face.sequence = face.sequence.wrapping_add(samples);
             face.updated_at = Some(now);
         }
         for (position, bytes) in sky_pending

@@ -38,9 +38,10 @@ fn parse_startup(
     let backend = match value("VOXEL_GI_BACKEND").as_deref() {
         None | Some("auto" | "gpu") => TransportBackend::Auto,
         Some("cpu") => TransportBackend::Cpu,
+        Some("resident") => TransportBackend::Resident,
         Some(other) => {
             return Err(format!(
-                "unknown VOXEL_GI_BACKEND={other:?}; choose auto, gpu or cpu"
+                "unknown VOXEL_GI_BACKEND={other:?}; choose auto, gpu, resident or cpu"
             ));
         }
     };
