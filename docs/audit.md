@@ -4,6 +4,8 @@ Historical checkpoint. The [October 10 scene-history audit](scene-history-audit.
 supersedes the emitter-reset rationale below with controlled removal/streaming
 evidence. The global voxel-emitter reset and its material-delta bookkeeping have
 been removed; analytic-source and model-replacement policies remain explicit.
+The [October 14 external-review follow-up](#october-14-external-review-follow-up)
+records later display-capacity/publication fixes and remaining review findings.
 
 Baseline: `831931d`. Production cleanup and corner census: `8546ef3`. Final
 offscreen-harness correction: `ad6ba8e`. All commits are local. The estimator,
@@ -159,3 +161,52 @@ budget. Consider GPU-resident statistical state only as a separately measured
 storage change. Keep current smoothing fixed during these experiments and compare
 brightening, darkening, freshness and frame tails together. The research guide
 records the relevant prior work, what is unimplemented and the acceptance criteria.
+
+## October 14 external-review follow-up
+
+Reconciled [the independent source review](../CODE_REVIEW_2026-10-13.txt), checked
+at `a68a1d8`, against current baseline `885deeb`. These are focused robustness/work
+removal fixes, not a new estimator or another retention calibration.
+
+- `8a94f1c` addresses the zero-source part of **F8**: the adapter removes analytic
+  sources with no transported or custom visible energy. Invisible bands remain
+  active. Four source tests passed, including activation and component removal.
+- `63f786d` addresses **F3**: topology has its own required-value ledger and uses
+  a nonblocking mirror lock. The 8,192-receiver regression leaves 8,190 unrelated
+  values queued while publishing the two required records atomically. Render
+  tests: 21 passed; display: 5; publication: 2; native headless generation: 1.
+  A preliminary `publication::tests` filter matched zero tests; the corrected
+  `publication::` invocation produced the two passes recorded here.
+- `c212e30` addresses **F2**: checked capacity planning, constrained optional
+  headroom, collision-growth bounds, actual-device revalidation and recoverable
+  replacement rejection. This includes CPU transport's GPU display bindings.
+  Render/capacity tests: 24 passed, then a separate adversarial hash-growth test
+  passed; display: 6; restricted native device and headless generation: 1 each.
+  The ordinary dev build passed. Large studies and the full toggle profile were
+  not run. These runs overlap earlier tests; their counts are not additive
+  coverage claims.
+
+Native checks used Apple M4 / Metal, Rust 1.95, default dev features and the shared
+Cargo target. There is no gameplay viewport or frame-time comparison in these
+tests. The workload bound and zero-source omission are proven by state/byte tests;
+no FPS improvement, faster visual settling or all-residency support is claimed.
+The existing whole-range policy, transport samples, presentation and BVW are
+unchanged. Capacity checks prevent unsupported allocations; they are not general
+physical-memory exhaustion recovery. See the current display contract in
+[architecture](architecture.md#temporal-and-spatial-display).
+
+Remaining findings are deliberately not called fixed:
+
+| Findings | Disposition |
+| --- | --- |
+| F4–F5: live per-voxel ingestion and repeated delta discovery | Prioritize a measured follow-up: immutable page input plus one actual scene delta. Preserve pending-edit timing, unknown-space/frontier semantics, distant sun dependency checks and stale-result rejection. No BVW modification required or authorized here. |
+| F1, F7, C3: input/configuration/runtime ownership | Valid architecture work, separate from sampling changes. Introduce typed host configuration and a GI-only harness incrementally; do not extract a generic engine or rewrite all state in this patch. |
+| F6: light visibility | Real adapter mismatch; decide explicit GI/simulation enable semantics before implementation. Camera culling must never disable persistent world lighting, and hiding a visible object need not disable its heat/radiation. |
+| F8: rebuilding static analytic-source lists | Still present. Change-driven synchronization must include component removal/despawn and later visibility semantics. Zero-source filtering does not solve this cost. |
+| C1–C2: unused release helpers, diagnostic mirrors, duplicate slot maps | Valid cleanup candidates; not evidence of costly dead solver code. No blanket dead-code allowances or unmeasured memory claims. |
+| C4: Python dependency/test entry point | Keep as harness reproducibility work before onboarding another analysis environment. This round used Rust/native checks, not Python analysis. |
+| C5: shader lookup/guard cleanup | Profile separately; retain corner reconstruction and native parity oracles. |
+
+The external review's independent CPU/GPU references, generation-owned buffers,
+immutable scene/revision contracts and display/simulation separation remain
+intentional. None should be removed merely to reduce file count or duplication.
