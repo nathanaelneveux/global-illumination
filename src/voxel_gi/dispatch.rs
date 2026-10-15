@@ -83,9 +83,15 @@ pub(super) fn start_trace_task(
         return;
     }
     let selection_started = Instant::now();
-    let reuse = startup
+    let reuse = startup.as_ref().is_some_and(|s| {
+        matches!(
+            s.backend,
+            super::TransportBackend::Reuse | super::TransportBackend::ReuseWide
+        )
+    });
+    let wide_reuse = startup
         .as_ref()
-        .is_some_and(|s| s.backend == super::TransportBackend::Reuse);
+        .is_some_and(|s| s.backend == super::TransportBackend::ReuseWide);
     let resident = startup.is_none_or(|s| s.backend.resident_accumulation());
     let requested = std::mem::take(&mut field.requested);
     enqueue_urgent(
@@ -184,7 +190,9 @@ pub(super) fn start_trace_task(
         {
             match gpu::GpuTracer::new(device) {
                 Ok(mut tracer) => {
-                    let enabled = if reuse {
+                    let enabled = if wide_reuse {
+                        tracer.enable_wide_reuse()
+                    } else if reuse {
                         tracer.enable_reuse()
                     } else if resident {
                         tracer.enable_resident()

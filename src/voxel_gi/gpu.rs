@@ -225,6 +225,9 @@ pub(crate) struct GpuTracer {
     resident: Option<resident::ResidentAccumulator>,
     context: GpuTransportDevice,
     pipeline: ComputePipeline,
+    singleton_pipeline: Option<ComputePipeline>,
+    singleton_bindings: Option<CachedBindings<9>>,
+    singleton_lanes: u32,
     module: wgpu::ShaderModule,
     entry: &'static str,
     pipeline_key: (u32, bool, u32),
@@ -278,7 +281,9 @@ pub(crate) struct GpuTracer {
 
 impl GpuTracer {
     pub(super) fn backend_name(&self) -> &'static str {
-        if self.entry == "trace_paired_faces" {
+        if self.entry == "trace_quad_faces" {
+            "gpu-reuse-wide"
+        } else if self.entry == "trace_paired_faces" {
             "gpu-reuse"
         } else if self.resident.is_some() {
             "gpu-resident"
@@ -311,6 +316,13 @@ impl GpuTracer {
         self.entry = "trace_paired_faces";
         self.quality_pipelines.clear();
         self.pipeline_key = (0, false, 0);
+        Ok(())
+    }
+
+    pub(super) fn enable_wide_reuse(&mut self) -> Result<(), String> {
+        self.enable_reuse()?;
+        self.resident.as_mut().unwrap().adaptive_reuse = true;
+        self.entry = "trace_quad_faces";
         Ok(())
     }
 
@@ -384,6 +396,9 @@ impl GpuTracer {
             module,
             entry,
             pipeline,
+            singleton_pipeline: None,
+            singleton_bindings: None,
+            singleton_lanes: 8,
             faces_per_workgroup,
             // Legacy test/reference shaders keep their original fixed layout.
             adaptive_lanes: cooperative && shader.contains("override PATH_LANES"),
@@ -716,6 +731,37 @@ impl GpuTracer {
         }
         let transport = work.transport.normalized();
         let mut pair_count = 0;
+        let mut singleton_count = 0;
+        if self.entry == "trace_quad_faces" {
+            for (index, face) in work.faces.iter().enumerate() {
+                if face.neighbor == 0 {
+                    continue;
+                }
+                let mut minimum = index;
+                let mut next = face.neighbor as usize - 1;
+                for _ in 0..3 {
+                    if next == index {
+                        break;
+                    }
+                    minimum = minimum.min(next);
+                    next = work.faces[next].neighbor as usize - 1;
+                }
+                if minimum == index {
+                    let offset = pair_count * TASK_BYTES + 24;
+                    self.task_bytes[offset..offset + 4]
+                        .copy_from_slice(&(index as u32).to_le_bytes());
+                    pair_count += 1;
+                }
+            }
+            for (index, face) in work.faces.iter().enumerate() {
+                if face.neighbor == 0 {
+                    let offset = (pair_count + singleton_count) * TASK_BYTES + 24;
+                    self.task_bytes[offset..offset + 4]
+                        .copy_from_slice(&(index as u32).to_le_bytes());
+                    singleton_count += 1;
+                }
+            }
+        }
         if self.entry == "trace_paired_faces" {
             // Compact root indices into unused task words. Face order and all
             // readback identities remain unchanged; no sort/permutation buffer.
@@ -747,7 +793,12 @@ impl GpuTracer {
                 emitters.total_weight,
                 emitters.faces.len() as f32,
             ),
-            transport: Vec4::new(transport.reach, pair_count as f32, 0.0, 0.0),
+            transport: Vec4::new(
+                transport.reach,
+                pair_count as f32,
+                singleton_count as f32,
+                0.0,
+            ),
         };
         self.params.upload(
             device,
@@ -795,17 +846,39 @@ impl GpuTracer {
         }
         let sky_ids = [0, 1, 2, 3, 5, 6, 7].map(|index| ids[index]);
         if self
+            .singleton_bindings
+            .as_ref()
+            .is_some_and(|cached| cached.buffers != ids)
+        {
+            self.singleton_bindings = None;
+        }
+        if self
             .sky_bindings
             .as_ref()
             .is_some_and(|cached| cached.buffers != sky_ids)
         {
             self.sky_bindings = None;
         }
-        let bindings = (!sky_only).then(|| {
+        let bindings =
+            (!sky_only && (self.entry != "trace_quad_faces" || pair_count > 0)).then(|| {
+                cached_bindings(
+                    &mut self.bindings,
+                    device,
+                    || self.pipeline.get_bind_group_layout(0).into(),
+                    std::array::from_fn(|index| (index as u32, buffers[index])),
+                )
+            });
+        let singleton_bindings = (singleton_count > 0).then(|| {
             cached_bindings(
-                &mut self.bindings,
+                &mut self.singleton_bindings,
                 device,
-                || self.pipeline.get_bind_group_layout(0).into(),
+                || {
+                    self.singleton_pipeline
+                        .as_ref()
+                        .unwrap()
+                        .get_bind_group_layout(0)
+                        .into()
+                },
                 std::array::from_fn(|index| (index as u32, buffers[index])),
             )
         });
@@ -852,11 +925,22 @@ impl GpuTracer {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &**bindings, &[]);
                 pass.dispatch_workgroups(
-                    if self.entry == "trace_paired_faces" {
+                    if self.entry == "trace_quad_faces" {
+                        (pair_count as u32).div_ceil(64 / (4 * self.pipeline_key.2))
+                    } else if self.entry == "trace_paired_faces" {
                         (pair_count as u32).div_ceil(64 / (2 * self.pipeline_key.2))
                     } else {
                         (face_count as u32).div_ceil(self.faces_per_workgroup)
                     },
+                    1,
+                    1,
+                );
+            }
+            if let Some(bindings) = singleton_bindings {
+                pass.set_pipeline(self.singleton_pipeline.as_ref().unwrap());
+                pass.set_bind_group(0, &**bindings, &[]);
+                pass.dispatch_workgroups(
+                    (singleton_count as u32).div_ceil(64 / self.singleton_lanes),
                     1,
                     1,
                 );
@@ -1025,7 +1109,7 @@ impl GpuTracer {
         // batches compact instead of allocating lanes with no samples to trace.
         let lanes = if self.adaptive_lanes {
             if samples >= 16 {
-                if self.entry == "trace_paired_faces" {
+                if matches!(self.entry, "trace_paired_faces" | "trace_quad_faces") {
                     16
                 } else {
                     8
@@ -1078,6 +1162,35 @@ impl GpuTracer {
             pipeline
         };
         self.pipeline = pipeline;
+        if self.entry == "trace_quad_faces" {
+            self.singleton_lanes = if samples >= 16 { 8 } else { 4 };
+            let scope = self
+                .context
+                .device
+                .wgpu_device()
+                .push_error_scope(wgpu::ErrorFilter::Validation);
+            self.singleton_pipeline = Some(self.context.device.create_compute_pipeline(
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("Independent mature reuse receivers"),
+                    layout: None,
+                    module: &self.module,
+                    entry_point: Some("trace_singleton_faces"),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &[
+                            ("DIFFUSE_HITS", key.0 as f64),
+                            ("LIMITED_REACH", f64::from(key.1)),
+                            ("PATH_LANES", f64::from(self.singleton_lanes)),
+                        ],
+                        ..default()
+                    },
+                    cache: None,
+                },
+            ));
+            if let Some(error) = bevy::tasks::block_on(scope.pop()) {
+                return Err(error.to_string());
+            }
+            self.singleton_bindings = None;
+        }
         self.pipeline_key = key;
         self.faces_per_workgroup = 64 / lanes;
         // Auto-layout bind groups belong to their pipeline, even when every

@@ -41,9 +41,10 @@ fn parse_startup(
         Some("resident") => TransportBackend::Resident,
         Some("sync") => TransportBackend::Synchronous,
         Some("reuse") => TransportBackend::Reuse,
+        Some("reuse-wide") => TransportBackend::ReuseWide,
         Some(other) => {
             return Err(format!(
-                "unknown VOXEL_GI_BACKEND={other:?}; choose auto, gpu, resident, sync, reuse or cpu"
+                "unknown VOXEL_GI_BACKEND={other:?}; choose auto, gpu, resident, sync, reuse, reuse-wide or cpu"
             ));
         }
     };

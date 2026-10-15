@@ -15,13 +15,18 @@ pub enum TransportBackend {
     Synchronous,
     /// Experimental fresh-path sharing on top of resident measurements.
     Reuse,
+    /// Experimental four-to-two-to-independent fresh sharing as history grows.
+    ReuseWide,
     /// Keep GPU display, but run transport through the independent CPU reference.
     Cpu,
 }
 
 impl TransportBackend {
     pub(super) fn resident_accumulation(self) -> bool {
-        matches!(self, Self::Auto | Self::Resident | Self::Reuse)
+        matches!(
+            self,
+            Self::Auto | Self::Resident | Self::Reuse | Self::ReuseWide
+        )
     }
 }
 

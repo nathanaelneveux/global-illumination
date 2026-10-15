@@ -38,6 +38,62 @@ fn fresh(probes: &[SurfaceProbe], revision: u64, sequence: u32) -> TraceWork {
     work
 }
 
+#[test]
+#[ignore = "native adaptive wide sharing: mixed groups, tails and mature independent path parity"]
+fn wide_reuse_mixed_groups_and_mature_fallback() {
+    let mut control = super::tests::native_tracer();
+    control.enable_resident().unwrap();
+    let mut candidate = GpuTracer::new(control.context.clone()).unwrap();
+    candidate.enable_wide_reuse().unwrap();
+    let fixture = super::refinement::research_fixture(2);
+    let emitters = Arc::new(EmissionDistribution::build(
+        &fixture.scene,
+        &fixture.materials,
+    ));
+    let probes: Vec<_> = (6..13)
+        .flat_map(|z| (6..15).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
+        .collect();
+    for spp in [1, 3, 7, 16] {
+        let mut a = fresh(&probes, u64::from(spp), 99);
+        let mut b = fresh(&probes, u64::from(spp), 99);
+        for work in [&mut a, &mut b] {
+            for (i, f) in work.faces.iter_mut().enumerate() {
+                f.samples = [0, 256, 1024][i % 3];
+            }
+        }
+        trace(&mut control, &fixture, &emitters, &mut a, spp);
+        trace(&mut candidate, &fixture, &emitters, &mut b, spp);
+        let links: Vec<_> = b.faces.iter().map(|f| f.neighbor).collect();
+        let mut shared = 0;
+        for (i, (a, b)) in a.faces.iter().zip(&b.faces).enumerate() {
+            assert_eq!((a.samples, a.sequence), (b.samples, b.sequence));
+            assert!(
+                channels(b.radiance)
+                    .iter()
+                    .all(|v| v.is_finite() && *v >= 0.0)
+            );
+            if i % 3 == 2 {
+                assert_eq!(b.neighbor, 0);
+                for (a, b) in channels(a.radiance).into_iter().zip(channels(b.radiance)) {
+                    assert!((a - b).abs() < 1e-5 * (0.02 + a.abs()), "mature {a} vs {b}");
+                }
+            }
+            if b.neighbor > 0 {
+                shared += 1;
+                let mut next = b.neighbor as usize - 1;
+                let mut size = 1;
+                while next != i {
+                    size += 1;
+                    assert!(size <= 4);
+                    assert_ne!(links[next], 0);
+                    next = links[next] as usize - 1;
+                }
+            }
+        }
+        assert!(shared > 0);
+    }
+}
+
 fn percentile(mut xs: Vec<f32>, p: f32) -> f32 {
     xs.sort_by(f32::total_cmp);
     xs[((xs.len() - 1) as f32 * p).round() as usize]

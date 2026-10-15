@@ -775,6 +775,115 @@ fn trace_paired_faces(@builtin(global_invocation_id) id: vec3<u32>,
     results[offset + 5u] = bitcast<vec4<u32>>(vec4(direct.radiation, direct.custom_visible));
 }
 
+var<workgroup> quad_values: array<vec4<f32>, 256>;
+var<workgroup> quad_radiation: array<vec4<f32>, 64>;
+
+// Balanced multi-proposal reconnection across a fixed geometric group. Each
+// source sample supplies q_target / sum(q_visible_sources) to every receiver.
+// All candidates are current; no reservoir approximation or stale path reuse.
+@compute @workgroup_size(64)
+fn trace_quad_faces(@builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(local_invocation_index) local: u32) {
+    let group = id.x / (4u * PATH_LANES);
+    let lane = local % PATH_LANES;
+    let side = (local / PATH_LANES) % 4u;
+    let group_valid = group < u32(params.transport.y);
+    var members = vec4(0u);
+    var count = 0u;
+    if group_valid {
+        let root = tasks[group].padding1;
+        members.x = root;
+        count = 1u;
+        var next = tasks[root].padding0;
+        for (var i=1u; i<4u; i+=1u) {
+            if next == 0u || next - 1u == root { break; }
+            members[i] = next - 1u;
+            next = tasks[members[i]].padding0;
+            count += 1u;
+        }
+    }
+    let valid = group_valid && side < count;
+    let face = members[side];
+    var moment: PathMoments;
+    for (var base=0u; base<params.counts.y; base+=PATH_LANES) {
+        let sample = base + lane;
+        var nee = Energy(vec4(0.0),0.0,vec3(0.0));
+        for (var receiver=0u; receiver<4u; receiver+=1u) {
+            quad_values[local*4u+receiver]=vec4(0.0);
+        }
+        quad_radiation[local]=vec4(0.0);
+        if valid && sample < params.counts.y {
+            let task=tasks[face];
+            let normal=face_normal(task.face);
+            let center=vec3<f32>(task.voxel)+vec3(0.5);
+            let origin=center+normal*0.501;
+            let stream=hash_voxel(task.voxel)^pcg(task.face+1u);
+            let sequence=task.sequence+sample;
+            let direction=hemisphere(normal,sample_1d(stream,sequence,0u),sample_1d(stream,sequence,1u));
+            let record=trace_path_record(origin,direction,normal,stream,sequence,true);
+            let q=record_pdf(record,origin,normal);
+            if q <= 0.0 || !record_has_energy(record) {
+                let own=evaluate_record(record,origin,normal);
+                quad_values[local*4u+side]=own.value;
+                quad_radiation[local][side]=own.radiation;
+            } else {
+                var densities=vec4(0.0);
+                densities[side]=q;
+                var sum=q;
+                for (var receiver=0u; receiver<count; receiver+=1u) {
+                    if receiver==side {continue;}
+                    let other_origin=vec3<f32>(tasks[members[receiver]].voxel)+vec3(0.5)+normal*0.501;
+                    let other=compatible_pdf(record,other_origin,normal);
+                    densities[receiver]=other;
+                    sum+=other;
+                }
+                for (var receiver=0u; receiver<count; receiver+=1u) {
+                    if densities[receiver] <= 0.0 {continue;}
+                    let other_origin=vec3<f32>(tasks[members[receiver]].voxel)+vec3(0.5)+normal*0.501;
+                    let value=evaluate_record(record,other_origin,normal);
+                    let weight=densities[receiver]/sum;
+                    quad_values[local*4u+receiver]=value.value*weight;
+                    quad_radiation[local][receiver]=value.radiation*weight;
+                }
+            }
+            nee=sample_emitter(center+normal*0.5,normal,stream,sequence,0u);
+        }
+        workgroupBarrier();
+        var value=nee.value;
+        var radiation=nee.radiation;
+        let first=local-side*PATH_LANES;
+        for (var source=0u; source<4u; source+=1u) {
+            let other=first+source*PATH_LANES;
+            value+=quad_values[other*4u+side];
+            radiation+=quad_radiation[other][side];
+        }
+        moment.mean+=value;
+        moment.second+=value*value;
+        moment.radiation+=vec2(radiation,radiation*radiation);
+        workgroupBarrier();
+    }
+    path_moments[local]=moment;
+    workgroupBarrier();
+    if lane!=0u || !valid {return;}
+    var total: PathMoments;
+    for (var i=0u;i<PATH_LANES;i+=1u) {
+        total.mean+=path_moments[local+i].mean;
+        total.second+=path_moments[local+i].second;
+        total.radiation+=path_moments[local+i].radiation;
+    }
+    let task=tasks[face];
+    let normal=face_normal(task.face);
+    let direct=direct_at(vec3<f32>(task.voxel)+vec3(0.5)+normal*0.5,normal);
+    let inverse=1.0/f32(params.counts.y);
+    let offset=face*6u;
+    results[offset]=bitcast<vec4<u32>>(total.mean*inverse);
+    results[offset+1u]=bitcast<vec4<u32>>(vec4(total.radiation.x*inverse,0.0,0.0,0.0));
+    results[offset+2u]=bitcast<vec4<u32>>(total.second*inverse);
+    results[offset+3u]=bitcast<vec4<u32>>(vec4(total.radiation.y*inverse,0.0,0.0,0.0));
+    results[offset+4u]=bitcast<vec4<u32>>(direct.value);
+    results[offset+5u]=bitcast<vec4<u32>>(vec4(direct.radiation,direct.custom_visible));
+}
+
 // Cooperative layout: four or eight lanes share a receiver, each tracing
 // an independent subsequence. Identical paths and moments, not sample reuse.
 // The serial entry point remains the paired throughput/correctness reference.
@@ -789,9 +898,25 @@ var<workgroup> path_moments: array<PathMoments, 64>;
 fn trace_faces_parallel(@builtin(global_invocation_id) id: vec3<u32>,
     @builtin(local_invocation_index) local: u32) {
     let face_index = id.x / PATH_LANES;
+    trace_cooperative_face(face_index, face_index < params.counts.x, local);
+}
+
+// Mature or unpaired receivers take the original eight-lane independent path,
+// rather than paying for three idle partners in the four-receiver kernel.
+@compute @workgroup_size(64)
+fn trace_singleton_faces(@builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(local_invocation_index) local: u32) {
+    let index = id.x / PATH_LANES;
+    let valid = index < u32(params.transport.z);
+    var face = 0u;
+    if valid { face = tasks[u32(params.transport.y) + index].padding1; }
+    trace_cooperative_face(face, valid, local);
+}
+
+fn trace_cooperative_face(face_index: u32, valid: bool, local: u32) {
     let lane = local % PATH_LANES;
     var moment: PathMoments;
-    if face_index < params.counts.x {
+    if valid {
         let task = tasks[face_index];
         let normal = face_normal(task.face);
         let center = vec3<f32>(task.voxel) + vec3(0.5);
@@ -812,7 +937,7 @@ fn trace_faces_parallel(@builtin(global_invocation_id) id: vec3<u32>,
     path_moments[local] = moment;
     // All lanes, including the unused tail, participate in the barrier.
     workgroupBarrier();
-    if lane != 0u || face_index >= params.counts.x { return; }
+    if lane != 0u || !valid { return; }
     var total: PathMoments;
     for (var i = 0u; i < PATH_LANES; i += 1u) {
         total.mean += path_moments[local + i].mean;
