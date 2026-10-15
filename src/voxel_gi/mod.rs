@@ -182,9 +182,13 @@ impl VoxelGiDirty {
     }
 
     pub fn mark_voxel(&mut self, voxel: IVec3) {
+        // A later untracked write supersedes an earlier exact value, including
+        // when both notifications arrive before the adapter drains this frame.
+        self.edits.remove(&voxel);
         self.voxels.insert(voxel);
     }
     pub fn mark_all_loaded(&mut self) {
+        self.edits.clear();
         self.all_loaded = true;
     }
 }

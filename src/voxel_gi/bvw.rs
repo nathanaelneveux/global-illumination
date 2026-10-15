@@ -406,6 +406,17 @@ mod tests {
     }
 
     #[test]
+    fn unknown_notification_supersedes_an_exact_value_in_the_same_frame() {
+        let mut dirty = VoxelGiDirty::tracked();
+        dirty.edits.insert(IVec3::ONE, 7);
+        dirty.mark_voxel(IVec3::ONE);
+        assert!(dirty.edits.is_empty());
+        dirty.edits.insert(IVec3::ZERO, 4);
+        dirty.mark_all_loaded();
+        assert!(dirty.edits.is_empty());
+    }
+
+    #[test]
     #[ignore = "isolated BVW input sampling pair, not frame timing"]
     fn immutable_edit_input_cost_study() {
         let mut app = app(true);
