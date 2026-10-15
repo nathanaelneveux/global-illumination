@@ -54,18 +54,22 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
         }
         let task = pool.spawn(async move {
             TraceBatchResult {
-                work: TraceWork::from_probes(&[probe], case == 1),
-                paths: 4,
+                batch: Some(TransportBatch {
+                    work: TraceWork::from_probes(&[probe], case == 1),
+                    paths: 4,
+                    sky_only: case == 1,
+                    transport_count: usize::from(case != 1),
+                    sky_count: usize::from(case == 1),
+                    ..default()
+                }),
+                pending: default(),
+                bindings: default(),
+                sky_stats: None,
                 trace_time: Duration::from_millis(1),
                 gpu_tracer: None,
                 emission_cache: None,
                 cpu_sky_cache: default(),
                 gpu_error: None,
-                sky_only: case == 1,
-                transport_count: usize::from(case != 1),
-                sky_count: usize::from(case == 1),
-                scene_generation: 0,
-                sky_revision: 0,
                 sunlight_change: None,
             }
         });
@@ -410,18 +414,20 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             }
             let task = pool.spawn(async move {
                 TraceBatchResult {
-                    work: TraceWork::from_probes(&[late], false),
-                    paths: 4,
+                    batch: Some(TransportBatch {
+                        work: TraceWork::from_probes(&[late], false),
+                        paths: 4,
+                        transport_count: 1,
+                        ..default()
+                    }),
+                    pending: default(),
+                    bindings: default(),
+                    sky_stats: None,
                     trace_time: Duration::from_millis(1),
                     gpu_tracer: None,
                     emission_cache: None,
                     cpu_sky_cache: default(),
                     gpu_error: None,
-                    sky_only: false,
-                    transport_count: 1,
-                    sky_count: 0,
-                    scene_generation: 0,
-                    sky_revision: 0,
                     sunlight_change: None,
                 }
             });

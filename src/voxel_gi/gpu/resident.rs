@@ -18,6 +18,7 @@ struct Slot {
 }
 
 pub(super) struct ResidentAccumulator {
+    pub bindings: Vec<ResidentBinding>,
     slots: HashMap<Key, Slot>,
     regions: HashMap<IVec3, HashSet<Key>>,
     free: Vec<u32>,
@@ -67,6 +68,7 @@ impl ResidentAccumulator {
         }
         let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
         Ok(Self {
+            bindings: Vec::new(),
             slots: default(),
             regions: default(),
             free: Vec::new(),
@@ -186,6 +188,15 @@ impl ResidentAccumulator {
                     encode_seed(&mut self.seed_bytes, face, slot.incarnation, self.origin);
                 }
                 face.resident = UVec2::new(slot.index, slot.incarnation);
+                if seed != u32::MAX {
+                    self.bindings.push(ResidentBinding {
+                        voxel: face.voxel,
+                        face: face.face,
+                        revision: job.revision,
+                        source_revision: job.source_revision,
+                        address: face.resident,
+                    });
+                }
                 let task_index = self.input_bytes.len() / 16;
                 for word in [slot.index, seed, face.history_cap, task_index as u32] {
                     self.input_bytes.extend_from_slice(&word.to_le_bytes());
@@ -617,5 +628,94 @@ mod tests {
                 times[15], times[28]
             );
         }
+    }
+
+    #[test]
+    #[ignore = "native overlapping readbacks with growth and recycled resident slots"]
+    fn resident_queued_snapshots_keep_their_own_measurements() {
+        let mut control = super::super::tests::native_tracer();
+        let mut candidate = GpuTracer::new(control.context.clone()).unwrap();
+        candidate.enable_resident().unwrap();
+        let (scene, mut sources, initial) = super::super::tests::open_floor_fixture();
+        let materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        let mut pending = Vec::new();
+        for (step, count) in [17, 1024, 128].into_iter().enumerate() {
+            sources.environment = EnergySpectrum::new(Vec3::splat(step as f32 + 0.25), 0.7, 0.3);
+            // Explicit retirement before reuse, while older snapshots are still
+            // mapped/pending. Their staging allocations must remain independent.
+            if step == 2 {
+                candidate
+                    .resident
+                    .as_mut()
+                    .unwrap()
+                    .prepare_inputs(
+                        &candidate.context,
+                        &Arc::new(TransportScene::default()),
+                        &mut TraceWork::default(),
+                        16,
+                    )
+                    .unwrap();
+            }
+            let mut probes = initial[..count].to_vec();
+            for probe in &mut probes {
+                probe.revision = step as u64;
+            }
+            let mut expected = TraceWork::from_probes(&probes, false);
+            let mut actual = TraceWork::from_probes(&probes, false);
+            for work in [&mut expected, &mut actual] {
+                work.response_seconds = 0.075;
+                for job in &mut work.probes {
+                    job.sky_requested = false;
+                }
+            }
+            let snapshot = candidate
+                .submit_compact(
+                    Arc::clone(&scene),
+                    &sources,
+                    &materials,
+                    &mut actual,
+                    16,
+                    &emitters,
+                    false,
+                )
+                .unwrap()
+                .unwrap();
+            control
+                .trace_compact(
+                    Arc::clone(&scene),
+                    &sources,
+                    &materials,
+                    &mut expected,
+                    16,
+                    &emitters,
+                    false,
+                )
+                .unwrap();
+            pending.push((snapshot, actual, expected));
+        }
+        for (mut snapshot, mut actual, expected) in pending {
+            assert!(candidate.snapshot_ready(&mut snapshot).unwrap());
+            candidate.complete_readback(snapshot, &mut actual).unwrap();
+            for (a, b) in actual.faces.iter().zip(&expected.faces) {
+                assert_eq!((a.samples, a.sequence), (b.samples, b.sequence));
+                for (x, y) in [
+                    (a.radiance, b.radiance),
+                    (a.second_moment, b.second_moment),
+                    (a.direct, b.direct),
+                ] {
+                    let d = x - y;
+                    assert!(
+                        d.visible
+                            .abs()
+                            .max_element()
+                            .max(d.infrared.abs())
+                            .max(d.ionizing.abs())
+                            < 1e-5
+                    );
+                }
+            }
+        }
+        assert_eq!(candidate.readbacks.len(), 3);
     }
 }

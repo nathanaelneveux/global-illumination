@@ -38,6 +38,11 @@ pub(super) fn append_sky_work(
         } else {
             break;
         };
+        if runtime.trace_pending.contains(&voxel) {
+            runtime.sky_pending.push_back(voxel);
+            runtime.sky_queued.insert(voxel);
+            continue;
+        }
         seen.insert(voxel);
     }
     for job in &mut selected.probes {
@@ -73,10 +78,11 @@ pub(super) fn start_trace_task(
     mut timings: ResMut<GiWorkTimings>,
 ) {
     let _timing = timings.main_scope(super::telemetry::MainStage::TraceDispatch);
-    if runtime.trace_task.is_some() || field.order.is_empty() {
+    if runtime.trace_task.is_some() || (field.order.is_empty() && runtime.gpu_pending.is_empty()) {
         return;
     }
     let selection_started = Instant::now();
+    let resident = startup.is_some_and(|s| s.backend == super::TransportBackend::Resident);
     let requested = std::mem::take(&mut field.requested);
     enqueue_urgent(
         &mut runtime,
@@ -90,33 +96,53 @@ pub(super) fn start_trace_task(
     update_focus(&mut runtime, &field, focus);
     runtime.batch_size = runtime.batch_size.min(settings.batch_limit());
     runtime.sky_batch_size = runtime.sky_batch_size.min(settings.batch_limit());
-    // Independent work queues, one worker/submission. Cached sun lookups must
-    // never consume the frames in which indirect transport could make progress.
-    let mut selected = select_transport(&mut runtime, &field, &settings);
+    // Three owned staging allocations bound queue latency and memory. When full,
+    // poll without selecting more work: never turn backpressure into a CPU wait.
+    let can_submit = !field.order.is_empty() && runtime.gpu_pending.len() < 3;
+    let mut selected = if can_submit {
+        select_transport(&mut runtime, &field, &settings)
+    } else {
+        TraceWork::default()
+    };
     selected.transport = runtime.transport;
     selected.response_seconds = settings.display_response_seconds();
     let samples = settings.batch_samples();
-    let resident = startup.is_some_and(|s| s.backend == super::TransportBackend::Resident);
     let transport_count = selected.probes.len();
-    let sky_count = append_sky_work(&mut runtime, &field, &mut selected);
+    let sky_count = if can_submit {
+        append_sky_work(&mut runtime, &field, &mut selected)
+    } else {
+        0
+    };
     let sky_only = transport_count == 0;
-    if selected.probes.is_empty() {
+    if selected.probes.is_empty() && runtime.gpu_pending.is_empty() {
         runtime.trace_scratch = selected;
         stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
         stats.idle_scheduler_frames += 1;
         update_stats_from_counters(&runtime, &field, &mut stats);
         return;
     }
+    runtime
+        .trace_pending
+        .extend(selected.probes.iter().map(|job| job.voxel));
     let paths = selected.faces.len() as u64 * u64::from(samples);
     stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
     let scene = Arc::clone(&runtime.scene);
-    let scene_generation = runtime.generation;
+    let mut batch = super::TransportBatch {
+        work: selected,
+        paths,
+        sky_only,
+        transport_count,
+        sky_count,
+        scene_generation: runtime.generation,
+        sky_revision: runtime.sky_revision,
+        ..default()
+    };
     let track_changes = runtime.spatial_history.is_some();
-    let sky_revision = runtime.sky_revision;
     let sources = runtime.sources.clone();
     let materials = Arc::clone(&runtime.materials);
     let pool = Arc::clone(&runtime.trace_pool);
     let mut gpu_tracer = runtime.gpu_tracer.take();
+    let mut pending = std::mem::take(&mut runtime.gpu_pending);
     let emission_cache = runtime.emission_cache.take();
     let mut cpu_sky_cache = runtime.cpu_sky_cache.take().unwrap_or_default();
     let gpu_device = gpu_device
@@ -124,6 +150,7 @@ pub(super) fn start_trace_task(
         .map(|device| device.clone());
     runtime.trace_task = Some(AsyncComputeTaskPool::get().spawn(async move {
         let started = Instant::now();
+        let dispatched = !batch.work.probes.is_empty();
         let emission_cache = if sky_only {
             emission_cache
         } else {
@@ -152,67 +179,118 @@ pub(super) fn start_trace_task(
                 Err(error) => gpu_error = Some(error),
             }
         }
-        let mut work = selected;
-        work.apply_retention();
+        batch.work.apply_retention();
         cpu_sky_cache.track_changes = track_changes;
+        let mut completed = None;
         if let Some(tracer) = &mut gpu_tracer {
             tracer.sky_cache.track_changes = track_changes;
+            tracer.sky_cache.deferred_results = resident;
+            let result = (|| -> Result<(), String> {
+                if resident {
+                    let ready = match pending.front_mut() {
+                        Some(super::PendingTransport {
+                            snapshot: Some(snapshot),
+                            ..
+                        }) => tracer.snapshot_ready(snapshot)?,
+                        Some(_) => true,
+                        None => false,
+                    };
+                    if ready {
+                        let mut oldest = pending.pop_front().unwrap();
+                        if let Some(snapshot) = oldest.snapshot {
+                            tracer.complete_readback(snapshot, &mut oldest.batch.work)?;
+                            oldest.batch.gpu_ms = tracer.last_gpu_ms;
+                            oldest.batch.execution_ms = Some(tracer.last_dispatch_ms);
+                        } else {
+                            oldest.batch.gpu_ms = Some(0.0);
+                            oldest.batch.execution_ms = Some(0.0);
+                        }
+                        completed = Some(oldest.batch);
+                    }
+                    if !batch.work.probes.is_empty() {
+                        let snapshot = tracer.submit_compact(
+                            Arc::clone(&scene),
+                            &sources,
+                            &materials,
+                            &mut batch.work,
+                            samples,
+                            &emitters,
+                            sky_only,
+                        )?;
+                        pending.push_back(super::PendingTransport {
+                            snapshot,
+                            batch: std::mem::take(&mut batch),
+                        });
+                    }
+                } else {
+                    tracer.trace_compact(
+                        Arc::clone(&scene),
+                        &sources,
+                        &materials,
+                        &mut batch.work,
+                        samples,
+                        &emitters,
+                        sky_only,
+                    )?;
+                    batch.gpu_ms = tracer.last_gpu_ms;
+                    batch.execution_ms = Some(tracer.last_dispatch_ms);
+                    completed = Some(std::mem::take(&mut batch));
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                gpu_error = Some(error);
+                gpu_tracer = None;
+                pending.clear();
+            }
         }
-        if let Some(tracer) = gpu_tracer.as_mut()
-            && let Err(error) = tracer.trace_compact(
-                Arc::clone(&scene),
-                &sources,
-                &materials,
-                &mut work,
-                samples,
-                &emitters,
-                sky_only,
-            )
-        {
-            gpu_error = Some(error);
-            gpu_tracer = None;
-        }
-        if gpu_tracer.is_none() {
-            // A GPU-only session needs no extra CPU tracing threads. Create the
-            // bounded fallback pool on its worker only if it is actually used.
+        if gpu_tracer.is_none() && !batch.work.probes.is_empty() {
             let pool = pool.get_or_init(|| {
                 let available = std::thread::available_parallelism().map_or(2, usize::from);
-                let worker_count = available.saturating_sub(2).clamp(1, 2);
                 ThreadPoolBuilder::new()
-                    .num_threads(worker_count)
+                    .num_threads(available.saturating_sub(2).clamp(1, 2))
                     .thread_name(|index| format!("voxel-gi-{index}"))
                     .build()
                     .expect("voxel GI worker pool")
             });
+            for face in &mut batch.work.faces {
+                face.resident = UVec2::ZERO;
+            }
             pool.install(|| {
                 trace_work_batch(
                     &scene,
                     &sources,
                     &materials,
-                    &mut work,
+                    &mut batch.work,
                     if sky_only { 0 } else { samples },
                     &emitters,
                     &mut cpu_sky_cache,
                 )
             });
+            completed = Some(batch);
         }
         let sunlight_change = gpu_tracer.as_mut().map_or_else(
             || cpu_sky_cache.take_changes(&scene),
             |tracer| tracer.sky_cache.take_changes(&scene),
         );
+        let bindings = gpu_tracer
+            .as_mut()
+            .map_or_else(Vec::new, gpu::GpuTracer::take_resident_bindings);
+        let sky_stats = dispatched.then(|| {
+            gpu_tracer
+                .as_ref()
+                .map_or(cpu_sky_cache.stats, |tracer| tracer.sky_cache.stats)
+        });
         TraceBatchResult {
-            work,
-            paths,
+            batch: completed,
+            pending,
+            bindings,
+            sky_stats,
             trace_time: started.elapsed(),
             gpu_tracer,
             emission_cache,
             cpu_sky_cache,
             gpu_error,
-            sky_only,
-            transport_count,
-            sky_count,
-            scene_generation,
-            sky_revision,
             sunlight_change,
         }
     }));
@@ -306,6 +384,7 @@ pub(super) fn select_transport(
     seen.clear();
     seen.reserve(runtime.batch_size);
     let mut adaptive = std::mem::take(&mut runtime.ranked_candidates);
+    let mut deferred_urgent = Vec::new();
     adaptive.clear();
     if runtime.urgent_pending.len() < runtime.batch_size {
         adaptive.refresh(
@@ -370,6 +449,12 @@ pub(super) fn select_transport(
         if !seen.insert(voxel) {
             continue;
         }
+        if runtime.trace_pending.contains(&voxel) {
+            if force {
+                deferred_urgent.push(voxel);
+            }
+            continue;
+        }
         // A reserved sweep slot can encounter an explicitly requested voxel
         // before its urgent queue entry. Honor the force now, not after it has
         // already been selected (or skipped as settled).
@@ -431,6 +516,7 @@ pub(super) fn select_transport(
     }
     runtime.selection_seen = seen;
     runtime.ranked_candidates = adaptive;
+    enqueue_urgent(runtime, deferred_urgent);
     selected
 }
 
@@ -467,15 +553,12 @@ pub(super) fn apply_trace_task(
             .retain(|page, _| field.pages.contains_key(page));
         history.record(change, super::retention::Origin::Sunlight);
     }
-    timing.record_gpu_batch(
-        result
-            .gpu_tracer
-            .as_ref()
-            .and_then(|tracer| tracer.last_gpu_ms),
-    );
+    timing.record_gpu_batch(result.batch.as_ref().and_then(|batch| batch.gpu_ms));
     if let Some(error) = result.gpu_error {
         warn!(%error, "GPU transport unavailable; continuing with bounded CPU transport");
         runtime.gpu_failed = true;
+        let retry: Vec<_> = runtime.trace_pending.drain().collect();
+        enqueue_urgent(&mut runtime, retry);
     }
     stats.backend = if result.gpu_tracer.is_some() {
         "gpu"
@@ -483,19 +566,16 @@ pub(super) fn apply_trace_task(
         "cpu"
     };
     let measured_ms = result
-        .gpu_tracer
+        .batch
         .as_ref()
-        .map_or(result.trace_time.as_secs_f32() * 1_000.0, |tracer| {
-            tracer.last_dispatch_ms
-        });
-    let sky = result
-        .gpu_tracer
-        .as_ref()
-        .map_or(result.cpu_sky_cache.stats, |tracer| tracer.sky_cache.stats);
-    stats.sky_corner_requests += sky.requested as u64;
-    stats.sky_corners_traced += sky.traced as u64;
-    stats.sky_rays_scheduled += sky.rays as u64;
-    stats.sky_cached_corners = sky.resident;
+        .and_then(|batch| batch.execution_ms)
+        .unwrap_or(result.trace_time.as_secs_f32() * 1000.0);
+    if let Some(sky) = result.sky_stats {
+        stats.sky_corner_requests += sky.requested as u64;
+        stats.sky_corners_traced += sky.traced as u64;
+        stats.sky_rays_scheduled += sky.rays as u64;
+        stats.sky_cached_corners = sky.resident;
+    }
     if let Some(tracer) = &result.gpu_tracer {
         stats.last_prepare_ms = tracer.last_prepare_ms;
         stats.last_wait_ms = tracer.last_wait_ms;
@@ -512,28 +592,47 @@ pub(super) fn apply_trace_task(
     runtime.emission_cache = result.emission_cache;
     runtime.cpu_sky_cache = Some(result.cpu_sky_cache);
     stats.last_worker_ms = result.trace_time.as_secs_f32() * 1000.0;
+    runtime.gpu_pending = result.pending;
+    // Address publication is independent of statistical snapshots. Once the
+    // submitted GPU work completes, the renderer sees it without a CPU merge.
+    for binding in result.bindings {
+        if let Some(probe) = field.probes.get_mut(&binding.voxel)
+            && probe.revision == binding.revision
+            && binding.source_revision >= runtime.model_reset_source_revision
+            && probe.resident[binding.face] != binding.address
+        {
+            probe.resident[binding.face] = binding.address;
+            runtime.mark_display_dirty(binding.voxel);
+        }
+    }
+    let Some(mut batch) = result.batch else {
+        update_stats_from_counters(&runtime, &field, &mut stats);
+        return;
+    };
+
     // Mixed submissions share one timestamp interval. Do not attribute the
     // indirect kernel's cost to sky and accidentally collapse its scan budget.
-    if result.sky_only && result.sky_count > 0 {
+    if batch.sky_only && batch.sky_count > 0 {
         runtime.sky_batch_size = scheduling::next_budget(
             runtime.sky_batch_size,
-            result.sky_count,
+            batch.sky_count,
             measured_ms,
             settings.budget_ms().min(1.0),
             settings.batch_limit(),
         );
     }
-    if result.sky_only {
+    if batch.sky_only {
         stats.sky_only_batches += 1;
     } else {
         stats.transport_batches += 1;
     }
-    let sky_current = result.scene_generation == runtime.generation
-        && result.sky_revision == runtime.sky_revision;
+    let sky_current =
+        batch.scene_generation == runtime.generation && batch.sky_revision == runtime.sky_revision;
     let mut requeue = Vec::new();
     let transport_revision = field.transport_revision;
-    for job in &result.work.probes {
+    for job in &batch.work.probes {
         let voxel = job.voxel;
+        runtime.trace_pending.remove(&voxel);
         let Some(old) = field.probes.get_mut(&voxel) else {
             continue;
         };
@@ -570,11 +669,11 @@ pub(super) fn apply_trace_task(
         // A material-table revision can change emission without rebuilding
         // geometry. Older source results were rejected above.
         old.emission = runtime.materials.get(old.material).emission;
-        let publish_display = result.work.faces[job.faces()]
+        let publish_display = batch.work.faces[job.faces()]
             .iter()
             .any(|face| face.resident.y == 0 || old.resident[face.face] != face.resident);
         job.publish(
-            &result.work.faces[job.faces()],
+            &batch.work.faces[job.faces()],
             old,
             merge_started,
             &settings,
@@ -592,18 +691,18 @@ pub(super) fn apply_trace_task(
             requeue.push(voxel);
         }
     }
-    result.work.clear();
-    runtime.trace_scratch = result.work;
+    batch.work.clear();
+    runtime.trace_scratch = batch.work;
     enqueue_many(&mut runtime, requeue);
-    stats.traced_paths = stats.traced_paths.saturating_add(result.paths);
+    stats.traced_paths = stats.traced_paths.saturating_add(batch.paths);
     stats.last_merge_ms = merge_started.elapsed().as_secs_f32() * 1000.0;
     // Adjust work to measured execution time rather than fixing throughput to
     // 1,024 probes per display frame. Limit growth to avoid sudden GPU bursts.
-    if !result.sky_only {
+    if !batch.sky_only {
         stats.last_trace_batch_ms = measured_ms;
         runtime.batch_size = scheduling::next_budget(
             runtime.batch_size,
-            result.transport_count,
+            batch.transport_count,
             measured_ms,
             settings.budget_ms(),
             settings.batch_limit(),

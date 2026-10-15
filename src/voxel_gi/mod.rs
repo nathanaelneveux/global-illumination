@@ -280,6 +280,8 @@ struct VoxelGiRuntime {
     scene_task: Option<Task<SceneBuildResult>>,
     scene_publication: Option<SceneBuildResult>,
     trace_task: Option<Task<TraceBatchResult>>,
+    gpu_pending: VecDeque<PendingTransport>,
+    trace_pending: HashSet<IVec3>,
     /// The one in-flight worker returns its allocation for the next dispatch.
     trace_scratch: TraceWork,
     selection_seen: bevy::platform::collections::HashSet<IVec3>,
@@ -357,6 +359,8 @@ impl Default for VoxelGiRuntime {
             scene_task: None,
             scene_publication: None,
             trace_task: None,
+            gpu_pending: default(),
+            trace_pending: default(),
             trace_scratch: TraceWork::default(),
             selection_seen: default(),
             ranked_candidates: default(),
@@ -396,19 +400,34 @@ struct SceneBuildResult {
 }
 
 struct TraceBatchResult {
-    work: TraceWork,
-    paths: u64,
+    batch: Option<TransportBatch>,
+    pending: VecDeque<PendingTransport>,
+    bindings: Vec<gpu::ResidentBinding>,
+    sky_stats: Option<sky_cache::SkyCacheStats>,
     trace_time: Duration,
     gpu_tracer: Option<gpu::GpuTracer>,
     emission_cache: Option<emission::EmissionCache>,
     cpu_sky_cache: sky_cache::SkyCache,
     gpu_error: Option<String>,
+    sunlight_change: Option<geometry::GeometryChange>,
+}
+
+struct PendingTransport {
+    snapshot: Option<gpu::Readback>,
+    batch: TransportBatch,
+}
+
+#[derive(Default)]
+struct TransportBatch {
+    work: TraceWork,
+    paths: u64,
+    gpu_ms: Option<f32>,
+    execution_ms: Option<f32>,
     sky_only: bool,
     transport_count: usize,
     sky_count: usize,
     scene_generation: u64,
     sky_revision: u64,
-    sunlight_change: Option<geometry::GeometryChange>,
 }
 
 fn page_of(voxel: IVec3) -> IVec3 {

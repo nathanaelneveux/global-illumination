@@ -28,7 +28,9 @@ const RESULT_BYTES: usize = 96;
 const SKY_RESULT_BYTES: usize = 32;
 const TASK_BYTES: usize = 32;
 
+mod readback;
 mod resident;
+pub(crate) use readback::Readback;
 
 #[cfg(test)]
 mod light_tree_experiment;
@@ -45,6 +47,14 @@ mod upload_tests;
 pub(crate) struct GpuTransportDevice {
     pub device: RenderDevice,
     pub queue: RenderQueue,
+}
+
+pub(crate) struct ResidentBinding {
+    pub voxel: IVec3,
+    pub face: usize,
+    pub revision: u64,
+    pub source_revision: u64,
+    pub address: UVec2,
 }
 
 #[derive(Clone, Copy, Default, ShaderType)]
@@ -251,7 +261,7 @@ pub(crate) struct GpuTracer {
     output: UploadBuffer,
     bindings: Option<CachedBindings<9>>,
     sky_bindings: Option<CachedBindings<7>>,
-    readback: UploadBuffer,
+    readbacks: Vec<UploadBuffer>,
     timestamps: Option<wgpu::QuerySet>,
     timestamp_resolve: UploadBuffer,
     pub last_dispatch_ms: f32,
@@ -265,6 +275,14 @@ pub(crate) struct GpuTracer {
 }
 
 impl GpuTracer {
+    pub(super) fn take_resident_bindings(&mut self) -> Vec<ResidentBinding> {
+        self.resident
+            .as_mut()
+            .map_or_else(Vec::new, |resident| std::mem::take(&mut resident.bindings))
+    }
+    pub(super) fn snapshot_ready(&self, snapshot: &mut Readback) -> Result<bool, String> {
+        snapshot.poll(&self.context.device)
+    }
     pub(crate) fn resident_buffer(&self) -> Option<Buffer> {
         self.resident.as_ref().map(|state| state.buffer())
     }
@@ -383,11 +401,7 @@ impl GpuTracer {
             ),
             bindings: None,
             sky_bindings: None,
-            readback: UploadBuffer::new(
-                device,
-                "GI asynchronous simulation snapshot",
-                BufferUsages::MAP_READ | BufferUsages::COPY_DST,
-            ),
+            readbacks: Vec::new(),
             timestamps,
             timestamp_resolve: UploadBuffer::new(
                 device,
@@ -451,6 +465,25 @@ impl GpuTracer {
         emitters: &Arc<EmissionDistribution>,
         sky_only: bool,
     ) -> Result<(), String> {
+        if let Some(mut snapshot) =
+            self.submit_compact(scene, sources, materials, work, samples, emitters, sky_only)?
+        {
+            snapshot.wait(&self.context.device)?;
+            self.complete_readback(snapshot, work)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn submit_compact(
+        &mut self,
+        scene: Arc<TransportScene>,
+        sources: &TransportSources,
+        materials: &VoxelMaterialTransportTable,
+        work: &mut TraceWork,
+        samples: u32,
+        emitters: &Arc<EmissionDistribution>,
+        sky_only: bool,
+    ) -> Result<Option<readback::Readback>, String> {
         let work_started = Instant::now();
         if !sky_only {
             self.select_quality_pipeline(work.transport.normalized(), samples)?;
@@ -490,7 +523,7 @@ impl GpuTracer {
             self.last_wait_ms = 0.0;
             self.last_decode_ms = 0.0;
             self.sky_cache.apply(&mut work.probes);
-            return Ok(());
+            return Ok(None);
         }
         if !work.faces.is_empty()
             && let Some(resident) = &mut self.resident
@@ -687,8 +720,14 @@ impl GpuTracer {
         };
         let timestamp_bytes = timestamp_count as u64 * 8;
         self.output.ensure(device, readback_bytes)?;
-        self.readback
-            .ensure(device, readback_bytes + timestamp_bytes as usize)?;
+        let mut readback = self.readbacks.pop().unwrap_or_else(|| {
+            UploadBuffer::new(
+                device,
+                "GI asynchronous simulation snapshot",
+                BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            )
+        });
+        readback.ensure(device, readback_bytes + timestamp_bytes as usize)?;
         let buffers = [
             &self.params,
             &self.directory,
@@ -794,7 +833,7 @@ impl GpuTracer {
         encoder.copy_buffer_to_buffer(
             &self.output.buffer,
             0,
-            &self.readback.buffer,
+            &readback.buffer,
             0,
             readback_bytes as u64,
         );
@@ -803,7 +842,7 @@ impl GpuTracer {
             encoder.copy_buffer_to_buffer(
                 &self.timestamp_resolve.buffer,
                 0,
-                &self.readback.buffer,
+                &readback.buffer,
                 readback_bytes as u64,
                 timestamp_bytes,
             );
@@ -812,28 +851,51 @@ impl GpuTracer {
         self.last_prepare_ms = work_started.elapsed().as_secs_f32() * 1000.0;
         let submission = queue.submit([encoder.finish()]);
         let (sender, receiver) = mpsc::sync_channel(1);
-        self.readback
+        readback
             .buffer
             .slice(0..readback_bytes as u64 + timestamp_bytes)
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = sender.send(result);
             });
-        // This method is only executed by an async worker, never an ECS/render
-        // system. The timeout also provides a bounded device-loss failure path.
-        device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(submission),
-                timeout: Some(Duration::from_secs(5)),
-            })
-            .map_err(|error| error.to_string())?;
-        receiver
-            .recv_timeout(Duration::from_secs(1))
-            .map_err(|error| error.to_string())?
-            .map_err(|error| error.to_string())?;
-        let view = self
-            .readback
+        Ok(Some(readback::Readback {
+            buffer: readback,
+            submission,
+            completion: std::sync::Mutex::new(receiver),
+            submitted,
+            face_bytes,
+            bytes: readback_bytes,
+            timestamp_bytes: timestamp_bytes as usize,
+            samples,
+            sky_pending,
+            sky_ticket: self.sky_cache.ticket(),
+            prepare_ms: self.last_prepare_ms,
+            ready: false,
+        }))
+    }
+
+    pub(super) fn complete_readback(
+        &mut self,
+        snapshot: readback::Readback,
+        work: &mut TraceWork,
+    ) -> Result<(), String> {
+        debug_assert!(snapshot.ready, "cannot decode a pending mapping");
+        let readback::Readback {
+            buffer: readback,
+            submitted,
+            face_bytes,
+            bytes: readback_bytes,
+            timestamp_bytes,
+            samples,
+            sky_pending,
+            sky_ticket,
+            prepare_ms,
+            ..
+        } = snapshot;
+        let queue = &self.context.queue;
+        self.last_prepare_ms = prepare_ms;
+        let view = readback
             .buffer
-            .slice(0..readback_bytes as u64 + timestamp_bytes)
+            .slice(0..readback_bytes as u64 + timestamp_bytes as u64)
             .get_mapped_range();
         self.last_wait_ms = submitted.elapsed().as_secs_f32() * 1000.0;
         let timestamp_ms = if self.timestamps.is_some() {
@@ -890,7 +952,8 @@ impl GpuTracer {
             .into_iter()
             .zip(view[face_bytes..readback_bytes].chunks_exact(SKY_RESULT_BYTES))
         {
-            self.sky_cache.store(
+            self.sky_cache.store_ticket(
+                sky_ticket,
                 position,
                 std::array::from_fn(|face| {
                     u32::from_le_bytes(bytes[face * 4..face * 4 + 4].try_into().unwrap())
@@ -898,7 +961,8 @@ impl GpuTracer {
             );
         }
         drop(view);
-        self.readback.buffer.unmap();
+        readback.buffer.unmap();
+        self.readbacks.push(readback);
         self.sky_cache.apply(&mut work.probes);
         self.last_decode_ms = now.elapsed().as_secs_f32() * 1000.0;
         Ok(())

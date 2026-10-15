@@ -86,6 +86,13 @@ struct Corner {
     value: [u32; 6],
     generation: u64,
     pending_batch: u64,
+    pending_generation: u64,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SkyTicket {
+    generation: u64,
+    batch: u64,
 }
 
 #[derive(Default)]
@@ -99,6 +106,9 @@ pub(crate) struct SkyCache {
     lit_faces: u8,
     pub stats: SkyCacheStats,
     pub track_changes: bool,
+    /// Resident submissions can overlap. Do not retrace shared corners that
+    /// already have a still-valid pending measurement.
+    pub deferred_results: bool,
     changes: HashMap<IVec3, super::geometry::Bounds>,
     #[cfg(debug_assertions)]
     audit_sun: Vec<super::validation::retention_audit::SunEvidence>,
@@ -107,6 +117,23 @@ pub(crate) struct SkyCache {
 }
 
 impl SkyCache {
+    pub fn ticket(&self) -> SkyTicket {
+        SkyTicket {
+            generation: self.generation,
+            batch: self.batch,
+        }
+    }
+
+    pub fn store_ticket(&mut self, ticket: SkyTicket, position: IVec3, value: [u32; 6]) {
+        if ticket.generation == self.generation
+            && self
+                .corners
+                .get(&position)
+                .is_some_and(|corner| corner.pending_batch == ticket.batch)
+        {
+            self.store(position, value);
+        }
+    }
     /// Build spatial bins on the tracing worker. Unknown coverage is explicit
     /// conservative evidence, not a claim that the whole sky cache is complete.
     pub fn take_changes(
@@ -159,8 +186,14 @@ impl SkyCache {
                             entry.insert(Corner::default())
                         }
                     };
-                    if entry.generation != self.generation && entry.pending_batch != self.batch {
+                    if entry.generation != self.generation
+                        && entry.pending_batch != self.batch
+                        && (!self.deferred_results
+                            || entry.pending_batch == 0
+                            || entry.pending_generation != self.generation)
+                    {
                         entry.pending_batch = self.batch;
+                        entry.pending_generation = self.generation;
                         pending.push(position);
                     }
                 }
@@ -199,6 +232,7 @@ impl SkyCache {
                 .or_insert(super::geometry::Bounds::point(position));
         }
         corner.value = value;
+        corner.pending_batch = 0;
         // Traversal-budget exhaustion is not a valid forever-cached shadow.
         corner.generation = if value.contains(&0) {
             0
@@ -217,7 +251,9 @@ impl SkyCache {
                     [1; 4]
                 } else {
                     std::array::from_fn(|corner| {
-                        self.corners[&corner_position(probe.voxel(), face, corner)].value[face]
+                        self.corners
+                            .get(&corner_position(probe.voxel(), face, corner))
+                            .map_or(0, |value| value.value[face])
                     })
                 };
                 probe.set_sky(face, value);
@@ -274,7 +310,9 @@ impl SkyCache {
                 });
                 if affected {
                     for position in positions.iter() {
-                        self.corners.get_mut(position).unwrap().generation = 0;
+                        let corner = self.corners.get_mut(position).unwrap();
+                        corner.generation = 0;
+                        corner.pending_batch = 0;
                     }
                 }
                 // Remove retired receivers after edits/unloading. Inspect only
@@ -521,6 +559,37 @@ mod tests {
         let mut probes = probes;
         cache.apply(&mut probes);
         assert!(probes.iter().all(|probe| probe.display[2].sky == [1; 4]));
+    }
+
+    #[test]
+    fn delayed_corners_are_deduplicated_and_cannot_revive_superseded_results() {
+        let scene = floor(&[IVec3::ZERO]);
+        let mut probes = square(IVec3::new(4, 4, 4), 2);
+        let mut sources = sun(Vec3::Y);
+        let mut cache = SkyCache {
+            deferred_results: true,
+            ..default()
+        };
+        let pending = cache.prepare(&scene, &sources, &probes);
+        let first = cache.ticket();
+        assert!(!pending.is_empty());
+        assert!(cache.prepare(&scene, &sources, &probes).is_empty());
+        let position = pending[0];
+        cache.store_ticket(first, position, [2; 6]);
+        assert_eq!(cache.corners[&position].value, [2; 6]);
+        sources.directional[0].radiance.visible *= 2.0;
+        assert!(!cache.prepare(&scene, &sources, &probes).is_empty());
+        let second = cache.ticket();
+        cache.store_ticket(first, position, [3; 6]);
+        assert_eq!(cache.corners[&position].value, [2; 6]);
+        cache.store_ticket(second, position, [4; 6]);
+        assert_eq!(cache.corners[&position].value, [4; 6]);
+        let retired = Arc::new(TransportScene::default());
+        cache.prepare(&retired, &sources, &[] as &[SurfaceProbe]);
+        cache.store_ticket(second, position, [5; 6]);
+        assert!(!cache.corners.contains_key(&position));
+        cache.apply(&mut probes);
+        assert_eq!(probes[0].display[2].sky, [0; 4]);
     }
 
     #[test]
