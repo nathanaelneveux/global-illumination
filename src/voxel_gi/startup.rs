@@ -11,6 +11,8 @@ pub enum TransportBackend {
     Auto,
     /// Experimental persistent GPU measurements; preserve CPU fallback.
     Resident,
+    /// Experimental fresh-path sharing on top of resident measurements.
+    Reuse,
     /// Keep GPU display, but run transport through the independent CPU reference.
     Cpu,
 }

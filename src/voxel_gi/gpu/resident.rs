@@ -15,6 +15,8 @@ struct Slot {
     incarnation: u32,
     revision: u64,
     model_epoch: u64,
+    task_epoch: u64,
+    task_index: u32,
 }
 
 pub(super) struct ResidentAccumulator {
@@ -24,6 +26,8 @@ pub(super) struct ResidentAccumulator {
     free: Vec<u32>,
     high_water: u32,
     incarnation: u32,
+    task_epoch: u64,
+    pub reuse: bool,
     scene: Option<Arc<TransportScene>>,
     origin: Instant,
     #[cfg(test)]
@@ -74,6 +78,8 @@ impl ResidentAccumulator {
             free: Vec::new(),
             high_water: 0,
             incarnation: 0,
+            task_epoch: 0,
+            reuse: false,
             scene: None,
             origin: Instant::now(),
             #[cfg(test)]
@@ -136,6 +142,10 @@ impl ResidentAccumulator {
         self.input_bytes.clear();
         self.cap_bytes.clear();
         self.seed_bytes.clear();
+        self.task_epoch = self
+            .task_epoch
+            .checked_add(1)
+            .ok_or("resident task epoch exhausted")?;
         for job in &work.probes {
             let cap = work.faces[job.faces()]
                 .first()
@@ -171,6 +181,8 @@ impl ResidentAccumulator {
                         incarnation: 0,
                         revision: u64::MAX,
                         model_epoch: u64::MAX,
+                        task_epoch: 0,
+                        task_index: 0,
                     }
                 });
                 let mut seed = u32::MAX;
@@ -198,10 +210,32 @@ impl ResidentAccumulator {
                     });
                 }
                 let task_index = self.input_bytes.len() / 16;
+                slot.task_epoch = self.task_epoch;
+                slot.task_index = task_index as u32;
                 for word in [slot.index, seed, face.history_cap, task_index as u32] {
                     self.input_bytes.extend_from_slice(&word.to_le_bytes());
                 }
             }
+        }
+        if self.reuse {
+            // Use the existing stable ownership index, not a per-frame sort or
+            // another hash table. Selection is geometric, never radiometric.
+            for face in &mut work.faces {
+                face.neighbor = 0;
+                let normal = FACE_OFFSETS[face.face];
+                for offset in FACE_OFFSETS {
+                    if offset.dot(normal) != 0 {
+                        continue;
+                    }
+                    if let Some(slot) = self.slots.get(&(face.voxel + offset, face.face))
+                        && slot.task_epoch == self.task_epoch
+                    {
+                        face.neighbor = slot.task_index + 1;
+                        break;
+                    }
+                }
+            }
+            debug!(target: "voxel_gi_reuse", faces=work.faces.len(), paired=work.faces.iter().filter(|f| f.neighbor != 0).count(), "fresh path neighbors");
         }
         self.input_bytes.extend_from_slice(&self.cap_bytes);
         let device = &context.device;

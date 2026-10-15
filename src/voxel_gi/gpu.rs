@@ -99,16 +99,16 @@ fn encode_tasks(bytes: &mut Vec<u8>, work: &TraceWork, sky: &[IVec3]) {
     let tasks = work
         .faces
         .iter()
-        .map(|face| (face.voxel, face.face as u32, face.sequence))
-        .chain(sky.iter().map(|&position| (position, 0, 0)));
-    for (voxel, face, sequence) in tasks {
+        .map(|face| (face.voxel, face.face as u32, face.sequence, face.neighbor))
+        .chain(sky.iter().map(|&position| (position, 0, 0, 0)));
+    for (voxel, face, sequence, neighbor) in tasks {
         let record = [
             voxel.x as u32,
             voxel.y as u32,
             voxel.z as u32,
             face,
             sequence,
-            0,
+            neighbor,
             0,
             0,
         ]
@@ -223,6 +223,9 @@ impl UploadBuffer {
 
 pub(crate) struct GpuTracer {
     resident: Option<resident::ResidentAccumulator>,
+    reuse_pipeline: Option<ComputePipeline>,
+    reuse_pipelines: bevy::platform::collections::HashMap<(u32, bool, u32), ComputePipeline>,
+    reuse_bindings: Option<CachedBindings<9>>,
     context: GpuTransportDevice,
     pipeline: ComputePipeline,
     module: wgpu::ShaderModule,
@@ -293,6 +296,15 @@ impl GpuTracer {
         Ok(())
     }
 
+    pub(super) fn enable_reuse(&mut self) -> Result<(), String> {
+        self.enable_resident()?;
+        self.resident.as_mut().unwrap().reuse = true;
+        self.entry = "trace_paths_recorded";
+        self.quality_pipelines.clear();
+        self.pipeline_key = (0, false, 0);
+        Ok(())
+    }
+
     pub fn new(context: GpuTransportDevice) -> Result<Self, String> {
         Self::with_kernel(context, true)
     }
@@ -356,6 +368,9 @@ impl GpuTracer {
             });
         Ok(Self {
             resident: None,
+            reuse_pipeline: None,
+            reuse_pipelines: default(),
+            reuse_bindings: None,
             quality_pipelines: [((3, false, 64 / faces_per_workgroup), pipeline.clone())]
                 .into_iter()
                 .collect(),
@@ -719,7 +734,26 @@ impl GpuTracer {
             2
         };
         let timestamp_bytes = timestamp_count as u64 * 8;
-        self.output.ensure(device, readback_bytes)?;
+        // Recorded paths live only within one bounded batch. They are never
+        // read back or retained across changes. Reject oversized experimental
+        // requests before allocation; reference renders use the original path.
+        let scratch_bytes = if self.reuse_pipeline.is_some() && !sky_only {
+            if samples > 64 {
+                return Err("path reuse supports at most 64 paths per dispatch".into());
+            }
+            face_count
+                .checked_mul(samples as usize)
+                .and_then(|n| n.checked_mul(80))
+                .ok_or("path record size overflow")?
+        } else {
+            0
+        };
+        self.output.ensure(
+            device,
+            readback_bytes
+                .checked_add(scratch_bytes)
+                .ok_or("path output size overflow")?,
+        )?;
         let mut readback = self.readbacks.pop().unwrap_or_else(|| {
             UploadBuffer::new(
                 device,
@@ -749,6 +783,13 @@ impl GpuTracer {
         {
             self.bindings = None;
         }
+        if self
+            .reuse_bindings
+            .as_ref()
+            .is_some_and(|cached| cached.buffers != ids)
+        {
+            self.reuse_bindings = None;
+        }
         let sky_ids = [0, 1, 2, 3, 5, 6, 7].map(|index| ids[index]);
         if self
             .sky_bindings
@@ -774,6 +815,18 @@ impl GpuTracer {
                 || self.sky_pipeline.get_bind_group_layout(0).into(),
                 [0, 1, 2, 3, 5, 6, 7].map(|index| (index as u32, buffers[index])),
             ))
+        };
+        let reuse_bindings = if sky_only {
+            None
+        } else {
+            self.reuse_pipeline.as_ref().map(|pipeline| {
+                cached_bindings(
+                    &mut self.reuse_bindings,
+                    device,
+                    || pipeline.get_bind_group_layout(0).into(),
+                    std::array::from_fn(|index| (index as u32, buffers[index])),
+                )
+            })
         };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("GI bounded transport batch"),
@@ -817,6 +870,15 @@ impl GpuTracer {
                 pass.set_pipeline(&self.sky_pipeline);
                 pass.set_bind_group(0, &**bindings, &[]);
                 pass.dispatch_workgroups((sky_pending.len() as u32).div_ceil(64), 1, 1);
+            }
+            if let Some(bindings) = reuse_bindings {
+                pass.set_pipeline(self.reuse_pipeline.as_ref().unwrap());
+                pass.set_bind_group(0, &**bindings, &[]);
+                pass.dispatch_workgroups(
+                    (face_count as u32).div_ceil(self.faces_per_workgroup),
+                    1,
+                    1,
+                );
             }
         }
         if face_count > 0
@@ -1022,6 +1084,39 @@ impl GpuTracer {
             pipeline
         };
         self.pipeline = pipeline;
+        if self.entry == "trace_paths_recorded" {
+            let reuse = if let Some(pipeline) = self.reuse_pipelines.get(&key) {
+                pipeline.clone()
+            } else {
+                let device = &self.context.device;
+                let scope = device
+                    .wgpu_device()
+                    .push_error_scope(wgpu::ErrorFilter::Validation);
+                let constants = [
+                    ("DIFFUSE_HITS", key.0 as f64),
+                    ("LIMITED_REACH", f64::from(key.1)),
+                    ("PATH_LANES", f64::from(lanes)),
+                ];
+                let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("GI compatible path resolve"),
+                    layout: None,
+                    module: &self.module,
+                    entry_point: Some("resolve_reused_faces"),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &constants,
+                        ..default()
+                    },
+                    cache: None,
+                });
+                if let Some(error) = bevy::tasks::block_on(scope.pop()) {
+                    return Err(error.to_string());
+                }
+                self.reuse_pipelines.insert(key, pipeline.clone());
+                pipeline
+            };
+            self.reuse_pipeline = Some(reuse);
+            self.reuse_bindings = None;
+        }
         self.pipeline_key = key;
         self.faces_per_workgroup = 64 / lanes;
         // Auto-layout bind groups belong to their pipeline, even when every
@@ -1055,6 +1150,9 @@ mod refinement;
 #[cfg(test)]
 #[path = "gpu/terminal_mixture.rs"]
 mod terminal_mixture;
+
+#[cfg(test)]
+mod reuse_tests;
 
 #[cfg(test)]
 pub(super) mod tests {

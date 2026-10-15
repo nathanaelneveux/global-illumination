@@ -139,6 +139,8 @@ pub(crate) struct FaceWork {
     pub updated_at: Option<Instant>,
     pub presentation: Vec4,
     pub resident: UVec2,
+    /// Fresh coplanar donor in this dispatch, encoded as task index plus one.
+    pub neighbor: u32,
 }
 
 impl TraceWork {
@@ -224,6 +226,7 @@ impl TraceWork {
                     .indirect
                     .extend(probe.display[face].confidence),
                 resident: UVec2::ZERO,
+                neighbor: 0,
                 history_cap: if restart {
                     0
                 } else {
