@@ -319,7 +319,7 @@ fn reconcile_scene_page(
             .or_default()
             .push(descriptor.voxel);
         if display_changed {
-            runtime.mark_display_dirty(descriptor.voxel);
+            runtime.mark_topology_value_dirty(descriptor.voxel);
         }
         field.probes.insert_box(descriptor.voxel, probe);
     }

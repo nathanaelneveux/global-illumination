@@ -568,14 +568,16 @@ impl PreparedGpuCache {
                 added.push(voxel);
             }
         }
-        if !patch_gpu_topology(
+        if patch_gpu_topology(
             &mut self.cache,
             &self.patches,
             probes,
             &removed,
             &added,
             &changed,
-        ) {
+        )
+        .is_err()
+        {
             return false;
         }
         // Fold private patches into the initial asset bytes in the same bounded
@@ -919,8 +921,15 @@ pub(crate) fn install_prepared_gpu_cache(
     }
 }
 
-/// Apply sparse probe additions/removals without replacing either GPU buffer.
-/// Tombstones preserve collision chains for the shader's linear probing.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TopologyPatchError {
+    Busy,
+    Capacity,
+}
+
+/// Apply sparse probe additions/removals and required face values atomically.
+/// Tombstones preserve collision chains. Contention and capacity failures
+/// leave the live generation untouched; the caller retains/rebuilds the delta.
 pub(crate) fn patch_gpu_topology(
     cache: &mut GpuTransportCache,
     patches: &GpuProbePatchQueue,
@@ -928,7 +937,7 @@ pub(crate) fn patch_gpu_topology(
     removed: &[IVec3],
     added: &[IVec3],
     changed: &HashSet<IVec3>,
-) -> bool {
+) -> Result<(), TopologyPatchError> {
     // Preflight only the delta. A failed allocation/hash insertion must leave
     // the published cache completely intact until its replacement is ready.
     // Cloning the full world-sized mirrors would defeat sparse edit uploads.
@@ -967,7 +976,7 @@ pub(crate) fn patch_gpu_topology(
             slot
         } else {
             if high_water >= cache.probe_capacity {
-                return false;
+                return Err(TopologyPatchError::Capacity);
             }
             let slot = high_water;
             high_water += 1;
@@ -986,7 +995,7 @@ pub(crate) fn patch_gpu_topology(
             hash_slot = (hash_slot + 1) & (cache.hash_entries.len() - 1);
         }
         if !found {
-            return false;
+            return Err(TopologyPatchError::Capacity);
         }
         let entry = GpuHashEntry {
             voxel,
@@ -996,7 +1005,11 @@ pub(crate) fn patch_gpu_topology(
         planned.push((entry, hash_slot, gpu_probe(probe)));
     }
 
-    let mut state = patches.state.lock().unwrap();
+    let mut state = match patches.state.try_lock() {
+        Ok(state) => state,
+        Err(std::sync::TryLockError::WouldBlock) => return Err(TopologyPatchError::Busy),
+        Err(std::sync::TryLockError::Poisoned(error)) => panic!("{error}"),
+    };
     for voxel in &removed {
         if let Some(probe_slot) = cache.slots.remove(voxel) {
             cache.free_probe_slots.push(probe_slot);
@@ -1028,7 +1041,7 @@ pub(crate) fn patch_gpu_topology(
     patch_values_locked(&mut state, cache, probes, changed);
     // Addressing is generation-stable: an extracted material must already
     // accept a freshly allocated slot before its new hash entry becomes live.
-    true
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1289,6 +1302,142 @@ pub(crate) fn prepare_texture_array(
 mod tests {
     use super::*;
     use crate::voxel_gi::spectrum::EnergySpectrum;
+
+    #[test]
+    fn local_topology_defers_on_contention_and_does_not_drain_radiance_backlog() {
+        use super::super::{
+            VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, upload_transport_cache,
+        };
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy_voxel_world::rendering::VoxelWorldMaterialHandle;
+        use std::time::{Duration, Instant};
+        let mut field = VoxelEnergyField::default();
+        field.order = (0..8192).map(|x| IVec3::new(x, 0, 0)).collect();
+        for &voxel in &field.order {
+            field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
+        }
+        let prepared = PreparedGpuCache::new(build_gpu_cache(snapshot_gpu_probes(
+            &field.probes,
+            &field.order,
+        )));
+        let mut buffers = Assets::<ShaderBuffer>::default();
+        let mut assets = VoxelTransportAssets {
+            texture: default(),
+            probes: default(),
+            hash_entries: default(),
+        };
+        let mut patches = prepared.patches.clone();
+        let mut cache = GpuTransportCache::default();
+        let mut materials = Assets::default();
+        let handle = materials.add(material_template(&assets));
+        install_prepared_gpu_cache(
+            prepared,
+            &mut cache,
+            &mut patches,
+            &mut assets,
+            &mut buffers,
+            &mut materials,
+            &handle,
+        );
+        let old_handle = assets.probes.id();
+        let far_slot = cache.slots[&(IVec3::X * 8191)];
+        let far_bytes = patches.state.lock().unwrap().probe_mirror
+            [far_slot * GPU_PROBE_BYTES..(far_slot + 1) * GPU_PROBE_BYTES]
+            .to_vec();
+        let mut runtime = VoxelGiRuntime {
+            last_gpu_upload: Instant::now(),
+            ..default()
+        };
+        for &voxel in &field.order {
+            field.probes.get_mut(&voxel).unwrap().display[2].indirect = Vec3::ONE;
+            runtime.mark_display_dirty(voxel);
+        }
+        let added = IVec3::X * 8192;
+        field.probes.remove(&IVec3::ZERO);
+        field.probes.insert(added, SurfaceProbe::new(added, 4));
+        field.probes.get_mut(&IVec3::X).unwrap().update_face_mask(5);
+        runtime.gpu_removed.push(IVec3::ZERO);
+        runtime.gpu_added.push(added);
+        runtime.mark_topology_value_dirty(IVec3::X);
+        runtime.mark_topology_value_dirty(added);
+        let shared = patches.state.clone();
+        let mut world = World::new();
+        world.insert_resource(runtime);
+        world.insert_resource(field);
+        world.insert_resource(assets);
+        world.insert_resource(patches);
+        world.insert_resource(cache);
+        world.insert_resource(buffers);
+        world.insert_resource(materials);
+        world.insert_resource(VoxelWorldMaterialHandle { handle });
+        world.insert_resource(VoxelGiSettings {
+            display_upload_interval: Duration::from_secs(3600),
+            ..default()
+        });
+        world.init_resource::<super::super::telemetry::GiWorkTimings>();
+        let lock = shared.lock().unwrap();
+        world.run_system_once(upload_transport_cache).unwrap();
+        assert_eq!(
+            world.resource::<VoxelGiRuntime>().gpu_value_dirty.len(),
+            8193
+        );
+        assert_eq!(
+            world.resource::<VoxelGiRuntime>().gpu_topology_values.len(),
+            2
+        );
+        assert!(world.resource::<VoxelGiRuntime>().gpu_topology_dirty);
+        assert!(!world.resource::<VoxelGiRuntime>().gpu_rebuild_required);
+        assert!(
+            world
+                .resource::<GpuTransportCache>()
+                .slots
+                .contains_key(&IVec3::ZERO)
+        );
+        assert!(lock.pending_probes.is_empty());
+        assert!(lock.pending_hash.is_empty());
+        drop(lock);
+
+        world.run_system_once(upload_transport_cache).unwrap();
+        assert_eq!(
+            world.resource::<VoxelGiRuntime>().gpu_value_dirty.len(),
+            8190
+        );
+        assert!(
+            world
+                .resource::<VoxelGiRuntime>()
+                .gpu_topology_values
+                .is_empty()
+        );
+        assert!(!world.resource::<VoxelGiRuntime>().gpu_topology_dirty);
+        assert_eq!(
+            world.resource::<VoxelTransportAssets>().probes.id(),
+            old_handle
+        );
+        let cache = world.resource::<GpuTransportCache>();
+        assert!(!cache.slots.contains_key(&IVec3::ZERO));
+        let state = shared.lock().unwrap();
+        assert_eq!(
+            state.pending_probes.len(),
+            2,
+            "only topology-required values may bypass the timer"
+        );
+        assert_eq!(
+            &state.probe_mirror[far_slot * GPU_PROBE_BYTES..(far_slot + 1) * GPU_PROBE_BYTES],
+            far_bytes
+        );
+        for voxel in [IVec3::X, added] {
+            let slot = cache.slots[&voxel];
+            let expected = ShaderBuffer::from(vec![gpu_probe(
+                &world.resource::<VoxelEnergyField>().probes[&voxel],
+            )])
+            .data
+            .unwrap();
+            assert_eq!(
+                &state.probe_mirror[slot * GPU_PROBE_BYTES..(slot + 1) * GPU_PROBE_BYTES],
+                expected
+            );
+        }
+    }
 
     #[test]
     fn live_values_never_wait_for_render_and_resume_without_losing_dirty_keys() {
@@ -1718,14 +1867,17 @@ mod tests {
             high_water: build.high_water,
             ready: true,
         };
-        assert!(patch_gpu_topology(
-            &mut cache,
-            &patches,
-            &probes,
-            &[voxel_a],
-            &[voxel_c],
-            &HashSet::new(),
-        ));
+        assert!(
+            patch_gpu_topology(
+                &mut cache,
+                &patches,
+                &probes,
+                &[voxel_a],
+                &[voxel_c],
+                &HashSet::new(),
+            )
+            .is_ok()
+        );
         assert_eq!(cache.slots[&voxel_c], old_slot);
         assert!(!cache.slots.contains_key(&voxel_a));
         for voxel in [voxel_b, voxel_c] {
@@ -1784,14 +1936,17 @@ mod tests {
             }
             let before_slots = cache.slots.clone();
             let before_hash = ShaderBuffer::from(cache.hash_entries.clone()).data.unwrap();
-            assert!(!patch_gpu_topology(
-                &mut cache,
-                &patches,
-                &probes,
-                &[a],
-                &[b, c],
-                &HashSet::new()
-            ));
+            assert!(
+                patch_gpu_topology(
+                    &mut cache,
+                    &patches,
+                    &probes,
+                    &[a],
+                    &[b, c],
+                    &HashSet::new()
+                )
+                .is_err()
+            );
             assert_eq!(cache.slots, before_slots);
             assert_eq!(
                 ShaderBuffer::from(cache.hash_entries.clone()).data.unwrap(),
@@ -1901,14 +2056,17 @@ mod tests {
             &mut materials,
             &Handle::default(),
         );
-        assert!(patch_gpu_topology(
-            &mut cache,
-            &patches,
-            &probes,
-            &[a, transient],
-            &[c, transient],
-            &HashSet::from([b, c]),
-        ));
+        assert!(
+            patch_gpu_topology(
+                &mut cache,
+                &patches,
+                &probes,
+                &[a, transient],
+                &[c, transient],
+                &HashSet::from([b, c]),
+            )
+            .is_ok()
+        );
         assert_eq!(cache.slots.len(), probes.len());
         assert!(!cache.slots.contains_key(&a));
         assert!(!cache.slots.contains_key(&transient));
@@ -2209,7 +2367,7 @@ mod tests {
         {
             let mut runtime = world.resource_mut::<VoxelGiRuntime>();
             runtime.gpu_topology_dirty = true;
-            runtime.mark_display_dirty(voxel);
+            runtime.mark_topology_value_dirty(voxel);
         }
         world.run_system_once(upload_transport_cache).unwrap();
         let expected_faces = ShaderBuffer::from(vec![gpu_probe(

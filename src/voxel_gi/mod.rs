@@ -279,6 +279,9 @@ struct VoxelGiRuntime {
     gpu_rebuild_required: bool,
     gpu_added: Vec<IVec3>,
     gpu_removed: Vec<IVec3>,
+    /// Values that must publish atomically with face/hash topology, not the
+    /// independent backlog of ordinary radiance updates.
+    gpu_topology_values: HashSet<IVec3>,
     gpu_task: Option<Task<PreparedGpuCache>>,
     gpu_snapshot: Option<GpuSnapshot>,
     gpu_prepared: Option<PreparedGpuCache>,
@@ -352,6 +355,7 @@ impl Default for VoxelGiRuntime {
             gpu_rebuild_required: false,
             gpu_added: Vec::new(),
             gpu_removed: Vec::new(),
+            gpu_topology_values: default(),
             gpu_task: None,
             gpu_snapshot: None,
             gpu_prepared: None,

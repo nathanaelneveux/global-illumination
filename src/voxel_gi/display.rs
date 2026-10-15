@@ -3,8 +3,9 @@
 //! receiving lighting updates throughout preparation.
 use super::render::{
     GpuProbe, GpuProbePatchQueue, GpuSnapshot, GpuTransportCache, PreparedGpuCache,
-    VoxelTransportAssets, VoxelTransportMaterial, build_gpu_cache_for_residency, gpu_probe,
-    install_prepared_gpu_cache, patch_gpu_topology, try_patch_probe_values,
+    TopologyPatchError, VoxelTransportAssets, VoxelTransportMaterial,
+    build_gpu_cache_for_residency, gpu_probe, install_prepared_gpu_cache, patch_gpu_topology,
+    try_patch_probe_values,
 };
 use super::telemetry::{DisplayStage, GiWorkTimings, MainStage};
 use super::{VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, field::ProbeLookup};
@@ -100,6 +101,14 @@ impl FromIterator<IVec3> for DisplayDirtyQueue {
 }
 
 impl VoxelGiRuntime {
+    /// Face masks/materials belong to the topology transaction even when the
+    /// voxel already has a slot. Ordinary sampled lighting never enters it.
+    pub(super) fn mark_topology_value_dirty(&mut self, voxel: IVec3) {
+        self.gpu_topology_dirty = true;
+        self.gpu_topology_values.insert(voxel);
+        self.mark_display_dirty(voxel);
+    }
+
     /// One actual presentation change feeds both consumers. Pending live
     /// uploads are not new changes and must not restart private catch-up.
     pub(super) fn mark_display_dirty(&mut self, voxel: IVec3) {
@@ -123,6 +132,9 @@ fn record_changes(runtime: &mut VoxelGiRuntime, live: bool) {
     runtime
         .gpu_catchup_dirty
         .extend(runtime.gpu_removed.drain(..));
+    runtime
+        .gpu_catchup_dirty
+        .extend(runtime.gpu_topology_values.drain());
     if !live {
         // Before the first publication there is no old generation to update.
         // Retaining this set would re-enqueue unchanged keys every frame forever.
@@ -275,18 +287,34 @@ pub(super) fn upload_transport_cache(
     {
         let added = std::mem::take(&mut runtime.gpu_added);
         let removed = std::mem::take(&mut runtime.gpu_removed);
-        if patch_gpu_topology(
+        let changed = std::mem::take(&mut runtime.gpu_topology_values);
+        match patch_gpu_topology(
             &mut cache,
             &patch_queue,
             &field.probes,
             &removed,
             &added,
-            runtime.gpu_value_dirty.keys(),
+            &changed,
         ) {
-            runtime.gpu_topology_dirty = false;
-            runtime.gpu_value_dirty.clear();
-        } else {
-            runtime.gpu_rebuild_required = true;
+            Ok(()) => {
+                runtime.gpu_topology_dirty = false;
+                // Only this transaction's values have been encoded. Unrelated
+                // radiance remains queued for the ordinary time-sliced path.
+                for voxel in changed.iter().chain(&added).chain(&removed) {
+                    runtime.gpu_value_dirty.captured(voxel);
+                }
+            }
+            Err(TopologyPatchError::Busy) => {
+                runtime.gpu_added = added;
+                runtime.gpu_removed = removed;
+                runtime.gpu_topology_values = changed;
+                // Do not publish the required values outside their transaction.
+                // The renderer owns the mirror; the game thread never waits.
+                return;
+            }
+            Err(TopologyPatchError::Capacity) => {
+                runtime.gpu_rebuild_required = true;
+            }
         }
     }
     timing.display_checkpoint(DisplayStage::Topology);
