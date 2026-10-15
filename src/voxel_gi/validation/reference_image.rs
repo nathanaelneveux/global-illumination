@@ -412,7 +412,7 @@ impl ReferenceImage {
                         "scene_generation":generation,"origin":origin.to_array(),
                         "transport":transport,"face_count":sites.len(),
                         "sampler":if super::sample_sweep::reuse_requested() {"fresh-paired-reuse"} else {"independent-paths"},
-                        "batch_faces":if super::sample_sweep::reuse_requested(){2048}else{512},
+                        "batch_faces":if super::sample_sweep::reuse_requested() || super::sample_sweep::spatial_requested(){2048}else{512},
                         "sampling_importance":[importance.visible.x,importance.visible.y,importance.visible.z,importance.infrared,importance.ionizing],
                         "windows":sweep,
                         "note":"Same exact frozen scene and sites as cave-reference.json. Unfiltered production estimator prefixes, disjoint unaligned sequence windows, no resets or scheduling. Equal-confidence connected corners; images use normal textures and tonemapping. Not an interactive timing or temporal-filter study."})).unwrap())
@@ -525,6 +525,13 @@ impl ReferenceImage {
             for (label, windows) in [("samples",sweep),("control",control)] {
               for (window, data) in windows.into_iter().enumerate() {
                 for prefix in data.prefixes {
+                    if super::sample_sweep::spatial_requested() {
+                        frames.push_back(ReferenceFrame {
+                            name:format!("spatial-{}-window-{window}",prefix.paths),
+                            values:super::sample_sweep::spatial_values(&sites, &prefix), pending:default(),
+                            confidence:None, sky:None,
+                        });
+                    }
                     frames.push_back(ReferenceFrame {
                         name:format!("{label}-{}-window-{window}",prefix.paths),
                         values:prefix.means, pending:default(),

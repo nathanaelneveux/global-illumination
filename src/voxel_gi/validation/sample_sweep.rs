@@ -27,7 +27,11 @@ const STARTS: [u32; 4] = [0, 574_117, 1_853_903, 3_102_719];
 pub(super) type Means = Vec<[f64; 5]>;
 
 pub(super) fn requested() -> bool {
-    std::env::var("VOXEL_GI_VALIDATE_SAMPLE_SWEEP").is_ok_and(|v| v == "1")
+    std::env::var("VOXEL_GI_VALIDATE_SAMPLE_SWEEP").is_ok_and(|v| v == "1") || spatial_requested()
+}
+
+pub(super) fn spatial_requested() -> bool {
+    std::env::var("VOXEL_GI_VALIDATE_SPATIAL_SWEEP").is_ok_and(|v| v == "1")
 }
 
 pub(super) fn reuse_requested() -> bool {
@@ -35,7 +39,9 @@ pub(super) fn reuse_requested() -> bool {
 }
 
 fn counts(control: bool) -> &'static [u32] {
-    if reuse_requested() && control {
+    if spatial_requested() {
+        &[16, 64, 256, 512, 1024, 2048, 4096]
+    } else if reuse_requested() && control {
         &[1024, 1536, 2048]
     } else if reuse_requested() {
         &[64, 256, 512, 768, 1024, 1280, 1536, 2048, 4096]
@@ -58,6 +64,8 @@ pub(super) fn path_count(faces: usize) -> u64 {
 pub(super) struct Prefix {
     pub paths: u32,
     pub means: Means,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub second_moments: Option<Vec<[f32; 3]>>,
     /// Sum of native compute-pass timestamps through this whole-scene prefix.
     /// None when timestamps are unavailable; never substitute readback latency.
     pub gpu_ms: Option<f64>,
@@ -94,12 +102,17 @@ pub(super) fn run(
             .map(|&paths| Prefix {
                 paths,
                 means: vec![[0.0; 5]; sites.len()],
+                second_moments: spatial_requested().then(|| vec![[0.0; 3]; sites.len()]),
                 gpu_ms: Some(0.0),
             })
             .collect();
         // Reuse needs a representative neighborhood, not a 512-face reference
         // serialization tile. Both samplers get identical 2048-face batches.
-        let chunk_size = if reuse_requested() { 2048 } else { 512 };
+        let chunk_size = if reuse_requested() || spatial_requested() {
+            2048
+        } else {
+            512
+        };
         for (chunk_index, chunk) in sites.chunks(chunk_size).enumerate() {
             let mut work = TraceWork {
                 transport,
@@ -116,8 +129,13 @@ pub(super) fn run(
             let mut gpu_ms = Some(0.0_f64);
             for prefix in &mut prefixes {
                 while completed < prefix.paths {
-                    let paths =
-                        (prefix.paths - completed).min(if reuse_requested() { 16 } else { 1024 });
+                    let paths = (prefix.paths - completed).min(
+                        if reuse_requested() || spatial_requested() {
+                            16
+                        } else {
+                            1024
+                        },
+                    );
                     gpu.trace_compact(
                         scene.clone(),
                         sources,
@@ -141,6 +159,10 @@ pub(super) fn run(
                     }
                     prefix.means[chunk_index * chunk_size + i] =
                         super::reference_oracle::channels(face.radiance).map(f64::from);
+                    if let Some(moments) = &mut prefix.second_moments {
+                        moments[chunk_index * chunk_size + i] =
+                            face.second_moment.visible.to_array();
+                    }
                 }
                 prefix.gpu_ms = prefix.gpu_ms.zip(gpu_ms).map(|(sum, ms)| sum + ms);
             }
@@ -151,6 +173,53 @@ pub(super) fn run(
         });
     }
     Ok(windows)
+}
+
+/// Identical nonrecursive filter to the native resident pass, applied to frozen
+/// raw prefixes so temporal response and scheduling do not confound the image
+/// comparison. This oracle is checked against native GPU presentation in tests.
+pub(super) fn spatial_values(sites: &[(IVec3, usize)], prefix: &Prefix) -> Means {
+    use super::super::spatial::{Sample, neighbors, reconstruct};
+    let indices: bevy::platform::collections::HashMap<_, _> = sites
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(i, k)| (k, i))
+        .collect();
+    let moments = prefix
+        .second_moments
+        .as_ref()
+        .expect("spatial sweep moments");
+    let samples: Vec<_> = prefix
+        .means
+        .iter()
+        .zip(moments)
+        .map(|(m, s)| {
+            let mean = Vec3::new(m[0] as f32, m[1] as f32, m[2] as f32);
+            Sample {
+                mean,
+                second: Vec3::from_array(*s),
+                count: prefix.paths,
+                display: mean,
+            }
+        })
+        .collect();
+    sites
+        .iter()
+        .enumerate()
+        .map(|(i, &(voxel, face))| {
+            let rgb = reconstruct(
+                samples[i],
+                neighbors(voxel, face, |p, f| {
+                    indices.get(&(p, f)).map(|&i| samples[i])
+                }),
+                1.0,
+            );
+            let mut result = prefix.means[i];
+            result[..3].copy_from_slice(&rgb.to_array().map(f64::from));
+            result
+        })
+        .collect()
 }
 
 #[cfg(test)]
