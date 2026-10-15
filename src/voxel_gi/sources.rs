@@ -6,6 +6,7 @@ use super::{
     advance_transport_revision, request_global_refresh, sky_cache, telemetry::GiWorkTimings,
     update_stats_from_counters,
 };
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use std::cmp::Ordering;
 use std::sync::Arc;
@@ -80,6 +81,49 @@ pub struct TransportSources {
     pub points: Vec<PointTransportLight>,
 }
 
+/// Detect host input changes before rebuilding/canonicalizing a snapshot.
+/// Removal readers must all advance, even if another input already changed.
+/// Raster visibility is deliberately not a source switch: offscreen/hidden
+/// presentation must not implicitly turn off persistent heat or radiation.
+#[derive(SystemParam)]
+pub(super) struct SourceInputs<'w, 's> {
+    changed: Query<
+        'w,
+        's,
+        (),
+        (
+            Or<(
+                With<PointLight>,
+                With<DirectionalLight>,
+                With<EnergyEmitter>,
+            )>,
+            Or<(
+                Changed<PointLight>,
+                Changed<DirectionalLight>,
+                Changed<EnergyEmitter>,
+                Changed<GlobalTransform>,
+            )>,
+        ),
+    >,
+    removed_points: RemovedComponents<'w, 's, PointLight>,
+    removed_directional: RemovedComponents<'w, 's, DirectionalLight>,
+    removed_emitters: RemovedComponents<'w, 's, EnergyEmitter>,
+    removed_transforms: RemovedComponents<'w, 's, GlobalTransform>,
+    initialized: Local<'s, bool>,
+}
+
+impl SourceInputs<'_, '_> {
+    fn changed(&mut self, environment_changed: bool) -> bool {
+        let removed = self.removed_points.read().count()
+            + self.removed_directional.read().count()
+            + self.removed_emitters.read().count()
+            + self.removed_transforms.read().count();
+        let first = !*self.initialized;
+        *self.initialized = true;
+        first || environment_changed || removed != 0 || !self.changed.is_empty()
+    }
+}
+
 pub(super) fn synchronize_transport_sources(
     mut runtime: ResMut<VoxelGiRuntime>,
     mut field: ResMut<VoxelEnergyField>,
@@ -93,8 +137,12 @@ pub(super) fn synchronize_transport_sources(
     >,
     mut timings: ResMut<GiWorkTimings>,
     mut next: Local<TransportSources>,
+    mut inputs: SourceInputs,
 ) {
     let _timing = timings.main_scope(super::telemetry::MainStage::Sources);
+    if !inputs.changed(environment.is_changed()) {
+        return;
+    }
     next.environment = environment.0.bounded(1e12);
     next.directional.clear();
     next.points.clear();
@@ -286,6 +334,141 @@ impl Default for TransportSources {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn source_app() -> App {
+        let mut app = App::new();
+        app.init_resource::<VoxelGiRuntime>()
+            .init_resource::<VoxelEnergyField>()
+            .init_resource::<VoxelGiStats>()
+            .init_resource::<VoxelGiEnvironment>()
+            .init_resource::<GiWorkTimings>()
+            .add_systems(Update, synchronize_transport_sources);
+        app
+    }
+
+    #[test]
+    fn change_detection_covers_reclassification_removal_and_reactivation() {
+        #[derive(Resource, Default)]
+        struct Rebuilds(usize);
+        let mut app = source_app();
+        app.init_resource::<Rebuilds>().add_systems(
+            Update,
+            |mut inputs: SourceInputs,
+             environment: Res<VoxelGiEnvironment>,
+             mut count: ResMut<Rebuilds>| {
+                count.0 += usize::from(inputs.changed(environment.is_changed()));
+            },
+        );
+        let entity = app
+            .world_mut()
+            .spawn((
+                EnergyEmitter {
+                    spectrum: EnergySpectrum::new(Vec3::ZERO, 2.0, 0.0),
+                    ..default()
+                },
+                GlobalTransform::IDENTITY,
+            ))
+            .id();
+        app.update();
+        let expected = app.world().resource::<VoxelGiRuntime>().sources.clone();
+        for _ in 0..8 {
+            app.update();
+        }
+        assert_eq!(app.world().resource::<Rebuilds>().0, 1);
+        assert_eq!(app.world().resource::<VoxelGiRuntime>().sources, expected);
+
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(PointLight::default());
+        app.update();
+        assert!(
+            app.world().resource::<VoxelGiRuntime>().sources.points[0]
+                .intensity
+                .visible
+                .max_element()
+                > 0.0
+        );
+        app.world_mut().entity_mut(entity).remove::<PointLight>();
+        app.update();
+        assert_eq!(app.world().resource::<VoxelGiRuntime>().sources, expected);
+        app.world_mut()
+            .entity_mut(entity)
+            .remove::<GlobalTransform>();
+        app.update();
+        assert!(
+            app.world()
+                .resource::<VoxelGiRuntime>()
+                .sources
+                .points
+                .is_empty()
+        );
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(GlobalTransform::from_translation(Vec3::X));
+        app.update();
+        assert_eq!(
+            app.world().resource::<VoxelGiRuntime>().sources.points[0].position,
+            Vec3::X
+        );
+        app.world_mut().entity_mut(entity).remove::<EnergyEmitter>();
+        app.update();
+        assert!(
+            app.world()
+                .resource::<VoxelGiRuntime>()
+                .sources
+                .points
+                .is_empty()
+        );
+        let rebuilds = app.world().resource::<Rebuilds>().0;
+        app.update();
+        assert_eq!(
+            app.world().resource::<Rebuilds>().0,
+            rebuilds,
+            "removals are consumed once"
+        );
+        assert_eq!(rebuilds, 6);
+    }
+
+    #[test]
+    #[ignore = "paired static analytic source synchronization study; no renderer"]
+    fn static_source_sync_cost_study() {
+        for count in [100, 10_000] {
+            let mut app = source_app();
+            for x in 0..count {
+                app.world_mut().spawn((
+                    PointLight::default(),
+                    GlobalTransform::from_translation(Vec3::X * x as f32),
+                ));
+            }
+            app.update();
+            let expected = app.world().resource::<VoxelGiRuntime>().sources.clone();
+            let mut times: [Vec<f64>; 2] = default();
+            for round in 0..24 {
+                for mode in [round % 2, 1 - round % 2] {
+                    if mode == 0 {
+                        // Equal-valued changed input forces the original complete
+                        // snapshot work without changing transport revisions.
+                        app.world_mut()
+                            .resource_mut::<VoxelGiEnvironment>()
+                            .set_changed();
+                    }
+                    let start = std::time::Instant::now();
+                    app.update();
+                    if round >= 4 {
+                        times[mode].push(start.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    assert_eq!(app.world().resource::<VoxelGiRuntime>().sources, expected);
+                }
+            }
+            for t in &mut times {
+                t.sort_by(f64::total_cmp);
+            }
+            println!(
+                "STATIC_SOURCES count={count} full_ms={:.4} gated_ms={:.4} exact=true",
+                times[0][10], times[1][10]
+            );
+        }
+    }
 
     #[test]
     fn empty_sources_are_omitted_but_each_transport_band_can_activate_them() {
