@@ -97,8 +97,7 @@ impl HouseRun {
                     if matches!(world.get_voxel(voxel), WorldVoxel::Solid(_)) {
                         removed += 1;
                     }
-                    world.set_voxel(voxel, WorldVoxel::Air);
-                    dirty.mark_voxel(voxel);
+                    dirty.set_voxel(world, voxel, WorldVoxel::Air);
                 }
                 self.events.push(json!({"name": name, "scheduled_s": at,
                     "at_s": elapsed, "requested_voxels": voxels.iter().map(|v| v.to_array()).collect::<Vec<_>>(),

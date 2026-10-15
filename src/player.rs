@@ -329,8 +329,7 @@ fn edit_voxels(
 
     if breaking {
         let edited_position = hit.position.as_ivec3();
-        voxel_world.set_voxel(edited_position, WorldVoxel::Air);
-        voxel_gi_dirty.mark_voxel(edited_position);
+        voxel_gi_dirty.set_voxel(&mut voxel_world, edited_position, WorldVoxel::Air);
     }
 
     if let Some(material) = material {
@@ -354,8 +353,7 @@ fn edit_voxels(
             } else {
                 material.voxel()
             };
-            voxel_world.set_voxel(placement_position, voxel);
-            voxel_gi_dirty.mark_voxel(placement_position);
+            voxel_gi_dirty.set_voxel(&mut voxel_world, placement_position, voxel);
         }
     }
 }

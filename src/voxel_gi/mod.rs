@@ -165,10 +165,22 @@ impl Plugin for VoxelGiPlugin {
 #[derive(Resource, Default)]
 pub struct VoxelGiDirty {
     voxels: HashSet<IVec3>,
+    edits: bevy::platform::collections::HashMap<IVec3, u16>,
+    complete_edit_tracking: bool,
     all_loaded: bool,
 }
 
 impl VoxelGiDirty {
+    /// Opt in only when every host write uses the adapter's `set_voxel`, or
+    /// explicitly marks an unknown edit with `mark_voxel`/`mark_all_loaded`.
+    /// BVW chunk-update messages alone cannot distinguish tracked/untracked writes.
+    pub fn tracked() -> Self {
+        Self {
+            complete_edit_tracking: true,
+            ..default()
+        }
+    }
+
     pub fn mark_voxel(&mut self, voxel: IVec3) {
         self.voxels.insert(voxel);
     }
@@ -238,6 +250,7 @@ struct VoxelGiRuntime {
     loaded_pages: HashSet<IVec3>,
     dirty_pages: HashSet<IVec3>,
     full_resample_pages: HashSet<IVec3>,
+    page_edits: bvw::PageEdits,
     dirty_voxels: HashSet<IVec3>,
     removed_pages: HashSet<IVec3>,
     last_world_change: Instant,
@@ -317,6 +330,7 @@ impl Default for VoxelGiRuntime {
             loaded_pages: HashSet::new(),
             dirty_pages: HashSet::new(),
             full_resample_pages: HashSet::new(),
+            page_edits: default(),
             dirty_voxels: HashSet::new(),
             removed_pages: HashSet::new(),
             last_world_change: now,

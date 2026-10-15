@@ -35,7 +35,8 @@ impl ResponseRun {
                     for x in 4..=12 {
                         let position = IVec3::new(x, y, z);
                         let solid = x == 4 || x == 12 || y <= 38 || y == 45 || z == -12 || z == -4;
-                        world.set_voxel(
+                        dirty.set_voxel(
+                            world,
                             position,
                             if solid {
                                 WorldVoxel::Solid(2)
@@ -43,7 +44,6 @@ impl ResponseRun {
                                 WorldVoxel::Air
                             },
                         );
-                        dirty.mark_voxel(position);
                     }
                 }
             }
@@ -55,8 +55,7 @@ impl ResponseRun {
                 },
             );
             let lamp = IVec3::new(6, 42, -8);
-            world.set_voxel(lamp, WorldVoxel::Solid(251));
-            dirty.mark_voxel(lamp);
+            dirty.set_voxel(world, lamp, WorldVoxel::Solid(251));
             for camera in cameras {
                 commands
                     .entity(camera)
@@ -105,8 +104,7 @@ impl ResponseRun {
                     _ => (EMITTER, WorldVoxel::Air),
                 }
             };
-            world.set_voxel(position, material);
-            dirty.mark_voxel(position);
+            dirty.set_voxel(world, position, material);
             self.stage = stage;
             self.samples.push(json!({"event": stage, "at_s": elapsed}));
         }

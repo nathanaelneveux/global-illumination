@@ -95,6 +95,9 @@ fn main() -> AppExit {
         .resource::<assets::TemplateAssets>()
         .voxel_texture
         .clone();
+    // All prototype writes use VoxelGiDirty::set_voxel; coarse external changes
+    // explicitly request resampling. BVW remains the terrain/mesh host.
+    app.insert_resource(voxel_gi::VoxelGiDirty::tracked());
     app.add_plugins((
         VoxelGiPlugin { voxel_texture },
         TerrainPlugin,

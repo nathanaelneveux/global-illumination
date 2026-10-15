@@ -465,8 +465,7 @@ pub(super) fn run_validation(
                     ..default()
                 },
             );
-            world.set_voxel(position, WorldVoxel::Solid(250));
-            dirty.mark_voxel(position);
+            dirty.set_voxel(&mut world, position, WorldVoxel::Solid(250));
             run.emitter_started = true;
         }
         let center = run.center;
@@ -531,8 +530,7 @@ pub(super) fn run_validation(
         if let Some((voxel, material, removing)) = edit {
             let targets = edit_receivers(voxel, removing, |position| world.get_voxel(position));
             run.metrics.edit(&field, targets);
-            world.set_voxel(voxel, material);
-            dirty.mark_voxel(voxel);
+            dirty.set_voxel(&mut world, voxel, material);
             run.edits += 1;
         }
         run.edit_attempts += 1;
@@ -551,14 +549,12 @@ pub(super) fn run_validation(
     {
         let targets = edit_receivers(voxel, false, |position| world.get_voxel(position));
         run.metrics.edit(&field, targets);
-        world.set_voxel(voxel, material);
-        dirty.mark_voxel(voxel);
+        dirty.set_voxel(&mut world, voxel, material);
         run.edits += 1;
     }
     if elapsed >= 65.0 {
         if let Some((position, voxel, transport)) = run.emissive.take() {
-            world.set_voxel(position, voxel);
-            dirty.mark_voxel(position);
+            dirty.set_voxel(&mut world, position, voxel);
             transport_materials.set(250, transport);
         }
         if let Some(entity) = run.light.take() {
