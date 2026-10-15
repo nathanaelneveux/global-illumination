@@ -9,7 +9,7 @@ The numerical model and the stable display policy are deliberately separate.
 ```text
 host chunks / edits / sources / material table
                    |
-    scene worker: immutable pages, NAADFs, one SceneChanges comparison
+    scene worker: immutable pages, NAADFs, shared region-change lineage
                    |
     main world: bounded receiver publication + revision journals
                    |
@@ -29,10 +29,10 @@ host chunks / edits / sources / material table
 | Responsibility | Owner / source |
 | --- | --- |
 | Plugin wiring and runtime state | `src/voxel_gi/mod.rs` |
-| BVW events and generator snapshots | `bvw.rs` |
+| BVW events, tracked edits and immutable page input | `bvw.rs` |
 | Scene/receiver representation | `world.rs`, `field.rs` |
 | Acceleration and packing | `naadf.rs`, `gpu_scene.rs` |
-| Change metadata and retention | `geometry.rs`, `retention.rs`, `sources.rs`, `revision.rs` |
+| Change metadata and retention | `world/delta.rs`, `geometry.rs`, `retention.rs`, `sources.rs`, `revision.rs` |
 | Receiver page publication | `publication.rs` |
 | Eligibility, priority and dispatch | `scheduling.rs`, `dispatch.rs` |
 | Model/work configuration and revision synchronization | `settings.rs` |
@@ -63,6 +63,33 @@ air is the distinct value 256. Regions that are unchanged retain `Arc` identity.
 Empty and uniform regions avoid dense voxel storage.
 Uniform empty brick fields use exact distances to the volume edges; fully blocked
 fields are zero. Only mixed fields require iterative neighbor merging.
+
+### Host input contract
+
+The prototype opts into `VoxelGiDirty::tracked()`. Its player and validation
+systems write through `VoxelGiDirty::set_voxel`, forwarding the same value to BVW
+and a sparse, last-write-wins GI overlay. All writers must use this gateway or
+explicitly report unknown changes through `mark_voxel` / `mark_all_loaded`.
+Coarse BVW chunk messages cannot detect an unreported writer in tracked mode.
+`VoxelGiDirty::default()` retains conservative observer mode for integrations
+that cannot make this complete-tracking guarantee.
+
+Normal scene construction reads one immutable BVW chunk snapshot per dirty page
+(or the deterministic generator if unavailable), then applies that page's edit
+overlay. Workers hold copy-on-write overlay snapshots: later writes cannot alter
+an in-flight input. This removes per-cell live host lookups from tracked edits;
+it does not claim one atomic snapshot of the entire host world. Unknown updates
+discard the affected overlay and use the general live resampling fallback.
+A later unknown notification supersedes earlier exact values, including within
+one frame; subsequent tracked writes can supply newer values again.
+
+Overlays survive unload/reload so an older mesh/chunk snapshot cannot erase a
+newer edit. Repeated writes coalesce, but acknowledged edits are not automatically
+retired: memory grows with distinct edited positions, including unloaded pages.
+Retiring them safely requires an authoritative host acknowledgement/version
+contract. This adapter does not modify BVW or provide persistence for game saves.
+
+### Incremental geometry and shared change discovery
 
 Within a changed dense region, occupancy-identical 4³ bricks reuse their complete
 voxel bounds. The region's brick-level bounds are reused only when its brick
@@ -101,15 +128,32 @@ streaming holes do not cast invented dark slabs. Neither policy sees unloaded
 geometry. These are explicit query semantics over the same traversal structure,
 not two unrelated voxel engines.
 
-`SceneChanges` compares material IDs and computes tight changed-voxel bounds in one
-worker comparison. Region load/unload uses full region bounds because residency
-changes knowledge of empty space too. Air-only changes outside previous occupied
+Scene construction records actual changed region keys once. A bounded journal of
+eight transitions lets geometry invalidation, sunlight, emitter dependencies and
+GPU packing discover changes even when they skip scene versions. It stores keys
+and identity stamps, **not old voxel payloads**. Consumers filter endpoint region
+identities; expired, forked or unknown lineage falls back to a complete comparison.
+This discovery journal is separate from the receiver history-retention journal
+and does not change sample weights or invalidation distance rules.
+
+`SceneChanges` compares material IDs only within the discovered regions and
+computes tight changed-voxel bounds in one worker comparison. Region load/unload
+uses full region bounds because residency changes knowledge of empty space too.
+Air-only changes outside previous occupied
 bounds need bookkeeping but do not invalidate existing indirect transport; holes
 inside those bounds remain conservative invalidations. Emitting, reflecting and
 occluding voxels use this same path. There is no emission classification or
 global source reset attached to a geometry delta. The worker's emitter
 distribution is keyed by immutable scene/material snapshots, independently of
 the analytic-source revision.
+
+The optimization removes repeated whole-world **discovery**, not every world-sized
+operation. Scene construction still clones the region map; occupancy/residency
+changes can rebuild the top-level field. Packing then refreshes all affected
+top-level headers, including unchanged regions whose skip bounds changed. Sunlight
+still checks directional dependencies across receiver buckets: a distant blocker
+must not be discarded merely because indirect retention has a distance limit.
+Receiver influence scans and residency-directory rebuilds remain explicit costs.
 
 ## Receiver and transport model
 

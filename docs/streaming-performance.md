@@ -666,3 +666,106 @@ The log includes the normal unsupported-Metal-bindless fallback warning and a
 window-destruction warning on exit; it is not described as warning-free. No
 screen/security settings were changed. This does not certify temporal stability
 or the new [2,048-path appearance target](cave-sampling.md#user-calibrated-visual-target).
+
+## October 14 immutable input and shared delta
+
+Work-removal follow-up to independent-review F4/F5. Clean baseline **`5364955`**;
+immutable tracked input **`ce17a4c`**; same-frame unknown-input ordering correction
+**`254234d`**; shared region-change discovery **`f4f1847`**. All commits are local.
+No BVW, shader, estimator, retention-curve, display-filter or debounce-window
+change. Contracts and memory limits are in
+[architecture](architecture.md#host-input-contract); focused correctness checks
+are in [the audit](audit.md#october-14-immutable-input-and-shared-delta-qualification).
+
+### Isolated CPU cost
+
+Apple M4 / 16 GiB / Metal, macOS 26.6.2, Rust 1.95, Bevy 0.19.1, development
+profile (application opt1, dependencies opt3), shared Cargo cache. The studies
+are opt-in Rust tests, with 24 alternating rounds (first four discarded as warmup)
+and exact-data comparisons. They ran without a concurrent native app.
+
+- `immutable_edit_input_cost_study` at `ce17a4c`: filling a 32³ page through the
+  live BVW voxel-lookup/generator fallback took median **0.3926 ms**; deterministic
+  immutable generator input plus one tracked overlay took **0.0189 ms**. Arrays
+  matched. This specifically exercises the missing-chunk fallback; it excludes
+  chunk snapshot cloning, region/NAADF construction and all other scene work.
+  The generator fixture returns uniform solid material, not the full procedural
+  terrain generator. Do not extrapolate this ratio to total page-build or frame
+  speed.
+- `scene_delta_discovery_cost_study` in `f4f1847`: one changed region, stable
+  residency/occupancy, with payload reuse enabled in both paths. Scene construction
+  and initial packing are outside the timed interval. Packed bytes match each
+  round. Full discovery scans/sorts the scene; the candidate uses retained keys.
+
+| Loaded regions | Full-discovery packing median | Shared-delta packing median |
+| ---: | ---: | ---: |
+| 256 | 0.0139 ms | 0.0073 ms |
+| 2,048 | 0.0711 ms | 0.0075 ms |
+| 8,192 | 0.2818 ms | 0.0075 ms |
+
+These are removed CPU costs, **not whole-GI, convergence or FPS multipliers**.
+Topology changes still require dependent header refresh; expired/forked lineage
+still uses full discovery. Top-level map cloning and receiver dependency scans
+remain, so the entire pipeline is not O(changed regions).
+
+### Native edit/streaming integration
+
+Same machine/profile as above, Bevy offscreen 2560×1440 with a 60 Hz schedule
+runner. Preferred shared-corner sun and reconstructed indirect, textures on,
+AO off; seed 7, period 256. Defaults fixed: 16 paths/dispatch, 4 ms trace budget,
+8,192 receivers, 2 ms publication, 75 ms display response, 50 ms upload, adaptive
+updates, three diffuse hits, reach 768. Continuous background terrain loading.
+No concurrent compiler or second native benchmark during any timed run.
+
+```sh
+VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_PROFILE=edits \
+VOXEL_GI_VALIDATE_BACKGROUND=1 VOXEL_GI_VALIDATE_TEMPORAL=1 \
+VOXEL_GI_VALIDATE_FRAME_TIMINGS=1 VOXEL_GI_VALIDATE_EXIT=1 \
+VOXEL_GI_VALIDATE_HEADLESS=1 VOXEL_GI_VALIDATE_EXPECT_BUILD_ROOT="$PWD" \
+RUST_LOG=info cargo run --locked --offline
+```
+
+All runs completed 30 seconds and recorded five actual edit events in
+`response.json` (the generic `edits` counter does not count this fixture).
+All 18 captures in each run pass completed/varied/target-valid/2560×1440 checks;
+assets verified, no warnings/errors. Baseline/input room images and final room,
+cavity and surface-recovered images were visually inspected. This is a focused
+integration check, not a high-sample appearance qualification or proof that every
+intervening frame is flicker-free.
+
+| Run | Commit | Output folder under `target/gi-validation/` | Paths | Max pages | Startup-inclusive max app interval |
+| --- | --- | --- | ---: | ---: | ---: |
+| Baseline | `5364955` | `edits-1792024303248693000-1532` | 62.36 M | 615 | 591 ms |
+| Input only | `ce17a4c` | `edits-1792024588726349000-1747` | 60.85 M | 619 | 680 ms |
+| Final A | `f4f1847` | `edits-1792024921332056000-1981` | 62.57 M | 608 | 595 ms |
+| Final B | `f4f1847` | `edits-1792025150285653000-2451` | 62.30 M | 618 | 595 ms |
+
+Baseline, input-only and Final A launched from clean source trees. During the
+input-only run, subsequent Rust edits were made without compiling or changing
+runtime assets; the running executable remained the input-only build. Final B
+had only documentation changes. The two final runs used binary SHA-256
+`4539f7c257561e18c75be9c4ac5c3f591f06800a3bdc0475c45f6567cd1da104`.
+Logs are `target/input-delta-{baseline,input,final,repeat}.log`.
+
+Capture/readback/cooldown frames excluded, report phase summaries:
+
+| Metric | Baseline | Input only | Final A | Final B |
+| --- | ---: | ---: | ---: | ---: |
+| Underground edits app interval p99 | 29.63 ms | 27.40 ms | 28.45 ms | 27.76 ms |
+| Underground edits near-receiver age p99 | 485 ms | 540 ms | 856 ms | 539 ms |
+| Underground edits display-step p95 | 0.01714 | 0.01526 | 0.01516 | 0.01642 |
+| Surface edit app interval p99 | 28.76 ms | 28.30 ms | 28.44 ms | 28.12 ms |
+| Surface edit near-receiver age p99 | 1,171 ms | 1,242 ms | 1,130 ms | 1,457 ms |
+| First dig: all five new faces have measurements | 349 ms | 219 ms | 239 ms | 177 ms |
+| Floor restored: cavity faces removed from field | 181 ms | 151 ms | 168 ms | 150 ms |
+
+The last two rows are relative to actual edit event timestamps, observed each
+Update in `response.json`; first measurement is **not visually settled**. Generic
+edit-latency counters are empty for this fixture, not zero-latency measurements.
+Final B repeats the final candidate because Final A's underground refresh tail
+was slower. The repeated result is closer to baseline, while surface freshness
+varies the other way. These short streaming runs do not establish a repeatable
+freshness improvement or regression, and residency/scheduling are not identical.
+The data supports integration and continued transport progress, not a whole-game
+speedup claim. Offscreen app cadence is **not windowed FPS**; startup stalls and
+the always-60-FPS target are not solved by these two changes.

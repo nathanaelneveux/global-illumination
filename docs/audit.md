@@ -195,11 +195,12 @@ unchanged. Capacity checks prevent unsupported allocations; they are not general
 physical-memory exhaustion recovery. See the current display contract in
 [architecture](architecture.md#temporal-and-spatial-display).
 
-Remaining findings are deliberately not called fixed:
+Subsequent input/delta work is recorded below. Other remaining findings are
+deliberately not called fixed:
 
 | Findings | Disposition |
 | --- | --- |
-| F4–F5: live per-voxel ingestion and repeated delta discovery | Prioritize a measured follow-up: immutable page input plus one actual scene delta. Preserve pending-edit timing, unknown-space/frontier semantics, distant sun dependency checks and stale-result rejection. No BVW modification required or authorized here. |
+| F4–F5: live per-voxel ingestion and repeated delta discovery | Implemented in `ce17a4c`, `254234d`, `f4f1847`: tracked immutable input and a bounded shared region-change journal. Conservative fallback remains for unknown input or expired lineage. No BVW modification. See qualification below. |
 | F1, F7, C3: input/configuration/runtime ownership | Valid architecture work, separate from sampling changes. Introduce typed host configuration and a GI-only harness incrementally; do not extract a generic engine or rewrite all state in this patch. |
 | F6: light visibility | Real adapter mismatch; decide explicit GI/simulation enable semantics before implementation. Camera culling must never disable persistent world lighting, and hiding a visible object need not disable its heat/radiation. |
 | F8: rebuilding static analytic-source lists | Still present. Change-driven synchronization must include component removal/despawn and later visibility semantics. Zero-source filtering does not solve this cost. |
@@ -210,3 +211,39 @@ Remaining findings are deliberately not called fixed:
 The external review's independent CPU/GPU references, generation-owned buffers,
 immutable scene/revision contracts and display/simulation separation remain
 intentional. None should be removed merely to reduce file count or duplication.
+
+### October 14 immutable-input and shared-delta qualification
+
+Baseline: clean `5364955`. Three local, buildable code checkpoints:
+
+- **`ce17a4c`**: exact edit gateway, copy-on-write page overlays and immutable
+  chunk input. Tests cover last-write-wins, negative/boundary coordinates,
+  in-flight snapshots, unload/reload and unknown-input fallback.
+- **`254234d`**: a later unknown notification supersedes an earlier queued exact
+  value in the same frame. Three adapter tests passed; shared-delta work was
+  present but uncommitted during this targeted test run, and is not claimed to
+  have been tested by those adapter checks.
+- **`f4f1847`**: share bounded changed-region lineage across geometry, sunlight,
+  emitter dependencies and GPU packing. Tests compare skipped/expired/forked
+  versions with full discovery, prove retired geometry is not retained by the
+  journal, compare exact packed bytes/upload ranges, and preserve distant sun
+  blocker invalidation. World tests: 9 passed; packing: 6; sunlight: 9; emission:
+  7; geometry: 2. Opt-in packing cost study and native GPU/CPU parity also passed.
+  Standard and enclosed-emissive parity fixtures reported RMS 0.000000. Dev
+  builds and strict binary Clippy passed; the full suite and optional toggle
+  stress were not rerun. Clippy was run after the code commits, with only
+  documentation changes in progress.
+
+The [current input contract](architecture.md#host-input-contract) requires all
+tracked-mode writers to use the gateway or report unknown input. Sparse edits
+currently persist across unload/reload and consume memory per distinct edited
+position. The eight-transition delta journal is key-only and bounded in versions,
+not a new lighting history policy. Full fallback remains necessary; top-level
+map cloning, topology-dependent header refresh and directional sun dependency
+scans are not claimed removed.
+
+Isolated work reductions and native background-streaming/edit evidence are in
+[the performance record](streaming-performance.md#october-14-immutable-input-and-shared-delta).
+Transport, whole-range retention, display smoothing, preferred corner modes,
+existing coalescing windows and BVW are unchanged. This is not a claim of a
+whole-game speedup, faster convergence or a new 60-FPS guarantee.
