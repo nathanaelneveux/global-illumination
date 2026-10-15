@@ -340,7 +340,7 @@ impl ReferenceImage {
         if sites.is_empty() || !cache.ready {
             return Err("Reference image has no chamber receivers or live display cache".into());
         }
-        let live = cache.validation_mirror(queue, &sites);
+        let live = cache.validation_snapshot(queue, field, &sites);
         let mut base = ProbeMap::default();
         for (&(voxel, face), displayed) in sites.iter().zip(&live) {
             let probe = field

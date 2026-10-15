@@ -20,7 +20,8 @@ struct State {
     revisions: [u64; 3],
     fresh_mask: u8,
     stable_batches: u8,
-    /// CPU mirror queued for rendering, NOT a GPU completion/readback claim.
+    /// CPU queued publication or latest completed resident presentation snapshot.
+    /// Neither is a claim that the currently rendered frame has this value.
     mirror: Option<[f32; 4]>,
     /// Shader-equivalent connected, confidence-weighted corner reconstruction
     /// from that mirror. None while the center is unpublished (shader prior).
@@ -142,7 +143,7 @@ impl TemporalRun {
                 })
             })
             .collect();
-        let mirror = cache.validation_mirror(queue, &patch);
+        let mirror = cache.validation_snapshot(queue, field, &patch);
         let first = self.previous.is_empty();
         self.previous.resize(sites.len(), None);
         for (site, (voxel, face)) in sites.iter().enumerate() {
@@ -200,7 +201,7 @@ impl TemporalRun {
                 "sites": self.sites.iter().map(|(v,_)| v.to_array()).collect::<Vec<_>>(),
                 "site_faces": self.sites.iter().map(|(_,face)| face).collect::<Vec<_>>(),
                 "events": self.events,
-                "notes": "Every Update after GI systems. Event-compressed fixed receivers; hold each state until next event. Mirror is CPU render-publication state, not GPU readback; corners exclude unpublished-center fallback and material/tonemapping. No convergence claim without independent reference."
+                "notes": "Every Update after GI systems. Event-compressed fixed receivers; hold each state until next event. Mirror is CPU queued publication or latest completed GPU-resident presentation snapshot, potentially older than the rendered frame. Corners exclude unpublished-center fallback and material/tonemapping. No convergence claim without independent reference."
             }),
         )?;
         Ok(())

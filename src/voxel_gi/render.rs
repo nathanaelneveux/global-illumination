@@ -224,11 +224,14 @@ pub struct GpuTransportCache {
 
 #[cfg(debug_assertions)]
 impl GpuTransportCache {
-    /// Bounded diagnostics read of the publication mirror. This does not wait
-    /// for GPU consumption; screenshots remain the end-to-end evidence.
-    pub(super) fn validation_mirror(
+    /// Bounded diagnostics snapshot. CPU mode reads queued publication bytes;
+    /// resident mode reads the latest completed GPU presentation snapshot for
+    /// the published allocation. Neither waits for current GPU consumption.
+    /// Screenshots remain the end-to-end evidence.
+    pub(super) fn validation_snapshot(
         &self,
         queue: &GpuProbePatchQueue,
+        field: &super::VoxelEnergyField,
         sites: &[(IVec3, usize)],
     ) -> Vec<[f32; 4]> {
         let state = queue.state.lock().unwrap();
@@ -238,6 +241,21 @@ impl GpuTransportCache {
                 let Some(slot) = self.slots.get(voxel) else {
                     return [0.0; 4];
                 };
+                let address_offset = slot * GPU_PROBE_BYTES + 208 + face * 8;
+                let address = UVec2::from_array(std::array::from_fn(|i| {
+                    u32::from_le_bytes(
+                        state.probe_mirror[address_offset + i * 4..address_offset + i * 4 + 4]
+                            .try_into()
+                            .unwrap(),
+                    )
+                }));
+                if address.y != 0
+                    && let Some(probe) = field.probes.get(voxel)
+                    && probe.resident[*face] == address
+                {
+                    let display = probe.display[*face];
+                    return display.indirect.extend(display.confidence).to_array();
+                }
                 let offset = slot * GPU_PROBE_BYTES + face * 16;
                 std::array::from_fn(|i| {
                     f32::from_le_bytes(
@@ -1740,6 +1758,43 @@ mod tests {
         let mut encoded = vec![0; 16];
         write_hash_entry(&mut encoded, 0, entry);
         assert_eq!(encoded, ShaderBuffer::from(vec![entry]).data.unwrap());
+    }
+
+    #[test]
+    fn validation_snapshot_follows_resident_measurements_not_seed_bytes() {
+        let voxel = IVec3::new(3, 5, 7);
+        let address = UVec2::new(12, 34);
+        let mut gpu = GpuProbe::default();
+        gpu.positive_y = Vec4::splat(0.125);
+        gpu.resident[2] = address;
+        let mut bytes = vec![0; GPU_PROBE_BYTES];
+        encode_gpu_probe(gpu, &mut bytes);
+        let queue = GpuProbePatchQueue {
+            probe_buffer: default(),
+            hash_buffer: default(),
+            prepared: None,
+            state: Arc::new(Mutex::new(ProbePatchState {
+                probe_mirror: bytes,
+                ..default()
+            })),
+        };
+        let mut cache = GpuTransportCache::default();
+        cache.slots.insert(voxel, 0);
+        let mut field = super::super::VoxelEnergyField::default();
+        let mut probe = super::super::world::SurfaceProbe::new(voxel, 4);
+        probe.resident[2] = address;
+        probe.display[2].indirect = Vec3::new(1.0, 2.0, 3.0);
+        probe.display[2].confidence = 0.5;
+        field.probes.insert(voxel, probe);
+        assert_eq!(
+            cache.validation_snapshot(&queue, &field, &[(voxel, 2)]),
+            vec![[1.0, 2.0, 3.0, 0.5]]
+        );
+        field.probes.get_mut(&voxel).unwrap().resident[2].y += 1;
+        assert_eq!(
+            cache.validation_snapshot(&queue, &field, &[(voxel, 2)]),
+            vec![[0.125; 4]]
+        );
     }
 
     /// Previous worker serialization, including its two retained copies. Keep
