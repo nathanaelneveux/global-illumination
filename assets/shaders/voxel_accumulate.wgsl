@@ -9,7 +9,7 @@ struct Controls { counts: vec4<u32>, options: vec4<u32> }
 @group(0) @binding(4) var<storage, read> inputs: array<vec4<u32>>;
 @group(0) @binding(5) var<storage, read> seeds: array<vec4<u32>>;
 @group(0) @binding(6) var<storage, read> spatial_jobs: array<vec4<u32>>;
-@group(0) @binding(7) var<storage, read> spatial_donors: array<vec4<u32>>;
+@group(0) @binding(7) var<storage, read> spatial_donors: array<vec2<u32>>;
 
 @compute @workgroup_size(64)
 fn prepare(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -147,6 +147,10 @@ fn reconstruct_spatial(@builtin(global_invocation_id) id: vec3<u32>) {
 // Adaptive display support. Each header owns a disjoint range of unique,
 // connected candidates; means/moments and temporal RGB are read-only inputs.
 // Counts are a support heuristic, not independently traced rays at this face.
+fn unpack_position_tag(tag: u32) -> vec3<u32> {
+    return vec3(tag, tag >> 6u, tag >> 12u) & vec3(63u);
+}
+
 @compute @workgroup_size(64)
 fn reconstruct_evidence(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= settings.counts.x { return; }
@@ -157,6 +161,10 @@ fn reconstruct_evidence(@builtin(global_invocation_id) id: vec3<u32>) {
     let evidence_goal = f32(settings.options.w);
     if f32(count) >= evidence_goal || job.w == 0u { return; }
     let center = bitcast<vec4<f32>>(state[base + 6u]);
+    // Donors are at most 16 voxels away. Modulo-64 coordinate differences
+    // therefore recover exact distances even across negative/world boundaries.
+    // Identity still uses the full slot/incarnation, not these periodic tags.
+    let position = unpack_position_tag(state[base + 7u].w);
     let mean = bitcast<vec4<f32>>(state[base]).rgb;
     let error = standard_error(base);
     let n = max(f32(count), 1.0);
@@ -175,7 +183,10 @@ fn reconstruct_evidence(@builtin(global_invocation_id) id: vec3<u32>) {
         let tolerance = vec3(0.002) + 0.1 * max(abs(mean), abs(donor_mean))
             + 2.0 * (error + standard_error(donor));
         let difference = max3(abs(mean - donor_mean) / tolerance);
-        var w = exp(-0.5 * f32(candidate.z) / bandwidth2 - 0.5 * difference * difference) * donor_count;
+        let donor_position = unpack_position_tag(state[donor + 7u].w);
+        let delta = vec3<i32>((donor_position + vec3(96u) - position) & vec3(63u)) - vec3(32);
+        let distance2 = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
+        var w = exp(-0.5 * f32(distance2) / bandwidth2 - 0.5 * difference * difference) * donor_count;
         if w <= 0.00000001 { continue; }
         let next_effective = (weight + w) * (weight + w) / (squares + w * w / donor_count);
         let reached = next_effective >= evidence_goal;

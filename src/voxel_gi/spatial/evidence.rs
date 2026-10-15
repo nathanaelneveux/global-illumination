@@ -7,6 +7,17 @@ const EDGE: usize = (RADIUS * 2 + 1) as usize;
 const CELLS: usize = EDGE * EDGE;
 const MAX_FACES: usize = 1024;
 
+/// Coordinates modulo 64 recover exact donor distances because every axis of
+/// the bounded gather is strictly within half that period. This is distance
+/// metadata, never identity: full slot/incarnation ownership remains separate.
+pub(crate) fn position_tag(voxel: IVec3) -> u32 {
+    const {
+        assert!(RADIUS * 2 < 64);
+    }
+    let p = voxel.as_uvec3() & UVec3::splat(63);
+    p.x | (p.y << 6) | (p.z << 12)
+}
+
 /// Candidate search has a hard radius/work bound. Allow extra sites for uneven
 /// weights and rejection; the GPU decides actual support using current history.
 pub(crate) fn candidate_limit(target: u32, history: u32) -> usize {
@@ -171,6 +182,26 @@ mod tests {
             mean: Vec3::splat(value),
             second: Vec3::splat(10.0),
             display: Vec3::splat(value),
+        }
+    }
+
+    #[test]
+    fn periodic_position_metadata_preserves_bounded_distances_at_world_extremes() {
+        let unpack = |tag: u32| UVec3::new(tag, tag >> 6, tag >> 12) & UVec3::splat(63);
+        for origin in [i32::MIN + 32, -65, -33, -1, 0, 31, 63, i32::MAX - 32] {
+            let p = IVec3::splat(origin);
+            for x in [-16, -1, 0, 1, 16] {
+                for y in [-16, -1, 0, 1, 16] {
+                    for z in [-16, -1, 0, 1, 16] {
+                        let delta = IVec3::new(x, y, z);
+                        let a = unpack(position_tag(p));
+                        let b = unpack(position_tag(p + delta));
+                        let recovered = ((b + UVec3::splat(96) - a) & UVec3::splat(63)).as_ivec3()
+                            - IVec3::splat(32);
+                        assert_eq!(recovered, delta);
+                    }
+                }
+            }
         }
     }
 

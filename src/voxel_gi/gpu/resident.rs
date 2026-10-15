@@ -6,6 +6,7 @@ use super::*;
 use bevy::platform::collections::{HashMap, HashSet};
 
 const RECORD_BYTES: usize = 128;
+const DONOR_BYTES: usize = 8;
 const SHADER: &str = include_str!("../../../assets/shaders/voxel_accumulate.wgsl");
 type Key = (IVec3, usize);
 
@@ -372,7 +373,7 @@ impl ResidentAccumulator {
         if spatial_strength > 0.0 {
             for (index, face) in work.faces.iter().enumerate() {
                 if self.evidence_target > 0 {
-                    let start = self.donor_bytes.len() / 16;
+                    let start = self.donor_bytes.len() / DONOR_BYTES;
                     // CPU feedback only bounds candidate work; current GPU
                     // histories decide support. Caps are applied before rays.
                     let predicted = face.samples.min(face.history_cap).saturating_add(samples);
@@ -386,17 +387,16 @@ impl ResidentAccumulator {
                             ),
                             |address, edge, _| graph.neighbor(address.x, edge),
                         );
-                        for &(offset, address) in &self.evidence_gather.sites[1..] {
-                            for word in [address.x, address.y, offset.length_squared() as u32, 0] {
-                                self.donor_bytes.extend_from_slice(&word.to_le_bytes());
-                            }
+                        for &(_, address) in &self.evidence_gather.sites[1..] {
+                            let bytes = address.to_array().map(u32::to_le_bytes);
+                            self.donor_bytes.extend_from_slice(bytes.as_flattened());
                         }
                     }
                     for word in [
                         face.resident.x,
                         face.resident.y,
                         start as u32,
-                        (self.donor_bytes.len() / 16 - start) as u32,
+                        (self.donor_bytes.len() / DONOR_BYTES - start) as u32,
                     ] {
                         self.spatial_bytes.extend_from_slice(&word.to_le_bytes());
                     }
@@ -608,6 +608,9 @@ fn encode_seed(
         words[24 + i] = value.to_bits();
     }
     words[28] = incarnation;
+    // The last metadata word was spare. Bounded periodic coordinates recover
+    // exact spatial distances without uploading one distance per donor edge.
+    words[31] = super::super::spatial::evidence::position_tag(face.voxel);
     // Initialize final presentation even before the first accumulation pass.
     words[7] = words[24];
     words[13] = words[25];
@@ -665,18 +668,20 @@ mod tests {
     #[test]
     #[ignore = "native spatial CPU/GPU oracle, unchanged transport/temporal snapshots, partial jobs and disable"]
     fn spatial_reconstruction_matches_oracle_without_feedback() {
-        check_spatial_oracle(0);
+        check_spatial_oracle(0, IVec3::ZERO);
     }
 
     #[test]
     #[ignore = "native adaptive support oracle with heterogeneous edit histories and unchanged physical statistics"]
     fn evidence_reconstruction_matches_oracle_without_feedback() {
         for target in [512, 1024, 2048, 4096] {
-            check_spatial_oracle(target);
+            for shift in [IVec3::ZERO, IVec3::new(-16, 0, -16)] {
+                check_spatial_oracle(target, shift);
+            }
         }
     }
 
-    fn check_spatial_oracle(target: u32) {
+    fn check_spatial_oracle(target: u32, shift: IVec3) {
         use super::super::super::spatial::{self, Sample};
         let evidence = target > 0;
         let mut control = super::super::tests::native_tracer();
@@ -691,7 +696,7 @@ mod tests {
         let probes: Vec<_> = (6..if evidence { 26 } else { 13 })
             .flat_map(|z| {
                 (6..if evidence { 26 } else { 15 })
-                    .map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4))
+                    .map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z) + shift, 4))
             })
             .collect();
         let mut a = TraceWork::from_probes(&probes, false);
@@ -796,15 +801,15 @@ mod tests {
                     gather.sites.clear();
                     gather.sites.push((IVec2::ZERO, center));
                     if b.spatial_reconstruction > 0.0 {
+                        assert_eq!(position_gather.sites.len(), word(12) + 1);
                         for (expected, record) in position_gather.sites[1..].iter().zip(
-                            resident.donor_bytes[word(8) * 16..(word(8) + word(12)) * 16]
-                                .chunks_exact(16),
+                            resident.donor_bytes
+                                [word(8) * DONOR_BYTES..(word(8) + word(12)) * DONOR_BYTES]
+                                .chunks_exact(DONOR_BYTES),
                         ) {
                             let index = u32::from_le_bytes(record[..4].try_into().unwrap());
                             let incarnation = u32::from_le_bytes(record[4..8].try_into().unwrap());
-                            let distance2 = u32::from_le_bytes(record[8..12].try_into().unwrap());
                             assert_eq!(expected.1, UVec2::new(index, incarnation));
-                            assert_eq!(expected.0.length_squared() as u32, distance2);
                             // Recover the real offset from the stable keys.
                             let (donor_key, donor_slot) = by_index[&index];
                             let delta = donor_key.0 - key.0;
@@ -813,7 +818,7 @@ mod tests {
                                 1 => IVec2::new(delta.x, delta.z),
                                 _ => IVec2::new(delta.x, delta.y),
                             };
-                            assert_eq!(offset.length_squared() as u32, distance2);
+                            assert_eq!(expected.0, offset);
                             gather.sites.push((offset, sample(donor_slot)));
                         }
                     }
