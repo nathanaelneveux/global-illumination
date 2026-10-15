@@ -9,6 +9,9 @@ const RECORD_BYTES: usize = 128;
 const SHADER: &str = include_str!("../../../assets/shaders/voxel_accumulate.wgsl");
 type Key = (IVec3, usize);
 
+#[path = "resident_topology.rs"]
+mod topology;
+
 #[derive(Clone, Copy)]
 struct Slot {
     index: u32,
@@ -42,6 +45,8 @@ pub(super) struct ResidentAccumulator {
     spatial_donors: UploadBuffer,
     donor_bytes: Vec<u8>,
     evidence_gather: super::super::spatial::evidence::Gather<UVec2>,
+    evidence_topology: Option<topology::SurfaceTopology>,
+    topology_new: Vec<Key>,
     evidence_target: u32,
     input_bytes: Vec<u8>,
     cap_bytes: Vec<u8>,
@@ -115,6 +120,8 @@ impl ResidentAccumulator {
             spatial_donors: UploadBuffer::new(device, "GI adaptive spatial donors", storage),
             donor_bytes: Vec::new(),
             evidence_gather: default(),
+            evidence_topology: None,
+            topology_new: Vec::new(),
             evidence_target: 0,
             input_bytes: Vec::new(),
             cap_bytes: Vec::new(),
@@ -137,6 +144,15 @@ impl ResidentAccumulator {
         work: &mut TraceWork,
         samples: u32,
     ) -> Result<(), String> {
+        let indexed_spatial = work.spatial_evidence_target > 0
+            && work.spatial_reconstruction.is_finite()
+            && work.spatial_reconstruction > 0.0;
+        if !indexed_spatial {
+            // No persistent adjacency overhead for the default/unfiltered or
+            // fixed-stencil modes. Re-enabling rebuilds from current ownership.
+            self.evidence_topology = None;
+        }
+        self.topology_new.clear();
         if let Some(previous) = &self.scene {
             let mut affected = HashSet::new();
             for region in scene.changed_regions(previous) {
@@ -153,6 +169,9 @@ impl ResidentAccumulator {
                             .material_at(key.0 + FACE_OFFSETS[key.1])
                             .is_none_or(|m| m == AIR);
                     if !present && let Some(slot) = self.slots.remove(key) {
+                        if let Some(graph) = &mut self.evidence_topology {
+                            graph.remove(slot.index);
+                        }
                         self.free.push(slot.index);
                     }
                     present
@@ -191,6 +210,9 @@ impl ResidentAccumulator {
             for face in &mut work.faces[job.faces()] {
                 let key = (face.voxel, face.face);
                 let slot = self.slots.entry(key).or_insert_with(|| {
+                    if indexed_spatial {
+                        self.topology_new.push(key);
+                    }
                     self.regions
                         .entry(face.voxel.div_euclid(IVec3::splat(REGION_EDGE as i32)))
                         .or_default()
@@ -222,6 +244,9 @@ impl ResidentAccumulator {
                     slot.model_epoch = job.source_revision;
                     seed = (self.seed_bytes.len() / RECORD_BYTES) as u32;
                     encode_seed(&mut self.seed_bytes, face, slot.incarnation, self.origin);
+                    if let Some(graph) = &mut self.evidence_topology {
+                        graph.set_incarnation(slot.index, slot.incarnation);
+                    }
                 }
                 face.resident = UVec2::new(slot.index, slot.incarnation);
                 if seed != u32::MAX {
@@ -239,6 +264,20 @@ impl ResidentAccumulator {
                 for word in [slot.index, seed, face.history_cap, task_index as u32] {
                     self.input_bytes.extend_from_slice(&word.to_le_bytes());
                 }
+            }
+        }
+        if indexed_spatial {
+            if let Some(graph) = &mut self.evidence_topology {
+                // All new nodes exist before linking; either insertion order
+                // produces identical bidirectional coplanar adjacency.
+                for &key in &self.topology_new {
+                    graph.connect(key, &self.slots);
+                }
+            } else {
+                self.evidence_topology = Some(topology::SurfaceTopology::build(
+                    &self.slots,
+                    self.high_water,
+                ));
             }
         }
         if self.reuse {
@@ -338,19 +377,14 @@ impl ResidentAccumulator {
                     // histories decide support. Caps are applied before rays.
                     let predicted = face.samples.min(face.history_cap).saturating_add(samples);
                     if predicted < self.evidence_target {
-                        self.evidence_gather.collect(
-                            face.voxel,
-                            face.face,
+                        let graph = self.evidence_topology.as_ref().expect("adaptive topology");
+                        self.evidence_gather.collect_connected(
                             face.resident,
                             super::super::spatial::evidence::candidate_limit(
                                 self.evidence_target,
                                 predicted,
                             ),
-                            |p, f| {
-                                self.slots
-                                    .get(&(p, f))
-                                    .map(|s| UVec2::new(s.index, s.incarnation))
-                            },
+                            |address, edge, _| graph.neighbor(address.x, edge),
                         );
                         for &(offset, address) in &self.evidence_gather.sites[1..] {
                             for word in [address.x, address.y, offset.length_squared() as u32, 0] {
@@ -735,6 +769,7 @@ mod tests {
             let slots = &gpu.resident.as_ref().unwrap().slots;
             let by_index: HashMap<_, _> = slots.iter().map(|(k, s)| (s.index, (k, s))).collect();
             let mut gather = spatial::evidence::Gather::default();
+            let mut position_gather = spatial::evidence::Gather::default();
             for (key, slot) in slots {
                 let center = sample(slot);
                 let expected = if evidence && b.spatial_reconstruction > 0.0 {
@@ -747,14 +782,29 @@ mod tests {
                     let word = |offset| {
                         u32::from_le_bytes(header[offset..offset + 4].try_into().unwrap()) as usize
                     };
+                    position_gather.collect(
+                        key.0,
+                        key.1,
+                        UVec2::new(slot.index, slot.incarnation),
+                        word(12) + 1,
+                        |p, f| {
+                            slots
+                                .get(&(p, f))
+                                .map(|s| UVec2::new(s.index, s.incarnation))
+                        },
+                    );
                     gather.sites.clear();
                     gather.sites.push((IVec2::ZERO, center));
                     if b.spatial_reconstruction > 0.0 {
-                        for record in resident.donor_bytes[word(8) * 16..(word(8) + word(12)) * 16]
-                            .chunks_exact(16)
-                        {
+                        for (expected, record) in position_gather.sites[1..].iter().zip(
+                            resident.donor_bytes[word(8) * 16..(word(8) + word(12)) * 16]
+                                .chunks_exact(16),
+                        ) {
                             let index = u32::from_le_bytes(record[..4].try_into().unwrap());
+                            let incarnation = u32::from_le_bytes(record[4..8].try_into().unwrap());
                             let distance2 = u32::from_le_bytes(record[8..12].try_into().unwrap());
+                            assert_eq!(expected.1, UVec2::new(index, incarnation));
+                            assert_eq!(expected.0.length_squared() as u32, distance2);
                             // Recover the real offset from the stable keys.
                             let (donor_key, donor_slot) = by_index[&index];
                             let delta = donor_key.0 - key.0;
@@ -805,6 +855,16 @@ mod tests {
     #[test]
     #[ignore = "native persistent storage parity, growth, retention and recycling"]
     fn resident_accumulation_preserves_measurements() {
+        check_resident_lifecycle(false);
+    }
+
+    #[test]
+    #[ignore = "native indexed spatial lifecycle: growth, recycling, disable/re-enable and unchanged statistics"]
+    fn indexed_spatial_preserves_measurements_through_lifecycle() {
+        check_resident_lifecycle(true);
+    }
+
+    fn check_resident_lifecycle(spatial: bool) {
         let mut control = super::super::tests::native_tracer();
         let mut candidate = GpuTracer::new(control.context.clone()).unwrap();
         candidate.enable_resident().unwrap();
@@ -831,6 +891,10 @@ mod tests {
                 let empty = Arc::new(TransportScene::default());
                 let mut blank = TraceWork::default();
                 blank.probes.clear();
+                if spatial {
+                    blank.spatial_reconstruction = 1.0;
+                    blank.spatial_evidence_target = 2048;
+                }
                 candidate
                     .resident
                     .as_mut()
@@ -859,6 +923,10 @@ mod tests {
                     .collect::<Vec<_>>(),
                 false,
             );
+            if spatial {
+                b.spatial_reconstruction = if step == 8 { 0.0 } else { 1.0 };
+                b.spatial_evidence_target = 2048;
+            }
             for work in [&mut a, &mut b] {
                 work.response_seconds = 0.075;
                 for job in &mut work.probes {

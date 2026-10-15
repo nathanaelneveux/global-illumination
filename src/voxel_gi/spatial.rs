@@ -5,16 +5,20 @@ use bevy::prelude::*;
 
 pub(super) mod evidence;
 
+pub(super) fn tangent_axes(face: usize) -> (IVec3, IVec3) {
+    match face / 2 {
+        0 => (IVec3::Y, IVec3::Z),
+        1 => (IVec3::X, IVec3::Z),
+        _ => (IVec3::X, IVec3::Y),
+    }
+}
+
 pub(super) fn neighbors<T: Copy>(
     voxel: IVec3,
     face: usize,
     mut lookup: impl FnMut(IVec3, usize) -> Option<T>,
 ) -> [Option<T>; 20] {
-    let (u, v) = match face / 2 {
-        0 => (IVec3::Y, IVec3::Z),
-        1 => (IVec3::X, IVec3::Z),
-        _ => (IVec3::X, IVec3::Y),
-    };
+    let (u, v) = tangent_axes(face);
     let directions = [u, -u, v, -v];
     let mut result = [None; 20];
     for (axis, offset) in directions.into_iter().enumerate() {

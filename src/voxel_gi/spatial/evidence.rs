@@ -43,25 +43,38 @@ impl<T: Copy> Gather<T> {
         limit: usize,
         mut lookup: impl FnMut(IVec3, usize) -> Option<T>,
     ) {
+        let (u, v) = super::tangent_axes(face);
+        self.collect_connected(center, limit, |_, _, q| {
+            lookup(voxel + u * q.x + v * q.y, face)
+        });
+    }
+
+    /// Same ordered walk using already-indexed surface edges. `direction` is
+    /// +u, -u, +v, -v; the offset remains relative to the receiver. Keeping this
+    /// traversal shared makes the position-lookup oracle an exact comparison.
+    pub fn collect_connected(
+        &mut self,
+        center: T,
+        limit: usize,
+        mut neighbor: impl FnMut(T, usize, IVec2) -> Option<T>,
+    ) {
         self.sites.clear();
         self.visited.fill(0);
         self.sites.push((IVec2::ZERO, center));
         self.mark(IVec2::ZERO);
-        let (u, v) = match face / 2 {
-            0 => (IVec3::Y, IVec3::Z),
-            1 => (IVec3::X, IVec3::Z),
-            _ => (IVec3::X, IVec3::Y),
-        };
         let mut cursor = 0;
         while cursor < self.sites.len() && self.sites.len() < limit.min(MAX_FACES) {
-            let p = self.sites[cursor].0;
+            let (p, value) = self.sites[cursor];
             cursor += 1;
-            for direction in [IVec2::X, IVec2::NEG_X, IVec2::Y, IVec2::NEG_Y] {
+            for (edge, direction) in [IVec2::X, IVec2::NEG_X, IVec2::Y, IVec2::NEG_Y]
+                .into_iter()
+                .enumerate()
+            {
                 let q = p + direction;
                 if q.length_squared() > RADIUS * RADIUS || !self.mark(q) {
                     continue;
                 }
-                if let Some(value) = lookup(voxel + u * q.x + v * q.y, face) {
+                if let Some(value) = neighbor(value, edge, q) {
                     self.sites.push((q, value));
                     if self.sites.len() >= limit.min(MAX_FACES) {
                         break;
