@@ -100,6 +100,115 @@ fn percentile(mut xs: Vec<f32>, p: f32) -> f32 {
 }
 
 #[test]
+#[ignore = "native adaptive sharing study: identical RGB priority, disjoint prefixes and cumulative GPU work"]
+fn wide_reuse_quality_and_cost() {
+    let mut independent = super::tests::native_tracer();
+    independent.enable_resident().unwrap();
+    let mut paired = GpuTracer::new(independent.context.clone()).unwrap();
+    paired.enable_reuse().unwrap();
+    let mut wide = GpuTracer::new(independent.context.clone()).unwrap();
+    wide.enable_wide_reuse().unwrap();
+    for kind in 0..4 {
+        let mut fixture = if kind == 3 {
+            cave()
+        } else {
+            super::refinement::research_fixture(kind)
+        };
+        if kind == 3 {
+            let mut keys = bevy::platform::collections::HashSet::new();
+            let mut dense = Vec::new();
+            for probe in &fixture.receivers {
+                let face = probe.face_mask.trailing_zeros() as usize;
+                let normal = FACE_OFFSETS[face];
+                let axes: Vec<_> = [IVec3::X, IVec3::Y, IVec3::Z]
+                    .into_iter()
+                    .filter(|a| a.dot(normal) == 0)
+                    .collect();
+                for x in -2..=2 {
+                    for y in -2..=2 {
+                        let p = probe.voxel + axes[0] * x + axes[1] * y;
+                        if fixture.scene.material_at(p).is_some_and(|m| m != AIR)
+                            && fixture.scene.material_at(p + normal) == Some(AIR)
+                            && keys.insert((p, face))
+                        {
+                            dense.push(SurfaceProbe::new(p, 1 << face));
+                        }
+                    }
+                }
+            }
+            fixture.receivers = dense;
+        } else {
+            fixture.receivers = (6..26)
+                .flat_map(|z| (6..26).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
+                .collect();
+        }
+        let emitters = Arc::new(EmissionDistribution::with_importance(
+            &fixture.scene,
+            &fixture.materials,
+            super::super::EnergySpectrum::new(Vec3::ONE, 0.125, 0.125),
+        ));
+        let mut reference = fresh(&fixture.receivers, 1, 8_388_608);
+        for _ in 0..8 {
+            trace(&mut independent, &fixture, &emitters, &mut reference, 8192);
+        }
+        let refs: Vec<_> = reference
+            .faces
+            .iter()
+            .map(|f| channels(f.radiance))
+            .collect();
+        // Compile/warm all kernels separately from the measured prefixes.
+        for gpu in [&mut independent, &mut paired, &mut wide] {
+            let mut work = fresh(&fixture.receivers, 2, 7_000_000);
+            trace(gpu, &fixture, &emitters, &mut work, 16);
+        }
+        for window in 0..4 {
+            let mut works: Vec<_> = (0..3)
+                .map(|_| fresh(&fixture.receivers, 100 + window, window as u32 * 574_117))
+                .collect();
+            let mut cost = [0.0; 3];
+            for round in 0..128 {
+                for k in 0..3 {
+                    let mode = (round + k) % 3;
+                    let gpu = match mode {
+                        0 => &mut independent,
+                        1 => &mut paired,
+                        _ => &mut wide,
+                    };
+                    trace(gpu, &fixture, &emitters, &mut works[mode], 16);
+                    cost[mode] += gpu.last_gpu_ms.unwrap();
+                }
+                let paths = (round + 1) * 16;
+                if [16, 64, 256, 512, 1024, 2048].contains(&paths) {
+                    for mode in 0..3 {
+                        let work = &works[mode];
+                        let errors = corner_errors(work, &refs);
+                        let mut bias = [0.0f64; 5];
+                        for (face, reference) in work.faces.iter().zip(&refs) {
+                            for (i, (a, b)) in channels(face.radiance)
+                                .into_iter()
+                                .zip(reference)
+                                .enumerate()
+                            {
+                                bias[i] += f64::from(a - b) / refs.len() as f64;
+                            }
+                        }
+                        eprintln!(
+                            "WIDE_RESULT kind={kind} mode={} window={window} paths={paths} faces={} shared={} gpu_ms={} corner_p95={} corner_p99={} bias={bias:?}",
+                            ["independent", "paired", "wide"][mode],
+                            refs.len(),
+                            work.faces.iter().filter(|f| f.neighbor != 0).count(),
+                            cost[mode],
+                            percentile(errors.clone(), 0.95),
+                            percentile(errors, 0.99)
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 #[ignore = "native five-band CPU/GPU parity with unequal spectral sampling importance"]
 fn spectral_importance_preserves_cpu_gpu_energy_parity() {
     let mut gpu = super::tests::native_tracer();
