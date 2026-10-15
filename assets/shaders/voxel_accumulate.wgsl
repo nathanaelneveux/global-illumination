@@ -9,6 +9,7 @@ struct Controls { counts: vec4<u32>, options: vec4<u32> }
 @group(0) @binding(4) var<storage, read> inputs: array<vec4<u32>>;
 @group(0) @binding(5) var<storage, read> seeds: array<vec4<u32>>;
 @group(0) @binding(6) var<storage, read> spatial_jobs: array<vec4<u32>>;
+@group(0) @binding(7) var<storage, read> spatial_donors: array<vec4<u32>>;
 
 @compute @workgroup_size(64)
 fn prepare(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -141,4 +142,56 @@ fn reconstruct_spatial(@builtin(global_invocation_id) id: vec3<u32>) {
     // CPU snapshots intentionally retain the temporal resolve written by
     // accumulate. Scheduling and simulation never consume spatially borrowed
     // values. End-to-end spatial quality is measured from rendered captures.
+}
+
+// Adaptive display support. Each header owns a disjoint range of unique,
+// connected candidates; means/moments and temporal RGB are read-only inputs.
+// Counts are a support heuristic, not independently traced rays at this face.
+@compute @workgroup_size(64)
+fn reconstruct_evidence(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= settings.counts.x { return; }
+    let job = spatial_jobs[id.x];
+    let base = job.x * 8u;
+    if state[base + 7u].x != job.y { return; }
+    let count = state[base + 1u].y;
+    let evidence_goal = f32(settings.options.w);
+    if f32(count) >= evidence_goal || job.w == 0u { return; }
+    let center = bitcast<vec4<f32>>(state[base + 6u]);
+    let mean = bitcast<vec4<f32>>(state[base]).rgb;
+    let error = standard_error(base);
+    let n = max(f32(count), 1.0);
+    let bandwidth2 = max(evidence_goal / n / 3.14159265359, 1.0);
+    var sum = center.rgb * n;
+    var weight = n;
+    var squares = n;
+    for (var i = 0u; i < job.w; i += 1u) {
+        let candidate = spatial_donors[job.z + i];
+        let donor = candidate.x * 8u;
+        if candidate.y == 0u || donor + 7u >= arrayLength(&state) { continue; }
+        if state[donor + 7u].x != candidate.y { continue; }
+        let donor_count = f32(state[donor + 1u].y);
+        if donor_count == 0.0 { continue; }
+        let donor_mean = bitcast<vec4<f32>>(state[donor]).rgb;
+        let tolerance = vec3(0.002) + 0.1 * max(abs(mean), abs(donor_mean))
+            + 2.0 * (error + standard_error(donor));
+        let difference = max3(abs(mean - donor_mean) / tolerance);
+        var w = exp(-0.5 * f32(candidate.z) / bandwidth2 - 0.5 * difference * difference) * donor_count;
+        if w <= 0.00000001 { continue; }
+        let next_effective = (weight + w) * (weight + w) / (squares + w * w / donor_count);
+        let reached = next_effective >= evidence_goal;
+        if reached {
+            let c = weight * weight - evidence_goal * squares;
+            let a = 1.0 - evidence_goal / donor_count;
+            w = clamp(-c / (weight + sqrt(max(weight * weight - a * c, 0.0))), 0.0, w);
+        }
+        sum += bitcast<vec4<f32>>(state[donor + 6u]).rgb * w;
+        weight += w;
+        squares += w * w / donor_count;
+        if reached { break; }
+    }
+    let result = mix(center.rgb, sum / weight, bitcast<f32>(settings.options.z));
+    state[base + 1u].w = bitcast<u32>(result.r);
+    state[base + 3u].y = bitcast<u32>(result.g);
+    state[base + 3u].z = bitcast<u32>(result.b);
+    state[base + 3u].w = bitcast<u32>(center.a);
 }

@@ -124,6 +124,7 @@ pub(super) fn start_trace_task(
     selected.transport = runtime.transport;
     selected.response_seconds = settings.display_response_seconds();
     selected.spatial_reconstruction = settings.spatial_reconstruction;
+    selected.spatial_evidence_target = settings.spatial_evidence_target.min(4096);
     let samples = settings.batch_samples();
     let transport_count = selected.probes.len();
     let sky_count = if can_submit {

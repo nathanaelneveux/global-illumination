@@ -14,6 +14,7 @@ pub(crate) struct TraceWork {
     pub transport: super::TransportSettings,
     pub response_seconds: f32,
     pub spatial_reconstruction: f32,
+    pub spatial_evidence_target: u32,
     pub probes: Vec<ProbeWork>,
     pub faces: Vec<FaceWork>,
     pub(super) pending_retention: Vec<RetentionWork>,

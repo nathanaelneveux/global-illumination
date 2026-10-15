@@ -304,7 +304,9 @@ pub(super) fn run_validation(
         run.structures
             .tick(elapsed, player, &mut commands, &cameras, &mut lights);
     }
-    if matches!(profile, Profile::Cave | Profile::Canyon | Profile::Hallway) && !run.cave_camera_initialized {
+    if matches!(profile, Profile::Cave | Profile::Canyon | Profile::Hallway)
+        && !run.cave_camera_initialized
+    {
         let (eye, target, fov) = if profile == Profile::Hallway {
             reference_image::hallway_view()
         } else if profile == Profile::Canyon {
@@ -645,6 +647,7 @@ pub(super) fn run_validation(
         "settings": {"transport": settings.transport, "samples_per_dispatch": settings.batch_samples(),
             "simulation_sampling_importance": settings.sampling_importance().infrared,
             "spatial_reconstruction": settings.spatial_reconstruction,
+            "spatial_evidence_target": settings.spatial_evidence_target,
             "visible_refinement": settings.visible_refinement,
             "temporal_trace_scope": "pre-spatial temporal face estimates; use captures for spatial presentation",
             "trace_budget_ms": settings.trace_budget_ms, "max_probes_per_dispatch": settings.max_probes_per_dispatch,

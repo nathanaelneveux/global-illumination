@@ -23,6 +23,10 @@ pub struct VoxelGiSettings {
     /// Zero is the unchanged corner display; one enables uncertainty-weighted
     /// connected-surface filtering. Never changes transport or simulation data.
     pub spatial_reconstruction: f32,
+    /// Experimental display-evidence target. Zero selects the fixed stencil;
+    /// positive values choose a bounded adaptive footprint instead. This is not
+    /// physical history or an accuracy guarantee. Requires spatial strength > 0.
+    pub spatial_evidence_target: u32,
     /// Experimental refinement ranking by projected RGB error in total light.
     /// Does not change stability, coverage, edit urgency, or the fair world sweep.
     pub visible_refinement: bool,
@@ -54,6 +58,7 @@ impl Default for VoxelGiSettings {
             samples_per_dispatch: 16,
             simulation_sampling_importance: DEFAULT_SIMULATION_SAMPLING_IMPORTANCE,
             spatial_reconstruction: 0.0,
+            spatial_evidence_target: 0,
             visible_refinement: false,
             adaptive_updates: true,
             trace_budget_ms: 4.0,

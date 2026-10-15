@@ -3,6 +3,8 @@
 //! the same weights in voxel_accumulate.wgsl; this oracle qualifies captures.
 use bevy::prelude::*;
 
+pub(super) mod evidence;
+
 pub(super) fn neighbors<T: Copy>(
     voxel: IVec3,
     face: usize,

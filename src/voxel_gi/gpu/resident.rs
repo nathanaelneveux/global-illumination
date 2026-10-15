@@ -39,15 +39,21 @@ pub(super) struct ResidentAccumulator {
     control: UploadBuffer,
     spatial_jobs: UploadBuffer,
     spatial_bytes: Vec<u8>,
+    spatial_donors: UploadBuffer,
+    donor_bytes: Vec<u8>,
+    evidence_gather: super::super::spatial::evidence::Gather<UVec2>,
+    evidence_target: u32,
     input_bytes: Vec<u8>,
     cap_bytes: Vec<u8>,
     seed_bytes: Vec<u8>,
     prepare: ComputePipeline,
     accumulate: ComputePipeline,
     spatial: ComputePipeline,
+    evidence: ComputePipeline,
     prepare_bindings: Option<CachedBindings<5>>,
     accumulate_bindings: Option<CachedBindings<4>>,
     spatial_bindings: Option<CachedBindings<3>>,
+    evidence_bindings: Option<CachedBindings<4>>,
 }
 
 impl ResidentAccumulator {
@@ -73,6 +79,7 @@ impl ResidentAccumulator {
         let prepare = pipeline("prepare");
         let accumulate = pipeline("accumulate");
         let spatial = pipeline("reconstruct_spatial");
+        let evidence = pipeline("reconstruct_evidence");
         if let Some(error) = bevy::tasks::block_on(scope.pop()) {
             return Err(error.to_string());
         }
@@ -105,15 +112,21 @@ impl ResidentAccumulator {
             ),
             spatial_jobs: UploadBuffer::new(device, "GI connected spatial neighborhoods", storage),
             spatial_bytes: Vec::new(),
+            spatial_donors: UploadBuffer::new(device, "GI adaptive spatial donors", storage),
+            donor_bytes: Vec::new(),
+            evidence_gather: default(),
+            evidence_target: 0,
             input_bytes: Vec::new(),
             cap_bytes: Vec::new(),
             seed_bytes: Vec::new(),
             prepare,
             accumulate,
             spatial,
+            evidence,
             prepare_bindings: None,
             accumulate_bindings: None,
             spatial_bindings: None,
+            evidence_bindings: None,
         })
     }
 
@@ -310,6 +323,8 @@ impl ResidentAccumulator {
         }
         self.input_bytes.extend_from_slice(&self.cap_bytes);
         self.spatial_bytes.clear();
+        self.donor_bytes.clear();
+        self.evidence_target = work.spatial_evidence_target.min(4096);
         let spatial_strength = if work.spatial_reconstruction.is_finite() {
             work.spatial_reconstruction.clamp(0.0, 1.0)
         } else {
@@ -317,6 +332,42 @@ impl ResidentAccumulator {
         };
         if spatial_strength > 0.0 {
             for (index, face) in work.faces.iter().enumerate() {
+                if self.evidence_target > 0 {
+                    let start = self.donor_bytes.len() / 16;
+                    // CPU feedback only bounds candidate work; current GPU
+                    // histories decide support. Caps are applied before rays.
+                    let predicted = face.samples.min(face.history_cap).saturating_add(samples);
+                    if predicted < self.evidence_target {
+                        self.evidence_gather.collect(
+                            face.voxel,
+                            face.face,
+                            face.resident,
+                            super::super::spatial::evidence::candidate_limit(
+                                self.evidence_target,
+                                predicted,
+                            ),
+                            |p, f| {
+                                self.slots
+                                    .get(&(p, f))
+                                    .map(|s| UVec2::new(s.index, s.incarnation))
+                            },
+                        );
+                        for &(offset, address) in &self.evidence_gather.sites[1..] {
+                            for word in [address.x, address.y, offset.length_squared() as u32, 0] {
+                                self.donor_bytes.extend_from_slice(&word.to_le_bytes());
+                            }
+                        }
+                    }
+                    for word in [
+                        face.resident.x,
+                        face.resident.y,
+                        start as u32,
+                        (self.donor_bytes.len() / 16 - start) as u32,
+                    ] {
+                        self.spatial_bytes.extend_from_slice(&word.to_le_bytes());
+                    }
+                    continue;
+                }
                 for word in [face.resident.x, face.resident.y, index as u32, 0] {
                     self.spatial_bytes.extend_from_slice(&word.to_le_bytes());
                 }
@@ -355,6 +406,10 @@ impl ResidentAccumulator {
             self.spatial_jobs
                 .upload(device, queue, &self.spatial_bytes)?;
         }
+        if !self.donor_bytes.is_empty() {
+            self.spatial_donors
+                .upload(device, queue, &self.donor_bytes)?;
+        }
         let milliseconds = self.origin.elapsed().as_millis() as u32;
         #[cfg(test)]
         let milliseconds = self.clock_ms.unwrap_or(milliseconds);
@@ -366,7 +421,7 @@ impl ResidentAccumulator {
             work.response_seconds.max(0.001).to_bits(),
             (self.input_bytes.len() / 16) as u32,
             spatial_strength.to_bits(),
-            0,
+            self.evidence_target,
         ];
         self.control.upload(
             device,
@@ -436,7 +491,7 @@ impl ResidentAccumulator {
                 (4, &self.inputs),
             ],
         );
-        let spatial_bindings = if self.spatial_bytes.is_empty() {
+        let spatial_bindings = if self.spatial_bytes.is_empty() || self.evidence_target > 0 {
             None
         } else {
             Some(cached_bindings(
@@ -447,6 +502,21 @@ impl ResidentAccumulator {
                     (0, &self.control),
                     (3, &self.state),
                     (6, &self.spatial_jobs),
+                ],
+            ))
+        };
+        let evidence_bindings = if self.spatial_bytes.is_empty() || self.evidence_target == 0 {
+            None
+        } else {
+            Some(cached_bindings(
+                &mut self.evidence_bindings,
+                device,
+                || self.evidence.get_bind_group_layout(0).into(),
+                [
+                    (0, &self.control),
+                    (3, &self.state),
+                    (6, &self.spatial_jobs),
+                    (7, &self.spatial_donors),
                 ],
             ))
         };
@@ -463,6 +533,11 @@ impl ResidentAccumulator {
         pass.dispatch_workgroups((count as u32).div_ceil(64), 1, 1);
         if let Some(bindings) = spatial_bindings {
             pass.set_pipeline(&self.spatial);
+            pass.set_bind_group(0, &**bindings, &[]);
+            pass.dispatch_workgroups((count as u32).div_ceil(64), 1, 1);
+        }
+        if let Some(bindings) = evidence_bindings {
+            pass.set_pipeline(&self.evidence);
             pass.set_bind_group(0, &**bindings, &[]);
             pass.dispatch_workgroups((count as u32).div_ceil(64), 1, 1);
         }
@@ -556,6 +631,16 @@ mod tests {
     #[test]
     #[ignore = "native spatial CPU/GPU oracle, unchanged transport/temporal snapshots, partial jobs and disable"]
     fn spatial_reconstruction_matches_oracle_without_feedback() {
+        check_spatial_oracle(false);
+    }
+
+    #[test]
+    #[ignore = "native adaptive support oracle with heterogeneous edit histories and unchanged physical statistics"]
+    fn evidence_reconstruction_matches_oracle_without_feedback() {
+        check_spatial_oracle(true);
+    }
+
+    fn check_spatial_oracle(evidence: bool) {
         use super::super::super::spatial::{self, Sample};
         let mut control = super::super::tests::native_tracer();
         control.enable_resident().unwrap();
@@ -566,13 +651,42 @@ mod tests {
             &fixture.scene,
             &fixture.materials,
         ));
-        let probes: Vec<_> = (6..13)
-            .flat_map(|z| (6..15).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
+        let probes: Vec<_> = (6..if evidence { 26 } else { 13 })
+            .flat_map(|z| {
+                (6..if evidence { 26 } else { 15 })
+                    .map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4))
+            })
             .collect();
         let mut a = TraceWork::from_probes(&probes, false);
         let mut b = TraceWork::from_probes(&probes, false);
+        b.spatial_evidence_target = if evidence { 512 } else { 0 };
         let mut changed = false;
         for step in 0..5 {
+            let spp = if evidence {
+                [1, 3, 16, 16, 16][step as usize]
+            } else {
+                16
+            };
+            if evidence && step == 2 {
+                // Retained histories vary with distance from an edit. Seed
+                // uneven weights once, then apply different caps without
+                // discarding the means on the following step.
+                for work in [&mut a, &mut b] {
+                    for job in &mut work.probes {
+                        job.revision += 1;
+                    }
+                    for (i, face) in work.faces.iter_mut().enumerate() {
+                        face.samples = [1, 16, 128, 511, 2048][i % 5];
+                    }
+                }
+            }
+            if evidence && step == 3 {
+                for work in [&mut a, &mut b] {
+                    for (i, face) in work.faces.iter_mut().enumerate() {
+                        face.history_cap = [1, 16, 128, 256, u32::MAX][i % 5];
+                    }
+                }
+            }
             b.spatial_reconstruction = if step == 4 { 0.0 } else { 1.0 };
             for (tracer, work) in [(&mut control, &mut a), (&mut gpu, &mut b)] {
                 tracer.resident.as_mut().unwrap().clock_ms = Some(1000 + step * 50);
@@ -582,7 +696,7 @@ mod tests {
                         &fixture.sources,
                         &fixture.materials,
                         work,
-                        16,
+                        spp,
                         &emitters,
                         false,
                     )
@@ -616,13 +730,48 @@ mod tests {
                 }
             };
             let slots = &gpu.resident.as_ref().unwrap().slots;
+            let by_index: HashMap<_, _> = slots.iter().map(|(k, s)| (s.index, (k, s))).collect();
+            let mut gather = spatial::evidence::Gather::default();
             for (key, slot) in slots {
                 let center = sample(slot);
-                let expected = spatial::reconstruct(
-                    center,
-                    spatial::neighbors(key.0, key.1, |p, f| slots.get(&(p, f)).map(sample)),
-                    b.spatial_reconstruction,
-                );
+                let expected = if evidence && b.spatial_reconstruction > 0.0 {
+                    // Replay the exact uploaded candidates; feedback may lag
+                    // the current GPU count, so CPU work bounds need not match
+                    // the resulting count. The weighting oracle still reads
+                    // current independent moments/counts from native storage.
+                    let resident = gpu.resident.as_ref().unwrap();
+                    let header = &resident.spatial_bytes[slot.task_index as usize * 16..];
+                    let word = |offset| {
+                        u32::from_le_bytes(header[offset..offset + 4].try_into().unwrap()) as usize
+                    };
+                    gather.sites.clear();
+                    gather.sites.push((IVec2::ZERO, center));
+                    if b.spatial_reconstruction > 0.0 {
+                        for record in resident.donor_bytes[word(8) * 16..(word(8) + word(12)) * 16]
+                            .chunks_exact(16)
+                        {
+                            let index = u32::from_le_bytes(record[..4].try_into().unwrap());
+                            let distance2 = u32::from_le_bytes(record[8..12].try_into().unwrap());
+                            // Recover the real offset from the stable keys.
+                            let (donor_key, donor_slot) = by_index[&index];
+                            let delta = donor_key.0 - key.0;
+                            let offset = match key.1 / 2 {
+                                0 => IVec2::new(delta.y, delta.z),
+                                1 => IVec2::new(delta.x, delta.z),
+                                _ => IVec2::new(delta.x, delta.y),
+                            };
+                            assert_eq!(offset.length_squared() as u32, distance2);
+                            gather.sites.push((offset, sample(donor_slot)));
+                        }
+                    }
+                    spatial::evidence::resolve(&gather.sites, 512, b.spatial_reconstruction).rgb
+                } else {
+                    spatial::reconstruct(
+                        center,
+                        spatial::neighbors(key.0, key.1, |p, f| slots.get(&(p, f)).map(sample)),
+                        b.spatial_reconstruction,
+                    )
+                };
                 let base = slot.index as usize * 32;
                 let actual = Vec3::new(
                     f32::from_bits(words[base + 7]),
