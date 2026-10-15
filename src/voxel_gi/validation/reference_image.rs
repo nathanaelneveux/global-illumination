@@ -527,12 +527,16 @@ impl ReferenceImage {
               for (window, data) in windows.into_iter().enumerate() {
                 for prefix in data.prefixes {
                     if super::sample_sweep::evidence_requested() {
-                        let (values, report) = super::sample_sweep::evidence_values(&sites, &prefix, 512);
-                        evidence_reports.push(json!({"window":window,"support":report}));
+                      for &target in super::sample_sweep::evidence_targets() {
+                        let (values, report) = super::sample_sweep::evidence_values(&sites, &prefix, target);
+                        evidence_reports.push(json!({"window":window,"target":target,"support":report}));
+                        // Preserve the original 512-target filename for existing analysis tools.
+                        let label = if target == 512 {"evidence".into()} else {format!("evidence{target}")};
                         frames.push_back(ReferenceFrame {
-                            name:format!("evidence-{}-window-{window}",prefix.paths),
+                            name:format!("{label}-{}-window-{window}",prefix.paths),
                             values,pending:default(),confidence:None,sky:None,
                         });
+                      }
                     }
                     if super::sample_sweep::spatial_requested() {
                         frames.push_back(ReferenceFrame {

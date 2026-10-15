@@ -36,6 +36,20 @@ pub(super) fn spatial_requested() -> bool {
 
 pub(super) fn evidence_requested() -> bool {
     std::env::var("VOXEL_GI_VALIDATE_EVIDENCE_SWEEP").is_ok_and(|v| v == "1")
+        || evidence_targets_requested()
+}
+
+fn evidence_targets_requested() -> bool {
+    std::env::var("VOXEL_GI_VALIDATE_EVIDENCE_TARGETS").is_ok_and(|v| v == "1")
+}
+
+/// Matched presentation variants; all consume exactly the same raw prefixes.
+pub(super) fn evidence_targets() -> &'static [u32] {
+    if evidence_targets_requested() {
+        &[512, 1024, 2048, 4096]
+    } else {
+        &[512]
+    }
 }
 
 pub(super) fn reuse_requested() -> bool {
@@ -43,7 +57,9 @@ pub(super) fn reuse_requested() -> bool {
 }
 
 fn counts(control: bool) -> &'static [u32] {
-    if evidence_requested() {
+    if evidence_targets_requested() {
+        &[4, 16, 64, 128, 256, 512, 1024, 1280, 1536, 2048]
+    } else if evidence_requested() {
         &[1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
     } else if spatial_requested() {
         &[16, 64, 256, 512, 1024, 2048, 4096]

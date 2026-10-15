@@ -631,17 +631,20 @@ mod tests {
     #[test]
     #[ignore = "native spatial CPU/GPU oracle, unchanged transport/temporal snapshots, partial jobs and disable"]
     fn spatial_reconstruction_matches_oracle_without_feedback() {
-        check_spatial_oracle(false);
+        check_spatial_oracle(0);
     }
 
     #[test]
     #[ignore = "native adaptive support oracle with heterogeneous edit histories and unchanged physical statistics"]
     fn evidence_reconstruction_matches_oracle_without_feedback() {
-        check_spatial_oracle(true);
+        for target in [512, 1024, 2048, 4096] {
+            check_spatial_oracle(target);
+        }
     }
 
-    fn check_spatial_oracle(evidence: bool) {
+    fn check_spatial_oracle(target: u32) {
         use super::super::super::spatial::{self, Sample};
+        let evidence = target > 0;
         let mut control = super::super::tests::native_tracer();
         control.enable_resident().unwrap();
         let mut gpu = GpuTracer::new(control.context.clone()).unwrap();
@@ -659,7 +662,7 @@ mod tests {
             .collect();
         let mut a = TraceWork::from_probes(&probes, false);
         let mut b = TraceWork::from_probes(&probes, false);
-        b.spatial_evidence_target = if evidence { 512 } else { 0 };
+        b.spatial_evidence_target = target;
         let mut changed = false;
         for step in 0..5 {
             let spp = if evidence {
@@ -764,7 +767,7 @@ mod tests {
                             gather.sites.push((offset, sample(donor_slot)));
                         }
                     }
-                    spatial::evidence::resolve(&gather.sites, 512, b.spatial_reconstruction).rgb
+                    spatial::evidence::resolve(&gather.sites, target, b.spatial_reconstruction).rgb
                 } else {
                     spatial::reconstruct(
                         center,
