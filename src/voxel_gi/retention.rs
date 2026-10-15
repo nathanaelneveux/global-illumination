@@ -49,14 +49,16 @@ const BAND_STARTS: [i64; BAND_COUNT] = {
 };
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
-pub(super) enum SummaryMode {
+pub enum SummaryMode {
+    /// Conservative comparison: evicted events retain the nearest possible cap.
     Floors,
+    /// Default: preserve conservative distance information for evicted events.
     #[default]
     DistanceBands,
 }
 
 impl SummaryMode {
-    pub fn launch(value: Option<&str>) -> Result<Self, String> {
+    pub(super) fn launch(value: Option<&str>) -> Result<Self, String> {
         match value {
             Some("floors") => Ok(Self::Floors),
             None | Some("distance-bands") => Ok(Self::DistanceBands),

@@ -30,6 +30,7 @@ mod sky;
 mod sky_cache;
 mod sources;
 mod spectrum;
+mod startup;
 mod statistics;
 mod telemetry;
 mod tracer;
@@ -52,10 +53,11 @@ pub use field::{EnergyEstimate, VoxelEnergyField};
 pub use settings::{TransportSettings, VoxelGiSettings};
 pub use sources::VoxelGiEnvironment;
 pub use spectrum::{EnergyEmitter, EnergySpectrum};
+pub use startup::{RetentionPolicy, RetentionSummary, TransportBackend, VoxelGiStartup};
 pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 
 use bvw::{collect_chunk_changes, start_scene_task};
-pub(crate) use diagnostics::VoxelGiDiagnosticsPlugin;
+pub(crate) use diagnostics::{VoxelGiDiagnosticsPlugin, configure_demo_launch};
 use dispatch::{apply_trace_task, start_trace_task};
 use display::upload_transport_cache;
 use publication::apply_scene_task;
@@ -110,20 +112,7 @@ impl Plugin for VoxelGiPlugin {
                     .chain()
                     .in_set(VoxelGiSystems),
             );
-        if std::env::var("VOXEL_GI_CONTINUOUS").is_ok_and(|value| value == "1") {
-            app.world_mut()
-                .resource_mut::<VoxelGiSettings>()
-                .adaptive_updates = false;
-        }
-        let retention_mode = std::env::var("VOXEL_GI_RETENTION").ok();
-        let summary = std::env::var("VOXEL_GI_RETENTION_SUMMARY").ok();
-        let summary = retention::SummaryMode::launch(summary.as_deref())
-            .expect("retention summary launch policy");
-        if retention::launch_enabled(retention_mode.as_deref()).expect("retention launch policy") {
-            app.world_mut()
-                .resource_mut::<VoxelGiRuntime>()
-                .spatial_history = Some(retention::SpatialHistory::new(summary));
-        }
+        startup::initialize(app);
     }
 
     fn finish(&self, app: &mut App) {
@@ -140,7 +129,7 @@ impl Plugin for VoxelGiPlugin {
         {
             app.insert_resource(limits);
         }
-        if std::env::var("VOXEL_GI_BACKEND").is_ok_and(|backend| backend == "cpu") {
+        if app.world().resource::<VoxelGiStartup>().backend == TransportBackend::Cpu {
             return;
         }
         let context = app

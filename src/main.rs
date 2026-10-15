@@ -98,6 +98,10 @@ fn main() -> AppExit {
     // All prototype writes use VoxelGiDirty::set_voxel; coarse external changes
     // explicitly request resampling. BVW remains the terrain/mesh host.
     app.insert_resource(voxel_gi::VoxelGiDirty::tracked());
+    if let Err(error) = voxel_gi::configure_demo_launch(&mut app) {
+        eprintln!("Invalid GI launch configuration: {error}");
+        return AppExit::error();
+    }
     app.add_plugins((
         VoxelGiPlugin { voxel_texture },
         TerrainPlugin,
