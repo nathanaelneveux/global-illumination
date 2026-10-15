@@ -427,3 +427,109 @@ spatial experiments use independent RGB-prioritized paths. The calibrated FLIP
 limits remain fixed when an estimator improves; 2048 is their original visual
 calibration checkpoint, not a universal minimum or a new limit to recalibrate
 for every candidate.
+
+## Higher evidence targets: matched sweep and real edits (`1b327e6`)
+
+The target sweep remains on `codex/gi-evidence-target-sweep`. The tested 512
+baseline is preserved on `codex/gi-display-evidence` at `0d3de57`. No defaults,
+transport estimator, retention equation, temporal response or BVW code changed.
+New opt-in presets are `config/gi-display-evidence-{1024,2048,4096}.json`.
+
+Add `VOXEL_GI_VALIDATE_EVIDENCE_TARGETS=1` to the headless cave reference command
+with `VOXEL_GI_REFERENCE_PATHS=131072`. This renders targets 512/1024/2048/4096,
+the fixed filter, and raw display from identical independent RGB-prioritized
+prefixes in four windows. The 512 filename label remains `evidence`; larger
+targets use `evidence1024`, `evidence2048`, `evidence4096`. New 1280 and 1536
+checkpoints close the gap in the previous independent-path measurement.
+
+Native source `1b327e6`, Apple M4/Metal, 16 GiB, Rust 1.95, development profile,
+2560×1440 offscreen, PPD 67, preferred corners/textures/no baked AO, RGB priority
+1/.125, 16 paths/dispatch, 3 bounces/reach 768. Only the documentation clarification
+later committed as `15fb33c` was dirty during runs. No concurrent GPU test,
+compiler or image analysis during timed edit runs. Timings are offscreen app
+cadence, **not interactive FPS**. Native CPU/GPU reconstruction parity passes
+all four targets with heterogeneous histories, edit caps and disabling; physical
+and temporal statistics remain exactly unchanged. `cargo build` passes.
+
+Frozen run `cave-1792099117908647000-31496` completed all 245 reference/sweep
+captures plus the three initial gameplay captures. All targets are valid and
+nonblank; assets and logs are clean. Geometry unknown/mismatch counts are zero.
+The two 131072-path replicas qualify (RGB p99 .008163, maximum .015107) and all
+eight independent cosine checks pass. An earlier preflight run
+`cave-1792099088641452000-31449` was stopped before baking to correct the reference
+path-count environment variable; it is not evidence.
+
+Worst-window FLIP means, with the same fixed reference and limits:
+
+| Local paths | Target 512 | Target 1024 | Target 2048 | Target 4096 |
+|---:|---:|---:|---:|---:|
+| 4 | .144360 | .145792 | .158555 | .166316 |
+| 16 | .105786 | .108015 | .115122 | .126041 |
+| 128 | .067200 | .063669 | .062571 | .065743 |
+| 512 | .042424 | .045224 | .041212 | .040597 |
+| 1536 | .026919 | .026919 | .029959 | .027672 |
+| 2048 | .024274 | .024274 | .024274 | .029901 |
+
+Higher targets visibly keep walls smoother at 128; the 2048 target improves
+average FLIP there by 6.9%. However its worst tile worsens .246388→.338659,
+and broad 64-pixel residual RMS rises .003533→.003625. At 4096, that RMS rises
+to .004481. The lost detail includes local green-ceiling illumination and warm
+emitter halos; smoother broad color is not necessarily more accurate lighting.
+This is a visual tradeoff, not grounds to dismiss the user's preference for
+reduced spatial noise.
+
+Unfiltered RGB-prioritized independent paths at 1280 give mean/tile
+.028932/.084217 (both fail). At 1536 they give .026919/.075842 (mean passes,
+local patch fails the .072964 limit). At 2048 they give .024274/.067599 and
+pass both. Targets 512/1024/2048 all first pass at 2048; target 4096 has no pass
+through 2048, with mean/tile .029901/.106808 there. No new sampler minimum or
+lower perceptual threshold is inferred from smoothness.
+
+At 128, targets 512/1024/2048/4096 borrow approximately 4/8/16/33 faces. At 16
+they borrow 32/65/130/252. Thus target 2048 with a normal 16-path runtime batch
+closely matches the footprint of target 512 at four paths. Radius/work bounds
+still apply: at four paths, no face reaches the nominal 4096 target, and only
+47% reach 2048. The support is heuristic, not independently traced evidence.
+
+### Streamed edit screening
+
+All four 30-second `response` runs completed 14 valid captures, actual cavity
+removal/emitter add/removal, background terrain and clean logs. Production
+distance/history retention stayed unchanged. Run identifiers, in execution order:
+
+- 512: `response-1792099624655748000-31707`
+- 4096: `response-1792099655111771000-31739`
+- 1024: `response-1792099685576612000-31749`
+- 2048: `response-1792099716098897000-31757`
+
+| Target | Total paths | Emitter-added worker p95 | Cavity / add / remove FLIP at 1 s |
+|---:|---:|---:|---|
+| 512 | 77.55M | 5.43 ms | .042085 / .186251 / .288134 |
+| 1024 | 73.10M | 7.45 ms | .083768 / .497574 / .372278 |
+| 2048 | 63.04M | 13.20 ms | .104611 / .342952 / .323701 |
+| 4096 | 53.78M | 22.89 ms | .120316 / .487730 / .448919 |
+
+Errors use the same 512-run observed tail, **not certified truth**. Own-tail
+errors retain all nine worse-at-one-second directions. Tail disagreements
+(cavity/add/remove) are .040553/.068593/.035539 at 1024,
+.055411/.080759/.042048 at 2048 and .078255/.115856/.057378 at 4096.
+These are preliminary single-run screenings with varying scheduling; they do
+not isolate stale-donor bias from reduced transport or prove universal edit
+regressions. Total throughput falls 5.7%/18.7%/30.6%. Frame p99 is mixed by phase,
+not an established frame-pacing improvement. No higher-target house or windowed
+qualification was run: this screening already gives no promotion case.
+
+**Decision:** retain all larger targets as opt-in visual comparisons. None is
+an overall winner over 512 on the measured accuracy/cost/edit criteria, and
+4096 is not a suitable default. Wider reconstruction remains visually valuable;
+the next architectural target is cheaper neighborhood processing and better
+preservation of real illumination gradients/freshness, not simply a larger
+global support goal. Do not change the established retention curve or accuracy
+gate to compensate. Targeted evidence is sufficient here; no routine stress or
+full-suite rerun was needed for presets and this diagnostic-only extension.
+
+Detailed results: `target/evidence-target-image-quality.json`,
+`target/evidence-target-edit-quality.json`, and the frozen run's
+`cave-evidence-support.json`. The combined image
+`evidence-evidence1024-evidence2048-evidence4096-overview-window-0.png` in that run
+shows 4/16/128 paths, with the reference in the final column.
