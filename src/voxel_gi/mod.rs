@@ -308,7 +308,6 @@ struct VoxelGiRuntime {
     gpu_value_dirty: display::DisplayDirtyQueue,
     sky_upload_pending: bool,
     last_gpu_upload: Instant,
-    enabled: bool,
 }
 
 impl Default for VoxelGiRuntime {
@@ -383,7 +382,6 @@ impl Default for VoxelGiRuntime {
             gpu_value_dirty: default(),
             sky_upload_pending: false,
             last_gpu_upload: now - GPU_UPLOAD_INTERVAL,
-            enabled: true,
         }
     }
 }

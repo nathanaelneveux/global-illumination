@@ -396,15 +396,15 @@ mod tests {
                 Vec3::new(0.01, 0.02, 0.03),
                 Vec3::ONE,
                 32,
-                Vec3::new(0.98887787, 0.98899021, 0.98910256),
-                0.99313831,
+                Vec3::new(0.988_877_9, 0.988_990_2, 0.98910256),
+                0.993_138_3,
             ),
             (
                 Vec3::new(4., 2., 1.),
                 Vec3::ZERO,
                 256,
                 Vec3::new(0.03296449, 0.01648225, 0.00824112),
-                0.95036899,
+                0.950_369,
             ),
         ] {
             let mut probe = SurfaceProbe::new(IVec3::ZERO, 1);
@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn native_history_windows_are_disjoint_and_below_history_ceiling() {
-        assert!(WARM < crate::voxel_gi::tracer::HISTORY_LIMIT);
+        const { assert!(WARM < crate::voxel_gi::tracer::HISTORY_LIMIT) };
         for pair in STARTS.windows(2) {
             assert!(pair[0] + WARM + STEPS as u32 * BATCH < pair[1]);
         }

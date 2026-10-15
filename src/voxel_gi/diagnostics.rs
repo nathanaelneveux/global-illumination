@@ -9,7 +9,7 @@ use bevy_voxel_world::rendering::VoxelWorldMaterialHandle;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use super::render::{VoxelTransportMaterial, set_enabled};
+use super::render::VoxelTransportMaterial;
 use super::{VoxelEnergyField, VoxelGiRuntime, VoxelGiStats, VoxelGiSystems};
 use crate::player::PlaceEmissiveBlock;
 
@@ -231,7 +231,6 @@ fn hud_cost_text(stats: &VoxelGiStats) -> String {
 
 pub(super) fn toggle_voxel_gi(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut runtime: ResMut<VoxelGiRuntime>,
     material_handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
     mut materials: ResMut<Assets<VoxelTransportMaterial>>,
     mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>,
@@ -290,11 +289,16 @@ pub(super) fn toggle_voxel_gi(
     if !keyboard.just_pressed(KeyCode::F4) {
         return;
     }
-    runtime.enabled = !runtime.enabled;
-    if let Some(material_handle) = material_handle {
-        set_enabled(runtime.enabled, &mut materials, &material_handle.handle);
+    if let Some(handle) = material_handle
+        && let Some(mut material) = materials.get_mut(&handle.handle)
+    {
+        let settings = &mut material.extension.settings;
+        settings.enabled = u32::from(settings.enabled == 0);
+        info!(
+            enabled = settings.enabled != 0,
+            "world-space voxel GI toggled"
+        );
     }
-    info!(enabled = runtime.enabled, "world-space voxel GI toggled");
 }
 
 pub(super) fn log_voxel_gi_stats(
@@ -378,6 +382,46 @@ fn sampled_field_history(field: &VoxelEnergyField, now: Instant) -> (f32, Durati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyboard_toggle_uses_material_state_without_a_runtime_mirror() {
+        use super::super::render::{VoxelTransportAssets, material_template};
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        let mut materials = Assets::<VoxelTransportMaterial>::default();
+        let handle = materials.add(material_template(&VoxelTransportAssets {
+            texture: default(),
+            probes: default(),
+            hash_entries: default(),
+        }));
+        // An external caller, not the keyboard or panel, changed presentation.
+        materials
+            .get_mut(&handle)
+            .unwrap()
+            .extension
+            .settings
+            .enabled = 0;
+        world.insert_resource(materials);
+        world.insert_resource(VoxelWorldMaterialHandle {
+            handle: handle.clone(),
+        });
+        let mut keyboard = ButtonInput::default();
+        keyboard.press(KeyCode::F4);
+        world.insert_resource(keyboard);
+        for expected in [1, 0] {
+            world.run_system_once(toggle_voxel_gi).unwrap();
+            assert_eq!(
+                world
+                    .resource::<Assets<VoxelTransportMaterial>>()
+                    .get(&handle)
+                    .unwrap()
+                    .extension
+                    .settings
+                    .enabled,
+                expected
+            );
+        }
+    }
 
     #[test]
     fn optional_history_summary_is_bounded_and_explicitly_sampled() {

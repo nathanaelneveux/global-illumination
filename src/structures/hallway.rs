@@ -4,24 +4,29 @@
 use super::*;
 use crate::terrain::TerrainMaterial;
 use crate::terrain_noise::{BEDROCK_FLOOR_Y, MAX_SURFACE_Y};
+#[cfg(debug_assertions)]
 use bevy::math::Vec3;
 
 pub const ORIGIN: IVec3 = IVec3::new(-128, -12, -24);
 pub const SIZE: UVec3 = UVec3::new(96, 9, 9);
 pub const SOURCE: IVec3 = IVec3::new(-124, -11, -20);
+#[cfg(any(test, debug_assertions))]
 pub const OFFSETS: [i32; 16] = [1, 2, 3, 4, 6, 8, 12, 14, 16, 18, 20, 24, 32, 40, 48, 64];
 
+#[cfg(any(test, debug_assertions))]
 pub fn floor_receiver(offset: i32) -> IVec3 {
     SOURCE + IVec3::new(offset, -1, 0)
 }
 
 /// Equal projected footprint at every distance, entirely inside one floor face.
 /// A small tilt avoids the degenerate straight-down look-at basis.
+#[cfg(debug_assertions)]
 pub fn measurement_view(offset: i32) -> (Vec3, Vec3, f32) {
     let target = floor_receiver(offset).as_vec3() + Vec3::new(0.5, 1., 0.5);
     (target + Vec3::new(0., 2.5, 0.05), target, 12.)
 }
 
+#[cfg(debug_assertions)]
 pub fn overview() -> (Vec3, Vec3, f32) {
     (
         Vec3::new(-111., -8.5, -19.5),

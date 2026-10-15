@@ -140,6 +140,7 @@ impl ProbeStore {
     pub fn contains_key(&self, key: &IVec3) -> bool {
         self.shards[probe_shard(key)].contains_key(key)
     }
+    #[cfg(any(test, debug_assertions))]
     pub fn keys(&self) -> impl Iterator<Item = &IVec3> {
         self.shards.iter().flat_map(HashMap::keys)
     }

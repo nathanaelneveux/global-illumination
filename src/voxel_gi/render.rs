@@ -154,6 +154,7 @@ pub struct GpuTransportCache {
     pub ready: bool,
 }
 
+#[cfg(debug_assertions)]
 impl GpuTransportCache {
     /// Bounded diagnostics read of the publication mirror. This does not wait
     /// for GPU consumption; screenshots remain the end-to-end evidence.
@@ -1206,16 +1207,6 @@ fn write_hash_entry(mirror: &mut [u8], slot: usize, entry: GpuHashEntry) {
     mirror[offset + 12..offset + 16].copy_from_slice(&entry.probe_index.to_le_bytes());
 }
 
-pub fn set_enabled(
-    enabled: bool,
-    materials: &mut Assets<VoxelTransportMaterial>,
-    material_handle: &Handle<VoxelTransportMaterial>,
-) {
-    if let Some(mut material) = materials.get_mut(material_handle) {
-        material.extension.settings.enabled = enabled as u32;
-    }
-}
-
 pub(crate) fn gpu_probe(probe: &SurfaceProbe) -> GpuProbe {
     let face = |i: usize| {
         if probe.face_mask & (1 << i) != 0 {
@@ -1342,8 +1333,10 @@ mod tests {
         use bevy::ecs::system::RunSystemOnce;
         use bevy_voxel_world::rendering::VoxelWorldMaterialHandle;
         use std::time::{Duration, Instant};
-        let mut field = VoxelEnergyField::default();
-        field.order = (0..8192).map(|x| IVec3::new(x, 0, 0)).collect();
+        let mut field = VoxelEnergyField {
+            order: (0..8192).map(|x| IVec3::new(x, 0, 0)).collect(),
+            ..default()
+        };
         for &voxel in &field.order {
             field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
         }

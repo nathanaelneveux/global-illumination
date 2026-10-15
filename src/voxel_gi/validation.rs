@@ -65,6 +65,9 @@ const OFFSCREEN_HEIGHT: u32 = 1440;
 
 pub(super) fn install_frame_timing(app: &mut App) {
     if std::env::var_os("VOXEL_GI_VALIDATE_FRAME_TIMINGS").is_some() {
+        app.world_mut()
+            .resource_mut::<super::telemetry::GiWorkTimings>()
+            .enable_display_detail();
         host_timing::install(app);
     }
 }

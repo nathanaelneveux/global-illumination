@@ -495,7 +495,9 @@ pub struct SurfaceProbe {
     pub(crate) display: [super::history::FaceDisplay; 6],
     pub(crate) display_updated_at: Option<Instant>,
     pub samples: [u32; 6],
-    /// Worker selection, separate from topology. Never changes visible faces.
+    /// Selection in the full-probe test oracle. Production selection belongs
+    /// only to the compact `ProbeWork`, never the persistent receiver.
+    #[cfg(test)]
     pub(crate) trace_mask: u8,
     /// Faces refreshed in transport_revision; revision changes are lazy O(1).
     pub(crate) fresh_mask: u8,
@@ -529,6 +531,7 @@ impl SurfaceProbe {
             display: [super::history::FaceDisplay::default(); 6],
             display_updated_at: None,
             samples: [0; 6],
+            #[cfg(test)]
             trace_mask: 63,
             fresh_mask: 63,
             transport_revision: 0,

@@ -7,6 +7,7 @@ use super::VoxelGiStats;
 
 const REPORT_INTERVAL: Duration = Duration::from_millis(250);
 
+#[cfg(debug_assertions)]
 pub(super) const MAIN_STAGE_NAMES: [&str; 7] = [
     "ingestion",
     "sources",
@@ -28,6 +29,7 @@ pub(super) enum MainStage {
     DisplayPublication,
 }
 
+#[cfg(debug_assertions)]
 pub(super) const DISPLAY_STAGE_NAMES: [&str; 7] = [
     "poll",
     "install",
@@ -69,7 +71,7 @@ impl Default for GiWorkTimings {
             frames: 0,
             main: Duration::ZERO,
             frame_main: [Duration::ZERO; 7],
-            display_enabled: std::env::var_os("VOXEL_GI_VALIDATE_FRAME_TIMINGS").is_some(),
+            display_enabled: false,
             frame_display: [Duration::ZERO; 7],
             gpu_ms: 0.0,
             gpu_available: false,
@@ -79,6 +81,11 @@ impl Default for GiWorkTimings {
 }
 
 impl GiWorkTimings {
+    #[cfg(debug_assertions)]
+    pub(super) fn enable_display_detail(&mut self) {
+        self.display_enabled = true;
+    }
+
     /// Time only the system body, including early returns, not gaps between
     /// systems or asynchronous work. This does not add any GPU synchronization.
     pub(super) fn main_scope(&mut self, stage: MainStage) -> MainThreadScope<'_> {

@@ -6,7 +6,9 @@ use bevy_voxel_world::prelude::WorldVoxel;
 
 pub const SIZE: IVec3 = IVec3::new(256, 256, 512);
 pub const SPAWN: Vec3 = Vec3::new(128.0, 20.0, 80.0);
+#[cfg(debug_assertions)]
 pub const EYE: Vec3 = Vec3::new(128.0, 22.0, 80.0);
+#[cfg(debug_assertions)]
 pub const TARGET: Vec3 = Vec3::new(148.0, 125.0, 350.0);
 pub const ENVIRONMENT: EnergySpectrum = EnergySpectrum::new(Vec3::new(0.25, 0.4, 0.7), 0.08, 0.0);
 

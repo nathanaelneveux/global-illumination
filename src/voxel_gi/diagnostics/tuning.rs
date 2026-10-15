@@ -89,7 +89,6 @@ pub(super) fn draw_panel(
     mut settings: ResMut<VoxelGiSettings>,
     handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
     mut materials: ResMut<Assets<VoxelTransportMaterial>>,
-    mut runtime: ResMut<VoxelGiRuntime>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
 ) {
     if !panel.open {
@@ -131,7 +130,6 @@ pub(super) fn draw_panel(
                 .extension
                 .settings,
         );
-        runtime.enabled = display.enabled;
     }
 }
 

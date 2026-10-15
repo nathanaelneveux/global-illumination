@@ -81,7 +81,10 @@ impl ProbeWork {
                 }
             }
         }
-        probe.trace_mask = self.trace_mask;
+        #[cfg(test)]
+        {
+            probe.trace_mask = self.trace_mask;
+        }
         probe.source_revision = self.source_revision;
         probe.transport_revision = self.transport_revision;
         for measurement in faces {
