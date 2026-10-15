@@ -571,42 +571,58 @@ response and emission; inputs are sanitized and reflectance is bounded to one.
 `VoxelGiEnvironment` makes the background energy host-configurable. Rendering
 never writes filtered RGB back into these measurements.
 
-### Planned tick based simulation delivery
+### Resident measurements and asynchronous simulation delivery
 
-Future GPU-resident accumulation should separate visual updates from CPU
-simulation snapshots. Simulation may consume the field at a configurable tick
-cadence rather than every rendered frame; no fixed tick rate is assumed.
-This reduces required readback frequency, not the accuracy required of each
-measurement. The existing CPU-owned field and asynchronous query API remain the
-implemented production design. An isolated prototype validates resident
-accumulation, sparse snapshots, slot incarnation/source epoch checks, task
-reordering and buffer growth that preserves measurements. This is not yet a
-production world allocator or tick-delivery implementation.
+The opt-in `Resident` backend implements runtime GPU ownership, not only a
+fixed-slot prototype. Stable `(voxel, face)` slots own five-band means, second
+moments, direct energy, effective count, advancing sequence, and filtered display
+RGB. Slot incarnations separate allocation identity from scene freshness.
+Growth copies measurements; retirement is local to changed regions; recycling
+initializes the new surface before its address can be used for rendering.
 
-Snapshots must identify their geometry/source revisions and measurement ages,
-retain all five bands and sample/variance metadata, and distinguish unknown or
-stale results from valid zero energy. A tick can reuse a sufficiently fresh
-measurement or request a bounded priority refresh without blocking rendering.
-Topology changes must not let a snapshot name a recycled receiver as the old
-surface. Readbacks should be bounded and driven by simulation demand, with an
-explicit policy for delayed data. Temporal display RGB is never a simulation
-input. Integrating heating or dose over tick duration belongs to the host
-simulation, as do thresholds and material changes that become transport updates.
+The CPU selects work and applies the same retention evidence as the original
+backend. A GPU prepare pass caps its **own latest** history and supplies the
+current sequence to the ray task; delayed CPU counts cannot resurrect history
+or repeat paths. Probe-wide evidence also caps unselected resident faces. The
+ray estimator is unchanged. A resolve pass accumulates measurements and applies
+the existing presentation filter. The material reads that native buffer through
+generation-checked addresses, independently of CPU delivery.
 
-The resident prototype is a measured direction to pursue, not ready-to-merge
-storage. Integration needs stable receiver slots with generation-checked recycling,
-bounded in-flight work, GPU-side display publication independent of CPU snapshots,
-and per-face sample timestamps rather than assigning readback time to old data.
-CPU task selection still needs compact scheduling/freshness feedback. Initially
-retain the existing explicit-path estimator and reference/fallback; do not combine
-residency with recursive cache feedback or path guiding.
+At most three owned readbacks can be in flight. The worker polls readiness;
+resident runtime has no blocking GPU wait. A pending receiver is not selected
+again until its scheduling feedback is delivered. Each snapshot carries its
+job identities and submission timestamp, and publication validates geometry and
+source revisions. Sky jobs have generation/batch tickets, so overlapping work
+cannot publish superseded corners. The original synchronous backend and CPU
+reference remain available for comparison and fallback.
+
+Snapshots retain all five bands, sample/variance metadata and measurement ages,
+and distinguish unknown or stale results from valid zero energy. They currently
+accompany transport batches because the CPU scheduler needs their feedback. A
+separate demand/tick-based snapshot cadence is future work, not a prerequisite
+for rendering. There is no fixed simulation tick rate or delivery deadline.
+
+Simulation is allowed to lag lighting. `estimate` returns the latest completed
+unfiltered measurement with age/currentness metadata; it never stalls the player
+to obtain the current render-frame value. Acceptable age, exposure integration,
+and material-state transitions belong to the future host simulation. Filtered
+display RGB never becomes simulation energy.
+
+The resident record is 128 bytes per allocated face, plus the CPU scheduling/
+simulation snapshot and ownership index. Render probes grow from 208 to 256 bytes
+to carry six addresses. These are deliberate memory costs, not a claim that GPU
+residency removes CPU memory. Debug temporal diagnostics reconstruct from the
+latest completed resident presentation snapshot; the old CPU upload mirror only
+contains initialization values in this mode. Screenshots remain end-to-end
+display evidence.
 
 ## Integration contract and limits
 
 ### Construction configuration
 
 Insert `VoxelGiStartup` before adding `VoxelGiPlugin`. It selects
-`TransportBackend::Auto` (compute where available, CPU fallback) or `Cpu`, and
+`TransportBackend::Auto` (compute where available, CPU fallback), `Cpu`, or the
+opt-in `Resident`/`Reuse` experimental backends, and
 `RetentionPolicy::WholeRange(RetentionSummary)` or the legacy comparison.
 Defaults preserve whole-range retention with distance-band overflow summaries.
 These are per-App construction choices, not live switches. Runtime controls
