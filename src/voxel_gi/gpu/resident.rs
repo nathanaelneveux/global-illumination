@@ -12,6 +12,7 @@ type Key = (IVec3, usize);
 #[derive(Clone, Copy)]
 struct Slot {
     index: u32,
+    incarnation: u32,
     revision: u64,
     model_epoch: u64,
 }
@@ -21,13 +22,17 @@ pub(super) struct ResidentAccumulator {
     regions: HashMap<IVec3, HashSet<Key>>,
     free: Vec<u32>,
     high_water: u32,
+    incarnation: u32,
     scene: Option<Arc<TransportScene>>,
     origin: Instant,
+    #[cfg(test)]
+    clock_ms: Option<u32>,
     state: UploadBuffer,
     inputs: UploadBuffer,
     seeds: UploadBuffer,
     control: UploadBuffer,
     input_bytes: Vec<u8>,
+    cap_bytes: Vec<u8>,
     seed_bytes: Vec<u8>,
     prepare: ComputePipeline,
     accumulate: ComputePipeline,
@@ -66,8 +71,11 @@ impl ResidentAccumulator {
             regions: default(),
             free: Vec::new(),
             high_water: 0,
+            incarnation: 0,
             scene: None,
             origin: Instant::now(),
+            #[cfg(test)]
+            clock_ms: None,
             state: UploadBuffer::new(
                 device,
                 "GI resident measurements",
@@ -81,6 +89,7 @@ impl ResidentAccumulator {
                 BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             ),
             input_bytes: Vec::new(),
+            cap_bytes: Vec::new(),
             seed_bytes: Vec::new(),
             prepare,
             accumulate,
@@ -93,7 +102,7 @@ impl ResidentAccumulator {
         &mut self,
         context: &GpuTransportDevice,
         scene: &Arc<TransportScene>,
-        work: &TraceWork,
+        work: &mut TraceWork,
         samples: u32,
     ) -> Result<(), String> {
         if let Some(previous) = &self.scene {
@@ -123,9 +132,27 @@ impl ResidentAccumulator {
         }
         self.scene = Some(Arc::clone(scene));
         self.input_bytes.clear();
+        self.cap_bytes.clear();
         self.seed_bytes.clear();
         for job in &work.probes {
-            for face in &work.faces[job.faces()] {
+            let cap = work.faces[job.faces()]
+                .first()
+                .map_or(u32::MAX, |face| face.history_cap);
+            // Probe-level evidence is consumed atomically by CPU publication.
+            // Apply it to resident faces that were not selected too, otherwise
+            // their next job would incorrectly resurrect pre-change weight.
+            if cap != u32::MAX {
+                for face in 0..6 {
+                    if job.trace_mask & (1 << face) == 0
+                        && let Some(slot) = self.slots.get(&(job.voxel, face))
+                    {
+                        for word in [slot.index, u32::MAX, cap, u32::MAX] {
+                            self.cap_bytes.extend_from_slice(&word.to_le_bytes());
+                        }
+                    }
+                }
+            }
+            for face in &mut work.faces[job.faces()] {
                 let key = (face.voxel, face.face);
                 let slot = self.slots.entry(key).or_insert_with(|| {
                     self.regions
@@ -139,6 +166,7 @@ impl ResidentAccumulator {
                     });
                     Slot {
                         index,
+                        incarnation: 0,
                         revision: u64::MAX,
                         model_epoch: u64::MAX,
                     }
@@ -147,16 +175,24 @@ impl ResidentAccumulator {
                 if slot.revision != job.revision
                     || (job.restart && slot.model_epoch != job.source_revision)
                 {
+                    self.incarnation = self
+                        .incarnation
+                        .checked_add(1)
+                        .ok_or("resident allocation incarnation exhausted")?;
+                    slot.incarnation = self.incarnation;
                     slot.revision = job.revision;
                     slot.model_epoch = job.source_revision;
                     seed = (self.seed_bytes.len() / RECORD_BYTES) as u32;
-                    encode_seed(&mut self.seed_bytes, face);
+                    encode_seed(&mut self.seed_bytes, face, slot.incarnation, self.origin);
                 }
-                for word in [slot.index, seed, face.history_cap, 0] {
+                face.resident = UVec2::new(slot.index, slot.incarnation);
+                let task_index = self.input_bytes.len() / 16;
+                for word in [slot.index, seed, face.history_cap, task_index as u32] {
                     self.input_bytes.extend_from_slice(&word.to_le_bytes());
                 }
             }
         }
+        self.input_bytes.extend_from_slice(&self.cap_bytes);
         let device = &context.device;
         let queue = &context.queue;
         let previous = self.state.buffer.clone();
@@ -173,11 +209,18 @@ impl ResidentAccumulator {
         }
         self.inputs.upload(device, queue, &self.input_bytes)?;
         self.seeds.upload(device, queue, &self.seed_bytes)?;
+        let milliseconds = self.origin.elapsed().as_millis() as u32;
+        #[cfg(test)]
+        let milliseconds = self.clock_ms.unwrap_or(milliseconds);
         let control = [
             work.faces.len() as u32,
             samples,
-            self.origin.elapsed().as_millis() as u32,
+            milliseconds,
             HISTORY_LIMIT,
+            work.response_seconds.max(0.001).to_bits(),
+            (self.input_bytes.len() / 16) as u32,
+            0,
+            0,
         ];
         self.control.upload(
             device,
@@ -190,12 +233,17 @@ impl ResidentAccumulator {
         Ok(())
     }
 
+    pub(super) fn buffer(&self) -> Buffer {
+        self.state.buffer.clone()
+    }
+
     pub(super) fn dispatch_prepare(
         &mut self,
         device: &RenderDevice,
         encoder: &mut wgpu::CommandEncoder,
         tasks: &UploadBuffer,
         count: usize,
+        timestamps: Option<&wgpu::QuerySet>,
     ) {
         let bindings = cached_bindings(
             &mut self.prepare_bindings,
@@ -211,11 +259,16 @@ impl ResidentAccumulator {
         );
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("GI resident task preparation"),
-            timestamp_writes: None,
+            timestamp_writes: timestamps.map(|query_set| wgpu::ComputePassTimestampWrites {
+                query_set,
+                beginning_of_pass_write_index: Some(0),
+                end_of_pass_write_index: Some(1),
+            }),
         });
         pass.set_pipeline(&self.prepare);
         pass.set_bind_group(0, &**bindings, &[]);
-        pass.dispatch_workgroups((count as u32).div_ceil(64), 1, 1);
+        debug_assert!(count <= self.input_bytes.len() / 16);
+        pass.dispatch_workgroups((self.input_bytes.len() as u32 / 16).div_ceil(64), 1, 1);
     }
 
     pub(super) fn dispatch_accumulate(
@@ -224,6 +277,7 @@ impl ResidentAccumulator {
         encoder: &mut wgpu::CommandEncoder,
         output: &UploadBuffer,
         count: usize,
+        timestamps: Option<&wgpu::QuerySet>,
     ) {
         let bindings = cached_bindings(
             &mut self.accumulate_bindings,
@@ -238,7 +292,11 @@ impl ResidentAccumulator {
         );
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("GI resident accumulation"),
-            timestamp_writes: None,
+            timestamp_writes: timestamps.map(|query_set| wgpu::ComputePassTimestampWrites {
+                query_set,
+                beginning_of_pass_write_index: Some(4),
+                end_of_pass_write_index: Some(5),
+            }),
         });
         pass.set_pipeline(&self.accumulate);
         pass.set_bind_group(0, &**bindings, &[]);
@@ -246,7 +304,12 @@ impl ResidentAccumulator {
     }
 }
 
-fn encode_seed(bytes: &mut Vec<u8>, face: &super::super::work::FaceWork) {
+fn encode_seed(
+    bytes: &mut Vec<u8>,
+    face: &super::super::work::FaceWork,
+    incarnation: u32,
+    origin: Instant,
+) {
     let mut words = [0_u32; RECORD_BYTES / 4];
     for (base, energy) in [
         (0, face.radiance),
@@ -266,6 +329,18 @@ fn encode_seed(bytes: &mut Vec<u8>, face: &super::super::work::FaceWork) {
     words[6] = face.sequence;
     for (i, value) in face.custom_direct.to_array().into_iter().enumerate() {
         words[21 + i] = value.to_bits();
+    }
+    for (i, value) in face.presentation.to_array().into_iter().enumerate() {
+        words[24 + i] = value.to_bits();
+    }
+    words[28] = incarnation;
+    if let Some(time) = face.updated_at {
+        words[29] = if time >= origin {
+            time.duration_since(origin).as_millis() as u32
+        } else {
+            0_u32.wrapping_sub(origin.duration_since(time).as_millis() as u32)
+        };
+        words[30] = 1;
     }
     bytes.extend(words.into_iter().flat_map(u32::to_le_bytes));
 }
@@ -298,6 +373,10 @@ mod tests {
         let mut expected = initial.clone();
         let mut actual = initial;
         for step in 0..20 {
+            let milliseconds = 1000 + step * 50;
+            candidate.resident.as_mut().unwrap().clock_ms = Some(milliseconds);
+            let measured_at = candidate.resident.as_ref().unwrap().origin
+                + Duration::from_millis(u64::from(milliseconds));
             let mut indices: Vec<usize> = (0..if step < 3 { 17 } else { 1024 }).collect();
             if step % 2 == 1 {
                 indices.reverse();
@@ -314,7 +393,7 @@ mod tests {
                     .resident
                     .as_mut()
                     .unwrap()
-                    .prepare_inputs(&candidate.context, &empty, &blank, 16)
+                    .prepare_inputs(&candidate.context, &empty, &mut blank, 16)
                     .unwrap();
                 assert!(candidate.resident.as_ref().unwrap().slots.is_empty());
                 scene = Arc::new((*scene).clone());
@@ -339,6 +418,7 @@ mod tests {
                 false,
             );
             for work in [&mut a, &mut b] {
+                work.response_seconds = 0.075;
                 for job in &mut work.probes {
                     job.sky_requested = false;
                 }
@@ -373,6 +453,9 @@ mod tests {
                         false,
                     )
                     .unwrap();
+                for face in &mut work.faces {
+                    face.updated_at = Some(measured_at);
+                }
             }
             for (left, right) in a.faces.iter().zip(&b.faces) {
                 assert_eq!(
@@ -397,16 +480,142 @@ mod tests {
                     );
                 }
             }
-            for (work, probes) in [(&a, &mut expected), (&b, &mut actual)] {
+            for (resident, work, probes) in [(false, &a, &mut expected), (true, &b, &mut actual)] {
                 for (job, &i) in work.probes.iter().zip(&indices) {
                     for face in &work.faces[job.faces()] {
+                        let previous_time = probes[i].face_updated_at[face.face];
                         face.write(&mut probes[i]);
+                        if resident {
+                            probes[i].display[face.face].indirect = face.presentation.truncate();
+                            probes[i].display[face.face].confidence = face.presentation.w;
+                        } else {
+                            probes[i].resolve_face(face.face, previous_time, measured_at, 0.075);
+                        }
                     }
+                }
+            }
+            for &i in &indices {
+                for face in 0..6 {
+                    let a = expected[i].display[face];
+                    let b = actual[i].display[face];
+                    assert!(
+                        (a.indirect - b.indirect).abs().max_element() < 1e-5,
+                        "filter step={step} face={face} expected={a:?} resident={b:?}"
+                    );
+                    assert!((a.confidence - b.confidence).abs() < 1e-5);
                 }
             }
         }
         eprintln!(
             "RESIDENT_PARITY steps=20 five_bands=true growth=true subsets=true reorder=true retirement=true history_cap=true model_restart=true"
         );
+    }
+
+    #[test]
+    #[ignore = "native partial-face retention and model reset ownership"]
+    fn resident_caps_unselected_faces_before_evidence_is_consumed() {
+        let mut control = super::super::tests::native_tracer();
+        let mut resident = GpuTracer::new(control.context.clone()).unwrap();
+        resident.enable_resident().unwrap();
+        let (scene, sources, _) = super::super::tests::open_floor_fixture();
+        let materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        let mut a = SurfaceProbe::new(IVec3::new(0, 4, 0), 12);
+        let mut b = a.clone();
+        for (step, mask) in [12, 4, 8, 4, 8].into_iter().enumerate() {
+            for (tracer, probe) in [(&mut control, &mut a), (&mut resident, &mut b)] {
+                let mut work = TraceWork::default();
+                let cap = match step {
+                    1 => 3,
+                    3 => 0,
+                    _ => u32::MAX,
+                };
+                work.push(
+                    probe,
+                    mask,
+                    0,
+                    u64::from(step >= 3),
+                    step == 3,
+                    u32::MAX,
+                    cap,
+                );
+                work.probes[0].sky_requested = false;
+                work.probes[0].retention = Some((step as u64, cap));
+                work.response_seconds = 0.075;
+                tracer
+                    .trace_compact(
+                        Arc::clone(&scene),
+                        &sources,
+                        &materials,
+                        &mut work,
+                        16,
+                        &emitters,
+                        false,
+                    )
+                    .unwrap();
+                work.probes[0].publish(&work.faces, probe, Instant::now(), &default());
+            }
+            assert_eq!(a.samples, b.samples, "partial cap step={step}");
+            assert_eq!(a.sequence, b.sequence);
+            for face in [2, 3] {
+                assert!(
+                    (a.radiance[face] - b.radiance[face])
+                        .visible
+                        .abs()
+                        .max_element()
+                        < 1e-5
+                );
+            }
+        }
+        assert_eq!(b.samples[3], 16);
+    }
+
+    #[test]
+    #[ignore = "paired resident compute cost, no rendering or gameplay claim"]
+    fn resident_compute_cost() {
+        let control = super::super::tests::native_tracer();
+        let mut candidate = GpuTracer::new(control.context.clone()).unwrap();
+        candidate.enable_resident().unwrap();
+        let mut tracers = [control, candidate];
+        let (scene, sources, initial) = super::super::tests::open_floor_fixture();
+        let materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        let mut probes = [initial.clone(), initial];
+        let mut times: [Vec<f32>; 2] = default();
+        for round in 0..40 {
+            for mode in (0..2).map(|offset| (round + offset) % 2) {
+                let mut work = TraceWork::from_probes(&probes[mode], false);
+                for job in &mut work.probes {
+                    job.sky_requested = false;
+                }
+                work.response_seconds = 0.075;
+                tracers[mode]
+                    .trace_compact(
+                        Arc::clone(&scene),
+                        &sources,
+                        &materials,
+                        &mut work,
+                        16,
+                        &emitters,
+                        false,
+                    )
+                    .unwrap();
+                if round >= 10 {
+                    times[mode].push(tracers[mode].last_gpu_ms.unwrap());
+                }
+                for (job, probe) in work.probes.iter().zip(&mut probes[mode]) {
+                    for face in &work.faces[job.faces()] {
+                        face.write(probe);
+                    }
+                }
+            }
+        }
+        for (mode, times) in times.iter_mut().enumerate() {
+            times.sort_by(f32::total_cmp);
+            eprintln!(
+                "RESIDENT_COST mode={mode} GPU_p50={:.4} GPU_p95={:.4}",
+                times[15], times[28]
+            );
+        }
     }
 }

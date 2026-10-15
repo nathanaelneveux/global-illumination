@@ -130,6 +130,7 @@ mod tests {
         let mut materials = Assets::<VoxelTransportMaterial>::default();
         let material = materials.add(crate::voxel_gi::render::material_template(
             &crate::voxel_gi::render::VoxelTransportAssets {
+                resident: default(),
                 texture: default(),
                 hash_entries: default(),
                 probes: default(),

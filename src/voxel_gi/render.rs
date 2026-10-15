@@ -27,7 +27,7 @@ use super::world::SurfaceProbe;
 
 pub const VOXEL_TRANSPORT_SHADER: &str = "shaders/voxel_transport.wgsl";
 const MAX_SHADER_HASH_PROBES: usize = 32;
-const GPU_PROBE_BYTES: usize = 208;
+const GPU_PROBE_BYTES: usize = 256;
 
 pub type VoxelTransportMaterial = ExtendedMaterial<StandardMaterial, VoxelTransportExtension>;
 
@@ -42,6 +42,8 @@ pub struct VoxelTransportExtension {
     pub probes: Handle<ShaderBuffer>,
     #[uniform(104)]
     pub settings: GpuTransportSettings,
+    #[storage(105, read_only)]
+    pub resident: Handle<ShaderBuffer>,
 }
 
 impl MaterialExtension for VoxelTransportExtension {
@@ -131,6 +133,7 @@ pub struct GpuProbe {
     pub negative_z: Vec4,
     pub emission: Vec4,
     pub direct_sky: [UVec4; 6],
+    pub resident: [UVec2; 6],
 }
 
 #[derive(Resource, Clone)]
@@ -138,6 +141,71 @@ pub struct VoxelTransportAssets {
     pub texture: Handle<Image>,
     pub hash_entries: Handle<ShaderBuffer>,
     pub probes: Handle<ShaderBuffer>,
+    pub resident: Handle<ShaderBuffer>,
+}
+
+/// A native allocation is shared, not copied, across the compute/render
+/// boundary. Each grown allocation gets a new asset identity; already extracted
+/// materials keep their original buffer alive until their frame completes.
+#[derive(Resource, Default, Clone, ExtractResource)]
+pub(crate) struct ResidentDisplay {
+    pub buffer: Option<Buffer>,
+    installed: Option<(Buffer, Handle<ShaderBuffer>)>,
+}
+
+fn publish_resident_buffer(
+    mut resident: ResMut<ResidentDisplay>,
+    assets: Res<VoxelTransportAssets>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
+    mut materials: ResMut<Assets<VoxelTransportMaterial>>,
+) {
+    let unchanged = match (&resident.buffer, &resident.installed) {
+        (Some(buffer), Some((installed, _))) => buffer.id() == installed.id(),
+        (None, None) => true,
+        _ => false,
+    };
+    if unchanged {
+        return;
+    }
+    resident.installed = resident.buffer.as_ref().map(|buffer| {
+        let mut asset = ShaderBuffer::default();
+        asset.buffer_description.label = Some("Voxel GI resident presentation");
+        asset.buffer_description.size = buffer.size();
+        asset.buffer_description.usage = buffer.usage();
+        (buffer.clone(), buffers.add(asset))
+    });
+    let handle = resident
+        .installed
+        .as_ref()
+        .map_or(&assets.resident, |(_, handle)| handle);
+    for (_, material) in materials.iter_mut() {
+        material.extension.resident = handle.clone();
+    }
+}
+
+fn install_resident_buffer(
+    resident: Res<ResidentDisplay>,
+    mut assets: ResMut<RenderAssets<GpuShaderBuffer>>,
+) {
+    let Some((buffer, handle)) = &resident.installed else {
+        return;
+    };
+    if assets.get(handle).is_some() {
+        return;
+    }
+    assets.insert(
+        handle.id(),
+        GpuShaderBuffer {
+            buffer: buffer.clone(),
+            buffer_descriptor: wgpu::BufferDescriptor {
+                label: Some("Voxel GI resident presentation"),
+                size: buffer.size(),
+                usage: buffer.usage(),
+                ..ShaderBuffer::default().buffer_description
+            },
+            had_data: false,
+        },
+    );
 }
 
 /// Stable GPU indices are rebuilt only when probe topology changes. Radiance
@@ -330,7 +398,13 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
     app.add_plugins((
         MaterialPlugin::<VoxelTransportMaterial>::default(),
         ExtractResourcePlugin::<GpuProbePatchQueue>::default(),
+        ExtractResourcePlugin::<ResidentDisplay>::default(),
     ));
+    app.init_resource::<ResidentDisplay>();
+    app.add_systems(
+        Update,
+        publish_resident_buffer.after(super::dispatch::apply_trace_task),
+    );
     let hash_entries = app
         .world_mut()
         .resource_mut::<Assets<ShaderBuffer>>()
@@ -340,10 +414,15 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
         .resource_mut::<Assets<ShaderBuffer>>()
         .add(ShaderBuffer::from(vec![GpuProbe::default()]));
 
+    let resident = app
+        .world_mut()
+        .resource_mut::<Assets<ShaderBuffer>>()
+        .add(ShaderBuffer::from(vec![UVec4::ZERO; 8]));
     app.insert_resource(VoxelTransportAssets {
         texture,
         hash_entries: hash_entries.clone(),
         probes: probes.clone(),
+        resident,
     });
     app.insert_resource(GpuProbePatchQueue {
         probe_buffer: probes,
@@ -368,6 +447,9 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
                 install_prepared_buffers
                     .in_set(RenderSystems::PrepareAssets)
                     .before(prepare_assets::<GpuShaderBuffer>),
+                install_resident_buffer
+                    .in_set(RenderSystems::PrepareAssets)
+                    .before(prepare_assets::<GpuShaderBuffer>),
                 apply_probe_patches.in_set(RenderSystems::PrepareBindGroups),
             ),
         );
@@ -386,6 +468,7 @@ pub fn material_template(assets: &VoxelTransportAssets) -> VoxelTransportMateria
             voxel_texture: assets.texture.clone(),
             hash_entries: assets.hash_entries.clone(),
             probes: assets.probes.clone(),
+            resident: assets.resident.clone(),
             settings: GpuTransportSettings::default(),
         },
     }
@@ -1189,7 +1272,12 @@ fn encode_gpu_probe(probe: GpuProbe, bytes: &mut [u8]) {
         probe.direct_sky[5].to_array(),
     ];
     let encoded = words.map(|group| group.map(u32::to_le_bytes));
-    bytes.copy_from_slice(encoded.as_flattened().as_flattened());
+    bytes[..208].copy_from_slice(encoded.as_flattened().as_flattened());
+    for (i, address) in probe.resident.iter().enumerate() {
+        let start = 208 + i * 8;
+        bytes[start..start + 4].copy_from_slice(&address.x.to_le_bytes());
+        bytes[start + 4..start + 8].copy_from_slice(&address.y.to_le_bytes());
+    }
 }
 
 fn write_probe(mirror: &mut [u8], slot: usize, probe: GpuProbe) {
@@ -1224,6 +1312,7 @@ pub(crate) fn gpu_probe(probe: &SurfaceProbe) -> GpuProbe {
         positive_z: face(4),
         negative_z: face(5),
         emission: probe.emission.visible.extend(0.0),
+        resident: probe.resident,
         direct_sky: std::array::from_fn(|face| {
             if probe.face_mask & (1 << face) != 0 {
                 UVec4::from_array(probe.display[face].sky)
@@ -1320,7 +1409,7 @@ mod tests {
             Err(DisplayCapacityError::Buffer {
                 name: "hash",
                 bytes: 16_384,
-                limit: 8320
+                limit: 10240
             })
         ));
     }
@@ -1346,6 +1435,7 @@ mod tests {
         )));
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
+            resident: default(),
             texture: default(),
             probes: default(),
             hash_entries: default(),
@@ -1636,6 +1726,7 @@ mod tests {
             negative_z: Vec4::new(21.0, 22.0, 23.0, 24.0),
             emission: Vec4::new(25.0, 26.0, 27.0, 28.0),
             direct_sky: std::array::from_fn(|face| UVec4::splat(29 + face as u32)),
+            resident: std::array::from_fn(|face| UVec2::new(face as u32, 23)),
         };
         let mut encoded = vec![0; GPU_PROBE_BYTES];
         encode_gpu_probe(probe, &mut encoded);
@@ -1775,6 +1866,7 @@ mod tests {
         );
         assert_eq!(encoded.direct_sky[0], UVec4::ZERO);
         let material = material_template(&VoxelTransportAssets {
+            resident: default(),
             texture: default(),
             hash_entries: default(),
             probes: default(),
@@ -2059,6 +2151,7 @@ mod tests {
         let build = build_gpu_cache(snapshot);
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
+            resident: default(),
             texture: Handle::default(),
             hash_entries: buffers.add(ShaderBuffer::from(vec![GpuHashEntry::EMPTY])),
             probes: buffers.add(ShaderBuffer::from(vec![GpuProbe::default()])),
@@ -2128,6 +2221,7 @@ mod tests {
         )));
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
+            resident: default(),
             texture: default(),
             probes: default(),
             hash_entries: default(),
@@ -2271,6 +2365,7 @@ mod tests {
         let snapshot = snapshot_gpu_probes(&field.probes, &field.order);
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
+            resident: default(),
             texture: default(),
             probes: default(),
             hash_entries: default(),
@@ -2508,6 +2603,7 @@ mod tests {
     fn extracted_generations_survive_growth_shrink_and_equal_size_rebuilds() {
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
+            resident: default(),
             texture: default(),
             hash_entries: buffers.add(ShaderBuffer::from(vec![GpuHashEntry::EMPTY])),
             probes: buffers.add(ShaderBuffer::from(vec![GpuProbe::default()])),
@@ -2972,6 +3068,14 @@ mod tests {
             app.update();
         }
         for (generation, count) in [1, 64, 3, 3, 128, 8].into_iter().enumerate() {
+            let resident_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("resident identity regression"),
+                size: count as u64 * 128,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            app.world_mut().resource_mut::<ResidentDisplay>().buffer =
+                Some(resident_buffer.clone());
             let mut probes: HashMap<_, _> = (0..count)
                 .map(|x| {
                     let voxel = IVec3::new(x, generation as i32, 0);
@@ -3073,6 +3177,13 @@ mod tests {
                     .get(material.id())
                     .is_some(),
                 "material disappeared for generation {generation}"
+            );
+            let resident = render_world.resource::<ResidentDisplay>();
+            let (_, resident_handle) = resident.installed.as_ref().unwrap();
+            assert_eq!(
+                buffers.get(resident_handle).unwrap().buffer.id(),
+                resident_buffer.id(),
+                "descriptor-only preparation must not replace the shared resident allocation"
             );
             assert!(patches.state.lock().unwrap().pending_probes.is_empty());
         }

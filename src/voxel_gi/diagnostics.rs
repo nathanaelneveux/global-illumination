@@ -391,6 +391,7 @@ mod tests {
         let mut world = World::new();
         let mut materials = Assets::<VoxelTransportMaterial>::default();
         let handle = materials.add(material_template(&VoxelTransportAssets {
+            resident: default(),
             texture: default(),
             probes: default(),
             hash_entries: default(),

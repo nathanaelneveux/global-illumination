@@ -94,6 +94,7 @@ pub(super) fn start_trace_task(
     // never consume the frames in which indirect transport could make progress.
     let mut selected = select_transport(&mut runtime, &field, &settings);
     selected.transport = runtime.transport;
+    selected.response_seconds = settings.display_response_seconds();
     let samples = settings.batch_samples();
     let resident = startup.is_some_and(|s| s.backend == super::TransportBackend::Resident);
     let transport_count = selected.probes.len();
@@ -443,6 +444,7 @@ pub(super) fn apply_trace_task(
     mut stats: ResMut<VoxelGiStats>,
     settings: Res<VoxelGiSettings>,
     mut timings: ResMut<GiWorkTimings>,
+    resident_display: Option<ResMut<super::render::ResidentDisplay>>,
 ) {
     let mut timing = timings.main_scope(super::telemetry::MainStage::TracePublication);
     let Some(task) = runtime.trace_task.as_mut() else {
@@ -499,6 +501,12 @@ pub(super) fn apply_trace_task(
         stats.last_wait_ms = tracer.last_wait_ms;
         stats.last_decode_ms = tracer.last_decode_ms;
         stats.packed_geometry_bytes = tracer.geometry_storage_bytes();
+    }
+    if let Some(mut display) = resident_display {
+        display.buffer = result
+            .gpu_tracer
+            .as_ref()
+            .and_then(gpu::GpuTracer::resident_buffer);
     }
     runtime.gpu_tracer = result.gpu_tracer;
     runtime.emission_cache = result.emission_cache;
@@ -562,6 +570,9 @@ pub(super) fn apply_trace_task(
         // A material-table revision can change emission without rebuilding
         // geometry. Older source results were rejected above.
         old.emission = runtime.materials.get(old.material).emission;
+        let publish_display = result.work.faces[job.faces()]
+            .iter()
+            .any(|face| face.resident.y == 0 || old.resident[face.face] != face.resident);
         job.publish(
             &result.work.faces[job.faces()],
             old,
@@ -574,7 +585,9 @@ pub(super) fn apply_trace_task(
         runtime.covered_faces = runtime.covered_faces.saturating_sub(old_covered) + new_covered;
         runtime.settled_faces = runtime.settled_faces.saturating_sub(old_settled) + new_settled;
         let pending = probe_has_pending_samples(old);
-        runtime.mark_display_dirty(voxel);
+        if publish_display {
+            runtime.mark_display_dirty(voxel);
+        }
         if pending {
             requeue.push(voxel);
         }

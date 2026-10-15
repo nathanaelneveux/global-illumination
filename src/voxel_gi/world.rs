@@ -493,6 +493,9 @@ pub struct SurfaceProbe {
     /// Visible analytic contributions not already rendered by Bevy PBR.
     pub custom_direct: [Vec3; 6],
     pub(crate) display: [super::history::FaceDisplay; 6],
+    /// Optional resident slot and allocation incarnation. Zero incarnation is
+    /// the CPU/display-prior fallback; recycled slots cannot alias old readers.
+    pub(crate) resident: [UVec2; 6],
     pub(crate) display_updated_at: Option<Instant>,
     pub samples: [u32; 6],
     /// Selection in the full-probe test oracle. Production selection belongs
@@ -529,6 +532,7 @@ impl SurfaceProbe {
             direct: [EnergySpectrum::ZERO; 6],
             custom_direct: [Vec3::ZERO; 6],
             display: [super::history::FaceDisplay::default(); 6],
+            resident: [UVec2::ZERO; 6],
             display_updated_at: None,
             samples: [0; 6],
             #[cfg(test)]
@@ -559,6 +563,7 @@ impl SurfaceProbe {
             self.radiance[face] = EnergySpectrum::ZERO;
             self.second_moment[face] = EnergySpectrum::ZERO;
             self.display[face] = default();
+            self.resident[face] = UVec2::ZERO;
             self.direct[face] = EnergySpectrum::ZERO;
             self.custom_direct[face] = Vec3::ZERO;
             self.samples[face] = 0;

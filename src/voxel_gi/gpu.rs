@@ -265,6 +265,9 @@ pub(crate) struct GpuTracer {
 }
 
 impl GpuTracer {
+    pub(crate) fn resident_buffer(&self) -> Option<Buffer> {
+        self.resident.as_ref().map(|state| state.buffer())
+    }
     pub(super) fn enable_resident(&mut self) -> Result<(), String> {
         if self.resident.is_none() {
             self.resident = Some(resident::ResidentAccumulator::new(&self.context)?);
@@ -330,7 +333,7 @@ impl GpuTracer {
                     .create_query_set(&wgpu::QuerySetDescriptor {
                         label: Some("GI transport timing"),
                         ty: wgpu::QueryType::Timestamp,
-                        count: 2,
+                        count: 6,
                     })
             });
         Ok(Self {
@@ -677,8 +680,15 @@ impl GpuTracer {
         self.tasks.upload(device, queue, &self.task_bytes)?;
         let face_bytes = face_count * RESULT_BYTES;
         let readback_bytes = face_bytes + sky_pending.len() * SKY_RESULT_BYTES;
+        let timestamp_count = if self.resident.is_some() && face_count > 0 {
+            6
+        } else {
+            2
+        };
+        let timestamp_bytes = timestamp_count as u64 * 8;
         self.output.ensure(device, readback_bytes)?;
-        self.readback.ensure(device, readback_bytes + 16)?;
+        self.readback
+            .ensure(device, readback_bytes + timestamp_bytes as usize)?;
         let buffers = [
             &self.params,
             &self.directory,
@@ -732,7 +742,13 @@ impl GpuTracer {
         if face_count > 0
             && let Some(resident) = &mut self.resident
         {
-            resident.dispatch_prepare(device, &mut encoder, &self.tasks, face_count);
+            resident.dispatch_prepare(
+                device,
+                &mut encoder,
+                &self.tasks,
+                face_count,
+                self.timestamps.as_ref(),
+            );
         }
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -740,8 +756,12 @@ impl GpuTracer {
                 timestamp_writes: self.timestamps.as_ref().map(|query_set| {
                     wgpu::ComputePassTimestampWrites {
                         query_set,
-                        beginning_of_pass_write_index: Some(0),
-                        end_of_pass_write_index: Some(1),
+                        beginning_of_pass_write_index: Some(if timestamp_count == 6 {
+                            2
+                        } else {
+                            0
+                        }),
+                        end_of_pass_write_index: Some(if timestamp_count == 6 { 3 } else { 1 }),
                     }
                 }),
             });
@@ -763,7 +783,13 @@ impl GpuTracer {
         if face_count > 0
             && let Some(resident) = &mut self.resident
         {
-            resident.dispatch_accumulate(device, &mut encoder, &self.output, face_count);
+            resident.dispatch_accumulate(
+                device,
+                &mut encoder,
+                &self.output,
+                face_count,
+                self.timestamps.as_ref(),
+            );
         }
         encoder.copy_buffer_to_buffer(
             &self.output.buffer,
@@ -773,13 +799,13 @@ impl GpuTracer {
             readback_bytes as u64,
         );
         if let Some(query) = &self.timestamps {
-            encoder.resolve_query_set(query, 0..2, &self.timestamp_resolve.buffer, 0);
+            encoder.resolve_query_set(query, 0..timestamp_count, &self.timestamp_resolve.buffer, 0);
             encoder.copy_buffer_to_buffer(
                 &self.timestamp_resolve.buffer,
                 0,
                 &self.readback.buffer,
                 readback_bytes as u64,
-                16,
+                timestamp_bytes,
             );
         }
         let submitted = Instant::now();
@@ -788,7 +814,7 @@ impl GpuTracer {
         let (sender, receiver) = mpsc::sync_channel(1);
         self.readback
             .buffer
-            .slice(0..readback_bytes as u64 + 16)
+            .slice(0..readback_bytes as u64 + timestamp_bytes)
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = sender.send(result);
             });
@@ -807,18 +833,20 @@ impl GpuTracer {
         let view = self
             .readback
             .buffer
-            .slice(0..readback_bytes as u64 + 16)
+            .slice(0..readback_bytes as u64 + timestamp_bytes)
             .get_mapped_range();
         self.last_wait_ms = submitted.elapsed().as_secs_f32() * 1000.0;
         let timestamp_ms = if self.timestamps.is_some() {
-            let begin =
-                u64::from_le_bytes(view[readback_bytes..readback_bytes + 8].try_into().unwrap());
-            let end = u64::from_le_bytes(
-                view[readback_bytes + 8..readback_bytes + 16]
-                    .try_into()
-                    .unwrap(),
-            );
-            end.saturating_sub(begin) as f32 * queue.get_timestamp_period() / 1_000_000.0
+            // Sum actual compute passes, not the gaps between encoders. Some
+            // Metal devices cannot pair timestamps across separate passes.
+            view[readback_bytes..]
+                .chunks_exact(16)
+                .map(|pair| {
+                    let begin = u64::from_le_bytes(pair[..8].try_into().unwrap());
+                    let end = u64::from_le_bytes(pair[8..].try_into().unwrap());
+                    end.saturating_sub(begin) as f32 * queue.get_timestamp_period() / 1_000_000.0
+                })
+                .sum::<f32>()
         } else {
             0.0
         };
@@ -847,6 +875,7 @@ impl GpuTracer {
                 face.second_moment = second;
                 face.samples = values[5].to_bits();
                 face.sequence = values[6].to_bits();
+                face.presentation = Vec4::new(values[7], values[13], values[14], values[15]);
             } else {
                 face.radiance += (mean - face.radiance) * alpha;
                 face.second_moment += (second - face.second_moment) * alpha;
@@ -855,7 +884,7 @@ impl GpuTracer {
             }
             face.direct = decode_spectrum(&values[16..20], values[20]);
             face.custom_direct = Vec3::new(values[21], values[22], values[23]);
-            face.updated_at = Some(now);
+            face.updated_at = Some(submitted);
         }
         for (position, bytes) in sky_pending
             .into_iter()

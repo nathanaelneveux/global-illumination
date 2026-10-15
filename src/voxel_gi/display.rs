@@ -475,8 +475,8 @@ mod tests {
             resident_count: 10,
             generation: 1,
             limits: DisplayBufferLimits {
-                max_buffer_size: 2080,
-                max_storage_buffer_binding_size: 2080,
+                max_buffer_size: 2560,
+                max_storage_buffer_binding_size: 2560,
             },
         };
         assert!(guard.permits(request));

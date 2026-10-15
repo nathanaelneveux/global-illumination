@@ -1035,6 +1035,7 @@ fn sky_comparison_is_display_only_and_independent_of_gi_toggle() {
     let mut app = App::new();
     let mut materials = Assets::<VoxelTransportMaterial>::default();
     let handle = materials.add(render::material_template(&VoxelTransportAssets {
+        resident: default(),
         texture: default(),
         hash_entries: default(),
         probes: default(),

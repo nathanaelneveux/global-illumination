@@ -34,6 +34,7 @@ struct GpuProbe {
     faces: array<vec4<f32>, 6>,
     emission: vec4<f32>,
     direct_sky: array<vec4<u32>, 6>, // four packed RGBE corners per face
+    resident: array<vec2<u32>, 6>, // slot + allocation incarnation
 }
 
 struct GpuTransportSettings {
@@ -52,6 +53,8 @@ var<storage, read> transport_hash: array<GpuHashEntry>;
 var<storage, read> transport_probes: array<GpuProbe>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(104)
 var<uniform> transport_settings: GpuTransportSettings;
+@group(#{MATERIAL_BIND_GROUP}) @binding(105)
+var<storage, read> resident_faces: array<vec4<u32>>;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -127,7 +130,21 @@ fn lookup_face(voxel: vec3<i32>, face: u32) -> vec4<f32> {
         return vec4(0.0);
     }
 
-    return transport_probes[probe_index].faces[face];
+    return resolved_face(probe_index, face);
+}
+
+fn resolved_face(index: u32, face: u32) -> vec4<f32> {
+    let fallback = transport_probes[index].faces[face];
+    let address = transport_probes[index].resident[face];
+    let base = address.x * 8u;
+    if fallback.w > 0.0 && address.y != 0u && base + 7u < arrayLength(&resident_faces) {
+        if resident_faces[base + 7u].x == address.y {
+            let display = bitcast<vec4<f32>>(resident_faces[base + 6u]);
+            let custom = bitcast<vec4<f32>>(resident_faces[base + 5u]).yzw;
+            return vec4(display.rgb + custom, max(display.a, 0.03125));
+        }
+    }
+    return fallback;
 }
 
 const FACE_NORMALS = array<vec3<i32>, 6>(
@@ -153,7 +170,7 @@ fn unpublished_face_prior(voxel: vec3<i32>, receiver_face: u32) -> vec4<f32> {
         let value = lookup_face(exterior - FACE_NORMALS[face], face);
         sum += vec4(value.rgb * value.w, value.w);
         if index < transport_settings.probe_capacity {
-            let removed = transport_probes[index].faces[face];
+            let removed = resolved_face(index, face);
             sum += vec4(removed.rgb * removed.w, removed.w);
         }
     }

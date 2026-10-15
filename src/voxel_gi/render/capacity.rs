@@ -145,12 +145,12 @@ mod tests {
     fn headroom_is_clamped_without_dropping_residents_at_either_device_limit() {
         for limits in [
             DisplayBufferLimits {
-                max_buffer_size: 2080,
+                max_buffer_size: 2560,
                 max_storage_buffer_binding_size: 4096,
             },
             DisplayBufferLimits {
                 max_buffer_size: 4096,
-                max_storage_buffer_binding_size: 2080,
+                max_storage_buffer_binding_size: 2560,
             },
         ] {
             assert_eq!(
@@ -168,8 +168,8 @@ mod tests {
                     supported: 10
                 })
             );
-            assert!(limits.check_bytes("probes", 2080).is_ok());
-            assert!(limits.check_bytes("probes", 2081).is_err());
+            assert!(limits.check_bytes("probes", 2560).is_ok());
+            assert!(limits.check_bytes("probes", 2561).is_err());
             assert_eq!(limits.grow_hash(64).unwrap(), 128);
             assert!(limits.grow_hash(128).is_err());
         }

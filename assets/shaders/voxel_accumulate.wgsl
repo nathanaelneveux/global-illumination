@@ -1,7 +1,8 @@
 // Persistent measurement storage, independent of the ray estimator. Each face
 // owns eight uint4s: the six existing result records, presentation, then metadata.
 // Readback is a snapshot of this state, never the authority for advancing rays.
-@group(0) @binding(0) var<uniform> control: vec4<u32>;
+struct Controls { counts: vec4<u32>, options: vec4<u32> }
+@group(0) @binding(0) var<uniform> settings: Controls;
 @group(0) @binding(1) var<storage, read_write> tasks: array<vec4<u32>>;
 @group(0) @binding(2) var<storage, read_write> output: array<vec4<u32>>;
 @group(0) @binding(3) var<storage, read_write> state: array<vec4<u32>>;
@@ -10,8 +11,9 @@
 
 @compute @workgroup_size(64)
 fn prepare(@builtin(global_invocation_id) id: vec3<u32>) {
+    let control = settings.counts;
     let i = id.x;
-    if i >= control.x { return; }
+    if i >= settings.options.y { return; }
     let input = inputs[i];
     let base = input.x * 8u;
     if input.y != 0xffffffffu {
@@ -20,11 +22,14 @@ fn prepare(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
     state[base + 1u].y = min(state[base + 1u].y, input.z);
-    tasks[i * 2u + 1u].x = state[base + 1u].z;
+    if input.w != 0xffffffffu {
+        tasks[input.w * 2u + 1u].x = state[base + 1u].z;
+    }
 }
 
 @compute @workgroup_size(64)
 fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
+    let control = settings.counts;
     let i = id.x;
     if i >= control.x { return; }
     let base = inputs[i].x * 8u;
@@ -46,8 +51,33 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
     state[base + 1u].z += control.y;
     state[base + 4u] = output[result + 4u];
     state[base + 5u] = output[result + 5u];
+    let radiance = bitcast<vec4<f32>>(state[base]).rgb;
+    let moment = bitcast<vec4<f32>>(state[base + 2u]).rgb;
+    let error = sqrt(max(moment - radiance * radiance, vec3(0.0)) / max(f32(count), 1.0));
+    let uncertainty = select(min(8.0, max3(error / (vec3(0.02) + abs(radiance)))), 1.0, count < 2u);
+    let noise = select(min(8.0, max3(error / (vec3(0.002) + abs(radiance)))), 1.0, count < 2u);
+    let elapsed = select(1.0 / 60.0, f32(control.z - state[base + 7u].y) * 0.001, state[base + 7u].z != 0u);
+    let time_alpha = 1.0 - exp(-elapsed / bitcast<f32>(settings.options.x));
+    let evidence = f32(count) / (f32(count) + 32.0);
+    let blend = min(time_alpha, evidence / (1.0 + 16.0 * noise * noise));
+    let previous = bitcast<vec4<f32>>(state[base + 6u]);
+    let old_weight = (1.0 - blend) / (0.25 + max3(previous.rgb));
+    let new_weight = blend / (0.25 + max3(radiance));
+    let alpha_display = min(blend, new_weight / max(old_weight + new_weight, 0.0000001));
+    let confidence = clamp(f32(count) / (f32(count) + 8.0) / (1.0 + uncertainty), 0.125, 1.0);
+    state[base + 6u] = bitcast<vec4<u32>>(vec4(
+        mix(previous.rgb, radiance, alpha_display),
+        mix(previous.a, confidence, blend),
+    ));
     state[base + 7u].y = control.z;
+    state[base + 7u].z = 1u;
+    // Spare result words carry the resolved presentation and its measurement
+    // time without enlarging the five-band simulation snapshot.
+    state[base + 1u].w = state[base + 6u].x;
+    state[base + 3u] = vec4(state[base + 3u].x, state[base + 6u].yzw);
     for (var word = 0u; word < 6u; word += 1u) {
         output[result + word] = state[base + word];
     }
 }
+
+fn max3(value: vec3<f32>) -> f32 { return max(value.x, max(value.y, value.z)); }

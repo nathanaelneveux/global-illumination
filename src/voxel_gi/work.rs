@@ -1,6 +1,7 @@
 //! Compact worker ownership: receiver identity and only the selected face
-//! measurements cross threads. Display history, topology indices, and adaptive
-//! scheduling state stay in the authoritative field until validated publication.
+//! measurements cross threads. Topology and adaptive scheduling stay in the
+//! field. Resident mode seeds presentation once, then mirrors the GPU resolve;
+//! the CPU backend resolves against the live field at validated publication.
 use bevy::prelude::*;
 use std::ops::Range;
 use std::time::Instant;
@@ -11,6 +12,7 @@ use super::{EnergySpectrum, world::SurfaceProbe};
 pub(crate) struct TraceWork {
     /// Immutable model snapshot for this batch, shared by both backends.
     pub transport: super::TransportSettings,
+    pub response_seconds: f32,
     pub probes: Vec<ProbeWork>,
     pub faces: Vec<FaceWork>,
     pub(super) pending_retention: Vec<RetentionWork>,
@@ -47,8 +49,8 @@ impl ProbeWork {
     }
 
     /// Publish only after geometry/source validation. Untouched faces and live
-    /// order indices remain authoritative; display history never comes back
-    /// from a worker. The numerical resolve and stability rules are unchanged.
+    /// order indices remain authoritative. Resident presentation has already
+    /// been resolved by the same filter on the GPU; do not filter it twice.
     pub fn publish(
         &self,
         faces: &[FaceWork],
@@ -92,19 +94,28 @@ impl ProbeWork {
             let previous_time = probe.face_updated_at[face].or(previous_display_time);
             let before = probe.radiance[face];
             measurement.write(probe);
-            probe.resolve_face(
-                face,
-                previous_time,
-                now,
-                settings.display_response_seconds(),
-            );
+            if measurement.resident.y == 0 {
+                probe.resolve_face(
+                    face,
+                    previous_time,
+                    now,
+                    settings.display_response_seconds(),
+                );
+            } else {
+                probe.display[face].indirect = measurement.presentation.truncate();
+                probe.display[face].confidence = measurement.presentation.w;
+            }
             super::scheduling::record_face_batch(
                 probe,
                 face,
                 before,
                 previous_stable[face],
                 same_revision,
-                now,
+                if measurement.resident.y == 0 {
+                    now
+                } else {
+                    measurement.updated_at.unwrap_or(now)
+                },
                 settings,
             );
         }
@@ -126,6 +137,8 @@ pub(crate) struct FaceWork {
     pub history_cap: u32,
     pub sequence: u32,
     pub updated_at: Option<Instant>,
+    pub presentation: Vec4,
+    pub resident: UVec2,
 }
 
 impl TraceWork {
@@ -207,6 +220,10 @@ impl TraceWork {
                         .min(source_history_limit)
                 },
                 sequence: probe.sequence[face],
+                presentation: probe.display[face]
+                    .indirect
+                    .extend(probe.display[face].confidence),
+                resident: UVec2::ZERO,
                 history_cap: if restart {
                     0
                 } else {
@@ -294,6 +311,7 @@ impl FaceWork {
         probe.samples[face] = self.samples;
         probe.sequence[face] = self.sequence;
         probe.face_updated_at[face] = self.updated_at;
+        probe.resident[face] = self.resident;
         probe.updated_at = self.updated_at;
     }
 }
