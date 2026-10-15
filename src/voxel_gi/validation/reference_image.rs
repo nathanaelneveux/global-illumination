@@ -123,8 +123,7 @@ fn setup_residency(mut commands: Commands, evidence: Res<CaptureEvidence>) {
     }
     if near_fixture::Fixture::selected().is_ok_and(|f| f.is_hallway()) {
         for offset in [16, 64, 88] {
-            let eye = crate::structures::hallway::floor_receiver(offset).as_vec3()
-                + Vec3::Y * 4.;
+            let eye = crate::structures::hallway::floor_receiver(offset).as_vec3() + Vec3::Y * 4.;
             super::background::spawn_loader(
                 &mut commands,
                 &evidence,
@@ -387,6 +386,11 @@ impl ReferenceImage {
         let task = AsyncComputeTaskPool::get().spawn(async move {
             let mut gpu = GpuTracer::new(device.clone())?;
             let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
+            let mut control_gpu = if super::sample_sweep::reuse_requested() {
+                let mut tracer=GpuTracer::new(device.clone())?;
+                tracer.enable_resident()?;
+                Some(tracer)
+            } else {None};
             let mut reuse = if super::sample_sweep::reuse_requested() {
                 let mut tracer=GpuTracer::new(device)?;
                 tracer.enable_reuse()?;
@@ -394,17 +398,29 @@ impl ReferenceImage {
             } else {None};
             let sweep = if sweep_requested {
                 super::sample_sweep::run(reuse.as_mut().unwrap_or(&mut gpu), &scene, &sources, &materials,
-                    transport, &emitters, &sites, &worker_progress)?
+                    transport, &emitters, &sites, &worker_progress, false)?
             } else { Vec::new() };
+            let control = if sweep_requested && reuse.is_some() {
+                super::sample_sweep::run(control_gpu.as_mut().unwrap(), &scene, &sources, &materials,
+                    transport, &emitters, &sites, &worker_progress, true)?
+            } else {Vec::new()};
             if sweep_requested {
                 std::fs::write(worker_output.join("cave-sample-sweep.json"),
                     serde_json::to_vec(&json!({"schema_version":1,
                         "scene_generation":generation,"origin":origin.to_array(),
                         "transport":transport,"face_count":sites.len(),
                         "sampler":if super::sample_sweep::reuse_requested() {"fresh-paired-reuse"} else {"independent-paths"},
+                        "batch_faces":if super::sample_sweep::reuse_requested(){2048}else{512},
                         "windows":sweep,
                         "note":"Same exact frozen scene and sites as cave-reference.json. Unfiltered production estimator prefixes, disjoint unaligned sequence windows, no resets or scheduling. Equal-confidence connected corners; images use normal textures and tonemapping. Not an interactive timing or temporal-filter study."})).unwrap())
                     .map_err(|e| e.to_string())?;
+                if !control.is_empty() {
+                    std::fs::write(worker_output.join("cave-control-sweep.json"),
+                        serde_json::to_vec(&json!({"schema_version":1,"scene_generation":generation,
+                        "origin":origin.to_array(),"transport":transport,"face_count":sites.len(),
+                        "sampler":"resident-independent-paths","batch_faces":2048,"windows":control})).unwrap())
+                        .map_err(|e|e.to_string())?;
+                }
             }
             let mut replicas = Vec::new();
             for replica in 0..2 {
@@ -503,14 +519,16 @@ impl ReferenceImage {
             ].into_iter().map(|(name, values)| {
                 ReferenceFrame { name:name.into(), values:values.clone(), pending:default(), confidence:None, sky:None }
             }).collect();
-            for (window, data) in sweep.into_iter().enumerate() {
+            for (label, windows) in [("samples",sweep),("control",control)] {
+              for (window, data) in windows.into_iter().enumerate() {
                 for prefix in data.prefixes {
                     frames.push_back(ReferenceFrame {
-                        name:format!("samples-{}-window-{window}",prefix.paths),
+                        name:format!("{label}-{}-window-{window}",prefix.paths),
                         values:prefix.means, pending:default(),
                         confidence:None, sky:None,
                     });
                 }
+              }
             }
             let accepted = qualification["qualified"].as_bool().unwrap_or(false);
             Ok(Bake { frames, qualification, base, sites, accepted })

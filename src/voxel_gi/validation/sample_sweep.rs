@@ -34,8 +34,10 @@ pub(super) fn reuse_requested() -> bool {
     std::env::var("VOXEL_GI_VALIDATE_REUSE_SWEEP").is_ok_and(|v| v == "1")
 }
 
-fn counts() -> &'static [u32] {
-    if reuse_requested() {
+fn counts(control: bool) -> &'static [u32] {
+    if reuse_requested() && control {
+        &[1024, 1536, 2048]
+    } else if reuse_requested() {
         &[64, 256, 512, 768, 1024, 1280, 1536, 2048, 4096]
     } else {
         COUNTS
@@ -43,13 +45,22 @@ fn counts() -> &'static [u32] {
 }
 
 pub(super) fn path_count(faces: usize) -> u64 {
-    faces as u64 * u64::from(*counts().last().unwrap()) * STARTS.len() as u64
+    let paths = *counts(false).last().unwrap()
+        + if reuse_requested() {
+            *counts(true).last().unwrap()
+        } else {
+            0
+        };
+    faces as u64 * u64::from(paths) * STARTS.len() as u64
 }
 
 #[derive(Serialize)]
 pub(super) struct Prefix {
     pub paths: u32,
     pub means: Means,
+    /// Sum of native compute-pass timestamps through this whole-scene prefix.
+    /// None when timestamps are unavailable; never substitute readback latency.
+    pub gpu_ms: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -74,17 +85,22 @@ pub(super) fn run(
     emitters: &Arc<EmissionDistribution>,
     sites: &[(IVec3, usize)],
     progress: &AtomicU64,
+    control: bool,
 ) -> Result<Vec<Window>, String> {
     let mut windows = Vec::new();
     for sequence_start in STARTS {
-        let mut prefixes: Vec<_> = counts()
+        let mut prefixes: Vec<_> = counts(control)
             .iter()
             .map(|&paths| Prefix {
                 paths,
                 means: vec![[0.0; 5]; sites.len()],
+                gpu_ms: Some(0.0),
             })
             .collect();
-        for (chunk_index, chunk) in sites.chunks(512).enumerate() {
+        // Reuse needs a representative neighborhood, not a 512-face reference
+        // serialization tile. Both samplers get identical 2048-face batches.
+        let chunk_size = if reuse_requested() { 2048 } else { 512 };
+        for (chunk_index, chunk) in sites.chunks(chunk_size).enumerate() {
             let mut work = TraceWork {
                 transport,
                 ..default()
@@ -97,6 +113,7 @@ pub(super) fn run(
                 work.probes.last_mut().unwrap().revision = u64::from(sequence_start) + 1;
             }
             let mut completed = 0;
+            let mut gpu_ms = Some(0.0_f64);
             for prefix in &mut prefixes {
                 while completed < prefix.paths {
                     let paths =
@@ -111,6 +128,9 @@ pub(super) fn run(
                         false,
                     )?;
                     completed += paths;
+                    gpu_ms = gpu_ms
+                        .zip(gpu.last_gpu_ms)
+                        .map(|(sum, ms)| sum + f64::from(ms));
                     progress.fetch_add(chunk.len() as u64 * u64::from(paths), Ordering::Relaxed);
                 }
                 for (i, face) in work.faces.iter().enumerate() {
@@ -119,9 +139,10 @@ pub(super) fn run(
                     {
                         return Err("Sweep lost its cumulative sample count or sequence".into());
                     }
-                    prefix.means[chunk_index * 512 + i] =
+                    prefix.means[chunk_index * chunk_size + i] =
                         super::reference_oracle::channels(face.radiance).map(f64::from);
                 }
+                prefix.gpu_ms = prefix.gpu_ms.zip(gpu_ms).map(|(sum, ms)| sum + ms);
             }
         }
         windows.push(Window {

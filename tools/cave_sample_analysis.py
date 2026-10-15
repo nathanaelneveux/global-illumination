@@ -148,11 +148,11 @@ def perceptual_difference(first, second, ppd):
         flip_parameters=dict(ppd=params["ppd"], dynamic_range="LDR"))
 
 
-def perceptual_analysis(folder, results, ppd):
+def perceptual_analysis(folder, results, ppd, image_prefix="samples"):
     reference = load_rgb(folder / "cave-reference.png")
     images = []
     for r in results:
-        path = folder / f"samples-{r['paths']}-window-{r['window']}.png"
+        path = folder / f"{image_prefix}-{r['paths']}-window-{r['window']}.png"
         difference = perceptual_difference(reference, load_rgb(path), ppd)
         # Engineering gates declared before measuring this sweep. These are
         # conservative near-reference tolerances, NOT calibrated invisibility
@@ -180,6 +180,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run", type=Path)
     parser.add_argument("--perceptual", action="store_true", help="requires official flip-evaluator 1.7")
+    parser.add_argument("--control", action="store_true", help="analyze the independent sampler paired in the same frozen scene")
     parser.add_argument("--ppd", type=float, default=67, help="display pixels/degree, not camera FOV")
     args = parser.parse_args()
     reference = json.loads((args.run / "cave-reference.json").read_text())
@@ -188,7 +189,7 @@ def main():
     if (not reference["qualification"]["qualified"] or audit["unknown_voxels"]
             or audit["mismatched_voxels"] or status["status"] != "completed"):
         raise ValueError("unqualified or incomplete reference")
-    sweep = json.loads((args.run / "cave-sample-sweep.json").read_text())
+    sweep = json.loads((args.run / ("cave-control-sweep.json" if args.control else "cave-sample-sweep.json")).read_text())
     results = transport_analysis(reference, sweep)
     # Small manifest for the full-resolution gallery; do not make a browser
     # load the 100+ MiB per-face scientific dataset just to find checkpoint names.
@@ -196,7 +197,7 @@ def main():
                     sequence_starts=[w["sequence_start"] for w in sweep["windows"]],
                     reference_paths=reference["paths_per_replica"] * reference["replicas"],
                     scene_generation=reference["scene_generation"], qualified=True)
-    (args.run / "sample-gallery.json").write_text(json.dumps(manifest, allow_nan=False))
+    (args.run / ("control-gallery.json" if args.control else "sample-gallery.json")).write_text(json.dumps(manifest, allow_nan=False))
     output = dict(criteria=dict(practical="Every window: 99% of chamber corners within 5% RGB, worst <=10%",
         strict="Every window: 99% of chamber corners within 2% RGB, worst <=5%",
         perceptual="Every window at captured view: OKLab p99<=.01/max<=.02, FLIP mean<=.01/worst 32px tile mean<=.05",
@@ -204,7 +205,7 @@ def main():
         minimum_practical_paths=minimum_sustained(results, "practical_pass"),
         minimum_strict_paths=minimum_sustained(results, "strict_pass"), measurements=results)
     if args.perceptual:
-        output["perception"] = perceptual_analysis(args.run, results, args.ppd)
+        output["perception"] = perceptual_analysis(args.run, results, args.ppd, "control" if args.control else "samples")
         output["minimum_captured_view_paths"] = minimum_sustained(
             output["perception"]["images"], "near_reference_pass")
     print(json.dumps(output, indent=2))

@@ -1764,8 +1764,10 @@ mod tests {
     fn validation_snapshot_follows_resident_measurements_not_seed_bytes() {
         let voxel = IVec3::new(3, 5, 7);
         let address = UVec2::new(12, 34);
-        let mut gpu = GpuProbe::default();
-        gpu.positive_y = Vec4::splat(0.125);
+        let mut gpu = GpuProbe {
+            positive_y: Vec4::splat(0.125),
+            ..default()
+        };
         gpu.resident[2] = address;
         let mut bytes = vec![0; GPU_PROBE_BYTES];
         encode_gpu_probe(gpu, &mut bytes);
