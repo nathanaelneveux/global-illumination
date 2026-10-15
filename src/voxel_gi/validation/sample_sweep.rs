@@ -31,7 +31,11 @@ pub(super) fn requested() -> bool {
 }
 
 pub(super) fn spatial_requested() -> bool {
-    std::env::var("VOXEL_GI_VALIDATE_SPATIAL_SWEEP").is_ok_and(|v| v == "1")
+    std::env::var("VOXEL_GI_VALIDATE_SPATIAL_SWEEP").is_ok_and(|v| v == "1") || evidence_requested()
+}
+
+pub(super) fn evidence_requested() -> bool {
+    std::env::var("VOXEL_GI_VALIDATE_EVIDENCE_SWEEP").is_ok_and(|v| v == "1")
 }
 
 pub(super) fn reuse_requested() -> bool {
@@ -39,7 +43,9 @@ pub(super) fn reuse_requested() -> bool {
 }
 
 fn counts(control: bool) -> &'static [u32] {
-    if spatial_requested() {
+    if evidence_requested() {
+        &[1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
+    } else if spatial_requested() {
         &[16, 64, 256, 512, 1024, 2048, 4096]
     } else if reuse_requested() && control {
         &[1024, 1536, 2048]
@@ -220,6 +226,75 @@ pub(super) fn spatial_values(sites: &[(IVec3, usize)], prefix: &Prefix) -> Means
             result
         })
         .collect()
+}
+
+/// Presentation-only target-evidence sweep. Same sites, paths and ordinary
+/// material renderer as the control; no additional transport rays. The support
+/// report names its heuristic explicitly rather than calling it convergence.
+pub(super) fn evidence_values(
+    sites: &[(IVec3, usize)],
+    prefix: &Prefix,
+    target: u32,
+) -> (Means, serde_json::Value) {
+    use super::super::spatial::{Sample, evidence};
+    let indices: bevy::platform::collections::HashMap<_, _> = sites
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(i, k)| (k, i))
+        .collect();
+    let samples: Vec<_> = prefix
+        .means
+        .iter()
+        .zip(prefix.second_moments.as_ref().unwrap())
+        .map(|(m, s)| {
+            let mean = Vec3::new(m[0] as f32, m[1] as f32, m[2] as f32);
+            Sample {
+                mean,
+                second: Vec3::from_array(*s),
+                count: prefix.paths,
+                display: mean,
+            }
+        })
+        .collect();
+    let mut gather = evidence::Gather::default();
+    let mut borrowed = 0;
+    let mut candidates = 0;
+    let mut reached = 0;
+    let mut effective = 0.0f64;
+    let mut radius2 = 0;
+    let mut values = prefix.means.clone();
+    for (i, &(voxel, face)) in sites.iter().enumerate() {
+        gather.collect(
+            voxel,
+            face,
+            samples[i],
+            evidence::candidate_limit(target, prefix.paths),
+            |p, f| indices.get(&(p, f)).map(|&j| samples[j]),
+        );
+        let result = evidence::resolve(&gather.sites, target, 1.0);
+        values[i][..3].copy_from_slice(&result.rgb.to_array().map(f64::from));
+        borrowed += result.borrowed;
+        candidates += gather.sites.len() - 1;
+        reached += usize::from(result.effective >= target as f32 - 0.1);
+        effective += f64::from(result.effective);
+        radius2 = radius2.max(
+            gather
+                .sites
+                .iter()
+                .map(|(p, _)| p.length_squared())
+                .max()
+                .unwrap_or(0),
+        );
+    }
+    (
+        values,
+        serde_json::json!({"paths":prefix.paths,"target":target,"faces":sites.len(),
+        "mean_effective_support":effective/sites.len() as f64,"reached_fraction":reached as f64/sites.len() as f64,
+        "mean_borrowed_faces":borrowed as f64/sites.len() as f64,"mean_candidates":candidates as f64/sites.len() as f64,
+        "max_candidate_radius":(radius2 as f64).sqrt(),
+        "note":"Weighted support heuristic, not independent samples or certified accuracy."}),
+    )
 }
 
 #[cfg(test)]

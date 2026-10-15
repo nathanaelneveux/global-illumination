@@ -522,9 +522,18 @@ impl ReferenceImage {
             ].into_iter().map(|(name, values)| {
                 ReferenceFrame { name:name.into(), values:values.clone(), pending:default(), confidence:None, sky:None }
             }).collect();
+            let mut evidence_reports = Vec::new();
             for (label, windows) in [("samples",sweep),("control",control)] {
               for (window, data) in windows.into_iter().enumerate() {
                 for prefix in data.prefixes {
+                    if super::sample_sweep::evidence_requested() {
+                        let (values, report) = super::sample_sweep::evidence_values(&sites, &prefix, 512);
+                        evidence_reports.push(json!({"window":window,"support":report}));
+                        frames.push_back(ReferenceFrame {
+                            name:format!("evidence-{}-window-{window}",prefix.paths),
+                            values,pending:default(),confidence:None,sky:None,
+                        });
+                    }
                     if super::sample_sweep::spatial_requested() {
                         frames.push_back(ReferenceFrame {
                             name:format!("spatial-{}-window-{window}",prefix.paths),
@@ -539,6 +548,10 @@ impl ReferenceImage {
                     });
                 }
               }
+            }
+            if !evidence_reports.is_empty() {
+                std::fs::write(worker_output.join("cave-evidence-support.json"),
+                    serde_json::to_vec_pretty(&evidence_reports).unwrap()).map_err(|e|e.to_string())?;
             }
             let accepted = qualification["qualified"].as_bool().unwrap_or(false);
             Ok(Bake { frames, qualification, base, sites, accepted })
