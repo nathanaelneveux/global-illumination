@@ -623,18 +623,13 @@ fn record_visible(record: RecordedPath, origin: vec3<f32>) -> bool {
 // Balanced proposal weights are bounded without a Jacobian-ratio cutoff.
 // Reject only zero-support or occluded connections, symmetrically for both
 // receivers. No radiance clipping or energy-dependent selection is introduced.
-fn compatible_pdf(record: RecordedPath, origin: vec3<f32>, normal: vec3<f32>, reference_pdf: f32) -> f32 {
+fn compatible_pdf(record: RecordedPath, origin: vec3<f32>, normal: vec3<f32>) -> f32 {
     let other_pdf = record_pdf(record, origin, normal);
     if other_pdf <= 0.0 { return 0.0; }
     if !record_visible(record, origin) { return 0.0; }
     return other_pdf;
 }
 
-// Reciprocal pairs evaluate each first-vertex reconnection once, then publish
-// the two weighted energies. Three uint4s per path; no geometry readback.
-fn path_offset(face: u32, sample: u32) -> u32 {
-    return params.counts.x * 6u + u32(params.minimum.w) * 2u + (face * params.counts.y + sample) * 3u;
-}
 @compute @workgroup_size(64)
 fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= params.counts.x { return; }
@@ -676,95 +671,6 @@ fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     results[offset + 5u] = bitcast<vec4<u32>>(result.direct_extra);
 }
 
-@compute @workgroup_size(64)
-fn trace_paths_recorded(@builtin(global_invocation_id) id: vec3<u32>,
-    @builtin(local_invocation_index) local: u32) {
-    let face = id.x / PATH_LANES;
-    if face >= params.counts.x { return; }
-    let task = tasks[face];
-    let normal = face_normal(task.face);
-    let origin = vec3<f32>(task.voxel) + vec3(0.5) + normal * 0.501;
-    let stream = hash_voxel(task.voxel) ^ pcg(task.face + 1u);
-    let has_partner = task.padding0 > 0u && task.padding0 <= params.counts.x;
-    var other_origin = origin;
-    if has_partner { other_origin = vec3<f32>(tasks[task.padding0 - 1u].voxel) + vec3(0.5) + normal * 0.501; }
-    for (var i = local % PATH_LANES; i < params.counts.y; i += PATH_LANES) {
-        let sequence = task.sequence + i;
-        let direction = hemisphere(normal, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
-        let record = trace_path_record(origin, direction, normal, stream, sequence, true);
-        var own = evaluate_record(record, origin, normal);
-        var shifted = Energy(vec4(0.0), 0.0, vec3(0.0));
-        if has_partner {
-            let q = record_pdf(record, origin, normal);
-            if q > 0.0 {
-                let other_q = compatible_pdf(record, other_origin, normal, q);
-                own.value *= q / (q + other_q);
-                own.radiation *= q / (q + other_q);
-                if other_q > 0.0 {
-                    shifted = evaluate_record(record, other_origin, normal);
-                    shifted.value *= other_q / (q + other_q);
-                    shifted.radiation *= other_q / (q + other_q);
-                }
-            }
-        }
-        let offset = path_offset(face, i);
-        results[offset] = bitcast<vec4<u32>>(own.value);
-        results[offset+1u] = bitcast<vec4<u32>>(shifted.value);
-        results[offset+2u] = vec4(bitcast<u32>(own.radiation), bitcast<u32>(shifted.radiation), 0u, 0u);
-    }
-}
-
-@compute @workgroup_size(64)
-fn resolve_reused_faces(@builtin(global_invocation_id) id: vec3<u32>,
-    @builtin(local_invocation_index) local: u32) {
-    let face = id.x / PATH_LANES;
-    let lane = local % PATH_LANES;
-    var moment: PathMoments;
-    if face < params.counts.x {
-        let task = tasks[face];
-        let normal = face_normal(task.face);
-        let center = vec3<f32>(task.voxel) + vec3(0.5);
-        let origin = center + normal * 0.501;
-        let stream = hash_voxel(task.voxel) ^ pcg(task.face + 1u);
-        let has_partner = task.padding0 > 0u && task.padding0 <= params.counts.x;
-        let partner = task.padding0 - 1u;
-        for (var i = lane; i < params.counts.y; i += PATH_LANES) {
-            let offset = path_offset(face, i);
-            var energy = Energy(bitcast<vec4<f32>>(results[offset]), bitcast<f32>(results[offset+2u].x), vec3(0.0));
-            if has_partner {
-                let donated = path_offset(partner, i);
-                energy.value += bitcast<vec4<f32>>(results[donated+1u]);
-                energy.radiation += bitcast<f32>(results[donated+2u].y);
-            }
-            let nee = sample_emitter(center + normal * 0.5, normal, stream, task.sequence + i, 0u);
-            let value = energy.value + nee.value;
-            let radiation = energy.radiation + nee.radiation;
-            moment.mean += value;
-            moment.second += value * value;
-            moment.radiation += vec2(radiation, radiation * radiation);
-        }
-    }
-    path_moments[local] = moment;
-    workgroupBarrier();
-    if lane != 0u || face >= params.counts.x { return; }
-    var total: PathMoments;
-    for (var i = 0u; i < PATH_LANES; i += 1u) {
-        total.mean += path_moments[local + i].mean;
-        total.second += path_moments[local + i].second;
-        total.radiation += path_moments[local + i].radiation;
-    }
-    let task = tasks[face];
-    let normal = face_normal(task.face);
-    let direct = direct_at(vec3<f32>(task.voxel) + vec3(0.5) + normal * 0.5, normal);
-    let inverse = 1.0 / f32(params.counts.y);
-    let offset = face * 6u;
-    results[offset] = bitcast<vec4<u32>>(total.mean * inverse);
-    results[offset + 1u] = bitcast<vec4<u32>>(vec4(total.radiation.x * inverse, 0.0, 0.0, 0.0));
-    results[offset + 2u] = bitcast<vec4<u32>>(total.second * inverse);
-    results[offset + 3u] = bitcast<vec4<u32>>(vec4(total.radiation.y * inverse, 0.0, 0.0, 0.0));
-    results[offset + 4u] = bitcast<vec4<u32>>(direct.value);
-    results[offset + 5u] = bitcast<vec4<u32>>(vec4(direct.radiation, direct.custom_visible));
-}
 
 var<workgroup> pair_own: array<vec4<f32>, 64>;
 var<workgroup> pair_donated: array<vec4<f32>, 64>;
@@ -823,7 +729,7 @@ fn trace_paired_faces(@builtin(global_invocation_id) id: vec3<u32>,
                 let other_origin = vec3<f32>(tasks[partner].voxel) + vec3(0.5) + normal * 0.501;
                 let q = record_pdf(record, origin, normal);
                 if q > 0.0 {
-                    let other_q = compatible_pdf(record, other_origin, normal, q);
+                    let other_q = compatible_pdf(record, other_origin, normal);
                     own.value *= q / (q + other_q);
                     own.radiation *= q / (q + other_q);
                     if other_q > 0.0 {

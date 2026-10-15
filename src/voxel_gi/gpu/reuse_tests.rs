@@ -86,6 +86,79 @@ fn spectral_importance_preserves_cpu_gpu_energy_parity() {
     }
 }
 
+#[test]
+#[ignore = "native cross-scene early-corner accuracy and matched-work GPU cost"]
+fn reuse_cross_scene_quality() {
+    let mut baseline = super::tests::native_tracer();
+    baseline.enable_resident().unwrap();
+    let mut candidate = GpuTracer::new(baseline.context.clone()).unwrap();
+    candidate.enable_reuse().unwrap();
+    for kind in 0..3 {
+        let mut fixture = super::refinement::research_fixture(kind);
+        fixture.receivers = (6..26)
+            .flat_map(|z| (6..26).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
+            .collect();
+        let emitters = Arc::new(EmissionDistribution::with_importance(
+            &fixture.scene,
+            &fixture.materials,
+            super::super::EnergySpectrum::new(Vec3::ONE, 0.125, 0.125),
+        ));
+        let mut reference = fresh(&fixture.receivers, 1, 8_388_608);
+        for _ in 0..4 {
+            trace(&mut baseline, &fixture, &emitters, &mut reference, 8192);
+        }
+        let refs: Vec<_> = reference
+            .faces
+            .iter()
+            .map(|f| channels(f.radiance))
+            .collect();
+        for paths in [64, 256, 1024, 2048] {
+            for (mode, gpu) in [("independent", &mut baseline), ("reuse", &mut candidate)] {
+                let mut errors = Vec::new();
+                for window in 0..4 {
+                    let mut work = fresh(
+                        &fixture.receivers,
+                        100 + paths as u64 * 4 + window,
+                        window as u32 * 574_117,
+                    );
+                    for _ in 0..paths / 16 {
+                        trace(gpu, &fixture, &emitters, &mut work, 16);
+                    }
+                    errors.extend(corner_errors(&work, &refs));
+                }
+                eprintln!(
+                    "REUSE_SCENE kind={kind} mode={mode} paths={paths} corner_p95={} corner_p99={}",
+                    percentile(errors.clone(), 0.95),
+                    percentile(errors, 0.99)
+                );
+            }
+        }
+        let mut a = fresh(&fixture.receivers, 999_999, 0);
+        let mut b = fresh(&fixture.receivers, 999_999, 0);
+        let mut cost = [Vec::new(), Vec::new()];
+        for round in 0..40 {
+            for mode in [round % 2, 1 - round % 2] {
+                let (gpu, work) = if mode == 0 {
+                    (&mut baseline, &mut a)
+                } else {
+                    (&mut candidate, &mut b)
+                };
+                trace(gpu, &fixture, &emitters, work, 16);
+                if round >= 8 {
+                    cost[mode].push(gpu.last_gpu_ms.unwrap());
+                }
+            }
+        }
+        eprintln!(
+            "REUSE_SCENE_COST kind={kind} baseline_p50={} reuse_p50={} baseline_p95={} reuse_p95={}",
+            percentile(cost[0].clone(), 0.5),
+            percentile(cost[1].clone(), 0.5),
+            percentile(cost[0].clone(), 0.95),
+            percentile(cost[1].clone(), 0.95)
+        );
+    }
+}
+
 fn corner_errors(work: &TraceWork, refs: &[[f32; 5]]) -> Vec<f32> {
     let indices: bevy::platform::collections::HashMap<_, _> = work
         .faces

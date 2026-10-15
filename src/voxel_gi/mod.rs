@@ -221,7 +221,8 @@ pub struct VoxelGiStats {
     pub last_selection_ms: f32,
     pub last_merge_ms: f32,
     pub last_prepare_ms: f32,
-    pub last_wait_ms: f32,
+    /// Submission-to-delivery latency; does not imply a blocking GPU wait.
+    pub last_snapshot_latency_ms: f32,
     pub last_decode_ms: f32,
     pub packed_geometry_bytes: usize,
     pub fully_bootstrapped: bool,

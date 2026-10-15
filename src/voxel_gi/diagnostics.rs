@@ -345,7 +345,7 @@ pub(super) fn log_voxel_gi_stats(
         selection_ms = stats.last_selection_ms,
         merge_ms = stats.last_merge_ms,
         prepare_ms = stats.last_prepare_ms,
-        wait_ms = stats.last_wait_ms,
+        snapshot_latency_ms = stats.last_snapshot_latency_ms,
         decode_ms = stats.last_decode_ms,
         packed_geometry_bytes = stats.packed_geometry_bytes,
         fully_bootstrapped = stats.fully_bootstrapped,

@@ -590,7 +590,7 @@ pub(super) fn apply_trace_task(
     }
     if let Some(tracer) = &result.gpu_tracer {
         stats.last_prepare_ms = tracer.last_prepare_ms;
-        stats.last_wait_ms = tracer.last_wait_ms;
+        stats.last_snapshot_latency_ms = tracer.last_snapshot_latency_ms;
         stats.last_decode_ms = tracer.last_decode_ms;
         stats.packed_geometry_bytes = tracer.geometry_storage_bytes();
     }
