@@ -645,6 +645,7 @@ pub(super) fn run_validation(
         "settings": {"transport": settings.transport, "samples_per_dispatch": settings.batch_samples(),
             "simulation_sampling_importance": settings.sampling_importance().infrared,
             "spatial_reconstruction": settings.spatial_reconstruction,
+            "visible_refinement": settings.visible_refinement,
             "temporal_trace_scope": "pre-spatial temporal face estimates; use captures for spatial presentation",
             "trace_budget_ms": settings.trace_budget_ms, "max_probes_per_dispatch": settings.max_probes_per_dispatch,
             "scene_publish_budget_ms": settings.scene_publish_budget.as_secs_f32() * 1000.0,

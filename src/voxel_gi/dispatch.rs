@@ -74,6 +74,7 @@ pub(super) fn start_trace_task(
     cameras: Query<&GlobalTransform, With<Camera3d>>,
     gpu_device: Option<Res<gpu::GpuTransportDevice>>,
     settings: Res<VoxelGiSettings>,
+    visual_weights: Option<Res<super::VoxelGiVisualWeights>>,
     startup: Option<Res<super::VoxelGiStartup>>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
@@ -102,6 +103,13 @@ pub(super) fn start_trace_task(
     // Three owned staging allocations bound queue latency and memory. When full,
     // poll without selecting more work: never turn backpressure into a CPU wait.
     let can_submit = !field.order.is_empty() && runtime.gpu_pending.len() < 3;
+    runtime.ranked_candidates.visual =
+        settings
+            .visible_refinement
+            .then(|| scheduling::VisualPriority {
+                weights: visual_weights.as_deref().copied().unwrap_or_default(),
+                nonvisual: settings.sampling_importance().infrared,
+            });
     let mut selected = if can_submit {
         select_transport(&mut runtime, &field, &settings)
     } else {

@@ -176,7 +176,70 @@ pub(crate) fn record_face_batch(
     probe.fresh_mask |= 1 << face;
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct VisualPriority {
+    pub weights: super::VoxelGiVisualWeights,
+    pub nonvisual: f32,
+}
+
+/// Heuristic visible error, not a confidence bound or a replacement for FLIP.
+/// RGB is normalized per channel against combined direct/indirect contribution;
+/// a bright red source cannot hide uncertain blue. Nonvisual error retains a
+/// positive independently normalized priority and the fair sweep is unchanged.
+fn visual_error(
+    probe: &SurfaceProbe,
+    face: usize,
+    source_revision: u64,
+    policy: VisualPriority,
+) -> f32 {
+    let count = probe.samples[face];
+    if count < 2 {
+        return 1.0;
+    }
+    let mean = probe.radiance[face];
+    let variance = (probe.second_moment[face] - mean * mean).finite_or_zero();
+    let sigma = (variance.visible / count as f32).map(f32::sqrt);
+    let weights = super::VoxelGiVisualWeights {
+        direct: if policy.weights.direct.is_finite() {
+            policy.weights.direct.max(0.0)
+        } else {
+            0.0
+        },
+        indirect: if policy.weights.indirect.is_finite() {
+            policy.weights.indirect.max(0.0)
+        } else {
+            1.0
+        },
+    };
+    let direct = if probe.source_revision == source_revision && probe.fresh_mask & (1 << face) != 0
+    {
+        (probe.direct[face].visible - probe.custom_direct[face]).max(Vec3::ZERO) * weights.direct
+            + probe.custom_direct[face] * weights.indirect
+    } else {
+        Vec3::ZERO
+    };
+    let visible = (sigma * weights.indirect
+        / (Vec3::splat(REFINEMENT_ENERGY_FLOOR) + mean.visible.abs() * weights.indirect + direct))
+        .max_element();
+    let nonvisual = ((variance.infrared / count as f32).sqrt()
+        / (REFINEMENT_ENERGY_FLOOR + mean.infrared.abs()))
+    .max(
+        (variance.ionizing / count as f32).sqrt() / (REFINEMENT_ENERGY_FLOOR + mean.ionizing.abs()),
+    );
+    visible.max(nonvisual * policy.nonvisual).min(8.0)
+}
+
+#[cfg(test)]
 fn priority(probe: &SurfaceProbe, source_revision: u64, now: Instant) -> f32 {
+    priority_with_policy(probe, source_revision, now, None)
+}
+
+fn priority_with_policy(
+    probe: &SurfaceProbe,
+    source_revision: u64,
+    now: Instant,
+    visual: Option<VisualPriority>,
+) -> f32 {
     let age = probe
         .face_updated_at
         .iter()
@@ -194,7 +257,10 @@ fn priority(probe: &SurfaceProbe, source_revision: u64, now: Instant) -> f32 {
             let value = if probe.samples[face] == 0 {
                 8.0
             } else {
-                refinement_error(probe, face)
+                visual.map_or_else(
+                    || refinement_error(probe, face),
+                    |policy| visual_error(probe, face, source_revision, policy),
+                )
             };
             error = error.max(value);
         }
@@ -206,6 +272,7 @@ fn priority(probe: &SurfaceProbe, source_revision: u64, now: Instant) -> f32 {
 /// depend on hash iteration; the set only deduplicates the ordered windows.
 #[derive(Default)]
 pub(crate) struct RankedCandidates {
+    pub(super) visual: Option<VisualPriority>,
     seen: HashSet<IVec3>,
     ranked: Vec<(bool, f32, IVec3)>,
 }
@@ -256,7 +323,8 @@ impl RankedCandidates {
                         .any(|face| probe.face_mask & (1 << face) != 0 && probe.samples[face] > 0);
                     candidates.push((
                         measured,
-                        priority(probe, field.source_revision, now) + bonus,
+                        priority_with_policy(probe, field.source_revision, now, self.visual)
+                            + bonus,
                         voxel,
                     ));
                 }
@@ -292,6 +360,45 @@ fn ranked_candidates(
 mod tests {
     use super::super::EnergySpectrum;
     use super::*;
+
+    #[test]
+    fn visible_priority_uses_total_light_without_hiding_color_or_simulation_error() {
+        let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
+        probe.samples[2] = 64;
+        probe.radiance[2] = EnergySpectrum::ONE;
+        probe.second_moment[2] = EnergySpectrum::new(Vec3::splat(65.0), 1.0, 1.0);
+        let policy = VisualPriority {
+            weights: super::super::VoxelGiVisualWeights::default(),
+            nonvisual: 0.125,
+        };
+        let dark = visual_error(&probe, 2, 0, policy);
+        probe.direct[2].visible = Vec3::splat(100.0);
+        assert!(visual_error(&probe, 2, 0, policy) < dark * 0.02);
+        assert_eq!(
+            visual_error(&probe, 2, 1, policy),
+            dark,
+            "stale direct light cannot mask uncertainty"
+        );
+        probe.fresh_mask = 0;
+        assert_eq!(visual_error(&probe, 2, 0, policy), dark);
+        probe.fresh_mask = 4;
+        probe.direct[2].visible = Vec3::X * 100.0;
+        assert_eq!(
+            visual_error(&probe, 2, 0, policy),
+            dark,
+            "red cannot hide blue error"
+        );
+        probe.direct[2].visible = Vec3::splat(100.0);
+        probe.second_moment[2].infrared = 257.0;
+        assert!(
+            visual_error(&probe, 2, 0, policy) > 0.24,
+            "nonvisual measurements retain a separate positive priority"
+        );
+        assert!(
+            refinement_error(&probe, 2) > 1.9,
+            "ranking must not manufacture convergence"
+        );
+    }
 
     #[test]
     fn sparse_due_windows_cannot_collapse_search_capacity() {

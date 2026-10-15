@@ -98,6 +98,8 @@ mod launch_tests {
 impl Plugin for VoxelGiDiagnosticsPlugin {
     fn build(&self, app: &mut App) {
         tuning::load_launch_settings(app);
+        app.init_resource::<super::VoxelGiVisualWeights>()
+            .add_systems(Update, tuning::update_visual_weights.before(VoxelGiSystems));
         if terminal_stats_enabled() {
             app.add_plugins(LogDiagnosticsPlugin::default())
                 .add_systems(Update, log_voxel_gi_stats.after(VoxelGiSystems));

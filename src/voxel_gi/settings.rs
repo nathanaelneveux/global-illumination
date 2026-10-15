@@ -23,6 +23,9 @@ pub struct VoxelGiSettings {
     /// Zero is the unchanged corner display; one enables uncertainty-weighted
     /// connected-surface filtering. Never changes transport or simulation data.
     pub spatial_reconstruction: f32,
+    /// Experimental refinement ranking by projected RGB error in total light.
+    /// Does not change stability, coverage, edit urgency, or the fair world sweep.
+    pub visible_refinement: bool,
     /// Disable for a same-kernel continuous-sampling A/B baseline.
     pub adaptive_updates: bool,
     pub trace_budget_ms: f32,
@@ -51,6 +54,7 @@ impl Default for VoxelGiSettings {
             samples_per_dispatch: 16,
             simulation_sampling_importance: DEFAULT_SIMULATION_SAMPLING_IMPORTANCE,
             spatial_reconstruction: 0.0,
+            visible_refinement: false,
             adaptive_updates: true,
             trace_budget_ms: 4.0,
             max_probes_per_dispatch: 8192,
@@ -60,6 +64,24 @@ impl Default for VoxelGiSettings {
             stable_audit_interval: Duration::from_secs(2),
             stable_min_samples: 64,
             stable_relative_error: 0.12,
+        }
+    }
+}
+
+/// Host-supplied conversion from normalized transport to visible shading units.
+/// Used only by optional visual ranking, never by physical transport. A renderer
+/// with camera exposure or an artistic GI gain should update these together.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct VoxelGiVisualWeights {
+    pub direct: f32,
+    pub indirect: f32,
+}
+
+impl Default for VoxelGiVisualWeights {
+    fn default() -> Self {
+        Self {
+            direct: 1.0,
+            indirect: 1.0,
         }
     }
 }
