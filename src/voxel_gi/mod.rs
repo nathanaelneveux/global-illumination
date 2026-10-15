@@ -127,6 +127,19 @@ impl Plugin for VoxelGiPlugin {
     }
 
     fn finish(&self, app: &mut App) {
+        // CPU tracing still uses the same display storage bindings. Capture
+        // renderer limits independently of transport backend selection.
+        if let Some(limits) = app
+            .get_sub_app(bevy::render::RenderApp)
+            .and_then(|render_app| {
+                render_app
+                    .world()
+                    .get_resource::<bevy::render::renderer::RenderDevice>()
+                    .map(|device| render::DisplayBufferLimits::from(&device.limits()))
+            })
+        {
+            app.insert_resource(limits);
+        }
         if std::env::var("VOXEL_GI_BACKEND").is_ok_and(|backend| backend == "cpu") {
             return;
         }
@@ -282,7 +295,7 @@ struct VoxelGiRuntime {
     /// Values that must publish atomically with face/hash topology, not the
     /// independent backlog of ordinary radiance updates.
     gpu_topology_values: HashSet<IVec3>,
-    gpu_task: Option<Task<PreparedGpuCache>>,
+    gpu_task: Option<Task<Result<PreparedGpuCache, display::DisplayBuildFailure>>>,
     gpu_snapshot: Option<GpuSnapshot>,
     gpu_prepared: Option<PreparedGpuCache>,
     gpu_catchup_dirty: display::DisplayDirtyQueue,

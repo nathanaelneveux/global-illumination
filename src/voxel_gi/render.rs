@@ -1,5 +1,7 @@
 #[cfg(test)]
 use bevy::platform::collections::HashMap;
+mod capacity;
+pub(crate) use capacity::{DisplayBufferLimits, DisplayCapacityError};
 use std::sync::{Arc, Mutex};
 
 use bevy::image::{ImageAddressMode, ImageSampler, TextureReinterpretationError};
@@ -692,20 +694,20 @@ pub(crate) fn snapshot_gpu_probes(
 #[cfg(test)]
 pub(crate) fn build_gpu_cache(snapshot: Vec<(IVec3, GpuProbe)>) -> GpuCacheBuild {
     let resident_count = snapshot.len();
-    build_gpu_cache_for_residency(snapshot, resident_count)
+    build_gpu_cache_for_residency(snapshot, resident_count, DisplayBufferLimits::default()).unwrap()
 }
 
 pub(crate) fn build_gpu_cache_for_residency(
     snapshot: Vec<(IVec3, GpuProbe)>,
     resident_count: usize,
-) -> GpuCacheBuild {
+    limits: DisplayBufferLimits,
+) -> Result<GpuCacheBuild, DisplayCapacityError> {
     // Geometric headroom avoids rebuilding the entire cache every 16k streamed
     // receivers. Keep hash occupancy <= 50% even after using that headroom.
     let resident_count = resident_count.max(snapshot.len());
-    let probe_capacity = resident_count
-        .saturating_add((resident_count / 2).max(16_384))
-        .max(1);
-    let mut hash_capacity = probe_capacity.saturating_mul(2).next_power_of_two().max(1);
+    let capacity = limits.plan(resident_count)?;
+    let probe_capacity = capacity.probes;
+    let mut hash_capacity = capacity.hash;
     loop {
         let mut entries = vec![GpuHashEntry::EMPTY; hash_capacity];
         // Reserve the same growth headroom as the GPU slots, on this worker.
@@ -729,10 +731,10 @@ pub(crate) fn build_gpu_cache_for_residency(
             longest_probe = longest_probe.max(distance);
         }
         if longest_probe >= MAX_SHADER_HASH_PROBES {
-            hash_capacity *= 2;
+            hash_capacity = limits.grow_hash(hash_capacity)?;
             continue;
         }
-        return GpuCacheBuild {
+        return Ok(GpuCacheBuild {
             mapped: None,
             patch_state: encode_cache_snapshot(&snapshot, probe_capacity, &entries),
             slots,
@@ -740,7 +742,7 @@ pub(crate) fn build_gpu_cache_for_residency(
             hash_entries: entries,
             probe_capacity,
             high_water: snapshot.len(),
-        };
+        });
     }
 }
 
@@ -771,7 +773,12 @@ impl GpuCacheBuild {
     /// Allocate and initialize on the worker, but leave buffers mapped until
     /// bounded catch-up completes. The owning private generation is the only
     /// writer; all mapped views are dropped before transfer to the renderer.
-    pub fn prepare_buffers(mut self, device: &RenderDevice) -> Self {
+    pub fn prepare_buffers(mut self, device: &RenderDevice) -> Result<Self, DisplayCapacityError> {
+        // Recheck the actual target even if encoding used supplied limits (or
+        // the device was replaced). Neither GPU allocation happens on failure.
+        let limits = DisplayBufferLimits::from(&device.limits());
+        limits.check_bytes("probes", self.patch_state.probe_mirror.len())?;
+        limits.check_bytes("hash", self.patch_state.hash_mirror.len())?;
         let mut usage = ShaderBuffer::default().buffer_description.usage;
         // Bevy enables this feature automatically on supported integrated GPUs,
         // not discrete GPUs. Without MAP_WRITE, mapped-at-creation is a staging
@@ -800,7 +807,7 @@ impl GpuCacheBuild {
             make("Voxel GI display probes", &self.patch_state.probe_mirror),
             make("Voxel GI display hash", &self.patch_state.hash_mirror),
         ]);
-        self
+        Ok(self)
     }
 }
 
@@ -1302,6 +1309,30 @@ pub(crate) fn prepare_texture_array(
 mod tests {
     use super::*;
     use crate::voxel_gi::spectrum::EnergySpectrum;
+
+    #[test]
+    fn collision_growth_stops_at_the_device_limit_before_allocating_another_hash() {
+        let limits = DisplayBufferLimits {
+            max_buffer_size: (40 * GPU_PROBE_BYTES) as u64,
+            max_storage_buffer_binding_size: (40 * GPU_PROBE_BYTES) as u64,
+        };
+        let snapshot: Vec<_> = (0..100_000)
+            .map(|x| IVec3::new(x, 0, 0))
+            .filter(|&voxel| hash_voxel(voxel) & 511 == 0)
+            .take(MAX_SHADER_HASH_PROBES + 1)
+            .map(|voxel| (voxel, GpuProbe::default()))
+            .collect();
+        assert_eq!(snapshot.len(), 33);
+        assert_eq!(limits.plan(snapshot.len()).unwrap().hash, 128);
+        assert!(matches!(
+            build_gpu_cache_for_residency(snapshot, 33, limits),
+            Err(DisplayCapacityError::Buffer {
+                name: "hash",
+                bytes: 16_384,
+                limit: 8320
+            })
+        ));
+    }
 
     #[test]
     fn local_topology_defers_on_contention_and_does_not_drain_radiance_backlog() {
@@ -2311,7 +2342,7 @@ mod tests {
             .resource_mut::<VoxelGiSettings>()
             .display_upload_interval = Duration::from_secs(3600);
         world.resource_mut::<VoxelGiRuntime>().gpu_task =
-            Some(pool.spawn(async move { PreparedGpuCache::new(build_gpu_cache(snapshot)) }));
+            Some(pool.spawn(async move { Ok(PreparedGpuCache::new(build_gpu_cache(snapshot))) }));
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             world.run_system_once(upload_transport_cache).unwrap();
@@ -2426,6 +2457,57 @@ mod tests {
                 .extension
                 .settings,
             extracted_settings
+        );
+
+        // Device rejection must not replace or disable the live generation,
+        // nor stop ordinary lighting updates to its resident slots.
+        let live_id = world.resource::<VoxelTransportAssets>().probes.id();
+        let live_state = world.resource::<GpuProbePatchQueue>().state.clone();
+        world.insert_resource(DisplayBufferLimits {
+            max_buffer_size: GPU_PROBE_BYTES as u64,
+            max_storage_buffer_binding_size: GPU_PROBE_BYTES as u64,
+        });
+        {
+            let mut runtime = world.resource_mut::<VoxelGiRuntime>();
+            runtime.gpu_topology_dirty = true;
+            runtime.gpu_rebuild_required = true;
+            runtime.mark_display_dirty(voxel);
+        }
+        world
+            .resource_mut::<VoxelGiSettings>()
+            .display_upload_interval = Duration::ZERO;
+        world
+            .resource_mut::<VoxelEnergyField>()
+            .probes
+            .get_mut(&voxel)
+            .unwrap()
+            .display[2]
+            .indirect = Vec3::splat(11.0);
+        for _ in 0..2 {
+            world.run_system_once(upload_transport_cache).unwrap();
+            let runtime = world.resource::<VoxelGiRuntime>();
+            assert!(runtime.gpu_task.is_none());
+            assert!(runtime.gpu_snapshot.is_none());
+            assert!(runtime.gpu_prepared.is_none());
+            assert!(runtime.gpu_rebuild_required);
+            assert_eq!(
+                world.resource::<VoxelTransportAssets>().probes.id(),
+                live_id
+            );
+            assert!(Arc::ptr_eq(
+                &world.resource::<GpuProbePatchQueue>().state,
+                &live_state
+            ));
+            assert!(world.resource::<GpuTransportCache>().ready);
+        }
+        let expected = ShaderBuffer::from(vec![gpu_probe(
+            &world.resource::<VoxelEnergyField>().probes[&voxel],
+        )])
+        .data
+        .unwrap();
+        assert_eq!(
+            &live_state.lock().unwrap().probe_mirror[..GPU_PROBE_BYTES],
+            expected
         );
     }
 
@@ -2698,7 +2780,9 @@ mod tests {
             .collect();
         let build = || {
             PreparedGpuCache::new(
-                build_gpu_cache(snapshot_gpu_probes(&probes, &order)).prepare_buffers(&device),
+                build_gpu_cache(snapshot_gpu_probes(&probes, &order))
+                    .prepare_buffers(&device)
+                    .unwrap(),
             )
         };
         let mut builds = [build(), build()];
@@ -2800,6 +2884,46 @@ mod tests {
 
     #[test]
     #[ignore = "requires a native compute adapter; run explicitly on supported hardware"]
+    fn gpu_display_capacity_is_checked_against_the_actual_restricted_device() {
+        use bevy::tasks::block_on;
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+        let (device, _) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: wgpu::Limits {
+                max_storage_buffer_binding_size: 4096,
+                max_buffer_size: 8192,
+                ..default()
+            },
+            ..default()
+        }))
+        .unwrap();
+        let device = RenderDevice::from(device);
+        let scope = device
+            .wgpu_device()
+            .push_error_scope(wgpu::ErrorFilter::Validation);
+        let snapshot = vec![(IVec3::ZERO, GpuProbe::default())];
+        // A build encoded under permissive limits must be rejected before
+        // either GPU allocation if the eventual target is more restricted.
+        assert!(matches!(
+            build_gpu_cache(snapshot.clone()).prepare_buffers(&device),
+            Err(DisplayCapacityError::Buffer { .. })
+        ));
+        let limits = DisplayBufferLimits::from(&device.limits());
+        let fitting = build_gpu_cache_for_residency(snapshot, 1, limits)
+            .unwrap()
+            .prepare_buffers(&device)
+            .unwrap();
+        assert_eq!(fitting.probe_capacity, 4096 / GPU_PROBE_BYTES);
+        for buffer in fitting.mapped.as_ref().unwrap() {
+            assert!(buffer.size() <= 4096);
+            buffer.unmap();
+        }
+        assert!(block_on(scope.pop()).is_none());
+    }
+
+    #[test]
+    #[ignore = "requires a native compute adapter; run explicitly on supported hardware"]
     fn gpu_headless_renderer_prepares_cache_and_material_generations_together() {
         use bevy::pbr::PreparedMaterial;
         use bevy::render::erased_render_asset::ErasedRenderAssets;
@@ -2866,7 +2990,7 @@ mod tests {
             // Growth, shrink and equal-size replacement all use the worker's
             // private mapped buffers; the last generation covers CPU fallback.
             let build = if generation < 5 {
-                build.prepare_buffers(&device)
+                build.prepare_buffers(&device).unwrap()
             } else {
                 build
             };

@@ -2,10 +2,10 @@
 //! in bounded batches, then become visible atomically. The old generation keeps
 //! receiving lighting updates throughout preparation.
 use super::render::{
-    GpuProbe, GpuProbePatchQueue, GpuSnapshot, GpuTransportCache, PreparedGpuCache,
-    TopologyPatchError, VoxelTransportAssets, VoxelTransportMaterial,
-    build_gpu_cache_for_residency, gpu_probe, install_prepared_gpu_cache, patch_gpu_topology,
-    try_patch_probe_values,
+    DisplayBufferLimits, DisplayCapacityError, GpuProbe, GpuProbePatchQueue, GpuSnapshot,
+    GpuTransportCache, PreparedGpuCache, TopologyPatchError, VoxelTransportAssets,
+    VoxelTransportMaterial, build_gpu_cache_for_residency, gpu_probe, install_prepared_gpu_cache,
+    patch_gpu_topology, try_patch_probe_values,
 };
 use super::telemetry::{DisplayStage, GiWorkTimings, MainStage};
 use super::{VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, field::ProbeLookup};
@@ -27,6 +27,49 @@ const CATCHUP_BUDGET: Duration = Duration::from_micros(1500);
 // compact records to a worker; neither route increases the capture time slice.
 const CATCHUP_WORKER_THRESHOLD: usize = 8192;
 const LIVE_VALUE_BUDGET: Duration = Duration::from_micros(1500);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DisplayBuildRequest {
+    resident_count: usize,
+    generation: u64,
+    limits: DisplayBufferLimits,
+}
+
+#[derive(Debug)]
+pub(super) struct DisplayBuildFailure {
+    request: DisplayBuildRequest,
+    error: DisplayCapacityError,
+}
+
+/// Reject a request once, without retrying an unchanged oversized generation
+/// every frame. A changed scene/residency/device may retry; only successful
+/// publication ends the failure episode (and permits another warning).
+#[derive(Default)]
+pub(super) struct DisplayBuildGuard(Option<DisplayBuildFailure>);
+
+impl DisplayBuildGuard {
+    fn reject(&mut self, failure: DisplayBuildFailure) {
+        if self.0.is_none() {
+            error!(reason = %failure.error, "voxel GI display capacity exceeded; keeping the live generation; reduce residency or increase device limits");
+        }
+        self.0 = Some(failure);
+    }
+
+    fn permits(&mut self, request: DisplayBuildRequest) -> bool {
+        if self
+            .0
+            .as_ref()
+            .is_some_and(|failure| failure.request == request)
+        {
+            return false;
+        }
+        if let Err(error) = request.limits.plan(request.resident_count) {
+            self.reject(DisplayBuildFailure { request, error });
+            return false;
+        }
+        true
+    }
+}
 
 /// Coalesce changes without repeatedly scanning a mostly-empty hash table.
 /// Popping makes a key eligible for re-enqueue if it changes again. FIFO keeps
@@ -216,6 +259,8 @@ pub(super) fn upload_transport_cache(
     settings: Res<VoxelGiSettings>,
     mut timings: ResMut<GiWorkTimings>,
     device: Option<Res<super::gpu::GpuTransportDevice>>,
+    limits: Option<Res<DisplayBufferLimits>>,
+    mut build_guard: Local<DisplayBuildGuard>,
 ) {
     let mut timing = timings.main_scope(MainStage::DisplayPublication);
     let Some(material_handle) = material_handle else {
@@ -227,7 +272,14 @@ pub(super) fn upload_transport_cache(
         .and_then(|task| block_on(poll_once(task)));
     if let Some(build) = build {
         runtime.gpu_task = None;
-        runtime.gpu_prepared = Some(build);
+        match build {
+            Ok(build) => runtime.gpu_prepared = Some(build),
+            Err(failure) => {
+                build_guard.reject(failure);
+                runtime.gpu_topology_dirty = true;
+                runtime.gpu_rebuild_required = true;
+            }
+        }
     }
     timing.display_checkpoint(DisplayStage::Poll);
 
@@ -243,7 +295,7 @@ pub(super) fn upload_transport_cache(
             );
             runtime.gpu_task = Some(AsyncComputeTaskPool::get().spawn(async move {
                 prepared.synchronize_delta(&delta);
-                prepared
+                Ok(prepared)
             }));
         } else {
             let fits = prepared.is_valid()
@@ -273,6 +325,7 @@ pub(super) fn upload_transport_cache(
                 runtime.gpu_value_dirty.clear();
                 runtime.sky_upload_pending = false;
                 runtime.last_gpu_upload = Instant::now();
+                build_guard.0 = None;
             } else {
                 runtime.gpu_prepared = Some(prepared);
             }
@@ -319,10 +372,23 @@ pub(super) fn upload_transport_cache(
     }
     timing.display_checkpoint(DisplayStage::Topology);
 
-    if runtime.gpu_topology_dirty
+    let needs_snapshot = runtime.gpu_topology_dirty
         && (!cache.ready || runtime.gpu_rebuild_required)
-        && !preparing(&runtime)
-    {
+        && !preparing(&runtime);
+    let request = (needs_snapshot || runtime.gpu_snapshot.is_some()).then(|| DisplayBuildRequest {
+        resident_count: publication_capacity(
+            &field,
+            runtime.scene_publication.iter().flat_map(|result| {
+                result
+                    .pages
+                    .iter()
+                    .map(|(page, probes)| (*page, probes.len()))
+            }),
+        ),
+        generation: runtime.generation,
+        limits: limits.as_deref().copied().unwrap_or_default(),
+    });
+    if needs_snapshot && build_guard.permits(request.unwrap()) {
         runtime.gpu_snapshot = Some(GpuSnapshot::new(&field.order));
         runtime.gpu_added.clear();
         runtime.gpu_removed.clear();
@@ -346,32 +412,31 @@ pub(super) fn upload_transport_cache(
         })
     };
     if snapshot_done {
+        let request = request.expect("a snapshot has a capacity request");
         let snapshot = runtime.gpu_snapshot.take().unwrap().finish();
         // The scene worker may have finished a large streaming batch while
         // only a few pages have reached the field. Repeatedly allocating for
         // that partial count makes private generations fail as the known pages
         // arrive. Reserve their positive growth now; reconcile their values
         // normally as publication proceeds.
-        let resident_count = publication_capacity(
-            &field,
-            runtime.scene_publication.iter().flat_map(|result| {
-                result
-                    .pages
-                    .iter()
-                    .map(|(page, probes)| (*page, probes.len()))
-            }),
-        );
         let device = device.map(|context| context.device.clone());
         runtime.gpu_task = Some(AsyncComputeTaskPool::get().spawn(async move {
-            let build = build_gpu_cache_for_residency(snapshot, resident_count);
-            let build = if let Some(device) = device {
-                build.prepare_buffers(&device)
-            } else {
-                build
+            let build = || {
+                let build = build_gpu_cache_for_residency(
+                    snapshot,
+                    request.resident_count,
+                    request.limits,
+                )?;
+                let build = if let Some(device) = device {
+                    build.prepare_buffers(&device)?
+                } else {
+                    build
+                };
+                // CPU-only fallback payloads also belong on the worker, not in
+                // the main-thread completion poll.
+                Ok(PreparedGpuCache::new(build))
             };
-            // CPU-only fallback payloads also belong on the worker, not in
-            // the main-thread completion poll.
-            PreparedGpuCache::new(build)
+            build().map_err(|error| DisplayBuildFailure { request, error })
         }));
     }
     timing.display_checkpoint(DisplayStage::SnapshotAdvance);
@@ -402,6 +467,43 @@ pub(super) fn upload_transport_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capacity_rejection_waits_for_a_changed_request_and_rechecks_device_limits() {
+        let mut guard = DisplayBuildGuard::default();
+        let mut request = DisplayBuildRequest {
+            resident_count: 10,
+            generation: 1,
+            limits: DisplayBufferLimits {
+                max_buffer_size: 2080,
+                max_storage_buffer_binding_size: 2080,
+            },
+        };
+        assert!(guard.permits(request));
+        // Model a worker hash-growth failure after the minimum plan passed.
+        guard.reject(DisplayBuildFailure {
+            request,
+            error: DisplayCapacityError::HashAddressing,
+        });
+        assert!(!guard.permits(request));
+        request.generation += 1;
+        assert!(
+            guard.permits(request),
+            "different keys may no longer collide"
+        );
+        request.resident_count = 11;
+        assert!(!guard.permits(request));
+        request.generation += 1;
+        assert!(
+            !guard.permits(request),
+            "scene changes cannot bypass the device cap"
+        );
+        request.resident_count = 9;
+        assert!(guard.permits(request));
+        request.resident_count = 11;
+        request.limits = DisplayBufferLimits::default();
+        assert!(guard.permits(request));
+    }
 
     #[test]
     fn worker_capture_is_bounded_immutable_and_requeues_later_changes() {

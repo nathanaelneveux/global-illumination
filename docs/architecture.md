@@ -234,6 +234,10 @@ is consulted. The journals keep metadata, not scene snapshots or old rays.
 Canonical source ordering prevents ECS order changes from causing relights;
 point-source deltas include both old and new influence volumes but exclude
 unchanged lights. Distance affects responsiveness, never visibility or eligibility.
+The adapter omits analytic lights with zero contribution in every transport band
+and custom visible output before either backend or the sunlight cache sees them.
+Infrared-only and ionizing-only sources remain active. Static source lists are
+still rebuilt/canonicalized each frame; change-driven synchronization is separate work.
 
 Removing, replacing or covering an emitting voxel uses ordinary spatial history:
 old energy decays as new paths arrive, rather than restarting every receiver.
@@ -393,6 +397,20 @@ payloads. The worker also prepares the CPU-only fallback payloads. Capacity
 includes positive growth in already-built, pending receiver pages; future removals
 cannot fund earlier additions.
 
+`render/capacity.rs` checks both maximum buffer size and maximum whole-storage
+binding size, including hash collision growth and integer/shader addressing.
+Optional 50%/16,384-slot headroom is reduced to fit those limits; occupied receivers
+are never dropped to fit. The main world preflights before starting a snapshot,
+the worker checks before allocating large mirrors, and native preparation checks
+the actual device again before either GPU allocation. These limits apply to CPU
+transport too, since presentation still binds the same GPU storage. An oversized
+replacement reports one error per failure episode and retains the live generation
+and its ordinary value updates. It retries after a scene/residency/limit change,
+not on every identical frame. Without an existing generation, publication remains
+unavailable until a supported request succeeds. This is controlled capacity
+failure, not multi-buffer paging or protection against arbitrary system-memory
+exhaustion; the host must keep residency within its supported device limits.
+
 A replacement remains private while topology and measurements catch up in
 batches of 512 keys and a 1.5-ms soft game-thread target. Large journals capture
 compact immutable records within that slice and transfer the private generation
@@ -448,7 +466,12 @@ one temporary driver buffer per range. One copy submission publishes both
 buffers before drawing. Recall is asynchronous, with no device wait in the main
 world; renderer recovery recreates the device-owned pool.
 Topology updates include values on existing newly exposed faces, so
-the value-upload timer cannot split the transaction. The shader's address bound
+the value-upload timer cannot split the transaction. A separate required-value
+ledger contains face-mask/material changes, not the ordinary lighting backlog.
+Successful topology publication consumes only those values and additions/removals;
+unrelated values stay on their bounded FIFO. Topology also uses a nonblocking
+mirror lock: contention retains the entire transaction for retry, without allowing
+its required values to publish separately. The shader's address bound
 is allocated capacity, not current occupancy.
 
 Buffers and indices retain high-water capacity. GPU geometry is persistent and
