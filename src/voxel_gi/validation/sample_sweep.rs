@@ -30,8 +30,20 @@ pub(super) fn requested() -> bool {
     std::env::var("VOXEL_GI_VALIDATE_SAMPLE_SWEEP").is_ok_and(|v| v == "1")
 }
 
+pub(super) fn reuse_requested() -> bool {
+    std::env::var("VOXEL_GI_VALIDATE_REUSE_SWEEP").is_ok_and(|v| v == "1")
+}
+
+fn counts() -> &'static [u32] {
+    if reuse_requested() {
+        &[64, 256, 512, 768, 1024, 1280, 1536, 2048, 4096]
+    } else {
+        COUNTS
+    }
+}
+
 pub(super) fn path_count(faces: usize) -> u64 {
-    faces as u64 * u64::from(*COUNTS.last().unwrap()) * STARTS.len() as u64
+    faces as u64 * u64::from(*counts().last().unwrap()) * STARTS.len() as u64
 }
 
 #[derive(Serialize)]
@@ -65,7 +77,7 @@ pub(super) fn run(
 ) -> Result<Vec<Window>, String> {
     let mut windows = Vec::new();
     for sequence_start in STARTS {
-        let mut prefixes: Vec<_> = COUNTS
+        let mut prefixes: Vec<_> = counts()
             .iter()
             .map(|&paths| Prefix {
                 paths,
@@ -82,11 +94,13 @@ pub(super) fn run(
                 probe.sequence[face] = sequence_start;
                 work.push(&probe, 1 << face, 0, 0, false, u32::MAX, u32::MAX);
                 work.probes.last_mut().unwrap().sky_requested = false;
+                work.probes.last_mut().unwrap().revision = u64::from(sequence_start) + 1;
             }
             let mut completed = 0;
             for prefix in &mut prefixes {
                 while completed < prefix.paths {
-                    let paths = (prefix.paths - completed).min(1024);
+                    let paths =
+                        (prefix.paths - completed).min(if reuse_requested() { 16 } else { 1024 });
                     gpu.trace_compact(
                         scene.clone(),
                         sources,

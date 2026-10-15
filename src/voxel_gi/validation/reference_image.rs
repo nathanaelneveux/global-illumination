@@ -385,10 +385,15 @@ impl ReferenceImage {
         let worker_progress = progress.clone();
         let worker_output = output.clone();
         let task = AsyncComputeTaskPool::get().spawn(async move {
-            let mut gpu = GpuTracer::new(device)?;
+            let mut gpu = GpuTracer::new(device.clone())?;
             let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
+            let mut reuse = if super::sample_sweep::reuse_requested() {
+                let mut tracer=GpuTracer::new(device)?;
+                tracer.enable_reuse()?;
+                Some(tracer)
+            } else {None};
             let sweep = if sweep_requested {
-                super::sample_sweep::run(&mut gpu, &scene, &sources, &materials,
+                super::sample_sweep::run(reuse.as_mut().unwrap_or(&mut gpu), &scene, &sources, &materials,
                     transport, &emitters, &sites, &worker_progress)?
             } else { Vec::new() };
             if sweep_requested {
@@ -396,6 +401,7 @@ impl ReferenceImage {
                     serde_json::to_vec(&json!({"schema_version":1,
                         "scene_generation":generation,"origin":origin.to_array(),
                         "transport":transport,"face_count":sites.len(),
+                        "sampler":if super::sample_sweep::reuse_requested() {"fresh-paired-reuse"} else {"independent-paths"},
                         "windows":sweep,
                         "note":"Same exact frozen scene and sites as cave-reference.json. Unfiltered production estimator prefixes, disjoint unaligned sequence windows, no resets or scheduling. Equal-confidence connected corners; images use normal textures and tonemapping. Not an interactive timing or temporal-filter study."})).unwrap())
                     .map_err(|e| e.to_string())?;
@@ -601,6 +607,9 @@ fn tick(
                 reference.sites.iter().zip(&frame.values).enumerate()
             {
                 let p = reference.base.get_mut(&voxel).unwrap();
+                // Offline reference frames must override the live resident
+                // address as well as its fallback RGB bytes.
+                p.resident[face] = UVec2::ZERO;
                 p.display[face].indirect =
                     Vec3::new(value[0] as f32, value[1] as f32, value[2] as f32);
                 p.display[face].confidence = frame.confidence.as_ref().map_or(1.0, |c| c[i]);
