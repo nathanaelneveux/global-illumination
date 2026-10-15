@@ -133,10 +133,20 @@ pub(super) fn synchronize_transport_sources(
             custom_visible: emitter.spectrum.bounded(1e12).visible,
         });
     }
-    next.points
-        .retain(|light| light.position.is_finite() && light.range.is_finite() && light.range > 0.0);
-    next.directional
-        .retain(|light| light.direction.is_finite() && light.direction.length_squared() > 0.0);
+    // Eliminate empty sources before either backend (and the sunlight cache)
+    // sees them. Invisible simulation bands and custom primary visibility
+    // still count: a visually black source is not necessarily inactive.
+    next.points.retain(|light| {
+        light.position.is_finite()
+            && light.range.is_finite()
+            && light.range > 0.0
+            && contributes(light.intensity, light.custom_visible)
+    });
+    next.directional.retain(|light| {
+        light.direction.is_finite()
+            && light.direction.length_squared() > 0.0
+            && contributes(light.radiance, light.custom_visible)
+    });
     next.canonicalize();
     if *next == runtime.sources {
         return;
@@ -148,6 +158,10 @@ pub(super) fn synchronize_transport_sources(
     }
     std::mem::swap(&mut runtime.sources, &mut *next);
     invalidate_source_change(&mut runtime, &mut field, &mut stats, change);
+}
+
+fn contributes(energy: EnergySpectrum, custom_visible: Vec3) -> bool {
+    energy.max_component() > 0.0 || custom_visible.max_element() > 0.0
 }
 
 impl TransportSources {
@@ -272,6 +286,88 @@ impl Default for TransportSources {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_sources_are_omitted_but_each_transport_band_can_activate_them() {
+        let mut app = App::new();
+        app.init_resource::<VoxelGiRuntime>()
+            .init_resource::<VoxelEnergyField>()
+            .init_resource::<VoxelGiStats>()
+            .init_resource::<VoxelGiEnvironment>()
+            .init_resource::<GiWorkTimings>()
+            .add_systems(Update, synchronize_transport_sources);
+        let point = app
+            .world_mut()
+            .spawn((
+                PointLight {
+                    intensity: 0.0,
+                    ..default()
+                },
+                GlobalTransform::IDENTITY,
+            ))
+            .id();
+        let sun = app
+            .world_mut()
+            .spawn((
+                DirectionalLight {
+                    illuminance: 0.0,
+                    ..default()
+                },
+                GlobalTransform::IDENTITY,
+            ))
+            .id();
+        let emitter = app
+            .world_mut()
+            .spawn((EnergyEmitter::default(), GlobalTransform::IDENTITY))
+            .id();
+        app.update();
+        let runtime = app.world().resource::<VoxelGiRuntime>();
+        assert!(runtime.sources.points.is_empty());
+        assert!(runtime.sources.directional.is_empty());
+        let revision = runtime.source_revision;
+
+        app.world_mut().entity_mut(point).insert(EnergyEmitter {
+            spectrum: EnergySpectrum::new(Vec3::ZERO, 2.0, 0.0),
+            ..default()
+        });
+        app.world_mut().entity_mut(sun).insert(EnergyEmitter {
+            spectrum: EnergySpectrum::new(Vec3::ZERO, 0.0, 3.0),
+            ..default()
+        });
+        app.world_mut().entity_mut(emitter).insert(EnergyEmitter {
+            spectrum: EnergySpectrum::new(Vec3::ONE, 0.0, 0.0),
+            ..default()
+        });
+        app.update();
+        let runtime = app.world().resource::<VoxelGiRuntime>();
+        assert_eq!(runtime.source_revision, revision + 1);
+        assert_eq!(runtime.sources.points.len(), 2);
+        assert!(
+            runtime
+                .sources
+                .points
+                .iter()
+                .any(|p| p.intensity.infrared == 2.0)
+        );
+        assert!(
+            runtime
+                .sources
+                .points
+                .iter()
+                .any(|p| p.custom_visible == Vec3::ONE)
+        );
+        assert_eq!(runtime.sources.directional[0].radiance.ionizing, 3.0);
+        assert!(contributes(EnergySpectrum::ZERO, Vec3::ONE));
+
+        for entity in [point, sun, emitter] {
+            app.world_mut().entity_mut(entity).remove::<EnergyEmitter>();
+        }
+        app.update();
+        let runtime = app.world().resource::<VoxelGiRuntime>();
+        assert_eq!(runtime.source_revision, revision + 2);
+        assert!(runtime.sources.points.is_empty());
+        assert!(runtime.sources.directional.is_empty());
+    }
 
     fn point(x: f32, power: f32) -> PointTransportLight {
         PointTransportLight {
