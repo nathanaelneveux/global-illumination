@@ -1,5 +1,10 @@
 # Resident accumulation and fresh path reuse — October 15, 2026
 
+The next spatial-reconstruction, visible-priority and wider-sharing experiments
+are recorded in [early spatial reconstruction](early-spatial-reconstruction.md).
+They are opt-in; their early error reductions are not claimed as a new gameplay
+convergence threshold.
+
 Baseline `e3b46be` is preserved as
 `codex/gi-baseline-residency-reuse-20261015`. All experiments are local. BVW,
 retention, finite path depth/reach and the 75-ms RGB display filter are unchanged.

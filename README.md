@@ -56,11 +56,16 @@ VOXEL_GI_BACKEND=reuse cargo run --locked
 ```
 
 Reuse combined with RGB priority reaches the cave's calibrated visual threshold
-at 1280 rather than the earlier 2048-sample target; that threshold has not been
-measured for priority alone. Reuse costs more per batch and is not a universal
-throughput win. See [measurements and tradeoffs](docs/resident-path-reuse.md).
+at 1280 rather than the earlier 2048-sample target. The independent
+RGB-prioritized control first passes at 2048 in the subsequent matched spatial
+study. Reuse costs more per batch and is not a universal throughput win. See
+[measurements and tradeoffs](docs/resident-path-reuse.md).
 `VOXEL_GI_BACKEND=sync` keeps the synchronous backend available; add the equal-band
 preset to reproduce its historical sampling priority too.
+
+Early spatial RGB reconstruction and total-light-aware refinement are opt-in
+experiments, not new stable defaults. See [controls, architecture and image
+evidence](docs/early-spatial-reconstruction.md).
 
 The many-emitter cave is now in the regular world. Walk toward the house, then
 follow the pale stone path to its right to the lit entrance near **(20, 11, -18)**.
