@@ -342,6 +342,18 @@ workload or nonblank image alone is not a quality/performance pass.
 
 ## Interpret the measurements
 
+`live-cave` and `live-hallway` hold the actual normal-world structure views for
+182 seconds, with captures at 15/30/60/120/180 seconds. The hallway camera stands
+beside the emitter looking toward the dark end, unlike the historical `hallway`
+overview looking toward the lamp. Use `VOXEL_GI_VALIDATE_BACKGROUND=1` for a
+moving terrain loader and `VOXEL_GI_VALIDATE_TEMPORAL=1` for every-update records.
+The hallway records 237 contiguous floor receivers in three parallel rows;
+the cave uses the existing wall receivers. Neither profile freezes sampling,
+forces uniform histories, or replaces scheduling with an offline prefix bake.
+Temporal records are still **pre-spatial** CPU feedback, not final rendered RGB.
+These views diagnose live publication and sampling; they do not supersede the
+raw matched-prefix sampler controls or establish windowed frame pacing.
+
 - `VOXEL_GI_VALIDATE_FRAME_TIMINGS=1` adds per-frame intervals and the previous
   Update's seven GI system-body times to `measurements.frame_timeline`, with
   names in `gi_main_stage_names`. Capture exclusions are explicit. Pipeline

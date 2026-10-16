@@ -16,6 +16,8 @@ pub(super) enum Profile {
     Canyon,
     Structures,
     Hallway,
+    LiveCave,
+    LiveHallway,
     Compare,
     Stress,
 }
@@ -34,10 +36,12 @@ impl Profile {
             "canyon" => Ok(Self::Canyon),
             "structures" => Ok(Self::Structures),
             "hallway" => Ok(Self::Hallway),
+            "live-cave" => Ok(Self::LiveCave),
+            "live-hallway" => Ok(Self::LiveHallway),
             "compare" => Ok(Self::Compare),
             "stress" => Ok(Self::Stress),
             _ => Err(format!(
-                "unknown validation profile {value:?}; choose gameplay, streaming, house, house-edits, response, edits, sources, cave, canyon, structures, hallway, compare, or stress"
+                "unknown validation profile {value:?}; choose gameplay, streaming, house, house-edits, response, edits, sources, cave, canyon, structures, hallway, live-cave, live-hallway, compare, or stress"
             )),
         }
     }
@@ -55,6 +59,8 @@ impl Profile {
             Self::Canyon => "canyon",
             Self::Structures => "structures",
             Self::Hallway => "hallway",
+            Self::LiveCave => "live-cave",
+            Self::LiveHallway => "live-hallway",
             Self::Compare => "compare",
             Self::Stress => "stress",
         }
@@ -68,6 +74,7 @@ impl Profile {
             Self::Compare => 29.0,
             Self::Streaming => 35.0,
             Self::House => 90.0,
+            Self::LiveCave | Self::LiveHallway => 182.0,
             Self::Cave | Self::Canyon | Self::Structures | Self::Hallway => 62.0,
             Self::HouseEdits => 180.0,
             Self::Response | Self::Edits => 30.0,
@@ -84,6 +91,10 @@ impl Profile {
     }
 
     pub fn captures(self) -> &'static [(f32, &'static str)] {
+        if matches!(self, Self::LiveCave | Self::LiveHallway) {
+            return &[(15., "live-15s"), (30., "live-30s"), (60., "live-60s"),
+                (120., "live-120s"), (180., "live-180s")];
+        }
         if self == Self::Hallway {
             return &[(15., "hallway-15s"), (30., "hallway-30s"), (60., "hallway-60s")];
         }
@@ -204,7 +215,7 @@ impl Profile {
             } else {
                 "cave"
             }
-        } else if matches!(self, Self::Cave | Self::Canyon | Self::Hallway) {
+        } else if matches!(self, Self::Cave | Self::Canyon | Self::Hallway | Self::LiveCave | Self::LiveHallway) {
             if elapsed < 15.0 {
                 "startup"
             } else {

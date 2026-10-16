@@ -304,10 +304,16 @@ pub(super) fn run_validation(
         run.structures
             .tick(elapsed, player, &mut commands, &cameras, &mut lights);
     }
-    if matches!(profile, Profile::Cave | Profile::Canyon | Profile::Hallway)
+    if matches!(profile, Profile::Cave | Profile::Canyon | Profile::Hallway | Profile::LiveCave | Profile::LiveHallway)
         && !run.cave_camera_initialized
     {
-        let (eye, target, fov) = if profile == Profile::Hallway {
+        let (eye, target, fov) = if profile == Profile::LiveHallway {
+            // The user's view: beside the lamp, looking down the dark end.
+            let eye = crate::structures::hallway::SOURCE.as_vec3() + Vec3::new(2.5, 1.62, 0.5);
+            (eye, eye + Vec3::new(64., -1., 0.), 65.)
+        } else if profile == Profile::LiveCave {
+            (Vec3::new(47., -11.4, -18.), Vec3::new(76., -17., -34.), 65.)
+        } else if profile == Profile::Hallway {
             reference_image::hallway_view()
         } else if profile == Profile::Canyon {
             (crate::canyon_scene::EYE, crate::canyon_scene::TARGET, 65.)
@@ -328,13 +334,13 @@ pub(super) fn run_validation(
         }
         run.cave_camera_initialized = true;
     }
-    if matches!(profile, Profile::Cave | Profile::Structures) {
+    if matches!(profile, Profile::Cave | Profile::Structures | Profile::LiveCave) {
         run.cave.record(elapsed, &field);
         run.retention_snapshots.record(elapsed, &runtime);
     }
     if matches!(
         profile,
-        Profile::House | Profile::HouseEdits | Profile::Cave | Profile::Structures
+        Profile::House | Profile::HouseEdits | Profile::Cave | Profile::Structures | Profile::LiveCave | Profile::LiveHallway
     ) {
         run.temporal
             .record(elapsed, profile, &field, &runtime, &cache, &queue);
@@ -601,7 +607,7 @@ pub(super) fn run_validation(
         commands.write_message(AppExit::error());
         return;
     }
-    if matches!(profile, Profile::Cave | Profile::Structures)
+    if matches!(profile, Profile::Cave | Profile::Structures | Profile::LiveCave)
         && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("cave.json"),
             json!({"samples": run.cave.samples, "note": "Fixed wall receivers; all five measured bands, RGB display, history and measurement age. No ground-truth/convergence claim."}).to_string()) {
         evidence.fail(&format!("Could not save cave sequence: {error}"));

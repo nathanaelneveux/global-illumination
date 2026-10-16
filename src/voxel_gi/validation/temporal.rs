@@ -49,7 +49,14 @@ pub(super) struct TemporalRun {
 }
 
 pub(super) fn sites(profile: Profile) -> Vec<(IVec3, usize)> {
-    if matches!(profile, Profile::Cave | Profile::Structures) {
+    if profile == Profile::LiveHallway {
+        // Dense parallel floor rows expose spatial error and page boundaries,
+        // not just the original logarithmic near-edit distance anchors.
+        return (1..80).flat_map(|x| [-2, 0, 2].map(|z| {
+            (crate::structures::hallway::floor_receiver(x) + IVec3::Z * z, 2)
+        })).collect();
+    }
+    if matches!(profile, Profile::Cave | Profile::Structures | Profile::LiveCave) {
         let origin = if crate::cave_scene::enabled() {
             IVec3::ZERO
         } else {
@@ -211,6 +218,18 @@ impl TemporalRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_hallway_sites_cover_contiguous_exposed_floor_across_pages() {
+        let layer = crate::structures::StructureLayer::new(crate::structures::hallway::instances(), 32);
+        let sites = sites(Profile::LiveHallway);
+        assert_eq!(sites.len(), 237);
+        for (voxel, face) in sites {
+            assert_eq!(face, 2);
+            assert!(matches!(layer.sample(voxel), crate::structures::VoxelOp::Solid(_)));
+            assert_eq!(layer.sample(voxel + IVec3::Y), crate::structures::VoxelOp::Air);
+        }
+    }
+
     #[test]
     fn cave_sites_are_exposed_and_house_sites_keep_the_same_definition() {
         let house = sites(Profile::House);
