@@ -376,19 +376,29 @@ impl ProbePatchState {
         let mut encoded = [0; GPU_PROBE_BYTES];
         encode_gpu_probe(probe, &mut encoded);
         let old = &mut self.probe_mirror[slot * GPU_PROBE_BYTES..(slot + 1) * GPU_PROBE_BYTES];
-        let first = (0..GPU_PROBE_BYTES).step_by(4)
+        let first = (0..GPU_PROBE_BYTES)
+            .step_by(4)
             .find(|&i| old[i..i + 4] != encoded[i..i + 4]);
-        let Some(first) = first else { return; };
-        let last = (first..GPU_PROBE_BYTES).step_by(4).rev()
-            .find(|&i| old[i..i + 4] != encoded[i..i + 4]).unwrap() + 4;
+        let Some(first) = first else {
+            return;
+        };
+        let last = (first..GPU_PROBE_BYTES)
+            .step_by(4)
+            .rev()
+            .find(|&i| old[i..i + 4] != encoded[i..i + 4])
+            .unwrap() + 4;
         old[first..last].copy_from_slice(&encoded[first..last]);
-        self.pending_probes.entry(slot)
-            .and_modify(|range| { range.start = range.start.min(first); range.end = range.end.max(last); })
+        self.pending_probes
+            .entry(slot)
+            .and_modify(|range| {
+                range.start = range.start.min(first);
+                range.end = range.end.max(last);
+            })
             .or_insert(first..last);
     }
 
-    /// Validate the entire transaction before submitting either buffer. On a
-    /// missing/undersized destination the caller retries without losing writes.
+    /// Validate before submitting either buffer or consuming pending writes.
+    /// The runtime treats an invalid destination as a fatal invariant failure.
     fn upload(
         &mut self,
         probe_bytes: u64,
@@ -403,9 +413,13 @@ impl ProbePatchState {
         if self
             .pending_probes
             .iter()
-            .any(|(slot, range)| *slot >= self.probe_mirror.len() / GPU_PROBE_BYTES
-                || range.start >= range.end || range.end > GPU_PROBE_BYTES
-                || range.start % 4 != 0 || range.end % 4 != 0)
+            .any(|(slot, range)| {
+                *slot >= self.probe_mirror.len() / GPU_PROBE_BYTES
+                    || range.start >= range.end
+                    || range.end > GPU_PROBE_BYTES
+                    || range.start % 4 != 0
+                    || range.end % 4 != 0
+            })
             || self
                 .pending_hash
                 .iter()
@@ -413,9 +427,14 @@ impl ProbePatchState {
         {
             return Err("dirty slot is outside its cache generation");
         }
-        for range in coalesce_patch_ranges(self.pending_probes.iter().map(|(slot, range)| {
-            slot * GPU_PROBE_BYTES + range.start..slot * GPU_PROBE_BYTES + range.end
-        }).collect()) {
+        let spans = self
+            .pending_probes
+            .iter()
+            .map(|(slot, range)| {
+                slot * GPU_PROBE_BYTES + range.start..slot * GPU_PROBE_BYTES + range.end
+            })
+            .collect();
+        for range in coalesce_patch_ranges(spans) {
             write(true, range.start, &self.probe_mirror[range]);
         }
         for range in patch_ranges(self.pending_hash.iter().copied().collect(), 16) {

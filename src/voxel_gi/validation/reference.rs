@@ -135,7 +135,10 @@ impl ReferenceRun {
         let revision = runtime.generation;
         let sites = super::temporal::sites(profile);
         let blocks = match std::env::var("VOXEL_GI_VALIDATE_REFERENCE_BLOCKS") {
-            Ok(value) => value.parse::<u32>().ok().filter(|v| (2..=128).contains(v))
+            Ok(value) => value
+                .parse::<u32>()
+                .ok()
+                .filter(|v| (2..=128).contains(v))
                 .ok_or("REFERENCE_BLOCKS must be an integer in 2..=128")?,
             Err(std::env::VarError::NotPresent) => BLOCKS,
             Err(error) => return Err(error.to_string()),
@@ -144,14 +147,21 @@ impl ReferenceRun {
         // Both replicas must remain disjoint and below the direction period.
         assert!(REFERENCE_SEQUENCE_START + stride + blocks * PATHS_PER_BLOCK < 1 << 24);
         let cpu_sites: Vec<usize> = match std::env::var("VOXEL_GI_VALIDATE_REFERENCE_CPU_SITES") {
-            Ok(value) => value.split(',').map(|value| value.parse::<usize>()
-                .ok().filter(|&index| index < sites.len())
-                .ok_or("REFERENCE_CPU_SITES must list valid receiver indices"))
+            Ok(value) => value
+                .split(',')
+                .map(|value| {
+                    value.parse::<usize>()
+                        .ok()
+                        .filter(|&index| index < sites.len())
+                        .ok_or("REFERENCE_CPU_SITES must list valid receiver indices")
+                })
                 .collect::<Result<_, _>>()?,
             Err(std::env::VarError::NotPresent) => Vec::new(),
             Err(error) => return Err(error.to_string()),
         };
-        if cpu_sites.len() > 8 { return Err("REFERENCE_CPU_SITES is limited to eight receivers".into()); }
+        if cpu_sites.len() > 8 {
+            return Err("REFERENCE_CPU_SITES is limited to eight receivers".into());
+        }
         self.task = Some(AsyncComputeTaskPool::get().spawn(async move {
             let mut gpu = GpuTracer::new(device)?;
             let emitters = std::sync::Arc::new(EmissionDistribution::build(&scene, &materials));
