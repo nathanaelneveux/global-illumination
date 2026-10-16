@@ -9,6 +9,7 @@ def main():
     from pathlib import Path
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run", type=Path)
+    parser.add_argument("--images", type=Path, help="separate audited replay image directory; source metadata stays in run")
     parser.add_argument("--window", type=int, choices=range(4), default=0)
     parser.add_argument("--counts", type=int, nargs="+", help="selected checkpoints, otherwise all")
     parser.add_argument("--labels", nargs="+", default=["samples"],
@@ -16,6 +17,7 @@ def main():
     parser.add_argument("--reference-per-row", action="store_true",
                         help="repeat the reference beside each checkpoint, even with one label")
     args = parser.parse_args()
+    images = args.images or args.run
     sweep = json.loads((args.run / "cave-sample-sweep.json").read_text())
     reference = json.loads((args.run / "cave-reference.json").read_text())
     if not reference["qualification"]["qualified"]:
@@ -44,7 +46,7 @@ def main():
     font = ImageFont.load_default(size=23)
     for i, (label, file) in enumerate(frames):
         x, y = (i % columns) * width, (i // columns) * (height + caption)
-        with Image.open(args.run / file) as image:
+        with Image.open(images / file) as image:
             if image.size != (2560, 1440):
                 raise ValueError(f"unexpected capture dimensions: {file}")
             sheet.paste(image.convert("RGB").resize((width, height), Image.Resampling.LANCZOS), (x, y + caption))
@@ -52,7 +54,7 @@ def main():
     label = "sample" if args.labels == ["samples"] else "-".join(args.labels)
     if args.reference_per_row:
         label += "-paired-" + "-".join(map(str, counts))
-    output = args.run / f"{label}-overview-window-{args.window}.png"
+    output = images / f"{label}-overview-window-{args.window}.png"
     sheet.save(output)
     print(output.resolve())
 
