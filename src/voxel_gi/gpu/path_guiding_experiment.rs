@@ -12,6 +12,60 @@ fn work(fixture: &super::super::research::ResearchFixture, start: u32) -> TraceW
     work
 }
 
+/// Paired actual-dispatch-size cost, separate from the sparse 128-path study.
+/// Repeat receivers only to fill workgroups; no display/queue scheduling claim.
+#[test]
+#[ignore = "native paired guide throughput; run without another GI app"]
+fn guiding_dispatch_cost() {
+    let mut gpu = tests::native_tracer();
+    let mut rows = Vec::new();
+    for (name, fixture) in [
+        ("hallway_loaded", super::super::research::hallway_loaded()),
+        ("cave", super::super::research::cave()),
+    ] {
+        let emitters = Arc::new(EmissionDistribution::with_importance(
+            &fixture.scene,
+            &fixture.materials,
+            super::super::VoxelGiSettings::default().sampling_importance(),
+        ));
+        let mut work = TraceWork::default();
+        for probe in fixture.receivers.iter().cycle().take(2048) {
+            work.push(probe, probe.face_mask, 0, 0, false, u32::MAX, u32::MAX);
+            work.probes.last_mut().unwrap().sky_requested = false;
+        }
+        for round in 0..26 {
+            for guided in if round % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
+                work.emitter_guiding = guided;
+                for face in &mut work.faces {
+                    face.sequence = round * 16;
+                }
+                let started = Instant::now();
+                gpu.trace_compact(
+                    fixture.scene.clone(),
+                    &fixture.sources,
+                    &fixture.materials,
+                    &mut work,
+                    16,
+                    &emitters,
+                    false,
+                )
+                .unwrap();
+                if round >= 2 {
+                    rows.push(serde_json::json!({"fixture":name,"guided":guided,"round":round,
+                        "gpu_ms":gpu.last_gpu_ms,"worker_ms":started.elapsed().as_secs_f64()*1000.0}));
+                }
+            }
+        }
+    }
+    let path = "target/guiding-dispatch-cost.json";
+    std::fs::write(path, serde_json::to_vec(&rows).unwrap()).unwrap();
+    println!("dispatch timings written to {path}");
+}
+
 #[test]
 #[ignore = "native raw hallway/cave sampler qualification"]
 fn conditional_guiding_prefix_study() {

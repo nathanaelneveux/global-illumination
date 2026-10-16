@@ -234,11 +234,12 @@ pub(crate) struct GpuTracer {
     singleton_lanes: u32,
     module: wgpu::ShaderModule,
     entry: &'static str,
-    pipeline_key: (u32, bool, u32),
+    pipeline_key: (u32, bool, u32, bool),
     /// Three depths × finite/default horizon × two cooperative lane layouts.
     /// Reach itself stays a uniform; changing 16 to 32 never compiles another
     /// variant. Pipelines and compilation stay on the transport worker.
-    quality_pipelines: bevy::platform::collections::HashMap<(u32, bool, u32), ComputePipeline>,
+    quality_pipelines:
+        bevy::platform::collections::HashMap<(u32, bool, u32, bool), ComputePipeline>,
     faces_per_workgroup: u32,
     adaptive_lanes: bool,
     #[cfg(test)]
@@ -319,7 +320,7 @@ impl GpuTracer {
         self.resident.as_mut().unwrap().reuse = true;
         self.entry = "trace_paired_faces";
         self.quality_pipelines.clear();
-        self.pipeline_key = (0, false, 0);
+        self.pipeline_key = (0, false, 0, false);
         Ok(())
     }
 
@@ -393,10 +394,13 @@ impl GpuTracer {
             });
         Ok(Self {
             resident: None,
-            quality_pipelines: [((3, false, 64 / faces_per_workgroup), pipeline.clone())]
-                .into_iter()
-                .collect(),
-            pipeline_key: (3, false, 64 / faces_per_workgroup),
+            quality_pipelines: [(
+                (3, false, 64 / faces_per_workgroup, false),
+                pipeline.clone(),
+            )]
+            .into_iter()
+            .collect(),
+            pipeline_key: (3, false, 64 / faces_per_workgroup, false),
             module,
             entry,
             pipeline,
@@ -527,7 +531,11 @@ impl GpuTracer {
     ) -> Result<Option<readback::Readback>, String> {
         let work_started = Instant::now();
         if !sky_only {
-            self.select_quality_pipeline(work.transport.normalized(), samples)?;
+            self.select_quality_pipeline(
+                work.transport.normalized(),
+                samples,
+                work.emitter_guiding,
+            )?;
         }
         let sky_pending = self.sky_cache.prepare(&scene, sources, &work.probes);
         #[cfg(test)]
@@ -1108,6 +1116,7 @@ impl GpuTracer {
         &mut self,
         transport: super::TransportSettings,
         samples: u32,
+        emitter_guiding: bool,
     ) -> Result<(), String> {
         // Larger batches benefit from more independent path lanes. Keep small
         // batches compact instead of allocating lanes with no samples to trace.
@@ -1130,6 +1139,7 @@ impl GpuTracer {
             transport.bounces,
             transport.reach < super::tracer::MAX_PATH_DISTANCE,
             lanes,
+            emitter_guiding,
         );
         if key == self.pipeline_key {
             return Ok(());
@@ -1147,6 +1157,9 @@ impl GpuTracer {
             ];
             if self.adaptive_lanes {
                 constants.push(("PATH_LANES", f64::from(lanes)));
+            }
+            if emitter_guiding {
+                constants.push(("GUIDE_RADIUS", f64::from(super::guiding::RADIUS)));
             }
             let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("Voxel transport quality variant"),
@@ -1168,6 +1181,14 @@ impl GpuTracer {
         self.pipeline = pipeline;
         if self.entry == "trace_quad_faces" {
             self.singleton_lanes = if samples >= 16 { 8 } else { 4 };
+            let mut constants = vec![
+                ("DIFFUSE_HITS", key.0 as f64),
+                ("LIMITED_REACH", f64::from(key.1)),
+                ("PATH_LANES", f64::from(self.singleton_lanes)),
+            ];
+            if emitter_guiding {
+                constants.push(("GUIDE_RADIUS", f64::from(super::guiding::RADIUS)));
+            }
             let scope = self
                 .context
                 .device
@@ -1180,11 +1201,7 @@ impl GpuTracer {
                     module: &self.module,
                     entry_point: Some("trace_singleton_faces"),
                     compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[
-                            ("DIFFUSE_HITS", key.0 as f64),
-                            ("LIMITED_REACH", f64::from(key.1)),
-                            ("PATH_LANES", f64::from(self.singleton_lanes)),
-                        ],
+                        constants: &constants,
                         ..default()
                     },
                     cache: None,

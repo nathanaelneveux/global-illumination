@@ -20,6 +20,73 @@ fn hallway_guide_anchors() {
             "GUIDE receiver={p:?} anchor={:?}",
             emitters.guide_at(surface, Vec3::Y, visible)
         );
+        assert_eq!(
+            emitters.guide_at(surface, Vec3::Y, visible).unwrap().voxel,
+            IVec3::new(-124, -11, -20)
+        );
+    }
+}
+
+#[test]
+#[ignore = "native guided CPU/GPU matched-path parity"]
+fn guided_native_prefix_parity() {
+    let mut gpu = super::super::gpu::tests::native_tracer();
+    for fixture in [
+        super::super::research::hallway_loaded(),
+        super::super::research::cave(),
+    ] {
+        let emitters = Arc::new(EmissionDistribution::with_importance(
+            &fixture.scene,
+            &fixture.materials,
+            super::super::VoxelGiSettings::default().sampling_importance(),
+        ));
+        for start in [0, 2240, 574117] {
+            let mut work = TraceWork {
+                emitter_guiding: true,
+                ..default()
+            };
+            for probe in fixture.receivers.iter().step_by(7) {
+                work.push(probe, probe.face_mask, 0, 0, false, u32::MAX, u32::MAX);
+                work.probes.last_mut().unwrap().sky_requested = false;
+                work.faces.last_mut().unwrap().sequence = start;
+            }
+            let mut cpu = work.faces.clone();
+            for face in &mut cpu {
+                trace_face(
+                    &fixture.scene,
+                    &fixture.sources,
+                    &fixture.materials,
+                    face,
+                    16,
+                    &emitters,
+                    work.transport,
+                    true,
+                );
+            }
+            gpu.trace_compact(
+                fixture.scene.clone(),
+                &fixture.sources,
+                &fixture.materials,
+                &mut work,
+                16,
+                &emitters,
+                false,
+            )
+            .unwrap();
+            for (cpu, gpu) in cpu.iter().zip(&work.faces) {
+                for (a, b) in super::super::research::channels(cpu.radiance)
+                    .into_iter()
+                    .zip(super::super::research::channels(gpu.radiance))
+                {
+                    assert!(
+                        (a - b).abs() < 0.00005 + a.abs() * 0.003,
+                        "receiver={:?}/{} start={start}: cpu={a} gpu={b}",
+                        cpu.voxel,
+                        cpu.face
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -49,6 +116,7 @@ fn hallway_outlier_paths() {
             1,
             &emitters,
             work.transport,
+            false,
         );
         gpu.trace_compact(
             fixture.scene.clone(),
@@ -121,6 +189,7 @@ fn hallway_outlier_paths() {
                 sequence,
                 bounce,
                 MAX_PATH_DISTANCE,
+                DirectionGuide::default(),
             )
         } else {
             sample_emitter(
@@ -133,6 +202,7 @@ fn hallway_outlier_paths() {
                 sequence,
                 bounce + 1,
                 MAX_PATH_DISTANCE,
+                DirectionGuide::default(),
             )
         };
         println!(

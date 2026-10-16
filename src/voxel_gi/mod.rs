@@ -14,6 +14,7 @@ mod field;
 mod geometry;
 mod gpu;
 mod gpu_scene;
+mod guiding;
 mod history;
 mod naadf;
 mod publication;

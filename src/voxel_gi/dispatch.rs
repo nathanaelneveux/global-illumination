@@ -130,6 +130,7 @@ pub(super) fn start_trace_task(
         TraceWork::default()
     };
     selected.transport = runtime.transport;
+    selected.emitter_guiding = settings.emitter_guiding;
     selected.response_seconds = settings.display_response_seconds();
     selected.display_frame = frame.as_ref().map_or(0, |frame| frame.0);
     selected.display_transition_frames = settings.display_transition_frames.min(32);

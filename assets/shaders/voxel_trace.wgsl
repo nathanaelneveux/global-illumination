@@ -527,7 +527,7 @@ fn guide_anchor(position: vec3<f32>, normal: vec3<f32>) -> GuideAnchor {
     }
     anchor.position = vec3<f32>(emitter.voxel) + vec3(0.5);
     let distance2 = dot(anchor.position - position, anchor.position - position);
-    let focus = distance2 / (distance2 + 64.0 * GUIDE_RADIUS * GUIDE_RADIUS);
+    let focus = distance2 / (distance2 + 256.0 * GUIDE_RADIUS * GUIDE_RADIUS);
     anchor.weight = 0.5 * min(6.0 * emitter.sampling.y, 1.0) * focus;
     return anchor;
 }

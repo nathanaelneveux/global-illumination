@@ -19,6 +19,10 @@ pub struct VoxelGiSettings {
     /// Defaults to 0.125 on every backend, independently of path reuse; use one
     /// for equal-band sampling. This is not a fixed ratio of sample counts.
     pub simulation_sampling_importance: f32,
+    /// Experimental source-informed directional sampling. Changes the proposal,
+    /// not the lighting equation or history validity. Both backends retain a
+    /// cosine component and use the same mixture PDF for emission MIS.
+    pub emitter_guiding: bool,
     /// Resident-only, nonrecursive spatial RGB reconstruction.
     /// Zero is the unchanged corner display; one enables uncertainty-weighted
     /// connected-surface filtering. Never changes transport or simulation data.
@@ -65,6 +69,7 @@ impl Default for VoxelGiSettings {
             transport: TransportSettings::default(),
             samples_per_dispatch: 16,
             simulation_sampling_importance: DEFAULT_SIMULATION_SAMPLING_IMPORTANCE,
+            emitter_guiding: false,
             spatial_reconstruction: 1.0,
             spatial_evidence_target: 2048,
             spatial_max_donors: 0,

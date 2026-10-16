@@ -14,6 +14,15 @@ pub(crate) struct EmissiveFace {
     pub probability: f32,
 }
 
+/// Deterministic proposal hint, not a sample from the light distribution.
+/// Keep concentration separate from `EmissiveFace::probability`: it must never
+/// enter a physical light PDF or change transported energy.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GuideSource {
+    pub voxel: IVec3,
+    pub concentration: f32,
+}
+
 #[derive(Default, Clone)]
 pub(crate) struct EmissionDistribution {
     pub faces: Vec<EmissiveFace>,
@@ -226,13 +235,14 @@ impl EmissionDistribution {
         position: Vec3,
         normal: Vec3,
         visible: impl FnMut(IVec3) -> bool,
-    ) -> Option<EmissiveFace> {
+    ) -> Option<GuideSource> {
         if !self.tree.is_empty() {
             let (index, probability) =
                 tree::dominant(&self.tree, &self.faces, position, normal, visible)?;
-            let mut face = self.faces[index];
-            face.probability = probability;
-            return Some(face);
+            return Some(GuideSource {
+                voxel: self.faces[index].voxel,
+                concentration: probability,
+            });
         }
         let score = |face: EmissiveFace| {
             let delta = face_point(face, 0.5, 0.5) - position;
@@ -246,10 +256,19 @@ impl EmissionDistribution {
                     .max(0.0)
                 / d2
         };
-        self.faces
-            .iter()
-            .copied()
-            .max_by(|a, b| score(*a).total_cmp(&score(*b)))
+        let mut best = -1.0;
+        let mut source = None;
+        for &face in &self.faces {
+            let value = score(face);
+            if value > best {
+                best = value;
+                source = Some(GuideSource {
+                    voxel: face.voxel,
+                    concentration: face.probability,
+                });
+            }
+        }
+        source
     }
 
     pub fn probability_at(

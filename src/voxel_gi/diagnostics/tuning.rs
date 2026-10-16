@@ -227,6 +227,8 @@ fn contents(
             ui.add(egui::Slider::new(&mut settings.simulation_sampling_importance, 0.01..=1.0).logarithmic(true).text("IR / radiation sampling importance"))
                 .on_hover_text("RGB importance stays one. Lower values prioritize visible emitter sampling while retaining nonzero support for invisible sources. Changes uncertainty, not physical energy or retained history. Simulation bands may take longer to settle.");
             ui.checkbox(&mut settings.adaptive_updates, "Let settled faces sleep between audits");
+            ui.checkbox(&mut settings.emitter_guiding, "Experimental source-informed path guiding")
+                .on_hover_text("Changes sampling directions, not energy or history. Retains cosine support; qualify raw accuracy and throughput before promoting.");
             ui.add(egui::Slider::new(&mut settings.stable_relative_error, 0.01..=0.5).logarithmic(true).text("Settle error tolerance"))
                 .on_hover_text("All-band heuristic, not guaranteed convergence. Lower is stricter; already settled faces reassess on their next audit.");
             ui.add(egui::Slider::new(&mut settings.stable_min_samples, 32..=256).text("Minimum samples"))

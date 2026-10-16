@@ -106,7 +106,7 @@ fn left_probability(nodes: &[LightNode], node: &LightNode, position: Vec3, norma
 }
 
 /// Greedy source-only guide anchor. This is not a draw from the light PMF;
-/// the returned PMF is used only as a concentration heuristic for a proposal.
+/// the returned local mass is only a concentration heuristic for a proposal.
 pub(super) fn dominant(
     nodes: &[LightNode],
     faces: &[EmissiveFace],
@@ -139,16 +139,19 @@ pub(super) fn dominant(
             continue;
         }
         let p = left_probability(nodes, node, position, normal);
+        let local = (node.maximum - node.minimum).length() <= 16.0;
+        let left_mass = if local { p } else { 1.0 };
+        let right_mass = if local { 1.0 - p } else { 1.0 };
         if pending >= 32 {
             return None;
         }
         if p >= 0.5 {
-            stack[pending] = (node.right as usize, probability * (1.0 - p));
-            probability *= p;
+            stack[pending] = (node.right as usize, probability * right_mass);
+            probability *= left_mass;
             index = node.left as usize;
         } else {
-            stack[pending] = (node.left as usize, probability * p);
-            probability *= 1.0 - p;
+            stack[pending] = (node.left as usize, probability * left_mass);
+            probability *= right_mass;
             index = node.right as usize;
         }
         pending += 1;
