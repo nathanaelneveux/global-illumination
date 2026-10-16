@@ -397,8 +397,10 @@ workload or nonblank image alone is not a quality/performance pass.
 
 ## Shared Cargo cache
 
-This machine uses an ignored `.cargo/config.toml` to share compatible intermediates
-with related Bevy prototypes:
+The tracked `.cargo/config.toml` isolates workspace artifacts with the checkout-local
+`tools/rustc-workspace.sh`. It optionally includes ignored `.cargo/local.toml` for
+machine-specific settings. This machine's local file shares compatible dependency
+intermediates with related Bevy prototypes:
 
 ```toml
 [build]
@@ -417,11 +419,50 @@ debug = "line-tables-only"
 debug-assertions = false
 ```
 
-Configure a suitable absolute path on another machine; do not check a user's path
-into the project. Final binaries, rustdoc and validation artifacts remain local
-under `target/`. Distinct feature/profile fingerprints can still require separate
-cached builds. Do not clean the shared cache as a routine test step or delete
-other prototypes' outputs to make a benchmark look clean.
+Configure a suitable absolute path in `.cargo/local.toml` on another machine; do
+not check a user's path into the project. Keep the tracked wrapper configuration
+in place. Cargo hashes the resolved `rustc-workspace-wrapper` path into workspace
+artifact names, so different checkouts do not alias the application while registry
+dependencies remain shared. The POSIX wrapper only executes the original compiler
+command; it changes no compiler flags. Do not move it to one global path. See
+[Cargo's workspace-wrapper contract](https://doc.rust-lang.org/cargo/reference/config.html#buildrustc-workspace-wrapper).
+
+Final binaries, rustdoc and validation artifacts remain local under `target/`.
+Distinct feature/profile fingerprints can still require separate cached builds.
+Do not clean the shared cache as a routine test step or delete other prototypes'
+outputs to make a benchmark look clean. Historical worktrees without the tracked
+configuration need their own copy of the wrapper/config before sharing intermediates.
+
+### Release launch regression, October 16
+
+On `906e50e`, `cargo run --release --locked --offline` reused an older executable
+from the shared cache, then loaded the current terrain shader. Pipeline creation
+failed because the old material layout lacked resident-buffer binding 105.
+Cached compiler warnings named `validation_mirror`, absent from the current code;
+Cargo's fingerprint log nevertheless classified the application as fresh. This
+matches the documented [same-name workspace collision](https://github.com/rust-lang/cargo/issues/7740).
+
+A two-checkout, dependency-free release reproduction ran A's code when asked to
+run B. Adding `env!("CARGO_MANIFEST_DIR")` alone **did not prevent** reuse on Cargo
+1.95.0. The checkout-local workspace wrapper passed A/B/A with correct identities.
+The permanent focused regression uses the real config/wrapper:
+
+```sh
+python3 tools/test_shared_build_cache.py
+```
+
+The application also logs its compiled checkout at info level in every profile;
+that is diagnostic provenance, not the isolation mechanism. This fix changes
+neither transport nor presentation. Baseline logs, fingerprint trace and reduced
+reproduction are under `target/startup-crash-*` and
+`target/shared-cache-check.oG1D6B/`. Verification uses this commit's build/config
+diff on the Apple M4 / Metal, macOS 26.6.2, Rust/Cargo 1.95.0. The development
+headless `edits` workload passed on unchanged runtime code before this build-only
+fix; it is not evidence of release frame pacing. With the final wrapper/config,
+`cargo run --release --locked --offline` rebuilt only the application and stayed
+running past startup with the correct build-root log and no render errors. A
+subsequent release build reused that application successfully. The existing egui
+Metal bindless warning remains; no dependency, shader or lighting setting changed.
 
 Keep focused, buildable local commits. Record verification and limitations in
 their messages; do not combine unrelated estimator, storage and presentation

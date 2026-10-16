@@ -32,6 +32,10 @@ use terrain::TerrainPlugin;
 use voxel_gi::{VoxelGiDiagnosticsPlugin, VoxelGiPlugin};
 use world_environment::WorldEnvironmentPlugin;
 
+// Keep launch provenance available in release builds too; validation-only
+// metadata cannot diagnose a stale executable loading another checkout's assets.
+const BUILD_MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
+
 fn main() -> AppExit {
     let headless = headless_validation();
     if headless && (!cfg!(debug_assertions) || std::env::var_os("VOXEL_GI_VALIDATE").is_none()) {
@@ -71,6 +75,11 @@ fn main() -> AppExit {
     }
     let mut app = App::new();
     app.add_plugins(plugins);
+    info!(
+        compiled_manifest_dir = BUILD_MANIFEST_DIR,
+        debug_assertions = cfg!(debug_assertions),
+        "GI executable identity"
+    );
     if headless {
         // No OS window, swapchain, focus events, cursor capture or display-server
         // runner. Keep the regular real-time workload cadence, not a fast-forward

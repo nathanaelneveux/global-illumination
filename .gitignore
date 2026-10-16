@@ -1,6 +1,7 @@
 /target/
 /imported_assets/
 __pycache__/
+/.cargo/local.toml
 
 # Rust applications should generally commit Cargo.lock.
 #!Cargo.lock
