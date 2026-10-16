@@ -234,9 +234,14 @@ impl EmissionDistribution {
         &self,
         position: Vec3,
         normal: Vec3,
-        visible: impl FnMut(GuideSource) -> Option<bool>,
+        visible: impl FnMut(IVec3) -> bool,
     ) -> Option<GuideSource> {
         if !self.tree.is_empty() {
+            let root = &self.tree[0];
+            let front = Vec3::select(normal.cmpge(Vec3::ZERO), root.maximum, root.minimum);
+            if normal.dot(front - position) <= 0.0 {
+                return None;
+            }
             let (index, probability) =
                 tree::dominant(&self.tree, &self.faces, position, normal, visible)?;
             return Some(GuideSource {

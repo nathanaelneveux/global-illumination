@@ -81,3 +81,41 @@ five bands. Runtime opt-in: `VOXEL_GI_SETTINGS=config/gi-guiding.json`.
 Actual-dispatch throughput and live streamed captures must be qualified before
 changing defaults. The first live run was concurrent with a test build: use it
 for lighting diagnosis, not comparative performance claims.
+
+## Gameplay qualification and rejected shortcut
+
+The initial live guided hallway (`live-hallway-1792166631031324000-74640`)
+reduces the 180-second p95 raw relative RGB norm error .489 → .182 against the
+saved frozen reference. Its neighboring cave run (`live-cave-1792166920149121000-74833`,
+`1f828bd`) has clean captures but traces only 309M paths versus the saved 483M
+control. Neutral cave accuracy per path does not justify that global throughput
+cost. These results did not qualify a default.
+
+`80d8633` tried stopping the anchor search when a candidate was weak. **Rejected**:
+the full-world hallway run `live-hallway-1792167337797769000-75058` stops before
+finding its lamp and reproduces the bright batch. The queued cave run was
+terminated once this failure was known; it is not completed evidence.
+Weakness of one candidate cannot certify that remaining candidates are weak.
+
+This exposed a fixture limitation: the original `hallway_loaded` includes only
+part of the competing cave. The corrected `hallway_loaded_full` includes its
+east side and ceiling/crystals. Its reference is newly computed, not relabeled
+from the partial scene. `target/conditional-guiding-front-study.json` gives:
+
+| Full competing cave / paths | p95 relative RGB norm, control → guided | p99 |
+| --- | --- | --- |
+| Hallway / 2048 | 1.022 → .278 | 2.934 → .600 |
+| Hallway / 8192 | .743 → .172 | 1.930 → .229 |
+
+The revised optimization rejects the entire guide query only when the light
+tree's bounds lie behind the receiver's hemisphere. That cannot suppress the
+hallway lamp search; the bounded visible-source search remains intact. Weak
+mixtures are disabled only **after** selecting an anchor. Each face shares its
+anchor across cooperative lanes, and zero-guide PDFs avoid lobe arithmetic.
+This is still proposal selection, never occlusion culling of transported energy.
+
+The exact offending 16-path batch in the full fixture changes from red .05073
+to .000114; a focused regression records this, alongside native CPU/GPU parity
+including the offending receiver. Constant-illumination and area-integral tests
+protect the PDF/energy contract. This single batch is not an accuracy certificate;
+the disjoint-window and full-world comparisons remain necessary.

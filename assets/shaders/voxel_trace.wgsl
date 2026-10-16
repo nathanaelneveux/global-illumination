@@ -475,6 +475,9 @@ fn guide_anchor(position: vec3<f32>, normal: vec3<f32>) -> GuideAnchor {
     if GUIDE_RADIUS <= 0.0 || params.extra.w == 0.0 { return anchor; }
     var emitter = load_emitter(0u);
     if emitter.sampling.w > 0.0 {
+        let root = load_node(0u);
+        let front = select(root.minimum_power.xyz, root.maximum, normal >= vec3(0.0));
+        if dot(front - position, normal) <= 0.0 { return anchor; }
         var index = 0u;
         var probability = 1.0;
         var stack: array<vec2<u32>, 32>;
@@ -486,11 +489,7 @@ fn guide_anchor(position: vec3<f32>, normal: vec3<f32>) -> GuideAnchor {
             if node.children.x == 0xffffffffu {
                 emitter = load_emitter(node.children.y);
                 emitter.sampling.y = probability;
-                // A weak proposal cannot materially address a concentrated
-                // indirect path. Keep the cosine control without visibility
-                // queries; this is proposal pruning, not an energy cutoff.
                 if any(emitter.voxel != previous_rejected) {
-                    if guide_weight(position, emitter.voxel, probability) < 0.05 { return anchor; }
                     let center = vec3<f32>(emitter.voxel) + vec3(0.5);
                     let delta = center - position;
                     let distance = length(delta);

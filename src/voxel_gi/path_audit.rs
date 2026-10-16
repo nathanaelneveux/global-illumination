@@ -12,12 +12,9 @@ fn hallway_guide_anchors() {
     for index in [10, 70, 98, 140, 172, 193, 208, 209, 235] {
         let p = fixture.receivers[index].voxel;
         let surface = p.as_vec3() + Vec3::new(0.5, 1., 0.5);
-        let visible = |source: super::super::emission::GuideSource| {
-            let voxel = source.voxel;
+        let visible = |voxel: IVec3| {
             let delta = voxel.as_vec3() + Vec3::splat(0.5) - surface;
-            Some(
-                matches!(fixture.scene.trace_ray_result(surface+Vec3::Y*0.002,delta.normalize(),delta.length()+0.01), TraceResult::Hit(hit) if hit.voxel == voxel),
-            )
+            matches!(fixture.scene.trace_ray_result(surface+Vec3::Y*0.002,delta.normalize(),delta.length()+0.01), TraceResult::Hit(hit) if hit.voxel == voxel)
         };
         println!(
             "GUIDE receiver={p:?} anchor={:?}",
@@ -48,7 +45,12 @@ fn guided_native_prefix_parity() {
                 emitter_guiding: true,
                 ..default()
             };
-            for probe in fixture.receivers.iter().step_by(7) {
+            for probe in fixture
+                .receivers
+                .iter()
+                .step_by(7)
+                .chain(fixture.receivers.get(208))
+            {
                 work.push(probe, probe.face_mask, 0, 0, false, u32::MAX, u32::MAX);
                 work.probes.last_mut().unwrap().sky_requested = false;
                 work.faces.last_mut().unwrap().sequence = start;
@@ -91,6 +93,53 @@ fn guided_native_prefix_parity() {
             }
         }
     }
+}
+
+#[test]
+fn guide_hemisphere_rejection_never_tests_visibility() {
+    let fixture = super::super::research::hallway_loaded();
+    let emitters = EmissionDistribution::build(&fixture.scene, &fixture.materials);
+    for normal in FACE_OFFSETS.map(|n| n.as_vec3()) {
+        assert!(
+            emitters
+                .guide_at(normal * 4096.0, normal, |_| panic!(
+                    "behind-plane source visibility query"
+                ))
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn guided_hallway_batch_avoids_the_reproduced_bright_return_path() {
+    let fixture = super::super::research::hallway_loaded();
+    let emitters = EmissionDistribution::with_importance(
+        &fixture.scene,
+        &fixture.materials,
+        super::super::VoxelGiSettings::default().sampling_importance(),
+    );
+    let mut work = TraceWork::default();
+    work.push(&fixture.receivers[208], 4, 0, 0, false, u32::MAX, u32::MAX);
+    work.faces[0].sequence = 2240;
+    let mut control = work.faces[0].clone();
+    let mut candidate = control.clone();
+    for (face, guided) in [(&mut control, false), (&mut candidate, true)] {
+        trace_face(
+            &fixture.scene,
+            &fixture.sources,
+            &fixture.materials,
+            face,
+            16,
+            &emitters,
+            work.transport,
+            guided,
+        );
+    }
+    println!(
+        "known batch: control={:?} candidate={:?}",
+        control.radiance, candidate.radiance
+    );
+    assert!(candidate.radiance.visible.x < control.radiance.visible.x * 0.1);
 }
 
 #[test]

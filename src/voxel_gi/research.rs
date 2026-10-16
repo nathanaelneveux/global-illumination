@@ -82,8 +82,8 @@ pub(super) fn hallway_loaded() -> ResearchFixture {
     let mut fixture = hallway();
     let layer = showcase::world_structures();
     let mut pages = Vec::new();
-    for px in 1..3 {
-        for py in -2..0 {
+    for px in 1..=3 {
+        for py in -2..=0 {
             for pz in -2..0 {
                 let coordinate = IVec3::new(px, py, pz);
                 let mut page = vec![5; volume_len(PAGE_SIZE)];

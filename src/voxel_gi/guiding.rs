@@ -33,19 +33,13 @@ impl GuideAnchor {
         position: Vec3,
         normal: Vec3,
     ) -> Self {
-        let visible = |source: super::emission::GuideSource| {
-            let voxel = source.voxel;
-            if weight(position, voxel, source.concentration) < 0.05 {
-                return None;
-            }
+        let visible = |voxel: IVec3| {
             let delta = voxel.as_vec3() + Vec3::splat(0.5) - position;
             let distance = delta.length();
-            Some(
-                distance > 0.001
-                    && matches!(scene.trace_ray_result(
+            distance > 0.001
+                && matches!(scene.trace_ray_result(
                 position + normal * 0.002, delta / distance, distance + 0.01),
-                    TraceResult::Hit(hit) if hit.voxel == voxel),
-            )
+                    TraceResult::Hit(hit) if hit.voxel == voxel)
         };
         let Some(source) = emitters.guide_at(position, normal, visible) else {
             return Self::default();

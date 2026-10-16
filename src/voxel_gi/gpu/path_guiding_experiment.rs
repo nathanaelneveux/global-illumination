@@ -20,7 +20,10 @@ fn guiding_dispatch_cost() {
     let mut gpu = tests::native_tracer();
     let mut rows = Vec::new();
     for (name, fixture) in [
-        ("hallway_loaded", super::super::research::hallway_loaded()),
+        (
+            "hallway_loaded_full",
+            super::super::research::hallway_loaded(),
+        ),
         ("cave", super::super::research::cave()),
     ] {
         let emitters = Arc::new(EmissionDistribution::with_importance(
@@ -90,7 +93,10 @@ fn conditional_guiding_prefix_study() {
     for (name, fixture) in [
         ("hallway", super::super::research::hallway()),
         ("cave", super::super::research::cave()),
-        ("hallway_loaded", super::super::research::hallway_loaded()),
+        (
+            "hallway_loaded_full",
+            super::super::research::hallway_loaded(),
+        ),
     ] {
         let importance = super::super::VoxelGiSettings::default().sampling_importance();
         let emitters = Arc::new(EmissionDistribution::with_importance(
