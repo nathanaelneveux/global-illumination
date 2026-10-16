@@ -388,6 +388,11 @@ raw matched-prefix sampler controls or establish windowed frame pacing.
   [whole-cave reference protocol](cave-reference.md), rather than the sparse
   wall-receiver timing oracle above. Require its separate qualification and
   capture status before treating it as a reference.
+- For unusually high-variance receivers, `VOXEL_GI_VALIDATE_REFERENCE_BLOCKS`
+  raises each sparse reference replica from the default two 32,768-path blocks
+  (allowed 2–128). Replica ranges remain disjoint and below the direction
+  sequence period. Inspect replica disagreement before calling either one a
+  settled target; a larger path count alone is not qualification.
 - Coverage is at least one path sample per exposed face. Bootstrap targets eight.
   Record published/loaded geometry and pending ingestion alongside percentages;
   an early tiny field can be 100% covered while most terrain is not published.

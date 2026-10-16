@@ -134,6 +134,15 @@ impl ReferenceRun {
         let transport = settings.transport;
         let revision = runtime.generation;
         let sites = super::temporal::sites(profile);
+        let blocks = match std::env::var("VOXEL_GI_VALIDATE_REFERENCE_BLOCKS") {
+            Ok(value) => value.parse::<u32>().ok().filter(|v| (2..=128).contains(v))
+                .ok_or("REFERENCE_BLOCKS must be an integer in 2..=128")?,
+            Err(std::env::VarError::NotPresent) => BLOCKS,
+            Err(error) => return Err(error.to_string()),
+        };
+        let stride = (blocks * PATHS_PER_BLOCK).max(1_048_576);
+        // Both replicas must remain disjoint and below the direction period.
+        assert!(REFERENCE_SEQUENCE_START + stride + blocks * PATHS_PER_BLOCK < 1 << 24);
         self.task = Some(AsyncComputeTaskPool::get().spawn(async move {
             let mut gpu = GpuTracer::new(device)?;
             let emitters = std::sync::Arc::new(EmissionDistribution::build(&scene, &materials));
@@ -177,7 +186,7 @@ impl ReferenceRun {
                         return Err(format!("Reference receiver is not exposed: {voxel:?}/{face}"));
                     }
                     let mut probe = SurfaceProbe::new(voxel, 1 << face);
-                    probe.sequence[face] = REFERENCE_SEQUENCE_START + replicate * 1_048_576;
+                    probe.sequence[face] = REFERENCE_SEQUENCE_START + replicate * stride;
                     work.push(&probe, 1 << face, 0, 0, false, u32::MAX, u32::MAX);
                     work.probes.last_mut().unwrap().sky_requested = false;
                 }
@@ -185,7 +194,7 @@ impl ReferenceRun {
                 // Each block stays below the production accumulator ceiling.
                 // Average blocks independently; running one long history would
                 // turn into an EMA and not provide this many effective paths.
-                for _ in 0..BLOCKS {
+                for _ in 0..blocks {
                     for face in &mut work.faces {
                         face.samples = 0;
                         face.radiance = EnergySpectrum::ZERO;
@@ -199,7 +208,7 @@ impl ReferenceRun {
                     }
                     for (mean, face) in estimate.iter_mut().zip(&work.faces) {
                         for (mean, sample) in mean.iter_mut().zip(channels(face.radiance)) {
-                            *mean += f64::from(sample) / f64::from(BLOCKS);
+                            *mean += f64::from(sample) / f64::from(blocks);
                         }
                     }
                 }
@@ -208,8 +217,8 @@ impl ReferenceRun {
             let corners: Vec<_> = references.iter().map(|r| patch.reconstruct(r)).collect();
             let faces: Vec<_> = references.iter().map(|r| &r[..sites.len()]).collect();
             let data = json!({"schema_version":2,"scene_generation":revision,
-                "regions":scene.regions.len(),"paths_per_replicate":PATHS_PER_BLOCK * BLOCKS,
-                "sequence_start":REFERENCE_SEQUENCE_START,"replicate_stride":1_048_576,
+                "regions":scene.regions.len(),"paths_per_replicate":PATHS_PER_BLOCK * blocks,
+                "sequence_start":REFERENCE_SEQUENCE_START,"replicate_stride":stride,
                 "transport":transport,"sites":sites.iter().map(|(v,f)|json!({"voxel":v.to_array(),"face":f})).collect::<Vec<_>>(),
                 "references":faces,"corner_references":corners,
                 "patch_sites":patch.sites.iter().map(|(v,f)|json!({"voxel":v.to_array(),"face":f})).collect::<Vec<_>>(),
