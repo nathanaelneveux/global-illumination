@@ -849,7 +849,30 @@ Nine rotating-order isolated trials over 9216 slots: indexed→compact median
 search costs are 22.746→12.174 ms at history16, 1.920→1.058 ms at128, and
 .289→.187 ms at512. These establish a 35–47% search-cost reduction, not an
 equivalent total-frame or settling-time gain. Strict Clippy and build pass.
-Runtime qualification is recorded below when complete.
+First streamed screening: cave `cave-1792116669726919000-39496` traces 167.77M
+paths versus 167.04M control (+0.4%); response
+`response-1792116748614010000-39596` 75.42M versus 74.15M (+1.7%). Neither is
+a reliable total-throughput gain. Cave startup/settling worker p95 improves
+13.50/8.34→11.71/7.04 ms; offscreen frame p99 34.37/29.60→33.53/28.26 ms,
+near-age p95 789/819→774/840 ms. Response worker p95 drops in all four phases,
+while tails/freshness remain mixed. Keep this exact-output reduction in CPU
+work, but do not claim it has closed the complete-pipeline throughput gap.
+
+### Compact GPU donor packets: not selected
+
+`codex/gi-evidence-packed-samples` at `9122626` stores a derived 48-byte packet
+per resident slot: raw RGB/count, standard error/position, temporal RGB/identity.
+This avoids repeated square roots and scattered resident reads. Packets update
+on accumulation and unselected history caps, survive growth, refresh on enable,
+and release on disable. They never feed physical/temporal history. The native
+oracle and 20-step lifecycle pass; each live packet is checked against state,
+including partial-face retention. Strict Clippy/build pass.
+
+It does not earn its memory: cave 167.46M vs compact-walk 167.77M paths (-0.2%),
+response 76.54M vs 75.42M (+1.5%). Those single-pair differences are inconclusive;
+there is no convincing speedup to offset the additional allocation. Preserve
+the branch, do not promote. Runs `cave-1792117066633965000-40014` and
+`response-1792117164239305000-40130`; same settings/hardware/view as above.
 
 Reproduction artifacts: `target/footprint-replay/manifest.json`,
 `target/footprint-quality.json`, `target/footprint-{base,cap128,gpu,fast}-*.log`.
