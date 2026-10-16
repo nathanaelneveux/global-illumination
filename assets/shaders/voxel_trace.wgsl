@@ -5,6 +5,7 @@ override DIFFUSE_HITS: u32 = 3u;
 // Experimental conditional emitter-neighborhood proposal; zero is the control.
 override GUIDE_RADIUS: f32 = 0.0;
 override GUIDES_PREPARED: bool = false;
+override SPLIT_GUIDES: bool = false;
 override LIMITED_REACH: bool = false;
 override PATH_LANES: u32 = 4u;
 struct Params {
@@ -555,11 +556,17 @@ fn prepare_guides(@builtin(global_invocation_id) id: vec3<u32>) {
     results[guide_offset(id.x)] = bitcast<vec4<u32>>(vec4(anchor.position, anchor.weight));
 }
 fn task_guide(face: u32, position: vec3<f32>, normal: vec3<f32>) -> GuideAnchor {
+    if GUIDE_RADIUS <= 0.0 { return GuideAnchor(vec3(0.0), 0.0); }
     if GUIDES_PREPARED {
         let value = bitcast<vec4<f32>>(results[guide_offset(face)]);
         return GuideAnchor(value.xyz, value.w);
     }
     return guide_anchor(position, normal);
+}
+fn guide_task_enabled(face: u32) -> bool {
+    if !SPLIT_GUIDES { return true; }
+    let guided = bitcast<vec4<f32>>(results[guide_offset(face)]).w > 0.0;
+    return guided == (GUIDE_RADIUS > 0.0);
 }
 
 // NEE and continuation use the SAME proposal for balance MIS. The guide only
@@ -799,6 +806,7 @@ fn compatible_pdf(record: RecordedPath, origin: vec3<f32>, normal: vec3<f32>) ->
 @compute @workgroup_size(64)
 fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= params.counts.x { return; }
+    if !guide_task_enabled(id.x) { return; }
     let task = tasks[id.x];
     let normal = face_normal(task.face);
     let center = vec3<f32>(task.voxel) + vec3(0.5);
@@ -1063,7 +1071,9 @@ var<workgroup> face_guides: array<GuideAnchor, 64>;
 fn trace_faces_parallel(@builtin(global_invocation_id) id: vec3<u32>,
     @builtin(local_invocation_index) local: u32) {
     let face_index = id.x / PATH_LANES;
-    trace_cooperative_face(face_index, face_index < params.counts.x, local);
+    var valid = face_index < params.counts.x;
+    if valid { valid = guide_task_enabled(face_index); }
+    trace_cooperative_face(face_index, valid, local);
 }
 
 // Mature or unpaired receivers take the original eight-lane independent path,
@@ -1081,7 +1091,7 @@ fn trace_singleton_faces(@builtin(global_invocation_id) id: vec3<u32>,
 fn trace_cooperative_face(face_index: u32, valid: bool, local: u32) {
     let lane = local % PATH_LANES;
     var anchor: GuideAnchor;
-    if GUIDES_PREPARED {
+    if GUIDES_PREPARED && GUIDE_RADIUS > 0.0 {
         if valid {
             let value = bitcast<vec4<f32>>(results[guide_offset(face_index)]);
             anchor = GuideAnchor(value.xyz, value.w);
