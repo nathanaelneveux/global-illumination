@@ -714,7 +714,9 @@ fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_norma
         throughput.value *= material.diffuse;
         throughput.radiation *= material.diffuse_extra.x;
         let maximum = max(max(max(throughput.value.x, throughput.value.y), max(throughput.value.z, throughput.value.w)), throughput.radiation);
-        if maximum < 0.002 { break; }
+        // A small weight can still reach a bright source. Only exact zero is
+        // safely discarded; roulette compensates surviving nonzero paths.
+        if maximum == 0.0 { break; }
         if bounce >= 1u {
             let survival = clamp(maximum, 0.1, 0.95);
             if sample_1d(stream, sequence, 8u + bounce) > survival { break; }

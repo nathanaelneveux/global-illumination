@@ -14,7 +14,7 @@ fn replace_once(source: &str, from: &str, to: &str) -> String {
     source.replacen(from, to, 1)
 }
 
-fn shader(iid: bool, roulette: bool, cutoff: bool) -> String {
+fn shader(iid: bool, roulette: bool, legacy_cutoff: bool) -> String {
     let mut shader = replace_once(
         SHADER,
         "fn sample_1d(stream: u32, sequence: u32, dimension: u32) -> f32 {",
@@ -35,11 +35,11 @@ fn shader(iid: bool, roulette: bool, cutoff: bool) -> String {
     if !roulette {
         shader = replace_once(&shader, "if bounce >= 1u {", "if false {");
     }
-    if !cutoff {
+    if legacy_cutoff {
         shader = replace_once(
             &shader,
+            "if maximum == 0.0 { break; }",
             "if maximum < 0.002 { break; }",
-            "// Audit: no small-throughput truncation.",
         );
     }
     shader
@@ -136,12 +136,12 @@ fn hallway_estimator_correctness_audit() {
     ));
     let native = tests::native_tracer();
     let mut variants: Vec<_> = [
-        ("production", false, true, true, false),
-        ("iid", true, true, true, false),
+        ("production", false, true, false, false),
+        ("iid", true, true, false, false),
         ("iid_no_roulette", true, false, false, false),
-        ("guided_iid", true, true, true, true),
-        ("guided_production", false, true, true, true),
-        ("guided_iid_no_cutoff", true, true, false, true),
+        ("guided_iid", true, true, false, true),
+        ("guided_production", false, true, false, true),
+        ("legacy_guided_iid_cutoff", true, true, true, true),
         ("guided_iid_no_roulette", true, false, false, true),
     ]
     .into_iter()

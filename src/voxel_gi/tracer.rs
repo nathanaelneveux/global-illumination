@@ -6,10 +6,10 @@ use rayon::prelude::*;
 use super::TransportSettings;
 use super::emission::{EmissionDistribution, face_point};
 use super::guiding::{DirectionGuide, GuideAnchor};
-use super::sampling::pcg;
-use super::sampling::{sample_1d, stream_id};
 #[cfg(test)]
 use super::sampling::hemisphere;
+use super::sampling::pcg;
+use super::sampling::{sample_1d, stream_id};
 use super::sources::TransportSources;
 #[cfg(test)]
 use super::sources::{DirectionalTransportLight, PointTransportLight};
@@ -546,7 +546,10 @@ fn trace_path(
         }
         throughput = throughput * material.diffuse;
 
-        if throughput.max_component() < 0.002 {
+        // Throughput alone does not bound the next radiance, particularly for
+        // guided paths. Only exact zero is safe to discard deterministically;
+        // roulette below compensates surviving paths for stochastic termination.
+        if throughput.max_component() == 0.0 {
             break;
         }
         if bounce >= 1 {
@@ -873,6 +876,104 @@ fn random_f32(seed: &mut u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn low_throughput_paths_can_still_reach_bright_radiance() {
+        // Two absorbing walls followed by bright environment. Throughput is
+        // only 0.0001 before the last segment, but that segment is not zero.
+        // A throughput-only cutoff cannot bound its eventual contribution.
+        let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+        for z in 0..32 {
+            for y in 0..32 {
+                for x in 0..32 {
+                    if x == 0 || y == 0 {
+                        page[linear_index(UVec3::new(x, y, z), PAGE_SIZE)] = 4;
+                    }
+                }
+            }
+        }
+        let scene = TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, page)],
+            &[],
+        );
+        let mut materials = VoxelMaterialTransportTable::default();
+        materials.set(
+            4,
+            super::super::MaterialTransport {
+                diffuse: EnergySpectrum::ONE * 0.01,
+                ..default()
+            },
+        );
+        let sources = TransportSources {
+            environment: EnergySpectrum::ONE * 10000.0,
+            directional: vec![],
+            points: vec![],
+        };
+        let emitters = EmissionDistribution::build(&scene, &materials);
+        let origin = Vec3::new(2.5, 1.001, 2.5);
+        let direction = Vec3::new(-1.0, 1.0, 0.0).normalize();
+        let TraceResult::Hit(first) = scene.trace_ray_result(origin, direction, MAX_PATH_DISTANCE)
+        else {
+            panic!("first wall");
+        };
+        assert_eq!(first.normal, Vec3::X);
+        let stream = 123;
+        let (sequence, last_direction) = (0..4096)
+            .find_map(|sequence| {
+                if sample_1d(stream, sequence, 9) > 0.1 {
+                    return None;
+                }
+                let d = hemisphere(
+                    first.normal,
+                    sample_1d(stream, sequence, 2),
+                    sample_1d(stream, sequence, 3),
+                );
+                let TraceResult::Hit(second) = scene.trace_ray_result(
+                    first.position + first.normal * 0.002,
+                    d,
+                    MAX_PATH_DISTANCE,
+                ) else {
+                    return None;
+                };
+                if second.normal != Vec3::Y {
+                    return None;
+                }
+                let d = hemisphere(
+                    second.normal,
+                    sample_1d(stream, sequence, 4),
+                    sample_1d(stream, sequence, 5),
+                );
+                (scene.trace_ray_result(
+                    second.position + second.normal * 0.002,
+                    d,
+                    MAX_PATH_DISTANCE,
+                ) == TraceResult::Escaped)
+                    .then_some((sequence, d))
+            })
+            .expect("a surviving two-wall path that escapes");
+        let actual = trace_path(
+            &scene,
+            &sources,
+            &materials,
+            origin,
+            direction,
+            stream,
+            sequence,
+            Vec3::Y,
+            &emitters,
+            default(),
+            GuideAnchor::default(),
+            direction.y / std::f32::consts::PI,
+        );
+        let expected = sources.environment * (0.01 * 0.01 / 0.1 * (0.65 + 0.35 * last_direction.y));
+        for (a, e) in super::super::research::channels(actual)
+            .into_iter()
+            .zip(super::super::research::channels(expected))
+        {
+            assert!((a - e).abs() < 1e-4, "sequence={sequence}: {a} != {e}");
+        }
+    }
 
     #[test]
     fn terminal_mixture_matches_area_integral_and_bounds_each_band() {
