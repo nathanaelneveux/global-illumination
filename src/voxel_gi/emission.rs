@@ -221,6 +221,37 @@ impl EmissionDistribution {
         Some(face)
     }
 
+    pub fn guide_at(
+        &self,
+        position: Vec3,
+        normal: Vec3,
+        visible: impl FnMut(IVec3) -> bool,
+    ) -> Option<EmissiveFace> {
+        if !self.tree.is_empty() {
+            let (index, probability) =
+                tree::dominant(&self.tree, &self.faces, position, normal, visible)?;
+            let mut face = self.faces[index];
+            face.probability = probability;
+            return Some(face);
+        }
+        let score = |face: EmissiveFace| {
+            let delta = face_point(face, 0.5, 0.5) - position;
+            let d2 = delta.length_squared().max(0.0001);
+            let direction = delta / d2.sqrt();
+            face.probability
+                * normal.dot(direction).max(0.0)
+                * FACE_OFFSETS[face.face as usize]
+                    .as_vec3()
+                    .dot(-direction)
+                    .max(0.0)
+                / d2
+        };
+        self.faces
+            .iter()
+            .copied()
+            .max_by(|a, b| score(*a).total_cmp(&score(*b)))
+    }
+
     pub fn probability_at(
         &self,
         position: Vec3,

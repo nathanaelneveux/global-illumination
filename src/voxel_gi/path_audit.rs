@@ -2,6 +2,28 @@
 use super::*;
 
 #[test]
+fn hallway_guide_anchors() {
+    let fixture = super::super::research::hallway_loaded();
+    let emitters = EmissionDistribution::with_importance(
+        &fixture.scene,
+        &fixture.materials,
+        super::super::VoxelGiSettings::default().sampling_importance(),
+    );
+    for index in [10, 70, 98, 140, 172, 193, 208, 209, 235] {
+        let p = fixture.receivers[index].voxel;
+        let surface = p.as_vec3() + Vec3::new(0.5, 1., 0.5);
+        let visible = |voxel: IVec3| {
+            let delta = voxel.as_vec3() + Vec3::splat(0.5) - surface;
+            matches!(fixture.scene.trace_ray_result(surface+Vec3::Y*0.002,delta.normalize(),delta.length()+0.01), TraceResult::Hit(hit) if hit.voxel == voxel)
+        };
+        println!(
+            "GUIDE receiver={p:?} anchor={:?}",
+            emitters.guide_at(surface, Vec3::Y, visible)
+        );
+    }
+}
+
+#[test]
 #[ignore = "native exact-path replay of the live hallway outlier"]
 fn hallway_outlier_paths() {
     let fixture = super::super::research::hallway();

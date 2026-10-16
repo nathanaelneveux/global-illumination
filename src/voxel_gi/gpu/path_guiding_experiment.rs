@@ -16,11 +16,15 @@ fn work(fixture: &super::super::research::ResearchFixture, start: u32) -> TraceW
 #[ignore = "native raw hallway/cave sampler qualification"]
 fn conditional_guiding_prefix_study() {
     let reference_path = "target/conditional-guiding-prefix-study.json";
-    let prior: Vec<serde_json::Value> = std::env::var("VOXEL_GI_GUIDING_REFERENCE").ok().and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    let prior: Vec<serde_json::Value> = match std::env::var("VOXEL_GI_GUIDING_REFERENCE") {
+        Ok(path) => serde_json::from_slice(&std::fs::read(&path).expect("read supplied reference"))
+            .expect("parse supplied reference"),
+        Err(std::env::VarError::NotPresent) => Vec::new(),
+        Err(error) => panic!("invalid reference path: {error}"),
+    };
     let control = tests::native_tracer();
     let mut tracers = vec![(0, control)];
-    for radius in [2, 4, 8, 16] {
+    for radius in [1, 2, 4] {
         let shader = SHADER.replace(
             "override GUIDE_RADIUS: f32 = 0.0;",
             &format!("override GUIDE_RADIUS: f32 = {radius}.0;"),
@@ -32,6 +36,7 @@ fn conditional_guiding_prefix_study() {
     for (name, fixture) in [
         ("hallway", super::super::research::hallway()),
         ("cave", super::super::research::cave()),
+        ("hallway_loaded", super::super::research::hallway_loaded()),
     ] {
         let importance = super::super::VoxelGiSettings::default().sampling_importance();
         let emitters = Arc::new(EmissionDistribution::with_importance(
@@ -70,7 +75,10 @@ fn conditional_guiding_prefix_study() {
         // Reference uses the unchanged control and disjoint windows. Block
         // averaging avoids the finite history cap turning this into an EMA.
         for start in [4194304, 5242880] {
-            if let Some(reference) = prior.iter().find(|r| r["fixture"] == name && r["start"] == start && r["paths"] == 1048576) {
+            if let Some(reference) = prior
+                .iter()
+                .find(|r| r["fixture"] == name && r["start"] == start && r["paths"] == 1048576)
+            {
                 rows.push(reference.clone());
                 continue;
             }

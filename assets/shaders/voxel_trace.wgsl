@@ -471,16 +471,48 @@ fn guide_anchor(position: vec3<f32>, normal: vec3<f32>) -> GuideAnchor {
     if emitter.sampling.w > 0.0 {
         var index = 0u;
         var probability = 1.0;
+        var stack: array<vec2<u32>, 32>;
+        var pending = 0u;
+        var tested = 0u;
+        var previous_rejected = vec3<i32>(0x7fffffff);
         loop {
             let node = load_node(index);
             if node.children.x == 0xffffffffu {
                 emitter = load_emitter(node.children.y);
                 emitter.sampling.y = probability;
-                break;
+                if any(emitter.voxel != previous_rejected) {
+                    let center = vec3<f32>(emitter.voxel) + vec3(0.5);
+                    let delta = center - position;
+                    let distance = length(delta);
+                    if distance > 0.001 {
+                        let hit = trace(position + normal * 0.002, delta / distance, distance + 0.01);
+                        if hit.status == 1u && all(hit.voxel == emitter.voxel) { break; }
+                    }
+                    previous_rejected = emitter.voxel;
+                    tested += 1u;
+                }
+                if pending == 0u || tested >= 8u { return anchor; }
+                pending -= 1u;
+                index = stack[pending].x;
+                probability = bitcast<f32>(stack[pending].y);
+                continue;
             }
             let p = node_left_probability(node, position, normal);
-            if p >= 0.5 { probability *= p; index = node.children.x; }
-            else { probability *= 1.0 - p; index = node.children.y; }
+            // Measure concentration inside the guide's local source region.
+            // Remote (often occluded) lights must not dilute an isolated lamp's
+            // proposal strength merely because they share the global tree.
+            let local = length(node.maximum - node.minimum_power.xyz) <= 16.0;
+            let left_mass = select(1.0, p, local);
+            let right_mass = select(1.0, 1.0 - p, local);
+            if pending >= 32u { return anchor; }
+            if p >= 0.5 {
+                stack[pending] = vec2(node.children.y, bitcast<u32>(probability * right_mass));
+                probability *= left_mass; index = node.children.x;
+            } else {
+                stack[pending] = vec2(node.children.x, bitcast<u32>(probability * left_mass));
+                probability *= right_mass; index = node.children.y;
+            }
+            pending += 1u;
         }
     } else {
         var best = -1.0;
@@ -494,13 +526,15 @@ fn guide_anchor(position: vec3<f32>, normal: vec3<f32>) -> GuideAnchor {
         }
     }
     anchor.position = vec3<f32>(emitter.voxel) + vec3(0.5);
-    anchor.weight = 0.5 * min(6.0 * emitter.sampling.y, 1.0);
+    let distance2 = dot(anchor.position - position, anchor.position - position);
+    let focus = distance2 / (distance2 + 64.0 * GUIDE_RADIUS * GUIDE_RADIUS);
+    anchor.weight = 0.5 * min(6.0 * emitter.sampling.y, 1.0) * focus;
     return anchor;
 }
 
 // NEE and continuation use the SAME proposal for balance MIS. The guide only
 // changes directions/PDFs, never light energy, path depth or retained history.
-struct DirectionGuide { axis: vec3<f32>, cosine: f32, weight: f32 }
+struct DirectionGuide { axis: vec3<f32>, g: f32, weight: f32 }
 fn direction_guide(position: vec3<f32>, anchor: GuideAnchor) -> DirectionGuide {
     var guide: DirectionGuide;
     if GUIDE_RADIUS <= 0.0 || anchor.weight == 0.0 { return guide; }
@@ -508,19 +542,21 @@ fn direction_guide(position: vec3<f32>, anchor: GuideAnchor) -> DirectionGuide {
     let distance = length(delta);
     if distance <= 0.001 { return guide; }
     guide.axis = delta / distance;
-    guide.cosine = min(distance / sqrt(distance * distance + GUIDE_RADIUS * GUIDE_RADIUS), 0.99999);
+    guide.g = min(distance / (distance + GUIDE_RADIUS), 0.999);
     guide.weight = anchor.weight;
     return guide;
 }
 fn direction_pdf(normal: vec3<f32>, direction: vec3<f32>, guide: DirectionGuide) -> f32 {
     let cosine = max(dot(normal, direction), 0.0) / 3.14159265359;
-    let cone = select(0.0, 1.0 / (6.28318530718 * max(1.0 - guide.cosine, 0.00001)), dot(guide.axis, direction) >= guide.cosine);
-    return (1.0 - guide.weight) * cosine + guide.weight * cone;
+    let denominator = (1.0 - guide.g) * (1.0 - guide.g) + 2.0 * guide.g * (1.0 - clamp(dot(guide.axis, direction), -1.0, 1.0));
+    let lobe = (1.0 - guide.g * guide.g) / (12.56637061436 * denominator * sqrt(denominator));
+    return (1.0 - guide.weight) * cosine + guide.weight * lobe;
 }
 fn guided_direction(normal: vec3<f32>, guide: DirectionGuide, u: f32, v: f32) -> vec3<f32> {
     if guide.weight == 0.0 { return hemisphere(normal, u, v); }
     if u >= guide.weight { return hemisphere(normal, (u - guide.weight) / (1.0 - guide.weight), v); }
-    let cosine = 1.0 - v * (1.0 - guide.cosine);
+    let ratio = (1.0 - guide.g * guide.g) / (1.0 - guide.g + 2.0 * guide.g * v);
+    let cosine = select(2.0 * v - 1.0, clamp(1.0 - (ratio * ratio - (1.0 - guide.g) * (1.0 - guide.g)) / max(2.0 * guide.g, 1e-8), -1.0, 1.0), guide.g >= 0.001);
     let radius = sqrt(max(1.0 - cosine * cosine, 0.0));
     let phi = 6.28318530718 * u / guide.weight;
     let axis = guide.axis;
@@ -565,16 +601,17 @@ fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, se
 // One terminal emission connection drawn from a 50/50 light/cosine mixture.
 // The finite-bounce integrand is unchanged: escaping sky and nonemitting hits
 // contribute zero here. No brightness clamp or extra connection ray is added.
-fn sample_terminal_emission(position: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, bounce: u32) -> Energy {
+fn sample_terminal_emission(position: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, bounce: u32, guide: DirectionGuide) -> Energy {
     var result: Energy;
     if params.extra.w == 0.0 { return result; }
     if sample_1d(stream, sequence, 8u + bounce) < 0.5 {
-        result = sample_emitter(position, normal, stream, sequence, bounce + 1u);
+        result = sample_emitter_guided(position, normal, stream, sequence, bounce + 1u, guide);
         result.value *= 2.0;
         result.radiation *= 2.0;
         return result;
     }
-    let direction = hemisphere(normal, sample_1d(stream, sequence, 2u + bounce * 2u), sample_1d(stream, sequence, 3u + bounce * 2u));
+    let direction = guided_direction(normal, guide, sample_1d(stream, sequence, 2u + bounce * 2u), sample_1d(stream, sequence, 3u + bounce * 2u));
+    if dot(normal, direction) <= 0.0 { return result; }
     let hit = trace(position + normal * 0.002, direction, connection_reach());
     if hit.status != 1u { return result; }
     let material = materials[hit.material];
@@ -588,7 +625,7 @@ fn sample_terminal_emission(position: vec3<f32>, normal: vec3<f32>, stream: u32,
     }
     let light_pdf = selection_pdf * d2 / max(dot(hit.normal, -direction), 1e-8);
     let cosine_pdf = max(dot(normal, direction), 0.0) / 3.14159265359;
-    let factor = 2.0 * cosine_pdf / (cosine_pdf + light_pdf);
+    let factor = 2.0 * cosine_pdf / (direction_pdf(normal, direction, guide) + light_pdf);
     result.value = material.emission * factor;
     result.radiation = material.emission_extra.x * factor;
     return result;
@@ -633,11 +670,10 @@ fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_norma
         if light_pdf > 0.0 { mis = previous_pdf / (previous_pdf + light_pdf); }
         if split_first && bounce == 0u { mis = 0.0; }
         var nee: Energy;
-        var guide: DirectionGuide;
+        let guide = direction_guide(hit.position, anchor);
         if bounce + 1u == DIFFUSE_HITS {
-            nee = sample_terminal_emission(hit.position, hit.normal, stream, sequence, bounce);
+            nee = sample_terminal_emission(hit.position, hit.normal, stream, sequence, bounce, guide);
         } else {
-            guide = direction_guide(hit.position, anchor);
             nee = sample_emitter_guided(hit.position, hit.normal, stream, sequence, bounce + 1u, guide);
         }
         result.value += throughput.value * (material.emission * mis + material.diffuse * (direct.value + nee.value));
