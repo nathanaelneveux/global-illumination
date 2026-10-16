@@ -285,7 +285,7 @@ pub(crate) struct GpuProbePatchQueue {
 struct ProbePatchState {
     // Mirrors own the bytes; each pending slot stores only its changed byte
     // envelope. Repeated publication unions ranges until the transaction drains.
-    pending_probes: HashMap<usize, std::ops::Range<usize>>,
+    pending_probes: VoxelMap<usize, std::ops::Range<usize>>,
     pending_hash: HashSet<usize>,
     probe_mirror: Vec<u8>,
     hash_mirror: Vec<u8>,
