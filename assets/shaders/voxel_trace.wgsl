@@ -1027,6 +1027,7 @@ struct PathMoments {
     radiation: vec2<f32>,
 }
 var<workgroup> path_moments: array<PathMoments, 64>;
+var<workgroup> face_guides: array<GuideAnchor, 64>;
 
 @compute @workgroup_size(64)
 fn trace_faces_parallel(@builtin(global_invocation_id) id: vec3<u32>,
@@ -1049,6 +1050,21 @@ fn trace_singleton_faces(@builtin(global_invocation_id) id: vec3<u32>,
 
 fn trace_cooperative_face(face_index: u32, valid: bool, local: u32) {
     let lane = local % PATH_LANES;
+    var anchor: GuideAnchor;
+    if GUIDE_RADIUS > 0.0 {
+        // Source selection and visibility are identical for all path lanes.
+        // Publish one proposal per receiver, not eight redundant searches.
+        if lane == 0u {
+            if valid {
+                let task = tasks[face_index];
+                let normal = face_normal(task.face);
+                anchor = guide_anchor(vec3<f32>(task.voxel) + vec3(0.5) + normal * 0.5, normal);
+            }
+            face_guides[local / PATH_LANES] = anchor;
+        }
+        workgroupBarrier();
+        anchor = face_guides[local / PATH_LANES];
+    }
     var moment: PathMoments;
     if valid {
         let task = tasks[face_index];
@@ -1056,7 +1072,6 @@ fn trace_cooperative_face(face_index: u32, valid: bool, local: u32) {
         let center = vec3<f32>(task.voxel) + vec3(0.5);
         let origin = center + normal * 0.501;
         let stream = hash_voxel(task.voxel) ^ pcg(task.face + 1u);
-        let anchor = guide_anchor(center + normal * 0.5, normal);
         for (var i = lane; i < params.counts.y; i += PATH_LANES) {
             let sequence = task.sequence + i;
             let sample = trace_receiver(center + normal * 0.5, normal, stream, sequence, anchor);
