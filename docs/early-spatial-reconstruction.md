@@ -664,3 +664,104 @@ Detailed artifacts: `target/evidence-topology-bench.log`,
 `target/evidence-optimized-cave-quality.json`,
 `target/evidence-optimized-edit-quality.json`, and
 `target/evidence-optimized-repeat-edit-quality.json`.
+
+## Unfiltered cost baseline and a separate smoothness criterion
+
+The earlier 3–7% cave throughput improvement compares optimized 2048 with
+**unoptimized 2048**, not with spatial reconstruction disabled. Fresh short
+screenings use the same `bfffadf` executable (HEAD `c61f397`, documentation-only
+delta), identical settings except spatial off versus strength 1/target 2048,
+and the same hardware/profile/background streaming/view as above. Cave order
+was off→on; response order on→off. Analysis-only Python files were being
+written during the final response run, but no compiler, image analysis or
+other GPU test ran concurrently. Both pairs completed, with 3/14 valid
+captures respectively, all response events and clean logs.
+
+| Workload | Spatial off paths | Optimized 2048 paths | Throughput gap |
+|---|---:|---:|---:|
+| Cave, 62 s | 212.23M | 156.55M | -26.2% |
+| Edit response, 30 s | 76.67M | 72.09M | -6.0% |
+
+Cave startup/later worker p95 rises 3.00/2.25→13.31/8.32 ms; offscreen frame
+p99 is 29.14/29.05→29.38/31.07 ms and near-age p95 700/780→790/853 ms.
+Response worker p95 rises about 1.87–2.55→7.55–10.96 ms, with mixed frame tails
+and freshness. These are preliminary single pairs, **not a stable universal
+percentage, windowed FPS or visual-settling times**. The worker is asynchronous;
+its time is not main-thread blocking time. Cave 15-second captures were
+inspected. Runs:
+
+- Off: `cave-1792113315861287000-37296`, `response-1792113608627091000-37499`.
+- On: `cave-1792113429380722000-37397`, `response-1792113517307951000-37436`.
+
+### Distinguish preferred early appearance from final fidelity
+
+FLIP remains the existing settled-fidelity criterion. It measures perceived
+difference when alternating against truth, not a user's preference between
+two still-imperfect renderings ([FLIP authors' explanation](https://developer.nvidia.com/blog/?p=29284)).
+The separate question is whether a still-converging wall looks spatially calm.
+Our old full-frame one-pixel residual roughness is texture-dominated; coarse
+residual RMS also includes broad bias and missing real emitter halos. Neither
+alone explains the user's preference for wider smoothing.
+
+`tools/spatial_noise_quality.py` adds a **diagnostic**, not a replacement
+perceptual model. It measures reference-relative OKLab band energy in two fixed
+smooth wall interiors, away from emitters, silhouettes and sunlight edges.
+Four-pixel residual averaging suppresses material texels; a binomial
+Laplacian-style pyramid then isolates bands at source-pixel spacings 4/8/16/32.
+For each crop/window the score is `sqrt(sum(mean(||band||²)))`; take the maximum
+across both crops and four sequence windows. Signed mean lightness error and
+between-window dispersion are separate diagnostics. The latter is neither
+temporal flicker nor a confidence interval. Multiscale perceptual models such
+as [NLPD](https://arxiv.org/abs/1701.06641) motivate this separation, but this
+simple RGB diagnostic is **not an implementation or validation of NLPD**.
+
+The two regions were fixed before scoring candidates. On the existing frozen
+four-window sweep, the preferred target-2048 envelope across local prefixes
+4/16/64/128/256/512/1024/2048 has maximum **.00142691185** (at four paths).
+`tools/quality_profiles/cave-spatial-noise-2048.json` records that as a
+**provisional noise ceiling**, normalized to 1.0, including reference checksum,
+view/crop coordinates and calibration provenance. This does not claim the user
+reviewed every window/crop. Hold this ceiling fixed for subsequent experiments;
+do not refit it to each candidate. The same images selected/calibrated the
+diagnostic, so its agreement is not independent validation. Combined-image
+viewing also differs from native resolution.
+
+| Display target | Noise at 16 local paths | Noise at 128 local paths |
+|---|---:|---:|
+| No filter | 7.06 | 2.31 |
+| 512 | 1.48 | 1.68 |
+| 1024 | .83 | 1.30 |
+| 2048 | .75 | .89 |
+| 4096 | .66 | .56 |
+
+This reproduces the stated distinction: 1024 and 2048 are both below the
+proposed noise ceiling at 16, but only 2048 is below it at 128. It also exposes
+the intermediate-history noise increase as the footprint contracts. Lower is
+not automatically better: 4096 smooths further but loses real lighting detail
+and fails the existing final FLIP gate through 2048 local paths. Uniformly
+incorrect brightness can have zero spatial noise. Therefore:
+
+1. Early presentation must meet the noise ceiling **and** retain full-image
+   fidelity/detail and acceptable brightness/color bias versus the preferred
+   preset at matched sample counts. There is no noise-only promotion.
+   Once noise is acceptable, prefer better fidelity/lower cost rather than
+   rewarding further smoothing for its own sake.
+2. Final fidelity still uses the unchanged mean/tile FLIP limits in
+   `cave-user-2048.json`. A pleasant early frame is not certified settled.
+3. Validate the noise criterion on held-out prefixes, views and edits before
+   treating it as an automated acceptance gate. No runtime policy changed here.
+
+The user's proposed maximum blending extent is a promising joint quality/cost
+experiment. Target 1024 borrows about 65 faces at 16 paths; target 2048 borrows
+about 130 there, but only 16 at 128. A tighter maximum footprint could limit
+the early case without weakening later reconstruction. Actual support depends
+on topology, unequal history and compatibility; these averages do not establish
+an optimal cap. Bound footprint rather than simply lowering global strength,
+which would reintroduce the noisy receiver value. GPU-resident/hierarchical
+neighborhood processing remains a further cost hypothesis, not a proven win.
+
+Reproduce with `python tools/spatial_noise_quality.py FROZEN_RUN`. Results:
+`target/evidence-smooth-wall-noise.json`; performance logs:
+`target/evidence-cost-{off,on}-{cave,response}.log`. Five focused noise tests
+and four existing spatial analysis tests pass. No Rust/runtime modification,
+build or full-suite rerun for this analysis extension.
