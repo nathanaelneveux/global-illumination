@@ -283,10 +283,9 @@ pub(crate) struct GpuProbePatchQueue {
 
 #[derive(Default)]
 struct ProbePatchState {
-    // Mirrors own the authoritative bytes. Dirty ledgers need only slot IDs;
-    // retaining another 208-byte GpuProbe per slot duplicates a large payload
-    // and forces expensive hash-table moves during bursty publication.
-    pending_probes: HashSet<usize>,
+    // Mirrors own the bytes; each pending slot stores only its changed byte
+    // envelope. Repeated publication unions ranges until the transaction drains.
+    pending_probes: HashMap<usize, std::ops::Range<usize>>,
     pending_hash: HashSet<usize>,
     probe_mirror: Vec<u8>,
     hash_mirror: Vec<u8>,
@@ -370,6 +369,24 @@ impl FromWorld for ProbeStaging {
 }
 
 impl ProbePatchState {
+    /// Compare aligned words before overwriting the mirror. Sky/address-only
+    /// publications need not resend the complete 256-byte probe, and unchanged
+    /// publications do not create a transfer. No second world-sized mirror.
+    fn patch_probe(&mut self, slot: usize, probe: GpuProbe) {
+        let mut encoded = [0; GPU_PROBE_BYTES];
+        encode_gpu_probe(probe, &mut encoded);
+        let old = &mut self.probe_mirror[slot * GPU_PROBE_BYTES..(slot + 1) * GPU_PROBE_BYTES];
+        let first = (0..GPU_PROBE_BYTES).step_by(4)
+            .find(|&i| old[i..i + 4] != encoded[i..i + 4]);
+        let Some(first) = first else { return; };
+        let last = (first..GPU_PROBE_BYTES).step_by(4).rev()
+            .find(|&i| old[i..i + 4] != encoded[i..i + 4]).unwrap() + 4;
+        old[first..last].copy_from_slice(&encoded[first..last]);
+        self.pending_probes.entry(slot)
+            .and_modify(|range| { range.start = range.start.min(first); range.end = range.end.max(last); })
+            .or_insert(first..last);
+    }
+
     /// Validate the entire transaction before submitting either buffer. On a
     /// missing/undersized destination the caller retries without losing writes.
     fn upload(
@@ -386,7 +403,9 @@ impl ProbePatchState {
         if self
             .pending_probes
             .iter()
-            .any(|slot| *slot >= self.probe_mirror.len() / GPU_PROBE_BYTES)
+            .any(|(slot, range)| *slot >= self.probe_mirror.len() / GPU_PROBE_BYTES
+                || range.start >= range.end || range.end > GPU_PROBE_BYTES
+                || range.start % 4 != 0 || range.end % 4 != 0)
             || self
                 .pending_hash
                 .iter()
@@ -394,10 +413,9 @@ impl ProbePatchState {
         {
             return Err("dirty slot is outside its cache generation");
         }
-        for range in patch_ranges(
-            self.pending_probes.iter().copied().collect(),
-            GPU_PROBE_BYTES,
-        ) {
+        for range in coalesce_patch_ranges(self.pending_probes.iter().map(|(slot, range)| {
+            slot * GPU_PROBE_BYTES + range.start..slot * GPU_PROBE_BYTES + range.end
+        }).collect()) {
             write(true, range.start, &self.probe_mirror[range]);
         }
         for range in patch_ranges(self.pending_hash.iter().copied().collect(), 16) {
@@ -1142,8 +1160,7 @@ pub(crate) fn patch_gpu_topology(
         cache.hash_slots.insert(entry.voxel, hash_slot);
         state.pending_hash.insert(hash_slot);
         write_hash_entry(&mut state.hash_mirror, hash_slot, entry);
-        state.pending_probes.insert(probe_slot);
-        write_probe(&mut state.probe_mirror, probe_slot, gpu_probe);
+        state.patch_probe(probe_slot, gpu_probe);
     }
     // Retire old donors and publish newly exposed faces on EXISTING probes in
     // one transaction. The ordinary value-upload timer must not split these.
@@ -1183,8 +1200,7 @@ pub(crate) fn try_patch_probe_values(
     };
     for (index, voxel) in dirty.enumerate() {
         if let (Some(slot), Some(probe)) = (cache.slots.get(&voxel), probes.lookup(&voxel)) {
-            state.pending_probes.insert(*slot);
-            write_probe(&mut state.probe_mirror, *slot, gpu_probe(probe));
+            state.patch_probe(*slot, gpu_probe(probe));
         }
         // Include removed/unknown keys in the budget too. Small bounded chunks
         // avoid clock queries per voxel while ensuring a zero budget progresses.
@@ -1205,8 +1221,7 @@ fn patch_values_locked(
             continue;
         };
         let gpu_probe = gpu_probe(probe);
-        state.pending_probes.insert(*slot);
-        write_probe(&mut state.probe_mirror, *slot, gpu_probe);
+        state.patch_probe(*slot, gpu_probe);
     }
 }
 
@@ -1243,17 +1258,20 @@ fn apply_probe_patches(
     );
 }
 
-fn patch_ranges(mut slots: Vec<usize>, stride: usize) -> Vec<std::ops::Range<usize>> {
-    slots.sort_unstable();
+fn patch_ranges(slots: Vec<usize>, stride: usize) -> Vec<std::ops::Range<usize>> {
+    coalesce_patch_ranges(slots.into_iter().map(|slot| slot * stride..(slot + 1) * stride).collect())
+}
+
+fn coalesce_patch_ranges(mut spans: Vec<std::ops::Range<usize>>) -> Vec<std::ops::Range<usize>> {
+    spans.sort_unstable_by_key(|span| span.start);
     let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
-    for slot in slots {
-        let start = slot * stride;
+    for span in spans {
         if let Some(last) = ranges.last_mut()
-            && start <= last.end + 1024
+            && span.start <= last.end + 1024
         {
-            last.end = start + stride;
+            last.end = last.end.max(span.end);
         } else {
-            ranges.push(start..start + stride);
+            ranges.push(span);
         }
     }
     ranges
@@ -1540,8 +1558,8 @@ mod tests {
         let state = shared.lock().unwrap();
         assert_eq!(
             state.pending_probes.len(),
-            2,
-            "only topology-required values may bypass the timer"
+            1,
+            "only changed topology-required bytes may bypass the timer; the reused identical slot needs no write"
         );
         assert_eq!(
             &state.probe_mirror[far_slot * GPU_PROBE_BYTES..(far_slot + 1) * GPU_PROBE_BYTES],
@@ -1602,7 +1620,7 @@ mod tests {
         );
         assert_eq!(dirty.len(), 0);
         let state = prepared.patches.state.lock().unwrap();
-        assert_eq!(state.pending_probes.len(), 512);
+        assert_eq!(state.pending_probes.len(), 1, "unchanged probes need no upload");
         let slot = prepared.cache.slots[&voxel];
         let expected = ShaderBuffer::from(vec![gpu_probe(&probes[&voxel])])
             .data
@@ -2659,7 +2677,7 @@ mod tests {
             let extracted = patches.clone();
             let old_probe = extracted.state.lock().unwrap().probe_mirror.clone();
             let old_hash = extracted.state.lock().unwrap().hash_mirror.clone();
-            let probes: HashMap<_, _> = (0..count)
+            let mut probes: HashMap<_, _> = (0..count)
                 .map(|x| {
                     let voxel = IVec3::new(x, generation as i32, 0);
                     (voxel, SurfaceProbe::new(voxel, 4))
@@ -2675,6 +2693,9 @@ mod tests {
                 &mut materials,
                 &material,
             );
+            for probe in probes.values_mut() {
+                probe.display[2].indirect = Vec3::splat(1.0);
+            }
             patch_probe_values(&cache, &patches, &probes, &order.iter().copied().collect());
             assert_ne!(extracted.probe_buffer.id(), patches.probe_buffer.id());
             assert_ne!(extracted.hash_buffer.id(), patches.hash_buffer.id());
@@ -2712,7 +2733,7 @@ mod tests {
         let mut latest = GpuProbe::default();
         for energy in [1.0, 2.0, 3.0] {
             latest.positive_y = Vec4::splat(energy);
-            state.pending_probes.insert(1);
+            state.pending_probes.insert(1, 0..GPU_PROBE_BYTES);
             write_probe(&mut state.probe_mirror, 1, latest);
         }
         assert_eq!(state.pending_probes.len(), 1);
@@ -2740,7 +2761,7 @@ mod tests {
         let mut state = ProbePatchState {
             probe_mirror: vec![7; GPU_PROBE_BYTES * 2],
             hash_mirror: vec![3; 64],
-            pending_probes: HashSet::from([1]),
+            pending_probes: HashMap::from([(1, 0..GPU_PROBE_BYTES)]),
             pending_hash: HashSet::from([3]),
         };
         // Smaller old hash allocation, even though the probe buffer fits.
@@ -2783,11 +2804,44 @@ mod tests {
     }
 
     #[test]
+    fn sparse_probe_delta_transfers_only_changed_words_and_unions_pending_updates() {
+        let mut probe = GpuProbe::default();
+        let mut state = ProbePatchState {
+            probe_mirror: vec![0; GPU_PROBE_BYTES * 2],
+            ..default()
+        };
+        state.patch_probe(1, probe);
+        assert!(state.pending_probes.is_empty());
+        probe.direct_sky[2] = UVec4::splat(42);
+        state.patch_probe(1, probe);
+        let mut sent = Vec::new();
+        state.upload((GPU_PROBE_BYTES * 2) as u64, 0, |is_probe, offset, bytes| {
+            assert!(is_probe);
+            sent.push((offset, bytes.to_vec()));
+        }).unwrap();
+        assert_eq!(sent, vec![(GPU_PROBE_BYTES + 144, vec![42u32.to_le_bytes(); 4].concat())]);
+        state.patch_probe(1, probe);
+        assert!(state.pending_probes.is_empty(), "identical publication adds no transfer");
+        probe.direct_sky[0].x = 9;
+        state.patch_probe(1, probe);
+        probe.resident[5] = UVec2::new(11, 12);
+        state.patch_probe(1, probe);
+        assert_eq!(state.pending_probes[&1], 112..256);
+        let mut gpu = vec![0; GPU_PROBE_BYTES * 2];
+        // Start from the previous completed snapshot, then replay the delta.
+        gpu[GPU_PROBE_BYTES + 144..GPU_PROBE_BYTES + 160].copy_from_slice(&sent[0].1);
+        state.upload(gpu.len() as u64, 0, |_, offset, bytes| {
+            gpu[offset..offset + bytes.len()].copy_from_slice(bytes);
+        }).unwrap();
+        assert_eq!(gpu, state.probe_mirror);
+    }
+
+    #[test]
     fn staged_upload_releases_mirror_lock_and_preserves_next_transaction() {
         let state = Mutex::new(ProbePatchState {
             probe_mirror: vec![7; GPU_PROBE_BYTES * 2],
             hash_mirror: vec![3; 64],
-            pending_probes: HashSet::from([1]),
+            pending_probes: HashMap::from([(1, 0..GPU_PROBE_BYTES)]),
             pending_hash: HashSet::from([3]),
         });
         let mut upload = ProbeUpload::default();
@@ -2804,7 +2858,7 @@ mod tests {
             if probe {
                 assert_eq!(bytes, vec![7; GPU_PROBE_BYTES]);
                 next.probe_mirror.fill(9);
-                next.pending_probes.insert(1);
+                next.pending_probes.insert(1, 0..GPU_PROBE_BYTES);
             } else {
                 assert_eq!(bytes, [3; 16]);
                 next.hash_mirror.fill(5);

@@ -462,7 +462,13 @@ corner measurements; indirect light interpolates reconstructed corners.
 ## Display-cache lifetime
 
 `display.rs` coordinates snapshots and sparse patches; `render.rs` owns buffer
-layouts and uploads. Snapshot packing uses a 1.5-ms slice, checked every 128
+layouts and uploads. Value publication compares aligned words against the
+authoritative byte mirror, skips identical records and unions changed byte
+envelopes per probe until extraction. A single changed sky face can transfer
+16 bytes instead of the whole 256-byte probe; neighboring ranges still coalesce
+to bound copy-command cost. This is not removal of the sky readback round trip
+or of scheduler/simulation feedback. No second world-sized mirror is retained.
+Snapshot packing uses a 1.5-ms slice, checked every 128
 keys (including removed keys), with no additional record ceiling. It does not
 promise a hard deadline under OS preemption. Encoding and initial
 buffer allocation run off thread. Encoding writes one authoritative pair of byte
