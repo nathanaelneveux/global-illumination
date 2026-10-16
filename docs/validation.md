@@ -104,6 +104,20 @@ Set `VOXEL_GI_AUDIT_PATHS=1048576 VOXEL_GI_AUDIT_ORACLE_PATHS=33554432` to repro
 the measured audit; setting oracle paths to zero explicitly omits it for GPU
 ablations and requires a separately retained unchanged-scene reference.
 
+`transport_field_correctness_gate` extends this to the cave's wall/ceiling grid
+and material/normal-stratified floor/source sites (165 receivers, not every cave
+face), shorter ranges, spectral furnace extremes, and a point source. It uses
+two 262,144-path independent CPU replicas and GPU windows per site. IID variants
+have a six-estimated-standard-error diagnostic gate; QMC variation is recorded,
+not labeled IID uncertainty. Analytic QMC cases require <=1.5% error. Outputs
+are timestamped `target/transport-field-*.json`; inspect precision, not only the
+pass flag, especially for near-zero channels. `cave_witness_estimator_isolation`
+compares the two formerly failing receivers at each depth with roulette off and
+with a separate cosine-only GPU estimator. `grazing_emitter_plane_matches_view_factor`
+checks the closed-form integral and reproduces the faulty visibility as a
+test-only legacy ablation; the ordinary CPU `grazing_emitter_connection...` test
+also checks real blockers. All three native checks are opt-in/ignored.
+
 The preferred resident display now uses uncapped 2048-evidence reconstruction.
 Do not let that hide estimator regressions or inflate apparent sample efficiency:
 

@@ -68,6 +68,13 @@ fn cave_with_material_receivers() -> ResearchFixture {
 
 fn cases() -> Vec<Case> {
     let mut cases = Vec::new();
+    cases.push(Case {
+        name: "grazing-emitter-plane".into(),
+        fixture: research::grazing_emitter_plane(false),
+        sites: vec![0],
+        transport: default(),
+        analytic: Some([research::grazing_emitter_view_factor(); 5]),
+    });
     for (label, bounces, reach, stride) in [
         ("cave-field", 3, 768.0, 1),
         ("cave-depth1", 1, 768.0, 11),
@@ -333,4 +340,166 @@ fn transport_field_correctness_gate() {
         failures.is_empty(),
         "independent estimator disagreements: {failures:?}"
     );
+}
+
+/// Independent cosine integration on the GPU isolates estimator logic from
+/// CPU/GPU traversal differences. It deliberately uses no light distribution,
+/// MIS, guide, roulette, cache, or history policy.
+fn cosine_shader() -> String {
+    let source = shader(true, false, false);
+    let start = source.find("fn trace_receiver(").unwrap();
+    let end = source[start..].find("fn evaluate_record(").unwrap() + start;
+    let replacement = r#"
+fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, anchor: GuideAnchor) -> Energy {
+    var result: Energy;
+    var weight = Energy(vec4(1.0), 1.0, vec3(0.0));
+    var position = surface;
+    var n = normal;
+    for (var bounce = 0u; bounce < DIFFUSE_HITS; bounce += 1u) {
+        let d = hemisphere(n, sample_1d(stream, sequence, bounce * 2u), sample_1d(stream, sequence, bounce * 2u + 1u));
+        let hit = trace_diffuse(position + n * 0.002, d);
+        if hit.status == 0u {
+            let horizon = clamp(0.65 + 0.35 * d.y, 0.15, 1.0);
+            result.value += weight.value * params.environment * horizon;
+            result.radiation += weight.radiation * params.extra.x * horizon;
+            break;
+        }
+        if hit.status != 1u { break; }
+        let material = materials[hit.material];
+        result.value += weight.value * material.emission;
+        result.radiation += weight.radiation * material.emission_extra.x;
+        weight.value *= material.diffuse;
+        weight.radiation *= material.diffuse_extra.x;
+        let direct = direct_at(hit.position, hit.normal);
+        result.value += weight.value * direct.value;
+        result.radiation += weight.radiation * direct.radiation;
+        position = hit.position;
+        n = hit.normal;
+        if bounce + 1u == DIFFUSE_HITS {
+            let last_d = hemisphere(n, sample_1d(stream, sequence, 6u), sample_1d(stream, sequence, 7u));
+            let last = trace(position + n * 0.002, last_d, connection_reach());
+            if last.status == 1u {
+                result.value += weight.value * materials[last.material].emission;
+                result.radiation += weight.radiation * materials[last.material].emission_extra.x;
+            }
+        }
+    }
+    return result;
+}
+"#;
+    format!("{}{}{}", &source[..start], replacement, &source[end..])
+}
+
+#[test]
+#[ignore = "native estimator/traversal isolation at cave disagreement witnesses"]
+fn cave_witness_estimator_isolation() {
+    let fixture = cave_with_material_receivers();
+    let sites = [159, 160];
+    let emitters = Arc::new(EmissionDistribution::with_importance(
+        &fixture.scene,
+        &fixture.materials,
+        crate::voxel_gi::VoxelGiSettings::default().sampling_importance(),
+    ));
+    let native = tests::native_tracer();
+    let mut variants: Vec<_> = [
+        ("production", shader(true, true, false)),
+        ("no-roulette", shader(true, false, false)),
+        ("cosine-only", cosine_shader()),
+    ]
+    .into_iter()
+    .map(|(name, source)| {
+        (
+            name,
+            GpuTracer::with_shader(native.context.clone(), true, &source).unwrap(),
+        )
+    })
+    .collect();
+    for bounces in 1..=3 {
+        let transport = TransportSettings {
+            bounces,
+            ..default()
+        };
+        let mut references = Vec::new();
+        for &site in &sites {
+            let p = &fixture.receivers[site];
+            let reference = reference_oracle::estimate_seeded(
+                &fixture.scene,
+                &fixture.materials,
+                &fixture.sources,
+                transport,
+                p.voxel,
+                p.face_mask.trailing_zeros() as usize,
+                1048576,
+                457,
+            );
+            eprintln!("WITNESS depth={bounces} site={site} cpu={reference:?}");
+            references.push(reference);
+        }
+        for (name, gpu) in &mut variants {
+            let actual = estimates(
+                gpu, &fixture, &emitters, transport, false, &sites, 1048576, 4194304,
+            );
+            eprintln!("WITNESS depth={bounces} {name}: {actual:?}");
+            for (reference, actual) in references.iter().zip(&actual) {
+                for b in 0..5 {
+                    let se = reference.standard_error[b].hypot(actual.standard_error[b]);
+                    assert!(
+                        (reference.mean[b] - actual.mean[b]).abs()
+                            <= 6.0 * se + 0.0002 * reference.mean[b].abs() + 1e-10,
+                        "depth={bounces} variant={name} band={b}: {reference:?} vs {actual:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "native analytic grazing-angle visibility regression with legacy ablation"]
+fn grazing_emitter_plane_matches_view_factor() {
+    let fixture = research::grazing_emitter_plane(false);
+    let emitters = Arc::new(EmissionDistribution::with_importance(
+        &fixture.scene,
+        &fixture.materials,
+        crate::voxel_gi::VoxelGiSettings::default().sampling_importance(),
+    ));
+    let expected = research::grazing_emitter_view_factor();
+    let native = tests::native_tracer();
+    let legacy = replace_once(
+        &shader(true, true, false),
+        "if trace(shadow_origin, shadow_delta / shadow_distance, shadow_distance).status != 0u { return result; }",
+        "if trace(position + normal * 0.002, direction, distance - 0.008).status != 0u { return result; }",
+    );
+    for (name, source) in [
+        ("corrected", shader(true, true, false)),
+        ("cosine-only", cosine_shader()),
+        ("legacy", legacy),
+    ] {
+        let mut gpu = GpuTracer::with_shader(native.context.clone(), true, &source).unwrap();
+        let actual = estimates(
+            &mut gpu,
+            &fixture,
+            &emitters,
+            default(),
+            false,
+            &[0],
+            1048576,
+            4194304,
+        )
+        .remove(0);
+        eprintln!("GRAZING {name}: analytic={expected} actual={actual:?}");
+        for b in 0..5 {
+            if name == "legacy" {
+                assert!(
+                    actual.mean[b] < expected - 6.0 * actual.standard_error[b],
+                    "legacy ablation must expose the false shadow"
+                );
+            } else {
+                assert!(
+                    (actual.mean[b] - expected).abs()
+                        < 6.0 * actual.standard_error[b] + expected * 0.0002
+                );
+            }
+        }
+    }
 }

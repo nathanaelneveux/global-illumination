@@ -207,7 +207,15 @@ approximates distance, projected emitter/receiver normals and power, with a
 power-mixture fallback and numerical probability floor to preserve support.
 Selection and reverse density use the same receiver position/normal for
 balance-heuristic MIS with cosine path hits. Actual visibility still traces
-against current geometry. Source weights include all five scalar channels:
+against current geometry. Emitter visibility connects the receiver and light's
+outward-offset endpoints, recomputing its direction and length. The physical
+unoffset points still define the PDF and geometry factors. Translating the
+origin while keeping the old direction and a fixed length trim falsely shadows
+grazing light samples; this is regression-covered by an analytic emitting plane.
+This follows the endpoint construction in
+[PBRT's ray spawning](https://pbr-book.org/4ed/Shapes/Managing_Rounding_Error#SpawnRayTo),
+while retaining our voxel-scale epsilon, not PBRT's full interval error bounds.
+Source weights include all five scalar channels:
 R, G, B, infrared and ionizing. The tree shares the emitter storage binding,
 adds 64 bytes per node and rebuilds with the worker's emitter snapshot; there is
 no per-receiver allocation or incremental tree refit. See the

@@ -271,8 +271,59 @@ Evidence: `cutoff-removal-dispatch-cost.json` and matching log.
    In dark regions its energy floor can report high confidence alongside large
    relative errors. Retain it only for scheduling with the existing fair audit;
    revisit heavy-tail-aware uncertainty before using it as a stopping rule.
-4. **Deferred:** a full cave-field independent-estimator audit, renewed early-prefix
-   and FLIP qualification of the corrected guide, and reducing guide overhead.
+4. **Follow-up:** the expanded cave-field audit below is complete. Renewed early-prefix
+   and FLIP qualification of the corrected guide and reducing guide overhead remain.
    The original unguided hallway outlier still exhibits severe variance; this
    audit does not establish that it was caused by the newly identified cutoff.
    No additional estimator is removed without measured or analytic evidence.
+
+## Expanded cave qualification: false grazing shadows
+
+The follow-up gate (harness `e4c318b`) includes 165 cave receivers: the existing
+wall/ceiling grid plus material/normal-stratified floor, lava, spire, crystal and
+torch sites. This is broader coverage, not all chamber surfaces. It also tests
+16/64-block segment ranges, one-hit transport, black/white/absorbing/spectrally
+imbalanced five-band furnaces, and an analytic point light. Same M4/Metal/test
+profile as above, no viewport or display filter; two 262,144-path CPU replicas
+and GPU windows per site. Compilations overlapped some accuracy checks, so these
+are not timing measurements.
+
+Two downward torch receivers failed: `(16,10,5)` and `(5,10,32)`, face 3.
+The red means were 2.43%/2.22% low, infrared 4.66%/4.17% low, up to 17.17
+combined estimated standard errors. Both guiding modes failed identically.
+The discrepancy exists at one diffuse hit and survives disabling roulette;
+an independent cosine-only GPU estimator agrees with the CPU oracle.
+
+The cause was emitter shadow-segment construction: shifting the start along its
+normal while preserving the unshifted direction and length. At grazing angles,
+the ray reaches the selected emitter earlier than the fixed `.008` endpoint
+trim and incorrectly reports an obstruction. CPU and GPU now connect **both
+offset endpoints**, leaving physical PDFs/geometry factors unchanged. No extra
+rays, brightness clamps, history changes, reconstruction changes or BVW edits.
+
+A black rectangle emitting unit energy has closed-form diffuse view factor
+`0.0993681879` at the test receiver. With 1,048,576 IID native paths:
+
+| Estimator | Mean | Difference from analytic |
+| --- | --- | --- |
+| Legacy shadow segment | 0.0958255364 | -3.565% |
+| Corrected shadow segment | 0.0993615022 | -0.0067% |
+| Independent cosine-only GPU | 0.0992326729 | -0.1364% (within 0.47 estimated SE) |
+
+All five bands are checked. A deterministic CPU test fails on the old code and
+passes on the fix; inserting a real black wall still blocks the connection.
+The expanded gate now passes with no rejected bands; cave IID maximum discrepancy
+is 3.254 estimated SE. This does not establish universal correctness or zero
+variance. Near-zero channels may still have poorly resolved relative error.
+
+Evidence: `target/transport-field-1792178923546.json` (failure),
+`target/transport-field-1792179470433.json` (corrected),
+`target/grazing-plane-analytic.log`, `target/grazing-emitter-{before,after}.log`.
+The intermediate `transport-field-1792179374406.json` is **not** a passed gate:
+its new planar fixture accidentally exposed emitting vertical edges excluded
+from its analytic answer. Embedding that rectangle in a black floor corrected
+the fixture; CPU and GPU already agreed on its original nonplanar geometry.
+No threshold was loosened. Fifteen tracer tests and strict all-target Clippy
+pass on the fix. The endpoint construction follows
+[PBRT](https://pbr-book.org/4ed/Shapes/Managing_Rounding_Error#SpawnRayTo), without
+claiming PBRT's interval-error guarantees for our fixed voxel-scale epsilon.

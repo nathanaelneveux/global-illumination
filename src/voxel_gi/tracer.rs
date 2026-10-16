@@ -618,8 +618,19 @@ fn sample_emitter(
     }
     let light_pdf = emitter.probability * distance_squared / emitter_cosine;
     let cosine_pdf = receiver_cosine / std::f32::consts::PI;
-    if scene.trace_ray_result(position + normal * 0.002, direction, distance - 0.008)
-        != TraceResult::Escaped
+    // Build visibility from both offset endpoints. Keeping the unoffset
+    // direction/length after moving the origin can hit the selected light
+    // before a fixed distance trim at grazing angles (false self-occlusion).
+    // PDFs and geometry factors above still use the physical surface points.
+    let shadow_origin = position + normal * 0.002;
+    let shadow_target = target + FACE_OFFSETS[emitter.face as usize].as_vec3() * 0.002;
+    let shadow_delta = shadow_target - shadow_origin;
+    let shadow_distance = shadow_delta.length();
+    if scene.trace_ray_result(
+        shadow_origin,
+        shadow_delta / shadow_distance,
+        shadow_distance,
+    ) != TraceResult::Escaped
     {
         return EnergySpectrum::ZERO;
     }
@@ -876,6 +887,45 @@ fn random_f32(seed: &mut u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grazing_emitter_connection_reaches_target_but_not_through_blockers() {
+        let emitter = super::super::emission::EmissiveFace {
+            voxel: IVec3::new(16, 0, 28),
+            face: 2,
+            material: 4,
+            cumulative: 1.0,
+            probability: 1.0,
+        };
+        let distribution = EmissionDistribution {
+            faces: vec![emitter],
+            total_weight: 1.0,
+            importance: EnergySpectrum::ONE,
+            ..default()
+        };
+        for blocked in [false, true] {
+            let fixture = super::super::research::grazing_emitter_plane(blocked);
+            for sequence in 0..64 {
+                let result = sample_emitter(
+                    &fixture.scene,
+                    &fixture.materials,
+                    &distribution,
+                    Vec3::new(16.5, 6.0, 2.5),
+                    Vec3::NEG_Y,
+                    123,
+                    sequence,
+                    0,
+                    MAX_PATH_DISTANCE,
+                    DirectionGuide::default(),
+                );
+                assert_eq!(
+                    result.max_component() > 0.0,
+                    !blocked,
+                    "blocked={blocked} sequence={sequence} result={result:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn low_throughput_paths_can_still_reach_bright_radiance() {

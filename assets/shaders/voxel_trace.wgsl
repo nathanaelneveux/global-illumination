@@ -619,7 +619,13 @@ fn sample_emitter_guided(position: vec3<f32>, normal: vec3<f32>, source_stream: 
     if receiver_cosine <= 0.0 || emitter_cosine <= 0.0 || emitter.sampling.y <= 0.0 { return result; }
     let light_pdf = emitter.sampling.y * d2 / emitter_cosine;
     let cosine_pdf = receiver_cosine / 3.14159265359;
-    if trace(position + normal * 0.002, direction, distance - 0.008).status != 0u { return result; }
+    // Visibility connects the offset endpoints, not a translated copy of the
+    // physical ray. A fixed length trim falsely occludes grazing light samples.
+    // The physical points above still define the geometry factors and PDFs.
+    let shadow_origin = position + normal * 0.002;
+    let shadow_delta = light_position + emitter_normal * 0.002 - shadow_origin;
+    let shadow_distance = length(shadow_delta);
+    if trace(shadow_origin, shadow_delta / shadow_distance, shadow_distance).status != 0u { return result; }
     let material = materials[u32(emitter.sampling.z)];
     let factor = cosine_pdf / (light_pdf + direction_pdf(normal, direction, guide));
     result.value = material.emission * factor;
