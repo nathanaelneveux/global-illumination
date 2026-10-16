@@ -82,6 +82,13 @@ pub(super) fn start_trace_task(
     if runtime.trace_task.is_some() || (field.order.is_empty() && runtime.gpu_pending.is_empty()) {
         return;
     }
+    let cpu = startup
+        .as_ref()
+        .is_some_and(|s| s.backend == super::TransportBackend::Cpu);
+    assert!(
+        cpu || gpu_device.is_some(),
+        "Voxel GI requires a GPU transport device. Select TransportBackend::Cpu explicitly for CPU reference transport."
+    );
     let selection_started = Instant::now();
     let reuse = startup.as_ref().is_some_and(|s| {
         matches!(
@@ -166,9 +173,7 @@ pub(super) fn start_trace_task(
     let emission_cache = runtime.emission_cache.take();
     let sampling_importance = settings.sampling_importance();
     let mut cpu_sky_cache = runtime.cpu_sky_cache.take().unwrap_or_default();
-    let gpu_device = gpu_device
-        .filter(|_| !runtime.gpu_failed)
-        .map(|device| device.clone());
+    let gpu_device = gpu_device.filter(|_| !cpu).map(|device| device.clone());
     runtime.trace_task = Some(AsyncComputeTaskPool::get().spawn(async move {
         let started = Instant::now();
         let dispatched = !batch.work.probes.is_empty();
@@ -275,7 +280,7 @@ pub(super) fn start_trace_task(
                 pending.clear();
             }
         }
-        if gpu_tracer.is_none() && !batch.work.probes.is_empty() {
+        if cpu && !batch.work.probes.is_empty() {
             let pool = pool.get_or_init(|| {
                 let available = std::thread::available_parallelism().map_or(2, usize::from);
                 ThreadPoolBuilder::new()
@@ -572,6 +577,12 @@ pub(super) fn apply_trace_task(
     };
     let merge_started = Instant::now();
     runtime.trace_task = None;
+    // Fail before publishing any partial result or switching execution backend.
+    // A slower CPU reference must be an explicit launch choice, never recovery
+    // from a GPU validation, submission, or snapshot mapping failure.
+    if let Some(error) = result.gpu_error {
+        panic!("Voxel GI GPU transport failed: {error}");
+    }
     if let Some(mut change) = result.sunlight_change.take()
         && let Some(history) = &mut runtime.spatial_history
     {
@@ -585,12 +596,6 @@ pub(super) fn apply_trace_task(
         history.record(change, super::retention::Origin::Sunlight);
     }
     timing.record_gpu_batch(result.batch.as_ref().and_then(|batch| batch.gpu_ms));
-    if let Some(error) = result.gpu_error {
-        warn!(%error, "GPU transport unavailable; continuing with bounded CPU transport");
-        runtime.gpu_failed = true;
-        let retry: Vec<_> = runtime.trace_pending.drain().collect();
-        enqueue_urgent(&mut runtime, retry);
-    }
     stats.backend = result
         .gpu_tracer
         .as_ref()

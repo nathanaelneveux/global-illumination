@@ -41,33 +41,18 @@ pub(super) struct DisplayBuildFailure {
     error: DisplayCapacityError,
 }
 
-/// Reject a request once, without retrying an unchanged oversized generation
-/// every frame. A changed scene/residency/device may retry; only successful
-/// publication ends the failure episode (and permits another warning).
-#[derive(Default)]
-pub(super) struct DisplayBuildGuard(Option<DisplayBuildFailure>);
-
-impl DisplayBuildGuard {
-    fn reject(&mut self, failure: DisplayBuildFailure) {
-        if self.0.is_none() {
-            error!(reason = %failure.error, "voxel GI display capacity exceeded; keeping the live generation; reduce residency or increase device limits");
-        }
-        self.0 = Some(failure);
+impl DisplayBuildFailure {
+    fn fail(self) -> ! {
+        panic!(
+            "Voxel GI display capacity exceeded for {} receivers at generation {}: {}. Reduce residency or increase device limits.",
+            self.request.resident_count, self.request.generation, self.error
+        );
     }
+}
 
-    fn permits(&mut self, request: DisplayBuildRequest) -> bool {
-        if self
-            .0
-            .as_ref()
-            .is_some_and(|failure| failure.request == request)
-        {
-            return false;
-        }
-        if let Err(error) = request.limits.plan(request.resident_count) {
-            self.reject(DisplayBuildFailure { request, error });
-            return false;
-        }
-        true
+fn require_display_capacity(request: DisplayBuildRequest) {
+    if let Err(error) = request.limits.plan(request.resident_count) {
+        DisplayBuildFailure { request, error }.fail();
     }
 }
 
@@ -260,7 +245,6 @@ pub(super) fn upload_transport_cache(
     mut timings: ResMut<GiWorkTimings>,
     device: Option<Res<super::gpu::GpuTransportDevice>>,
     limits: Option<Res<DisplayBufferLimits>>,
-    mut build_guard: Local<DisplayBuildGuard>,
 ) {
     let mut timing = timings.main_scope(MainStage::DisplayPublication);
     let Some(material_handle) = material_handle else {
@@ -274,11 +258,7 @@ pub(super) fn upload_transport_cache(
         runtime.gpu_task = None;
         match build {
             Ok(build) => runtime.gpu_prepared = Some(build),
-            Err(failure) => {
-                build_guard.reject(failure);
-                runtime.gpu_topology_dirty = true;
-                runtime.gpu_rebuild_required = true;
-            }
+            Err(failure) => failure.fail(),
         }
     }
     timing.display_checkpoint(DisplayStage::Poll);
@@ -325,7 +305,6 @@ pub(super) fn upload_transport_cache(
                 runtime.gpu_value_dirty.clear();
                 runtime.sky_upload_pending = false;
                 runtime.last_gpu_upload = Instant::now();
-                build_guard.0 = None;
             } else {
                 runtime.gpu_prepared = Some(prepared);
             }
@@ -388,7 +367,8 @@ pub(super) fn upload_transport_cache(
         generation: runtime.generation,
         limits: limits.as_deref().copied().unwrap_or_default(),
     });
-    if needs_snapshot && build_guard.permits(request.unwrap()) {
+    if needs_snapshot {
+        require_display_capacity(request.unwrap());
         runtime.gpu_snapshot = Some(GpuSnapshot::new(&field.order));
         runtime.gpu_added.clear();
         runtime.gpu_removed.clear();
@@ -469,40 +449,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn capacity_rejection_waits_for_a_changed_request_and_rechecks_device_limits() {
-        let mut guard = DisplayBuildGuard::default();
-        let mut request = DisplayBuildRequest {
-            resident_count: 10,
+    #[should_panic(expected = "Voxel GI display capacity exceeded for 11 receivers")]
+    fn display_failure_capacity_is_fatal_instead_of_leaving_stale_lighting() {
+        require_display_capacity(DisplayBuildRequest {
+            resident_count: 11,
             generation: 1,
             limits: DisplayBufferLimits {
                 max_buffer_size: 2560,
                 max_storage_buffer_binding_size: 2560,
             },
-        };
-        assert!(guard.permits(request));
-        // Model a worker hash-growth failure after the minimum plan passed.
-        guard.reject(DisplayBuildFailure {
-            request,
-            error: DisplayCapacityError::HashAddressing,
         });
-        assert!(!guard.permits(request));
-        request.generation += 1;
-        assert!(
-            guard.permits(request),
-            "different keys may no longer collide"
-        );
-        request.resident_count = 11;
-        assert!(!guard.permits(request));
-        request.generation += 1;
-        assert!(
-            !guard.permits(request),
-            "scene changes cannot bypass the device cap"
-        );
-        request.resident_count = 9;
-        assert!(guard.permits(request));
-        request.resident_count = 11;
-        request.limits = DisplayBufferLimits::default();
-        assert!(guard.permits(request));
     }
 
     #[test]

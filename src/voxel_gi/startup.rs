@@ -6,10 +6,10 @@ pub use super::retention::SummaryMode as RetentionSummary;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TransportBackend {
-    /// GPU-resident accumulation and asynchronous snapshots; retain CPU fallback.
+    /// GPU-resident accumulation and asynchronous snapshots. GPU errors are fatal.
     #[default]
     Auto,
-    /// Explicit alias for persistent GPU measurements with CPU fallback.
+    /// Explicit alias for persistent GPU measurements; never downgrades to CPU.
     Resident,
     /// Historical CPU-owned accumulation and blocking worker readback control.
     Synchronous,

@@ -11,6 +11,54 @@ use bevy::platform::collections::HashMap;
 use bevy_voxel_world::rendering::VoxelWorldMaterialHandle;
 
 #[test]
+#[should_panic(expected = "Voxel GI requires a GPU transport device")]
+fn transport_failure_missing_device_does_not_select_cpu_implicitly() {
+    use bevy::ecs::system::RunSystemOnce;
+    let mut world = World::new();
+    world.init_resource::<VoxelEnergyField>();
+    world.resource_mut::<VoxelEnergyField>().order.push(IVec3::ZERO);
+    world.init_resource::<VoxelGiRuntime>();
+    world.init_resource::<VoxelGiSettings>();
+    world.init_resource::<VoxelGiStats>();
+    world.init_resource::<GiWorkTimings>();
+    world.run_system_once(start_trace_task).unwrap();
+}
+
+#[test]
+#[should_panic(expected = "Voxel GI GPU transport failed: injected readback failure")]
+fn transport_failure_worker_error_is_fatal_at_publication() {
+    use bevy::ecs::system::RunSystemOnce;
+    let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(1).build();
+    let task = pool.spawn(async {
+        TraceBatchResult {
+            batch: None,
+            pending: default(),
+            bindings: default(),
+            sky_stats: None,
+            trace_time: Duration::ZERO,
+            gpu_tracer: None,
+            emission_cache: None,
+            cpu_sky_cache: default(),
+            gpu_error: Some("injected readback failure".into()),
+            sunlight_change: None,
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !task.is_finished() {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let mut world = World::new();
+    world.init_resource::<VoxelEnergyField>();
+    world.init_resource::<VoxelGiRuntime>();
+    world.resource_mut::<VoxelGiRuntime>().trace_task = Some(task);
+    world.init_resource::<VoxelGiSettings>();
+    world.init_resource::<VoxelGiStats>();
+    world.init_resource::<GiWorkTimings>();
+    world.run_system_once(apply_trace_task).unwrap();
+}
+
+#[test]
 fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches() {
     use bevy::ecs::system::RunSystemOnce;
     let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(1).build();

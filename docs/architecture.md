@@ -413,7 +413,7 @@ includes the rejected wider-window and separate-lane alternatives.
 Only selected measurements cross the worker boundary in `TraceWork`; topology
 indices, temporal display and scheduler state stay authoritative on the main
 world. Workers own scene/source snapshots and perform preparation, submission,
-waiting and decoding asynchronously. The CPU fallback pool is created lazily and
+waiting and decoding asynchronously. The explicit CPU reference pool is created lazily and
 limited to two threads. One outstanding trace batch bounds resource ownership.
 The default dispatch adds 16 paths per selected face within the same adaptive
 4-ms transport target. This amortizes receiver scheduling, transfer and merge;
@@ -431,7 +431,7 @@ faces update in place, preserving untouched faces and live topology indices.
 ## Temporal and spatial display
 
 Temporal filtering runs on resident GPU accumulation (or CPU result merge in the
-fallback), once per updated face. It blends
+CPU backend), once per updated face. It blends
 that face's measured indirect RGB with its own previous display. The base
 time response is `1 - exp(-elapsed / response_seconds)`. Sample evidence and
 visible-band noise further limit the blend; noisy dark estimates are deliberately
@@ -443,7 +443,7 @@ Resident RGB then uses nonrecursive, connected-coplanar evidence reconstruction,
 with the user-selected target 2048 and no extra donor cap. The radius/work bound
 still applies. Compatible raw statistics determine donor weights; temporal RGB
 supplies display values. Spatial output never feeds transport, moments, temporal
-history, scheduling or simulation readback. The CPU fallback keeps the original
+history, scheduling or simulation readback. The CPU reference keeps the original
 corner display. See [reconstruction and cost evidence](early-spatial-reconstruction.md).
 
 Newly exposed faces can borrow low-confidence display from measured, compatible
@@ -478,12 +478,13 @@ are never dropped to fit. The main world preflights before starting a snapshot,
 the worker checks before allocating large mirrors, and native preparation checks
 the actual device again before either GPU allocation. These limits apply to CPU
 transport too, since presentation still binds the same GPU storage. An oversized
-replacement reports one error per failure episode and retains the live generation
-and its ordinary value updates. It retries after a scene/residency/limit change,
-not on every identical frame. Without an existing generation, publication remains
-unavailable until a supported request succeeds. This is controlled capacity
-failure, not multi-buffer paging or protection against arbitrary system-memory
-exhaustion; the host must keep residency within its supported device limits.
+replacement is a fatal capacity error, with the receiver count, generation and
+device limit in the diagnostic. Invalid upload ranges are likewise fatal before
+submission. Neither condition silently leaves the player with stale lighting.
+Normal asynchronous generation handoffs still preserve the live generation;
+temporary worker ownership is not an error. This is not multi-buffer paging or
+protection against arbitrary system-memory exhaustion; the host must keep
+residency within its supported device limits.
 
 A replacement remains private while topology and measurements catch up in
 batches of 512 keys and a 1.5-ms soft game-thread target. Large journals capture
@@ -602,7 +603,7 @@ again until its scheduling feedback is delivered. Each snapshot carries its
 job identities and submission timestamp, and publication validates geometry and
 source revisions. Sky jobs have generation/batch tickets, so overlapping work
 cannot publish superseded corners. The original synchronous backend and CPU
-reference remain available for comparison and fallback.
+reference remain available as explicit comparison backends.
 
 Snapshots retain all five bands, sample/variance metadata and measurement ages,
 and distinguish unknown or stale results from valid zero energy. They currently
@@ -641,12 +642,15 @@ display evidence.
 ### Construction configuration
 
 Insert `VoxelGiStartup` before adding `VoxelGiPlugin`. It selects
-`TransportBackend::Auto` (resident compute where available, CPU fallback), `Cpu`,
+`TransportBackend::Auto` (required resident compute), `Cpu`,
 explicit `Resident`, opt-in `Reuse`, or the `Synchronous` comparison, and
 `RetentionPolicy::WholeRange(RetentionSummary)` or the legacy comparison.
 Defaults preserve whole-range retention with distance-band overflow summaries.
 These are per-App construction choices, not live switches. Runtime controls
 remain in `VoxelGiSettings`; CPU transport still uses the normal GPU display.
+GPU initialization, dispatch and readback failures are fatal at publication,
+before partial results are applied. They never switch the running game to CPU
+transport. Select `Cpu` explicitly when the independent reference is wanted.
 
 The demo parses backend/retention/continuous launch variables before installing
 the plugin and reports invalid choices at that boundary. Detailed timing is

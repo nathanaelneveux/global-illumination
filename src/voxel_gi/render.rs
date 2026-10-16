@@ -1216,7 +1216,6 @@ fn apply_probe_patches(
     queue: Res<RenderQueue>,
     device: Res<RenderDevice>,
     mut staging: ResMut<ProbeStaging>,
-    mut failed: Local<bool>,
     mut upload: Local<ProbeUpload>,
 ) {
     let (Some(probe_buffer), Some(hash_buffer)) = (
@@ -1228,29 +1227,20 @@ fn apply_probe_patches(
     // Capture hash and probe bytes atomically, including coalesced gaps. Later
     // topology changes cannot alter this transaction, and remain queued for
     // the next frame. Driver staging/submission never holds the shared lock.
-    let result = upload.stage(
-        &patches.state,
-        probe_buffer.buffer.size(),
-        hash_buffer.buffer.size(),
+    upload
+        .stage(
+            &patches.state,
+            probe_buffer.buffer.size(),
+            hash_buffer.buffer.size(),
+        )
+        .unwrap_or_else(|reason| panic!("Voxel GI display upload invariant failed: {reason}"));
+    upload.submit_staged(
+        &mut staging.0,
+        device.wgpu_device(),
+        &queue,
+        &probe_buffer.buffer,
+        &hash_buffer.buffer,
     );
-    if let Err(reason) = result {
-        if !*failed {
-            error!(
-                reason,
-                "voxel GI display upload deferred; pending writes retained"
-            );
-        }
-        *failed = true;
-    } else {
-        upload.submit_staged(
-            &mut staging.0,
-            device.wgpu_device(),
-            &queue,
-            &probe_buffer.buffer,
-            &hash_buffer.buffer,
-        );
-        *failed = false;
-    }
 }
 
 fn patch_ranges(mut slots: Vec<usize>, stride: usize) -> Vec<std::ops::Range<usize>> {
@@ -2604,8 +2594,7 @@ mod tests {
             extracted_settings
         );
 
-        // Device rejection must not replace or disable the live generation,
-        // nor stop ordinary lighting updates to its resident slots.
+        // Device rejection is fatal, before replacing the live generation.
         let live_id = world.resource::<VoxelTransportAssets>().probes.id();
         let live_state = world.resource::<GpuProbePatchQueue>().state.clone();
         world.insert_resource(DisplayBufferLimits {
@@ -2628,32 +2617,22 @@ mod tests {
             .unwrap()
             .display[2]
             .indirect = Vec3::splat(11.0);
-        for _ in 0..2 {
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             world.run_system_once(upload_transport_cache).unwrap();
-            let runtime = world.resource::<VoxelGiRuntime>();
-            assert!(runtime.gpu_task.is_none());
-            assert!(runtime.gpu_snapshot.is_none());
-            assert!(runtime.gpu_prepared.is_none());
-            assert!(runtime.gpu_rebuild_required);
-            assert_eq!(
-                world.resource::<VoxelTransportAssets>().probes.id(),
-                live_id
-            );
-            assert!(Arc::ptr_eq(
-                &world.resource::<GpuProbePatchQueue>().state,
-                &live_state
-            ));
-            assert!(world.resource::<GpuTransportCache>().ready);
-        }
-        let expected = ShaderBuffer::from(vec![gpu_probe(
-            &world.resource::<VoxelEnergyField>().probes[&voxel],
-        )])
-        .data
-        .unwrap();
+        }));
+        assert!(failure.is_err());
+        let runtime = world.resource::<VoxelGiRuntime>();
+        assert!(runtime.gpu_task.is_none());
+        assert!(runtime.gpu_snapshot.is_none());
+        assert!(runtime.gpu_prepared.is_none());
         assert_eq!(
-            &live_state.lock().unwrap().probe_mirror[..GPU_PROBE_BYTES],
-            expected
+            world.resource::<VoxelTransportAssets>().probes.id(),
+            live_id
         );
+        assert!(Arc::ptr_eq(
+            &world.resource::<GpuProbePatchQueue>().state,
+            &live_state
+        ));
     }
 
     #[test]
