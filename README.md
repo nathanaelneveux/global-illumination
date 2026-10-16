@@ -65,7 +65,11 @@ preset to reproduce its historical sampling priority too.
 
 Early spatial RGB reconstruction and total-light-aware refinement are opt-in
 experiments, not new stable defaults. See [controls, architecture and image
-evidence](docs/early-spatial-reconstruction.md).
+evidence](docs/early-spatial-reconstruction.md). The 2048 display preset retains
+its full adaptive footprint; `gi-display-evidence-2048-cap32/64/128.json`
+presets explicitly trade maximum candidate neighbors for cost. The 64-neighbor
+option improves measured cave throughput, but loses four-sample smoothness and
+has not qualified as a universal edit-response improvement.
 
 The many-emitter cave is now in the regular world. Walk toward the house, then
 follow the pale stone path to its right to the lit entrance near **(20, 11, -18)**.

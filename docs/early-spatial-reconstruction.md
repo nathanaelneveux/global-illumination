@@ -881,3 +881,68 @@ at the saved qualified sweep and `GI_FOOTPRINT_OUTPUT` at a new directory;
 render its manifest through `VOXEL_GI_VALIDATE_NEAR_HISTORY`. Compare using
 `python tools/spatial_replay_quality.py SOURCE REPLAY`. The contact-sheet tool
 accepts `--images REPLAY` while keeping `SOURCE` metadata authoritative.
+
+### Repeated 64-donor runtime comparison and selection
+
+Using the same saved `66b954d` executable, ordinary budgets (16 paths/dispatch),
+background terrain, preferred corners and 2560×1440 headless captures:
+
+| Workload/pair | Uncapped paths | Cap64 paths | Difference |
+|---|---:|---:|---:|
+| Cave 1 | 167.77M | 186.03M | +10.9% |
+| Cave 2 | 164.28M | 182.80M | +11.3% |
+| Response 1 | 75.42M | 79.73M | +5.7% |
+| Response 2 | 75.32M | 78.40M | +4.1% |
+
+Two fresh spatial-off cave controls on the same executable trace 181.95M and
+193.83M paths (6.5% spread), averaging 187.89M. The uncapped and cap64 means are
+166.03M and 184.41M: roughly **11.6% and 1.9% below spatial-off** in this set.
+Do not call the gap eliminated: baseline variability is larger than the final
+gap, earlier off controls were faster, and live terrain residency is not exactly
+identical across runs (1099/1122 maximum loaded pages in these off controls).
+These controls both have valid captures and clean logs:
+`cave-1792117695626164000-40629`, `cave-1792117906375600000-40795`.
+
+The cave worker p95 drops from 11.71–12.44 to 6.40–6.55 ms at startup and
+7.04–7.18 to 4.04–4.56 ms while settling. Relative to the pre-compact uncapped
+implementation, that is roughly half the worker cost. It does **not** establish
+a corresponding main-thread/FPS gain: offscreen frame tails and near freshness
+are mixed. For example, response pair 2's cavity near-age p95 worsens 320→1153
+ms, while its emitter-removal near-age improves 1332→1232 ms. Pair 1 has different
+tail weaknesses. Do not describe more global paths as uniformly faster edits.
+
+Matched runtime image analysis uses observed final frames, **not qualified
+ground truth**. In response pair 2 the emitter-add 1 s FLIP distance to the
+common observed tail increases .20852→.28351 (own-tail .28461); removal 1 s
+.23414→.24130 (own-tail .24194). Cavity 1 s is slightly better .07846→.07633.
+Cross-run final-tail differences are .01785/.02251/.01730 for cavity/add/remove.
+These scheduling-sensitive comparisons do not prove an intrinsic cap-induced
+delay, but they do not support declaring an all-purpose response win either.
+The repeated cap64 cave 15/60 s captures were visually inspected; all workloads
+have valid nonblank captures, all edit events, matching settings and clean logs.
+
+**Selection:** keep the compact CPU walk, with the full adaptive footprint
+unchanged in `gi-display-evidence-2048.json`. Keep 32/64/128 candidate caps as
+explicit comparison presets, not defaults. Cap64 gives a repeatable cave-speed
+option and retains the preferred noise envelope at 16+ paths in the fixed
+view, but sacrifices four-path smoothness and has not qualified universally
+through edits. Neither GPU architecture experiment is on the selected branch.
+Physical histories, transport budgets, simulation bands and global opt-in
+status remain unchanged. There is no claim of guaranteed 60 FPS or a fully
+eliminated quality-preserving performance gap.
+
+Additional run IDs:
+
+- Cave control 2: `cave-1792117385939861000-40282`.
+- Cave cap64 1/2: `cave-1792117222663522000-40157`,
+  `cave-1792117491590142000-40514`.
+- Response control 2: `response-1792117634714140000-40630`.
+- Response cap64 1/2: `response-1792117320411074000-40230`,
+  `response-1792117665180274000-40644`.
+- Runtime image comparison: `target/footprint-cap64-edit-quality.json`.
+
+Timing runs had no concurrent build, transport test or heavy image analysis.
+Only read-only metadata checks and source/document editing ran alongside them.
+The final executable was rebuilt from the selected compact-CPU branch after
+the isolated GPU trials. Cargo object/incremental cleanup removed regenerable
+build files only; saved reference data and all comparison captures were kept.
