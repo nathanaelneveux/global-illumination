@@ -245,6 +245,81 @@ impl LightNode {
 mod tests {
     use super::*;
     #[test]
+    fn light_selection_frequencies_match_reported_probabilities() {
+        // Pearson goodness-of-fit with tiny expected bins pooled. Independent
+        // uniforms isolate the light distribution from the production QMC map.
+        for fixture in [
+            crate::voxel_gi::research::hallway(),
+            crate::voxel_gi::research::cave(),
+        ] {
+            let distribution = EmissionDistribution::with_importance(
+                &fixture.scene,
+                &fixture.materials,
+                crate::voxel_gi::VoxelGiSettings::default().sampling_importance(),
+            );
+            for probe in fixture.receivers.iter().step_by(71).take(3) {
+                let face = probe.face_mask.trailing_zeros() as usize;
+                let normal = FACE_OFFSETS[face].as_vec3();
+                let position = probe.voxel.as_vec3() + Vec3::splat(0.5) + normal * 0.5;
+                let mut expected = [0.0f64; 64];
+                let mut observed = [0u32; 64];
+                let lookup: bevy::platform::collections::HashMap<_, _> = distribution
+                    .faces
+                    .iter()
+                    .enumerate()
+                    .map(|(i, face)| ((face.voxel, face.face), i))
+                    .collect();
+                for (i, face) in distribution.faces.iter().enumerate() {
+                    expected[i % 64] += f64::from(distribution.probability_at(
+                        position,
+                        normal,
+                        face.voxel,
+                        face.face,
+                        face.material,
+                        &fixture.materials,
+                    ));
+                }
+                assert!((expected.iter().sum::<f64>() - 1.0).abs() < 2e-5);
+                let mut state = 0x243f6a8885a308d3u64;
+                const N: u32 = 262144;
+                for _ in 0..N {
+                    state = state.wrapping_add(0x9e3779b97f4a7c15);
+                    let mut word = state;
+                    word = (word ^ (word >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+                    word = (word ^ (word >> 27)).wrapping_mul(0x94d049bb133111eb);
+                    word ^= word >> 31;
+                    let uniform = (word >> 40) as f32 / 16777216.0;
+                    let chosen = distribution.select_at(position, normal, uniform).unwrap();
+                    observed[lookup[&(chosen.voxel, chosen.face)] % 64] += 1;
+                }
+                let mut bins = Vec::new();
+                let (mut rare_observed, mut rare_expected) = (0.0, 0.0);
+                for (observed, probability) in observed.into_iter().zip(expected) {
+                    let expected = probability * f64::from(N);
+                    if expected >= 8.0 {
+                        bins.push((f64::from(observed), expected));
+                    } else {
+                        rare_observed += f64::from(observed);
+                        rare_expected += expected;
+                    }
+                }
+                if rare_expected >= 8.0 {
+                    bins.push((rare_observed, rare_expected));
+                } else {
+                    bins[0].0 += rare_observed;
+                    bins[0].1 += rare_expected;
+                }
+                let df = (bins.len() - 1) as f64;
+                let chi2: f64 = bins.iter().map(|(o, e)| (o - e).powi(2) / e).sum();
+                // Conservative engineering gate, not a reported exact p-value.
+                assert!(
+                    chi2 < df + 10.0 * (2.0 * df).sqrt() + 50.0,
+                    "light distribution: chi2={chi2}, df={df}, receiver={position:?}"
+                );
+            }
+        }
+    }
+    #[test]
     fn extreme_energy_ratios_do_not_erase_weak_emitters() {
         let faces: Vec<_> = (0..64)
             .map(|x| EmissiveFace {

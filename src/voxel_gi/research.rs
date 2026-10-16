@@ -16,6 +16,91 @@ pub(super) struct ResearchFixture {
     pub receivers: Vec<SurfaceProbe>,
 }
 
+/// Enclosed diffuse/emissive furnace. Every direction from an inner surface
+/// reaches the same material, so the finite-depth answer is E * sum(albedo^k),
+/// k=0..=bounces, including the solver's terminal emission connection.
+pub(super) fn furnace() -> ResearchFixture {
+    let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+    for z in 8..24 {
+        for y in 8..24 {
+            for x in 8..24 {
+                if [x, y, z].iter().any(|&v| v == 8 || v == 23) {
+                    page[linear_index(UVec3::new(x, y, z), PAGE_SIZE)] = 4;
+                }
+            }
+        }
+    }
+    let mut materials = VoxelMaterialTransportTable::default();
+    materials.set(
+        4,
+        super::MaterialTransport {
+            diffuse: EnergySpectrum::new(Vec3::new(0.3, 0.55, 0.7), 0.2, 0.65),
+            emission: EnergySpectrum::new(Vec3::new(0.7, 1.3, 0.2), 2.2, 0.9),
+            ..default()
+        },
+    );
+    ResearchFixture {
+        scene: Arc::new(TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, page)],
+            &[],
+        )),
+        materials,
+        sources: TransportSources {
+            environment: EnergySpectrum::ZERO,
+            directional: vec![],
+            points: vec![],
+        },
+        receivers: [
+            (IVec3::new(16, 8, 16), 2),
+            (IVec3::new(9, 8, 9), 2),
+            (IVec3::new(23, 16, 16), 1),
+        ]
+        .into_iter()
+        .map(|(voxel, face)| {
+            let mut p = SurfaceProbe::new(voxel, 1 << face);
+            p.material = 4;
+            p
+        })
+        .collect(),
+    }
+}
+
+#[test]
+fn independent_oracle_matches_furnace_geometric_series() {
+    let fixture = furnace();
+    let material = fixture.materials.get(4);
+    for bounces in 1..=3 {
+        let mut expected = material.emission;
+        let mut term = material.emission;
+        for _ in 0..bounces {
+            term = term * material.diffuse;
+            expected += term;
+        }
+        for probe in &fixture.receivers {
+            let actual = super::validation::reference_oracle::estimate_seeded(
+                &fixture.scene,
+                &fixture.materials,
+                &fixture.sources,
+                super::TransportSettings {
+                    bounces,
+                    ..default()
+                },
+                probe.voxel,
+                probe.face_mask.trailing_zeros() as usize,
+                2048,
+                42,
+            );
+            for (a, e) in actual.mean.into_iter().zip(channels(expected)) {
+                assert!(
+                    (a - f64::from(e)).abs() < 1e-5,
+                    "depth={bounces} actual={a} expected={e}"
+                );
+            }
+        }
+    }
+}
+
 /// Actual hallway chamber at its world coordinates, with opaque surroundings.
 /// This isolates emitter paths; the entrance has no environment illumination.
 pub(super) fn hallway() -> ResearchFixture {

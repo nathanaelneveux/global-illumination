@@ -14,7 +14,7 @@ fn replace_once(source: &str, from: &str, to: &str) -> String {
     source.replacen(from, to, 1)
 }
 
-fn shader(iid: bool, roulette: bool) -> String {
+fn shader(iid: bool, roulette: bool, cutoff: bool) -> String {
     let mut shader = replace_once(
         SHADER,
         "fn sample_1d(stream: u32, sequence: u32, dimension: u32) -> f32 {",
@@ -34,6 +34,8 @@ fn shader(iid: bool, roulette: bool) -> String {
     });
     if !roulette {
         shader = replace_once(&shader, "if bounce >= 1u {", "if false {");
+    }
+    if !cutoff {
         shader = replace_once(
             &shader,
             "if maximum < 0.002 { break; }",
@@ -47,7 +49,7 @@ fn shader(iid: bool, roulette: bool) -> String {
 fn correctness_audit_shader_variants_validate() {
     for iid in [false, true] {
         for roulette in [false, true] {
-            let source = shader(iid, roulette);
+            let source = shader(iid, roulette, roulette);
             let module = naga::front::wgsl::parse_str(&source)
                 .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
             naga::valid::Validator::new(
@@ -61,12 +63,71 @@ fn correctness_audit_shader_variants_validate() {
 }
 
 #[test]
+#[ignore = "native analytic furnace checks all bands and finite path depths"]
+fn native_furnace_matches_geometric_series() {
+    let fixture = crate::voxel_gi::research::furnace();
+    let emitters = Arc::new(EmissionDistribution::with_importance(
+        &fixture.scene,
+        &fixture.materials,
+        crate::voxel_gi::VoxelGiSettings::default().sampling_importance(),
+    ));
+    let mut gpu = tests::native_tracer();
+    let material = fixture.materials.get(4);
+    for bounces in 1..=3 {
+        let mut expected = material.emission;
+        let mut term = material.emission;
+        for _ in 0..bounces {
+            term = term * material.diffuse;
+            expected += term;
+        }
+        for guided in [false, true] {
+            let mut work = TraceWork {
+                transport: TransportSettings {
+                    bounces,
+                    ..default()
+                },
+                emitter_guiding: guided,
+                ..default()
+            };
+            for probe in &fixture.receivers {
+                work.push(probe, probe.face_mask, 0, 0, false, u32::MAX, u32::MAX);
+                work.probes.last_mut().unwrap().sky_requested = false;
+            }
+            for _ in 0..64 {
+                gpu.trace_compact(
+                    fixture.scene.clone(),
+                    &fixture.sources,
+                    &fixture.materials,
+                    &mut work,
+                    1024,
+                    &emitters,
+                    false,
+                )
+                .unwrap();
+            }
+            for face in work.faces {
+                for (a, e) in channels(face.radiance).into_iter().zip(channels(expected)) {
+                    eprintln!(
+                        "FURNACE depth={bounces} guided={guided} voxel={:?} measured={a} expected={e}",
+                        face.voxel
+                    );
+                    assert!((a / e - 1.0).abs() < 0.015, "analytic furnace: {a} != {e}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 #[ignore = "native raw estimator audit against independent CPU cosine paths"]
 fn hallway_estimator_correctness_audit() {
     let paths: u32 = std::env::var("VOXEL_GI_AUDIT_PATHS")
         .map(|v| v.parse().unwrap())
         .unwrap_or(262144);
     assert!(paths >= 16384 && paths.is_multiple_of(16384));
+    let oracle_paths: u32 = std::env::var("VOXEL_GI_AUDIT_ORACLE_PATHS")
+        .map(|v| v.parse().unwrap())
+        .unwrap_or(paths);
     let fixture = crate::voxel_gi::research::hallway_loaded();
     let emitters = Arc::new(EmissionDistribution::with_importance(
         &fixture.scene,
@@ -75,16 +136,19 @@ fn hallway_estimator_correctness_audit() {
     ));
     let native = tests::native_tracer();
     let mut variants: Vec<_> = [
-        ("production", false, true, false),
-        ("iid", true, true, false),
-        ("iid_no_roulette", true, false, false),
-        ("guided_iid", true, true, true),
-        ("guided_production", false, true, true),
+        ("production", false, true, true, false),
+        ("iid", true, true, true, false),
+        ("iid_no_roulette", true, false, false, false),
+        ("guided_iid", true, true, true, true),
+        ("guided_production", false, true, true, true),
+        ("guided_iid_no_cutoff", true, true, false, true),
+        ("guided_iid_no_roulette", true, false, false, true),
     ]
     .into_iter()
-    .map(|(name, iid, roulette, guided)| {
+    .map(|(name, iid, roulette, cutoff, guided)| {
         let tracer =
-            GpuTracer::with_shader(native.context.clone(), true, &shader(iid, roulette)).unwrap();
+            GpuTracer::with_shader(native.context.clone(), true, &shader(iid, roulette, cutoff))
+                .unwrap();
         (name, guided, tracer)
     })
     .collect();
@@ -95,6 +159,9 @@ fn hallway_estimator_correctness_audit() {
             ..default()
         };
         for site in [193, 208] {
+            if oracle_paths == 0 {
+                continue;
+            }
             let probe = &fixture.receivers[site];
             for replica in 0..2 {
                 let started = Instant::now();
@@ -105,7 +172,7 @@ fn hallway_estimator_correctness_audit() {
                     transport,
                     probe.voxel,
                     2,
-                    paths,
+                    oracle_paths,
                     0x9e3779b97f4a7c15u64.wrapping_mul(replica + 1),
                 );
                 eprintln!(
@@ -122,26 +189,24 @@ fn hallway_estimator_correctness_audit() {
         }
         for (name, guided, gpu) in &mut variants {
             for replica in 0..2 {
-                let mut work = TraceWork {
-                    transport,
-                    emitter_guiding: *guided,
-                    ..default()
-                };
-                for site in [193, 208] {
-                    let probe = &fixture.receivers[site];
-                    work.push(probe, probe.face_mask, 0, 0, false, u32::MAX, u32::MAX);
-                    work.probes.last_mut().unwrap().sky_requested = false;
-                }
                 let mut sums = [[0.0; 5]; 2];
                 let mut squares = [[0.0; 5]; 2];
                 // Exact block averages: never feed a >65536-path run through
                 // the runtime's capped-history exponential moving average.
-                for block in 0..paths / 16384 {
-                    for face in &mut work.faces {
-                        face.samples = 0;
-                        face.radiance = EnergySpectrum::ZERO;
-                        face.second_moment = EnergySpectrum::ZERO;
-                        face.sequence = 4194304 + replica * paths + block * 16384;
+                for first_block in (0..paths / 16384).step_by(64) {
+                    let mut work = TraceWork {
+                        transport,
+                        emitter_guiding: *guided,
+                        ..default()
+                    };
+                    for block in first_block..(first_block + 64).min(paths / 16384) {
+                        for site in [193, 208] {
+                            let probe = &fixture.receivers[site];
+                            work.push(probe, probe.face_mask, 0, 0, false, u32::MAX, u32::MAX);
+                            work.probes.last_mut().unwrap().sky_requested = false;
+                            work.faces.last_mut().unwrap().sequence =
+                                4194304 + replica * paths + block * 16384;
+                        }
                     }
                     for _ in 0..16 {
                         gpu.trace_compact(
@@ -155,7 +220,8 @@ fn hallway_estimator_correctness_audit() {
                         )
                         .unwrap();
                     }
-                    for (i, face) in work.faces.iter().enumerate() {
+                    for (index, face) in work.faces.iter().enumerate() {
+                        let i = index % 2;
                         for b in 0..5 {
                             sums[i][b] +=
                                 f64::from(channels(face.radiance)[b]) * 16384.0 / f64::from(paths);

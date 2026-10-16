@@ -77,6 +77,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn path_and_conditional_emitter_dimensions_have_joint_support() {
+        // Marginal uniformity is not sufficient: a light sample is evaluated
+        // at a position determined by earlier direction dimensions. Each pair
+        // must cover the product domain, including across bounce substreams.
+        let stream = stream_id(IVec3::new(-54, -12, -20), 2);
+        let n = 65536;
+        for bounce in 1..=3u32 {
+            let light_stream = stream ^ pcg(bounce.wrapping_add(0xa341_316c));
+            for direction in 0..(2 * bounce).min(6) {
+                for light in 12..=14 {
+                    let mut bins = [0u32; 256];
+                    for sequence in 0..n {
+                        let x = (sample_1d(stream, sequence, direction) * 16.0) as usize;
+                        let y = (sample_1d(light_stream, sequence, light) * 16.0) as usize;
+                        bins[y * 16 + x] += 1;
+                    }
+                    let expected = f64::from(n) / 256.0;
+                    let discrepancy: f64 = bins
+                        .iter()
+                        .map(|&count| (f64::from(count) - expected).powi(2) / expected)
+                        .sum();
+                    eprintln!(
+                        "JOINT bounce={bounce} direction={direction} light={light} empty={} discrepancy/n={}",
+                        bins.iter().filter(|&&n| n == 0).count(),
+                        discrepancy / f64::from(n)
+                    );
+                    assert!(
+                        discrepancy / f64::from(n) < 0.05,
+                        "conditional dimensions lack joint coverage: bounce={bounce} direction={direction} light={light}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn sequence_has_uniform_coverage_and_does_not_repeat_at_history_limit() {
         let stream = stream_id(IVec3::new(-19, 7, 12), 2);
         let values: Vec<_> = (0..4096).map(|i| sample_1d(stream, i, 0)).collect();
