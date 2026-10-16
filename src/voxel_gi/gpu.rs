@@ -235,7 +235,7 @@ pub(crate) struct GpuTracer {
     module: wgpu::ShaderModule,
     entry: &'static str,
     pipeline_key: (u32, bool, u32, bool),
-    /// Three depths × finite/default horizon × two cooperative lane layouts.
+    /// Three depths × finite/default horizon × two lane layouts × two proposals.
     /// Reach itself stays a uniform; changing 16 to 32 never compiles another
     /// variant. Pipelines and compilation stay on the transport worker.
     quality_pipelines:

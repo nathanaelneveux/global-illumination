@@ -37,7 +37,7 @@ accumulation. The default resident path does not wait for CPU delivery to render
 | Construction policy; model/work configuration and revision synchronization | `startup.rs`, `settings.rs` |
 | Thread-transfer payload and result merge | `work.rs` |
 | Source model and Bevy light adaptation | `sources.rs` |
-| Sampling, emitters and transport | `sampling.rs`, `emission.rs`, `tracer.rs`, `gpu.rs`, `voxel_trace.wgsl` |
+| Sampling, emitters and transport | `sampling.rs`, `emission.rs`, `guiding.rs`, `tracer.rs`, `gpu.rs`, `voxel_trace.wgsl` |
 | Stable GPU ownership, accumulation and bounded snapshots | `gpu/resident.rs`, `gpu/readback.rs`, `voxel_accumulate.wgsl` |
 | Shared uncertainty heuristic | `statistics.rs` |
 | Direct-sun visibility cache | `sky.rs`, `sky_cache.rs` |
@@ -699,14 +699,27 @@ canyon fixture is important: the small enclosed cave alone understates useful
 daylight travel distances. Current defaults and invalidation rules are unchanged.
 
 On GPU, depth and finite/default horizon policy are specialization constants.
-The worker lazily caches at most twelve face pipelines (three depths × two
-policies × two lane layouts);
+The worker lazily caches at most twenty-four face pipelines (three depths × two
+policies × two lane layouts × guided/control sampling);
 numeric reach stays in the uniform, so 16→32 does not compile another variant.
 The default path keeps the original traversal loop without a runtime cutoff
 policy argument. First use of a variant can delay that asynchronous batch during
 compilation, not block gameplay. Auto-layout face bindings are recreated whenever
 the active pipeline changes; unchanged buffer identities alone are insufficient.
 Sky has its own pipeline and is independent of these variants.
+
+Source-informed guiding is a proposal choice, not part of `TransportSettings`.
+It mixes cosine sampling with a source-directed spherical lobe and applies the
+same PDF to throughput and emitter MIS, including the terminal connection.
+The light-tree PMF remains distinct from the source-concentration heuristic.
+A GPU preparation pass writes one temporary 16-byte proposal per selected face
+after the result/sky payload; it introduces no CPU upload/readback or persistent
+world records. Preparation is included in the compute budget. CPU tracing uses
+the same proposal equations directly. Switching proposals preserves physical
+history; neither old measurements nor a missing guide are replaced by invented
+energy. A zero-weight guide is the intentional cosine proposal, not an error
+fallback. The [hallway investigation](hallway-path-outliers.md) records the
+accuracy win, extra raw-sampling cost, and rejected alternatives.
 
 The normalized model is captured on `TraceWork` for CPU/GPU parity. A model change
 calls `invalidate_model`: outstanding old-model results are

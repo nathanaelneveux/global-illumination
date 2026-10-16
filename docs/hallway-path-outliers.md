@@ -22,7 +22,7 @@ its exact contribution differs from the streamed world's.
 
 ## Experimental proposal, not a lighting-model change
 
-The disabled-by-default `emitter_guiding` setting mixes cosine sampling with a
+The `emitter_guiding` setting (initially opt-in; default decision below) mixes cosine sampling with a
 smooth source-directed spherical lobe. A task chooses a geometry/source-only
 anchor; every path uses its explicit PDF in throughput and emission MIS,
 including terminal connections. No radiance clipping, borrowed samples,
@@ -119,3 +119,62 @@ to .000114; a focused regression records this, alongside native CPU/GPU parity
 including the offending receiver. Constant-illumination and area-integral tests
 protect the PDF/energy contract. This single batch is not an accuracy certificate;
 the disjoint-window and full-world comparisons remain necessary.
+
+## Retained implementation and default decision
+
+Retain `2676282`'s GPU preparation pass (restored by `488d21c`). It builds one
+proposal per selected face into a 16-byte scratch record following the existing
+result/sky payload. The path pass reads it; CPU upload/readback sizes and
+persistent per-world storage do not grow. This removes the guide-search stack
+from the path kernel. Both preparations and tracing are included in measured
+GPU work. Inline preparation remains a test comparison, not another default.
+
+The subsequent split cosine/guided dispatch experiment `72d678b` was slower and
+was reverted, not hidden: its normal-world path count fell to 83.18M and cave
+median history to 291. Native numerical parity alone did not qualify that cost.
+
+Final long streamed hallway run:
+`live-hallway-1792168449690158000-75726`, exact `2676282`, explicit guiding on.
+Compare to saved control `live-hallway-1792161245235760000-71464` at `c02d99a`.
+Both are M4/Metal development builds, 2560×1440 offscreen, background terrain,
+preferred corners/textures, 2048-evidence display, sixteen paths/dispatch,
+4-ms adaptive batch target. No concurrent build or second GI app in the final
+candidate. The reference is the control's frozen two-million-path hallway field;
+this comparison does not assert that streamed scenes are identical at every
+instant or that the sparse field metric is FLIP.
+
+| Time | Control raw RGB relative error p95 / p99 | Guided p95 / p99 |
+| --- | --- | --- |
+| 30 s | .951 / 2.560 | .298 / .412 |
+| 60 s | .583 / 1.941 | .259 / .543 |
+| 120 s | .567 / 1.017 | .201 / .246 |
+| 180 s | .489 / 1.320 | .170 / .223 |
+
+At 180 seconds the tracked bad face is 13.6% below the reference, versus 192.8%
+above it in the control. It has passed sequence 2243; this is not merely avoiding
+the failure by running too slowly to reach that batch. Remaining relative error
+is material: this does not certify every face as converged or solve every cave
+artifact. The raw cave fixture is approximately neutral per path.
+
+Normal-world `structures` cost check (same settings/hardware/viewport):
+
+| Run / implementation | Paths in 62 s | Cave-site median history | Cave phase cadence p95 / p99 |
+| --- | ---: | ---: | --- |
+| `structures-1792167860822437000-75346`, control | 142.51M | 1023 | 24.47 / 30.72 ms |
+| `structures-1792168385470000000-75731`, prepared guiding | 119.97M | 879 | 24.51 / 29.12 ms |
+
+This is a **trade-off**, not a global speedup: about 16% fewer raw paths and
+14% fewer cave-site samples within the unchanged compute budget. Frame tails
+are comparable; offscreen cadence is not windowed FPS or proof of 60 FPS.
+Captures are nonblank, assets/targets valid, and render logs clean. The earlier
+unused test-only import warning was subsequently removed; it was not a rendering
+failure. Do not interpret slightly better p99 as a measured speedup.
+
+Enable guiding by default for the demonstrated large reduction in persistent
+hallway error, while retaining `config/gi-guiding-control.json` and the tuning
+checkbox. No smoothing strength, retained-history rule, bounce count, light
+range, or BVW code changes accompany this decision. The residual raw-throughput
+cost is a follow-up target, not concealed by increasing the budget. Runtime
+switching preserves valid measurements; use fresh runs or matched frozen
+prefixes for sampler comparisons. Frozen candidate image sweeps now explicitly
+carry and record the guiding flag; their independent references stay unguided.
