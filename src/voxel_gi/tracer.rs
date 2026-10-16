@@ -7,7 +7,9 @@ use super::TransportSettings;
 use super::emission::{EmissionDistribution, face_point};
 use super::guiding::{DirectionGuide, GuideAnchor};
 use super::sampling::pcg;
-use super::sampling::{hemisphere, sample_1d, stream_id};
+use super::sampling::{sample_1d, stream_id};
+#[cfg(test)]
+use super::sampling::hemisphere;
 use super::sources::TransportSources;
 #[cfg(test)]
 use super::sources::{DirectionalTransportLight, PointTransportLight};

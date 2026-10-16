@@ -53,9 +53,12 @@ impl GuideAnchor {
     }
 
     pub fn at(self, position: Vec3) -> DirectionGuide {
+        if self.weight == 0.0 {
+            return DirectionGuide::default();
+        }
         let delta = self.position - position;
         let distance = delta.length();
-        if self.weight == 0.0 || distance <= 0.001 {
+        if distance <= 0.001 {
             return DirectionGuide::default();
         }
         DirectionGuide {

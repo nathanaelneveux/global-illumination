@@ -273,7 +273,7 @@ impl EmissionDistribution {
                 });
             }
         }
-        source
+        if best <= 0.0 { None } else { source }
     }
 
     pub fn probability_at(

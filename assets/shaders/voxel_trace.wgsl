@@ -534,6 +534,7 @@ fn guide_anchor(position: vec3<f32>, normal: vec3<f32>) -> GuideAnchor {
             let score = light.sampling.y * max(dot(normal, direction), 0.0) * max(dot(face_normal(light.face), -direction), 0.0) / d2;
             if score > best { best = score; emitter = light; }
         }
+        if best <= 0.0 { return anchor; }
     }
     anchor.position = vec3<f32>(emitter.voxel) + vec3(0.5);
     anchor.weight = guide_weight(position, emitter.voxel, emitter.sampling.y);

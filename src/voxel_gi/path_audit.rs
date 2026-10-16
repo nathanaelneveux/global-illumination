@@ -32,6 +32,7 @@ fn hallway_guide_anchors() {
 fn guided_native_prefix_parity() {
     let mut gpu = super::super::gpu::tests::native_tracer();
     for fixture in [
+        super::super::research::hallway(),
         super::super::research::hallway_loaded(),
         super::super::research::cave(),
     ] {
@@ -97,16 +98,20 @@ fn guided_native_prefix_parity() {
 
 #[test]
 fn guide_hemisphere_rejection_never_tests_visibility() {
-    let fixture = super::super::research::hallway_loaded();
-    let emitters = EmissionDistribution::build(&fixture.scene, &fixture.materials);
-    for normal in FACE_OFFSETS.map(|n| n.as_vec3()) {
-        assert!(
-            emitters
-                .guide_at(normal * 4096.0, normal, |_| panic!(
-                    "behind-plane source visibility query"
-                ))
-                .is_none()
-        );
+    for fixture in [
+        super::super::research::hallway(),
+        super::super::research::hallway_loaded(),
+    ] {
+        let emitters = EmissionDistribution::build(&fixture.scene, &fixture.materials);
+        for normal in FACE_OFFSETS.map(|n| n.as_vec3()) {
+            assert!(
+                emitters
+                    .guide_at(normal * 4096.0, normal, |_| panic!(
+                        "behind-plane source visibility query"
+                    ))
+                    .is_none()
+            );
+        }
     }
 }
 
