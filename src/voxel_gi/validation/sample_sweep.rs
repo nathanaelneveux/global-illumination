@@ -132,6 +132,7 @@ pub(super) fn run(
     sites: &[(IVec3, usize)],
     progress: &AtomicU64,
     control: bool,
+    emitter_guiding: bool,
 ) -> Result<Vec<Window>, String> {
     let mut windows = Vec::new();
     for sequence_start in STARTS {
@@ -154,6 +155,7 @@ pub(super) fn run(
         for (chunk_index, chunk) in sites.chunks(chunk_size).enumerate() {
             let mut work = TraceWork {
                 transport,
+                emitter_guiding,
                 ..default()
             };
             for &(voxel, face) in chunk {

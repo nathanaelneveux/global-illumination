@@ -381,6 +381,7 @@ impl ReferenceImage {
         let materials = runtime.materials.clone();
         let transport = settings.transport;
         let importance = settings.sampling_importance();
+        let emitter_guiding = settings.emitter_guiding;
         let generation = runtime.generation;
         let worker_progress = progress.clone();
         let worker_output = output.clone();
@@ -400,11 +401,11 @@ impl ReferenceImage {
             } else {None};
             let sweep = if sweep_requested {
                 super::sample_sweep::run(reuse.as_mut().unwrap_or(&mut gpu), &scene, &sources, &materials,
-                    transport, &prioritized, &sites, &worker_progress, false)?
+                    transport, &prioritized, &sites, &worker_progress, false, emitter_guiding)?
             } else { Vec::new() };
             let control = if sweep_requested && reuse.is_some() {
                 super::sample_sweep::run(control_gpu.as_mut().unwrap(), &scene, &sources, &materials,
-                    transport, &emitters, &sites, &worker_progress, true)?
+                    transport, &emitters, &sites, &worker_progress, true, false)?
             } else {Vec::new()};
             if sweep_requested {
                 std::fs::write(worker_output.join("cave-sample-sweep.json"),
@@ -412,6 +413,7 @@ impl ReferenceImage {
                         "scene_generation":generation,"origin":origin.to_array(),
                         "transport":transport,"face_count":sites.len(),
                         "sampler":if super::sample_sweep::reuse_requested() {"fresh-paired-reuse"} else {"independent-paths"},
+                        "emitter_guiding":emitter_guiding,
                         "batch_faces":if super::sample_sweep::reuse_requested() || super::sample_sweep::spatial_requested(){2048}else{512},
                         "sampling_importance":[importance.visible.x,importance.visible.y,importance.visible.z,importance.infrared,importance.ionizing],
                         "windows":sweep,
@@ -421,7 +423,7 @@ impl ReferenceImage {
                     std::fs::write(worker_output.join("cave-control-sweep.json"),
                         serde_json::to_vec(&json!({"schema_version":1,"scene_generation":generation,
                         "origin":origin.to_array(),"transport":transport,"face_count":sites.len(),
-                        "sampler":"resident-independent-paths","batch_faces":2048,"windows":control})).unwrap())
+                        "sampler":"resident-independent-paths","emitter_guiding":false,"batch_faces":2048,"windows":control})).unwrap())
                         .map_err(|e|e.to_string())?;
                 }
             }
