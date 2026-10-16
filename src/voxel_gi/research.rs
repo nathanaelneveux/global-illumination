@@ -16,6 +16,64 @@ pub(super) struct ResearchFixture {
     pub receivers: Vec<SurfaceProbe>,
 }
 
+/// Actual hallway chamber at its world coordinates, with opaque surroundings.
+/// This isolates emitter paths; the entrance has no environment illumination.
+pub(super) fn hallway() -> ResearchFixture {
+    use crate::structures::{StructureLayer, VoxelOp, hallway};
+    use crate::terrain::TerrainMaterial;
+    let layer = StructureLayer::new(hallway::instances(), 32);
+    let rock = TerrainMaterial::CaveRock.index();
+    let mut pages = Vec::new();
+    for px in -4..0 {
+        let coordinate = IVec3::new(px, -1, -1);
+        let mut page = vec![u16::from(rock); volume_len(PAGE_SIZE)];
+        for z in 0..32 {
+            for y in 0..32 {
+                for x in 0..32 {
+                    let local = UVec3::new(x, y, z);
+                    page[linear_index(local, PAGE_SIZE)] =
+                        match layer.sample(coordinate * 32 + local.as_ivec3()) {
+                            VoxelOp::Solid(id) => u16::from(id),
+                            VoxelOp::Air => AIR,
+                            VoxelOp::Keep => u16::from(rock),
+                        };
+                }
+            }
+        }
+        pages.push((coordinate, page));
+    }
+    let scene = Arc::new(TransportScene::with_page_delta(
+        &TransportScene::default(),
+        pages,
+        &[],
+    ));
+    let mut materials = VoxelMaterialTransportTable::default();
+    materials.set(rock, crate::cave_scene::materials().get(2));
+    materials.set(
+        TerrainMaterial::Emissive.index(),
+        crate::terrain::emissive_block_transport(),
+    );
+    let receivers = (1..80)
+        .flat_map(|x| {
+            [-2, 0, 2].map(move |z| {
+                let mut probe = SurfaceProbe::new(hallway::floor_receiver(x) + IVec3::Z * z, 4);
+                probe.material = rock;
+                probe
+            })
+        })
+        .collect();
+    ResearchFixture {
+        scene,
+        materials,
+        receivers,
+        sources: TransportSources {
+            environment: EnergySpectrum::ZERO,
+            directional: vec![],
+            points: vec![],
+        },
+    }
+}
+
 /// A 56×40×56 enclosed cavity: extensive lava, a blue-lit central spire,
 /// green ceiling crystals, wall torches and a small far-side skylight.
 /// IR and ionizing emissions are independent, normalized game transport bands,
