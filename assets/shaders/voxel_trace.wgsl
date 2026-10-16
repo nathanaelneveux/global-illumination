@@ -564,7 +564,7 @@ struct RecordedPath {
     direction: vec3<f32>,
     suffix: Energy,
 }
-fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3<f32>, stream: u32, sequence: u32, split_first: bool) -> RecordedPath {
+fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3<f32>, stream: u32, sequence: u32, first_pdf: f32, split_first: bool) -> RecordedPath {
     var result: Energy;
     var record: RecordedPath;
     record.direction = first_direction;
@@ -572,7 +572,7 @@ fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_norma
     var origin = start;
     var direction = first_direction;
     var previous_normal = initial_normal;
-    var previous_pdf = max(dot(initial_normal, first_direction), 0.0) / 3.14159265359;
+    var previous_pdf = first_pdf;
     var previous_position = start - initial_normal * 0.001;
     for (var bounce = 0u; bounce < DIFFUSE_HITS; bounce += 1u) {
         let hit = trace_diffuse(origin, direction);
@@ -631,8 +631,18 @@ fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_norma
     return record;
 }
 
-fn trace_path(start: vec3<f32>, direction: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32) -> Energy {
-    return trace_path_record(start, direction, normal, stream, sequence, false).suffix;
+fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32) -> Energy {
+    let guide = direction_guide(surface, normal, stream, sequence, 3u);
+    let direction = guided_direction(normal, guide, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
+    let pdf = direction_pdf(normal, direction, guide);
+    let cosine = max(dot(normal, direction), 0.0) / 3.14159265359;
+    var result = sample_emitter_guided(surface, normal, stream, sequence, 0u, guide);
+    if cosine > 0.0 && pdf > 0.0 {
+        let path = trace_path_record(surface + normal * 0.001, direction, normal, stream, sequence, pdf, false).suffix;
+        result.value += path.value * (cosine / pdf);
+        result.radiation += path.radiation * (cosine / pdf);
+    }
+    return result;
 }
 
 fn evaluate_record(record: RecordedPath, origin: vec3<f32>, normal: vec3<f32>) -> Energy {
@@ -700,11 +710,9 @@ fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     result.direct_extra.w = direct.custom_visible.z;
     for (var i = 0u; i < params.counts.y; i += 1u) {
         let sequence = task.sequence + i;
-        let direction = hemisphere(normal, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
-        let sample = trace_path(origin, direction, normal, stream, sequence);
-        let nee = sample_emitter(center + normal * 0.5, normal, stream, sequence, 0u);
-        let value = sample.value + nee.value;
-        let radiation = sample.radiation + nee.radiation;
+        let sample = trace_receiver(center + normal * 0.5, normal, stream, sequence);
+        let value = sample.value;
+        let radiation = sample.radiation;
         result.mean += value;
         result.mean_extra.x += radiation;
         result.second += value * value;
@@ -776,7 +784,7 @@ fn trace_paired_faces(@builtin(global_invocation_id) id: vec3<u32>,
             let stream = hash_voxel(task.voxel) ^ pcg(task.face + 1u);
             let sequence = task.sequence + i;
             let direction = hemisphere(normal, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
-            let record = trace_path_record(origin, direction, normal, stream, sequence, true);
+            let record = trace_path_record(origin, direction, normal, stream, sequence, max(dot(normal, direction), 0.0) / 3.14159265359, true);
             own = evaluate_record(record, origin, normal);
             if paired && record_has_energy(record) {
                 let other_origin = vec3<f32>(tasks[partner].voxel) + vec3(0.5) + normal * 0.501;
@@ -873,7 +881,7 @@ fn trace_quad_faces(@builtin(global_invocation_id) id: vec3<u32>,
             let stream=hash_voxel(task.voxel)^pcg(task.face+1u);
             let sequence=task.sequence+sample;
             let direction=hemisphere(normal,sample_1d(stream,sequence,0u),sample_1d(stream,sequence,1u));
-            let record=trace_path_record(origin,direction,normal,stream,sequence,true);
+            let record=trace_path_record(origin,direction,normal,stream,sequence,max(dot(normal,direction),0.0)/3.14159265359,true);
             let q=record_pdf(record,origin,normal);
             if q <= 0.0 || !record_has_energy(record) {
                 let own=evaluate_record(record,origin,normal);
@@ -977,11 +985,9 @@ fn trace_cooperative_face(face_index: u32, valid: bool, local: u32) {
         let stream = hash_voxel(task.voxel) ^ pcg(task.face + 1u);
         for (var i = lane; i < params.counts.y; i += PATH_LANES) {
             let sequence = task.sequence + i;
-            let direction = hemisphere(normal, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
-            let sample = trace_path(origin, direction, normal, stream, sequence);
-            let nee = sample_emitter(center + normal * 0.5, normal, stream, sequence, 0u);
-            let value = sample.value + nee.value;
-            let radiation = sample.radiation + nee.radiation;
+            let sample = trace_receiver(center + normal * 0.5, normal, stream, sequence);
+            let value = sample.value;
+            let radiation = sample.radiation;
             moment.mean += value;
             moment.second += value * value;
             moment.radiation += vec2(radiation, radiation * radiation);

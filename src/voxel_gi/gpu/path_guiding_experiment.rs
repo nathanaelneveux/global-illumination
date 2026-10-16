@@ -15,6 +15,9 @@ fn work(fixture: &super::super::research::ResearchFixture, start: u32) -> TraceW
 #[test]
 #[ignore = "native raw hallway/cave sampler qualification"]
 fn conditional_guiding_prefix_study() {
+    let reference_path = "target/conditional-guiding-prefix-study.json";
+    let prior: Vec<serde_json::Value> = std::fs::read(reference_path).ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
     let control = tests::native_tracer();
     let mut tracers = vec![(0, control)];
     for radius in [2, 4, 8, 16] {
@@ -67,6 +70,10 @@ fn conditional_guiding_prefix_study() {
         // Reference uses the unchanged control and disjoint windows. Block
         // averaging avoids the finite history cap turning this into an EMA.
         for start in [4194304, 5242880] {
+            if let Some(reference) = prior.iter().find(|r| r["fixture"] == name && r["start"] == start && r["paths"] == 1048576) {
+                rows.push(reference.clone());
+                continue;
+            }
             let gpu = &mut tracers[0].1;
             let mut mean = vec![[0.0_f64; 5]; fixture.receivers.len()];
             for block in 0..32 {
@@ -96,7 +103,7 @@ fn conditional_guiding_prefix_study() {
             eprintln!("reference {name} start={start}");
         }
     }
-    let path = "target/conditional-guiding-prefix-study.json";
+    let path = if prior.is_empty() { reference_path } else { "target/conditional-guiding-primary-study.json" };
     std::fs::write(path, serde_json::to_vec(&rows).unwrap()).unwrap();
     println!("raw study written to {path}");
 }
