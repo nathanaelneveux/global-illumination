@@ -5,6 +5,72 @@ use super::*;
 use crate::voxel_gi::research::channels;
 use crate::voxel_gi::{TransportSettings, validation::reference_oracle};
 
+mod field;
+
+/// Raw block-averaged estimates. A duplicated receiver represents a disjoint
+/// sequence block, not borrowed evidence. Runtime history never exceeds 16384.
+fn estimates(
+    gpu: &mut GpuTracer,
+    fixture: &crate::voxel_gi::research::ResearchFixture,
+    emitters: &Arc<EmissionDistribution>,
+    transport: TransportSettings,
+    guided: bool,
+    sites: &[usize],
+    paths: u32,
+    start: u32,
+) -> Vec<reference_oracle::Estimate> {
+    assert!(!sites.is_empty() && paths > 0 && paths.is_multiple_of(16384));
+    let mut sums = vec![[0.0; 5]; sites.len()];
+    let mut squares = sums.clone();
+    let blocks_per_batch = (4096 / sites.len()).clamp(1, 64);
+    for first_block in (0..paths / 16384).step_by(blocks_per_batch) {
+        let mut work = TraceWork {
+            transport,
+            emitter_guiding: guided,
+            ..default()
+        };
+        for block in first_block..(first_block + blocks_per_batch as u32).min(paths / 16384) {
+            for &site in sites {
+                let probe = &fixture.receivers[site];
+                work.push(probe, probe.face_mask, 0, 0, false, u32::MAX, u32::MAX);
+                work.probes.last_mut().unwrap().sky_requested = false;
+                work.faces.last_mut().unwrap().sequence = start + block * 16384;
+            }
+        }
+        for _ in 0..16 {
+            gpu.trace_compact(
+                fixture.scene.clone(),
+                &fixture.sources,
+                &fixture.materials,
+                &mut work,
+                1024,
+                emitters,
+                false,
+            )
+            .unwrap();
+        }
+        for (index, face) in work.faces.iter().enumerate() {
+            assert_eq!(face.samples, 16384);
+            let i = index % sites.len();
+            for b in 0..5 {
+                sums[i][b] += f64::from(channels(face.radiance)[b]) * 16384.0 / f64::from(paths);
+                squares[i][b] +=
+                    f64::from(channels(face.second_moment)[b]) * 16384.0 / f64::from(paths);
+            }
+        }
+    }
+    sums.into_iter()
+        .zip(squares)
+        .map(|(mean, square)| reference_oracle::Estimate {
+            paths,
+            mean,
+            standard_error: std::array::from_fn(|b| {
+                ((square[b] - mean[b].powi(2)).max(0.0) / f64::from(paths - 1)).sqrt()
+            }),
+        })
+        .collect()
+}
+
 fn replace_once(source: &str, from: &str, to: &str) -> String {
     assert_eq!(
         source.matches(from).count(),
