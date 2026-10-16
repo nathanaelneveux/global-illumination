@@ -1,5 +1,10 @@
 # Repeating hallway outliers: diagnosis and guiding experiment
 
+**Qualification update:** the [independent correctness audit](#independent-correctness-audit)
+below found a deterministic path-truncation bias amplified by guiding. The old
+guided accuracy results are historical, not a certificate of correctness. The
+cutoff is removed in `6c9d848`; no smoothing/history adjustment compensates for it.
+
 ## Reproduced failure (2026-10-16)
 
 Production baseline: `c02d99a`, Apple M4 / Metal, macOS 26.6.2, development
@@ -27,7 +32,8 @@ smooth source-directed spherical lobe. A task chooses a geometry/source-only
 anchor; every path uses its explicit PDF in throughput and emission MIS,
 including terminal connections. No radiance clipping, borrowed samples,
 history resets, or emitter falloff changes are involved. All five bands use
-the same unbiased weights. A nonzero cosine component preserves support.
+the same PDF-compensated weights. A nonzero cosine component preserves support;
+correct weights alone did not make the old path-termination policy unbiased.
 
 The lobe uses the [Henyey–Greenstein distribution](https://pbr-book.org/4ed/Volume_Scattering/Phase_Functions)
 as a proposal, **not** as a physical medium. This follows the importance-sampling
@@ -178,3 +184,95 @@ cost is a follow-up target, not concealed by increasing the budget. Runtime
 switching preserves valid measurements; use fresh runs or matched frozen
 prefixes for sampler comparisons. Frozen candidate image sweeps now explicitly
 carry and record the guiding flag; their independent references stay unguided.
+
+## Independent correctness audit
+
+The audit separates estimator correctness from display, scheduling, variance,
+and cost. Tests/harness: `0fbcc06`, `409d812`. Runtime correction: `6c9d848`.
+Hardware: Apple M4, Metal, macOS 26.6.2, Rust 1.95, optimized development test
+profile. Native compute only; no viewport, smoothing, reconstruction, history
+invalidation or gameplay-FPS claim. References reuse traversal/material snapshots,
+but use a separate SplitMix64 cosine-only integrator: no emitter selection/PDF,
+MIS, guiding, roulette, or low-throughput cutoff. Scalar DDA traversal parity
+remains a separate check.
+
+The two actual hallway outliers, receivers 193 and 208, were tested at one, two
+and three diffuse hits. Each independent reference has two 33,554,432-path random
+replicas. GPU variants have two 1,048,576-path windows, block-averaged below the
+runtime history cap. Disjoint QMC windows are not independent IID trials: their
+sample variance is diagnostic, not a statistical confidence interval. The IID
+shader ablation provides the statistical comparison below.
+
+Three-bounce red means (raw energy, not display RGB or FLIP):
+
+| Receiver | Independent cosine mean ± standard error | Guided IID with old cutoff | Guided IID after removal |
+| --- | --- | --- | --- |
+| 193 `(-59,-12,-20)` | 0.000160213 ± 0.000003446 | 0.000141501 | 0.000154868 |
+| 208 `(-54,-12,-20)` | 0.000134841 ± 0.000003151 | 0.000119775 | 0.000130918 |
+
+The legacy guided estimator is 11.7% / 11.2% low (5.35 / 4.66 combined estimated
+standard errors). Disabling **only** its `throughput < 0.002` cutoff restores
+9.45% / 9.30% relative to those old means. The corrected estimates are within
+1.52 / 1.21 combined standard errors of the independent reference. Removing
+roulette as a separate control agrees too. Across both sites, all depths and
+nonzero bands, corrected guided IID differs by at most 2.04 estimated standard
+errors. This bounds what these measurements establish; it is not a universal
+unbiasedness proof or a claim that every face is visually settled.
+
+The cutoff is invalid: a small importance weight does not bound the radiance
+encountered later. Guiding creates many small-weight, important paths. A new
+known-answer two-wall test demonstrates the error without Monte Carlo uncertainty:
+sequence 19 returned zero instead of 9.490358 in each band. Both the CPU test and
+native GPU exact-path replay pass after removal; the GPU's legacy ablation
+reproduces zero. Exact-zero termination remains; roulette compensates
+surviving paths and is retained. This follows the distinction between biased
+deterministic truncation and compensated roulette in
+[PBRT](https://www.pbr-book.org/4ed/Monte_Carlo_Integration/Improving_Efficiency).
+
+Other focused checks:
+
+- Light-selection frequencies versus reported PMFs pass for flat and hierarchical
+  distributions with independent uniforms, pooling sparse histogram bins.
+- Joint path-direction / conditional-light dimensions cover the product domain;
+  testing marginal uniformity alone would miss correlations.
+- An enclosed five-band emissive furnace matches its analytic finite geometric
+  series in the independent oracle and native guided/unguided transport, all
+  three depths and three receivers. Native tolerance is 1.5%.
+- All 14 tracer tests, WGSL audit variants, and native guided CPU/GPU prefix parity
+  across hallway, loaded hallway and cave pass after the correction.
+
+Evidence under ignored `target/`: `hallway-correctness-reference.json` and its
+log (pre-fix runtime with the audit harness), `hallway-cutoff-audit.json` (causal
+ablation), `hallway-correctness-audit.json` / `hallway-correctness-fixed.log`
+(corrected runtime), `furnace-correctness-fixed.log`, and
+`cutoff-fix-native-parity.log`. These numerical accuracy runs sometimes overlapped
+test compilation; they are not timing evidence.
+
+The separately built, isolated dispatch-cost check uses 2,048 faces × 16 paths,
+two warmup rounds and 24 rotating paired rounds. On `6c9d848` plus only the new
+cost-test harness, median GPU milliseconds were legacy/corrected 2.470/2.447
+(loaded hallway) and 4.012/3.964 (cave). Treat these as comparable, not a speedup.
+The correctness fix adds no measured dispatch slowdown here; guiding still costs
+more than unguided sampling (1.992/3.819 ms respectively). This is not a repeat
+of the full-world throughput comparison or a windowed frame-pacing certificate.
+Evidence: `cutoff-removal-dispatch-cost.json` and matching log.
+
+### Invalidated systems and follow-up queue
+
+1. **Removed:** deterministic nonzero-throughput truncation. It is available only
+   as the explicitly named `legacy_guided_iid_cutoff` test ablation, not a runtime
+   toggle/fallback. Any future pruning needs a justified error bound or correctly
+   compensated stochastic termination, followed by this audit.
+2. **Invalidated as proof:** CPU/GPU parity and a high-sample reference sharing the
+   production estimator. They remain useful regression tools, but cannot certify
+   bias. Earlier guided-reference accuracy claims need requalification; the raw
+   user-calibrated FLIP threshold is not lowered by this work.
+3. **Not a correctness certificate:** the runtime confidence/stability heuristic.
+   In dark regions its energy floor can report high confidence alongside large
+   relative errors. Retain it only for scheduling with the existing fair audit;
+   revisit heavy-tail-aware uncertainty before using it as a stopping rule.
+4. **Deferred:** a full cave-field independent-estimator audit, renewed early-prefix
+   and FLIP qualification of the corrected guide, and reducing guide overhead.
+   The original unguided hallway outlier still exhibits severe variance; this
+   audit does not establish that it was caused by the newly identified cutoff.
+   No additional estimator is removed without measured or analytic evidence.

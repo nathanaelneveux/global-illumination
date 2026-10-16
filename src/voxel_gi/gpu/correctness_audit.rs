@@ -119,6 +119,130 @@ fn native_furnace_matches_geometric_series() {
 }
 
 #[test]
+#[ignore = "native exact-path regression for nonzero throughput termination"]
+fn native_low_throughput_path_keeps_bright_suffix() {
+    let fixture = crate::voxel_gi::research::absorbing_corner();
+    let emitters = Arc::new(EmissionDistribution::build(
+        &fixture.scene,
+        &fixture.materials,
+    ));
+    let native = tests::native_tracer();
+    let mut source = replace_once(
+        SHADER,
+        "fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, anchor: GuideAnchor) -> Energy {",
+        "fn production_trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, anchor: GuideAnchor) -> Energy {",
+    );
+    // Replay the analytically checked CPU witness, including its roulette coin.
+    // Only its initial direction is forced; all suffix sampling is production.
+    source.push_str("\nfn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, anchor: GuideAnchor) -> Energy {
+        let direction = normalize(vec3(-1.0, 1.0, 0.0));
+        return trace_path_record(surface + normal * 0.001, direction, normal, 123u, 19u,
+            direction.y / 3.14159265359, false, anchor).suffix;
+    }\n");
+    for cutoff in [false, true] {
+        let shader = if cutoff {
+            replace_once(
+                &source,
+                "if maximum == 0.0 { break; }",
+                "if maximum < 0.002 { break; }",
+            )
+        } else {
+            source.clone()
+        };
+        let mut gpu = GpuTracer::with_shader(native.context.clone(), true, &shader).unwrap();
+        let mut work = TraceWork::default();
+        work.push(&fixture.receivers[0], 4, 0, 0, false, u32::MAX, u32::MAX);
+        work.probes[0].sky_requested = false;
+        gpu.trace_compact(
+            fixture.scene.clone(),
+            &fixture.sources,
+            &fixture.materials,
+            &mut work,
+            1,
+            &emitters,
+            false,
+        )
+        .unwrap();
+        let expected = if cutoff { 0.0 } else { 9.490358 };
+        for value in channels(work.faces[0].radiance) {
+            assert!(
+                (value - expected).abs() < 0.001,
+                "legacy_cutoff={cutoff}: {value} != {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "paired native dispatch cost; run without another GI app or compiler"]
+fn cutoff_removal_dispatch_cost() {
+    let native = tests::native_tracer();
+    let mut variants: Vec<_> = [
+        ("unguided", false, false),
+        ("legacy_guided", true, true),
+        ("corrected_guided", true, false),
+    ]
+    .into_iter()
+    .map(|(name, guided, cutoff)| {
+        (
+            name,
+            guided,
+            GpuTracer::with_shader(native.context.clone(), true, &shader(false, true, cutoff))
+                .unwrap(),
+        )
+    })
+    .collect();
+    let mut rows = Vec::new();
+    for (name, fixture) in [
+        ("hallway", crate::voxel_gi::research::hallway_loaded()),
+        ("cave", crate::voxel_gi::research::cave()),
+    ] {
+        let emitters = Arc::new(EmissionDistribution::with_importance(
+            &fixture.scene,
+            &fixture.materials,
+            crate::voxel_gi::VoxelGiSettings::default().sampling_importance(),
+        ));
+        let mut work = TraceWork::default();
+        for probe in fixture.receivers.iter().cycle().take(2048) {
+            work.push(probe, probe.face_mask, 0, 0, false, u32::MAX, u32::MAX);
+            work.probes.last_mut().unwrap().sky_requested = false;
+        }
+        for round in 0..26 {
+            for offset in 0..3 {
+                let (variant, guided, gpu) = &mut variants[(offset + round as usize) % 3];
+                work.emitter_guiding = *guided;
+                for face in &mut work.faces {
+                    face.sequence = round * 16;
+                }
+                let started = Instant::now();
+                gpu.trace_compact(
+                    fixture.scene.clone(),
+                    &fixture.sources,
+                    &fixture.materials,
+                    &mut work,
+                    16,
+                    &emitters,
+                    false,
+                )
+                .unwrap();
+                if round >= 2 {
+                    rows.push(
+                        serde_json::json!({"fixture":name,"variant":variant,"round":round,
+                        "gpu_ms":gpu.last_gpu_ms.expect("GPU timestamps for cost audit"),
+                        "worker_ms":started.elapsed().as_secs_f64()*1000.0}),
+                    );
+                }
+            }
+        }
+    }
+    std::fs::write(
+        "target/cutoff-removal-dispatch-cost.json",
+        serde_json::to_vec_pretty(&rows).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
 #[ignore = "native raw estimator audit against independent CPU cosine paths"]
 fn hallway_estimator_correctness_audit() {
     let paths: u32 = std::env::var("VOXEL_GI_AUDIT_PATHS")

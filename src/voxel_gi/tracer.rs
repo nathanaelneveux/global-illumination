@@ -882,35 +882,9 @@ mod tests {
         // Two absorbing walls followed by bright environment. Throughput is
         // only 0.0001 before the last segment, but that segment is not zero.
         // A throughput-only cutoff cannot bound its eventual contribution.
-        let mut page = vec![AIR; volume_len(PAGE_SIZE)];
-        for z in 0..32 {
-            for y in 0..32 {
-                for x in 0..32 {
-                    if x == 0 || y == 0 {
-                        page[linear_index(UVec3::new(x, y, z), PAGE_SIZE)] = 4;
-                    }
-                }
-            }
-        }
-        let scene = TransportScene::with_page_delta(
-            &TransportScene::default(),
-            vec![(IVec3::ZERO, page)],
-            &[],
-        );
-        let mut materials = VoxelMaterialTransportTable::default();
-        materials.set(
-            4,
-            super::super::MaterialTransport {
-                diffuse: EnergySpectrum::ONE * 0.01,
-                ..default()
-            },
-        );
-        let sources = TransportSources {
-            environment: EnergySpectrum::ONE * 10000.0,
-            directional: vec![],
-            points: vec![],
-        };
-        let emitters = EmissionDistribution::build(&scene, &materials);
+        let fixture = super::super::research::absorbing_corner();
+        let (scene, materials, sources) = (&*fixture.scene, &fixture.materials, &fixture.sources);
+        let emitters = EmissionDistribution::build(scene, materials);
         let origin = Vec3::new(2.5, 1.001, 2.5);
         let direction = Vec3::new(-1.0, 1.0, 0.0).normalize();
         let TraceResult::Hit(first) = scene.trace_ray_result(origin, direction, MAX_PATH_DISTANCE)
@@ -953,9 +927,9 @@ mod tests {
             })
             .expect("a surviving two-wall path that escapes");
         let actual = trace_path(
-            &scene,
-            &sources,
-            &materials,
+            scene,
+            sources,
+            materials,
             origin,
             direction,
             stream,

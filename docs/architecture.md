@@ -115,8 +115,11 @@ Immutable snapshots share its allocation across edits that preserve that topolog
 changed voxel regions still trigger normal transport invalidation.
 Rays normalize direction, offset from surfaces, traverse at most 2,048 steps and
 768 voxel units per segment by default, and distinguish hits, escape and unknown traversal.
-These limits and the small-throughput cutoff are approximations, not an exact
-infinite-domain light solver.
+These finite-domain/depth limits are explicit approximations, not an exact
+infinite-domain light solver. Nonzero paths are never discarded solely because
+throughput is small: the next radiance can be large, especially with guiding.
+Only exact-zero termination and compensated Russian roulette are retained; the
+old 0.002 cutoff failed the independent estimator audit.
 GPU empty-space box stepping uses vector operations with the scalar reference's
 ordered XYZ tie and epsilon policy. This is an execution optimization, not a new
 intersection rule, shorter traversal limit or change to the path estimator.
@@ -719,7 +722,8 @@ the same proposal equations directly. Switching proposals preserves physical
 history; neither old measurements nor a missing guide are replaced by invented
 energy. A zero-weight guide is the intentional cosine proposal, not an error
 fallback. The [hallway investigation](hallway-path-outliers.md) records the
-accuracy win, extra raw-sampling cost, and rejected alternatives.
+variance reduction, extra raw-sampling cost, rejected alternatives, and the
+independent correctness audit that removed biased path truncation.
 
 The normalized model is captured on `TraceWork` for CPU/GPU parity. A model change
 calls `invalidate_model`: outstanding old-model results are

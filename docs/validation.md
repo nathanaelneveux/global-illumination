@@ -83,6 +83,27 @@ or noisy. Retain logs and captures under ignored `target/`, not Git.
 
 ### Separate sampling accuracy from presentation
 
+Correctness precedes variance/quality tuning. The
+[independent estimator audit](hallway-path-outliers.md#independent-correctness-audit)
+found a bias that CPU/GPU parity and shared-estimator references missed. For changes
+to sampling, MIS or termination, check distribution/PDF agreement and a known-answer
+integral first, then independent cosine-only means by depth at the actual suspect
+receivers. Separate IID statistical uncertainty from QMC prefix variation; do not
+interpret disjoint QMC windows as independent random trials. Only then compare
+time to FLIP acceptance. No display filter participates in an estimator audit.
+
+Focused checks: `low_throughput_paths_can_still_reach_bright_radiance`,
+`light_selection_frequencies_match_reported_probabilities`,
+`path_and_conditional_emitter_dimensions_have_joint_support`,
+`independent_oracle_matches_furnace_geometric_series`, and ignored native
+`native_furnace_matches_geometric_series` and
+`native_low_throughput_path_keeps_bright_suffix`. The ignored
+`hallway_estimator_correctness_audit` collects evidence, **not** an automatic
+accuracy pass: inspect independent reference precision and replica agreement.
+Set `VOXEL_GI_AUDIT_PATHS=1048576 VOXEL_GI_AUDIT_ORACLE_PATHS=33554432` to reproduce
+the measured audit; setting oracle paths to zero explicitly omits it for GPU
+ablations and requires a separately retained unchanged-scene reference.
+
 The preferred resident display now uses uncapped 2048-evidence reconstruction.
 Do not let that hide estimator regressions or inflate apparent sample efficiency:
 

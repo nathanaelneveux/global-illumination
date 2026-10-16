@@ -16,6 +16,45 @@ pub(super) struct ResearchFixture {
     pub receivers: Vec<SurfaceProbe>,
 }
 
+/// Two absorbing perpendicular walls, open to a bright environment. Used to
+/// detect invalid termination of nonzero, low-throughput paths on CPU and GPU.
+pub(super) fn absorbing_corner() -> ResearchFixture {
+    let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+    for z in 0..32 {
+        for y in 0..32 {
+            for x in 0..32 {
+                if x == 0 || y == 0 {
+                    page[linear_index(UVec3::new(x, y, z), PAGE_SIZE)] = 4;
+                }
+            }
+        }
+    }
+    let mut materials = VoxelMaterialTransportTable::default();
+    materials.set(
+        4,
+        super::MaterialTransport {
+            diffuse: EnergySpectrum::ONE * 0.01,
+            ..default()
+        },
+    );
+    let mut receiver = SurfaceProbe::new(IVec3::new(2, 0, 2), 4);
+    receiver.material = 4;
+    ResearchFixture {
+        scene: Arc::new(TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, page)],
+            &[],
+        )),
+        materials,
+        sources: TransportSources {
+            environment: EnergySpectrum::ONE * 10000.0,
+            directional: vec![],
+            points: vec![],
+        },
+        receivers: vec![receiver],
+    }
+}
+
 /// Enclosed diffuse/emissive furnace. Every direction from an inner surface
 /// reaches the same material, so the finite-depth answer is E * sum(albedo^k),
 /// k=0..=bounces, including the solver's terminal emission connection.
@@ -36,7 +75,6 @@ pub(super) fn furnace() -> ResearchFixture {
         super::MaterialTransport {
             diffuse: EnergySpectrum::new(Vec3::new(0.3, 0.55, 0.7), 0.2, 0.65),
             emission: EnergySpectrum::new(Vec3::new(0.7, 1.3, 0.2), 2.2, 0.9),
-            ..default()
         },
     );
     ResearchFixture {
