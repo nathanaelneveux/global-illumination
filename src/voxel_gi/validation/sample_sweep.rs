@@ -40,16 +40,32 @@ pub(super) fn evidence_requested() -> bool {
 }
 
 fn evidence_targets_requested() -> bool {
-    std::env::var("VOXEL_GI_VALIDATE_EVIDENCE_TARGETS").is_ok_and(|v| v == "1")
+    std::env::var("VOXEL_GI_VALIDATE_EVIDENCE_TARGETS").is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
 /// Matched presentation variants; all consume exactly the same raw prefixes.
-pub(super) fn evidence_targets() -> &'static [u32] {
+pub(super) fn evidence_targets() -> Vec<u32> {
     if evidence_targets_requested() {
-        &[512, 1024, 2048, 4096]
+        parse_evidence_targets(&std::env::var("VOXEL_GI_VALIDATE_EVIDENCE_TARGETS").unwrap())
+            .expect("EVIDENCE_TARGETS must be 1 or distinct comma-separated targets in [2,4096]")
     } else {
-        &[512]
+        vec![512]
     }
+}
+
+fn parse_evidence_targets(value: &str) -> Option<Vec<u32>> {
+    if value == "1" {
+        return Some(vec![512, 1024, 2048, 4096]);
+    }
+    let targets: Vec<u32> = value
+        .split(',')
+        .map(|v| v.trim().parse().ok())
+        .collect::<Option<_>>()?;
+    targets
+        .iter()
+        .enumerate()
+        .all(|(i, t)| (2..=4096).contains(t) && !targets[..i].contains(t))
+        .then_some(targets)
 }
 
 pub(super) fn reuse_requested() -> bool {
@@ -320,6 +336,28 @@ mod footprint_replay;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_evidence_targets_preserve_legacy_and_reject_invalid_lists() {
+        assert_eq!(
+            parse_evidence_targets("1"),
+            Some(vec![512, 1024, 2048, 4096])
+        );
+        assert_eq!(parse_evidence_targets("1536, 2048"), Some(vec![1536, 2048]));
+        for value in ["", "0", "4097", "1536,1536", "1536,", "nan"] {
+            assert_eq!(parse_evidence_targets(value), None, "{value}");
+        }
+    }
+
+    #[test]
+    fn raw_prefix_work_does_not_inherit_gameplay_presentation() {
+        // Frozen prefixes use TraceWork directly, not the live dispatch path
+        // that copies gameplay settings. Keep the physical control unfiltered.
+        let work = TraceWork::default();
+        assert_eq!(work.spatial_reconstruction, 0.0);
+        assert_eq!(work.spatial_evidence_target, 0);
+        assert_eq!(work.response_seconds, 0.0);
+    }
 
     #[test]
     fn prefix_windows_are_disjoint_below_history_ceiling_and_sampler_period() {

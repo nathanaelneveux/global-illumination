@@ -27,32 +27,55 @@ def equivalent_render(a, b):
     return result
 
 
+def aggregate_errors(errors):
+    """Keep window-average fidelity distinct from worst-window/local failures."""
+    means = np.array([e["flip"]["mean"] for e in errors])
+    tiles = np.array([e["flip_32px_tile_means"]["max"] for e in errors])
+    if len(errors) != 4 or not np.isfinite(means).all() or not np.isfinite(tiles).all():
+        raise ValueError("require four finite window measurements")
+    return dict(average_flip=float(means.mean()), flip=float(means.max()),
+                average_worst_tile=float(tiles.mean()), worst_tile=float(tiles.max()))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("replay", type=Path)
+    parser.add_argument("--labels", nargs="+", default=[
+        "evidence2048", "evidence2048cap32", "evidence2048cap64", "evidence2048cap128"])
+    parser.add_argument("--counts", type=int, nargs="+", default=[4, 16, 64, 128])
+    parser.add_argument("--fresh-reference", action="store_true",
+                        help="analyze variants from one newly qualified native sweep, not a replay of old images")
     args = parser.parse_args()
     read = lambda path: json.loads(path.read_text())
     profile = read(Path(__file__).parent / "quality_profiles/cave-spatial-noise-2048.json")
     source = read(args.source / "cave-reference.json")
     assert source["qualification"]["qualified"]
+    if args.fresh_reference and args.source.resolve() != args.replay.resolve():
+        raise ValueError("fresh-reference mode requires the same source and image directory")
     for folder, status_name in [(args.source, "cave-reference-status.json"),
-                                (args.replay, "cave-model-comparison-status.json")]:
+                                (args.replay, "cave-reference-status.json" if args.fresh_reference
+                                 else "cave-model-comparison-status.json")]:
         assert read(folder / status_name)["status"] == "completed"
         audit = read(folder / "cave-geometry-audit.json")
         assert audit["unknown_voxels"] == audit["mismatched_voxels"] == 0
     path = args.source / "cave-reference.png"
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == profile["view"]["reference_sha256"]
+    reference_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    calibration_match = reference_hash == profile["view"]["reference_sha256"]
+    if not args.fresh_reference and not calibration_match:
+        raise ValueError("replay source does not match the saved calibration reference")
     reference = load_rgb(path)
     assert reference.shape == (1440, 2560, 3)
-    equivalence = {"reference": equivalent_render(reference, load_rgb(args.replay / path.name))}
-    counts = [4, 16, 64, 128]
-    for count in counts:
-        for window in range(4):
-            name = f"evidence2048-{count}-window-{window}.png"
-            equivalence[name] = equivalent_render(load_rgb(args.source / name), load_rgb(args.replay / name))
+    equivalence = {}
+    counts = args.counts
+    if not args.fresh_reference:
+        equivalence["reference"] = equivalent_render(reference, load_rgb(args.replay / path.name))
+        for count in counts:
+            for window in range(4):
+                name = f"evidence2048-{count}-window-{window}.png"
+                equivalence[name] = equivalent_render(load_rgb(args.source / name), load_rgb(args.replay / name))
     rows = []
-    for label in ["evidence2048", "evidence2048cap32", "evidence2048cap64", "evidence2048cap128"]:
+    for label in args.labels:
         for count in counts:
             bands = {name: [] for name in profile["view"]["regions"]}
             bias = {name: [] for name in bands}
@@ -66,10 +89,12 @@ def main():
                 errors.append(perceptual_difference(reference, image, 67))
             regions = {name: dict(**summarize_windows(b), signed_lightness=bias[name]) for name, b in bands.items()}
             noise = max(r["wall_noise_max"] for r in regions.values())
-            rows.append(dict(label=label, paths=count, normalized_wall_noise=noise / profile["provisional_wall_noise_limit"],
-                regions=regions, windows=errors, flip=max(e["flip"]["mean"] for e in errors),
-                worst_tile=max(e["flip_32px_tile_means"]["max"] for e in errors)))
+            rows.append(dict(label=label, paths=count, wall_noise=noise,
+                normalized_wall_noise=noise / profile["provisional_wall_noise_limit"] if calibration_match else None,
+                regions=regions, windows=errors, **aggregate_errors(errors)))
     print(json.dumps(dict(source=str(args.source), replay=str(args.replay), profile=profile,
+        reference_sha256=reference_hash, calibration_reference_matches=calibration_match,
+        fresh_reference=args.fresh_reference,
         note="Matched path/display study. Noise envelope is provisional, not a quality or settling pass. No interactive timing claim.",
         render_equivalence=equivalence, measurements=rows), indent=2, allow_nan=False))
 

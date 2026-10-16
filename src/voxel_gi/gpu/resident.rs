@@ -675,7 +675,7 @@ mod tests {
     #[test]
     #[ignore = "native adaptive support oracle with heterogeneous edit histories and unchanged physical statistics"]
     fn evidence_reconstruction_matches_oracle_without_feedback() {
-        for target in [512, 1024, 2048, 4096] {
+        for target in [512, 1024, 1536, 2048, 4096] {
             for shift in [IVec3::ZERO, IVec3::new(-16, 0, -16)] {
                 check_spatial_oracle(target, shift, 0);
             }

@@ -108,6 +108,17 @@ localized regression. The provisional smooth-wall noise envelope complements,
 not replaces, the existing user-calibrated FLIP guard. Change a quality threshold
 only with new matched evidence and visual agreement, not to pass a candidate.
 
+For a matched 1536/2048 display-target study, add
+`VOXEL_GI_VALIDATE_EVIDENCE_TARGETS=1536,2048` to the headless reference command in
+[the cave protocol](cave-reference.md), with `VOXEL_GI_REFERENCE_PATHS=131072`.
+`EVIDENCE_TARGETS=1` retains the historical 512/1024/2048/4096 sweep. The raw
+`samples-*` controls are always captured alongside presentation variants.
+Analyze a fresh qualified sweep with `tools/spatial_replay_quality.py RUN RUN
+--fresh-reference --labels samples evidence1536 evidence2048 --counts 4 16 64
+128 256 512 1024 1280 1536 2048`. Fresh-reference mode does not assert equality
+to a deleted historical image: it records the new reference hash, and only
+normalizes against the old noise envelope if that hash matches exactly.
+
 | Change | First useful check |
 | --- | --- |
 | Documentation/workflow | Diff and link review; no renderer run |
