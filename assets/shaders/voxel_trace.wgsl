@@ -2,6 +2,8 @@
 // Layouts and sampling dimensions are mirrored by gpu.rs and sampling.rs.
 // Bounded, lazily cached quality/layout variants, not per-face loop controls.
 override DIFFUSE_HITS: u32 = 3u;
+// Experimental conditional emitter-neighborhood proposal; zero is the control.
+override GUIDE_RADIUS: f32 = 0.0;
 override LIMITED_REACH: bool = false;
 override PATH_LANES: u32 = 4u;
 struct Params {
@@ -439,12 +441,8 @@ fn trace_sky_corners(@builtin(global_invocation_id) id: vec3<u32>) {
     results[offset] = select(vec4(0u), vec4(pack_sky(values[0]), pack_sky(values[1]), pack_sky(values[2]), pack_sky(values[3])), valid);
     results[offset + 1u] = select(vec4(0u), vec4(pack_sky(values[4]), pack_sky(values[5]), 0u, 0u), valid);
 }
-fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, sequence: u32, bounce: u32) -> Energy {
-    var result: Energy;
+fn choose_emitter(position: vec3<f32>, normal: vec3<f32>, choice: f32) -> EmissiveFace {
     let count = u32(params.extra.w);
-    if count == 0u { return result; }
-    let stream = source_stream ^ pcg(bounce + 0xa341316cu);
-    let choice = sample_1d(stream, sequence, 12u);
     var emitter: EmissiveFace;
     if load_emitter(0u).sampling.w > 0.0 { emitter = tree_emitter(position, normal, choice); }
     else {
@@ -457,6 +455,50 @@ fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, se
         }
         emitter = load_emitter(min(low, count - 1u));
     }
+    return emitter;
+}
+
+// Condition on a separately sampled guide light. Every conditional proposal
+// retains cosine support, so its own PDF suffices: no sum over all emitters.
+// The NEE sample must be independent of the guide selection and must use this
+// SAME proposal PDF for balance MIS with the continuing diffuse ray.
+struct DirectionGuide { axis: vec3<f32>, cosine: f32, weight: f32 }
+fn direction_guide(position: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, bounce: u32) -> DirectionGuide {
+    var guide: DirectionGuide;
+    if GUIDE_RADIUS <= 0.0 || params.extra.w == 0.0 { return guide; }
+    let choice = sample_1d(stream ^ pcg(bounce + 0x68bc21ebu), sequence, 16u);
+    let emitter = choose_emitter(position, normal, choice);
+    let delta = vec3<f32>(emitter.voxel) + vec3(0.5) - position;
+    let distance = length(delta);
+    if distance <= 0.001 { return guide; }
+    guide.axis = delta / distance;
+    guide.cosine = min(distance / sqrt(distance * distance + GUIDE_RADIUS * GUIDE_RADIUS), 0.99999);
+    guide.weight = 0.5;
+    return guide;
+}
+fn direction_pdf(normal: vec3<f32>, direction: vec3<f32>, guide: DirectionGuide) -> f32 {
+    let cosine = max(dot(normal, direction), 0.0) / 3.14159265359;
+    let cone = select(0.0, 1.0 / (6.28318530718 * max(1.0 - guide.cosine, 0.00001)), dot(guide.axis, direction) >= guide.cosine);
+    return (1.0 - guide.weight) * cosine + guide.weight * cone;
+}
+fn guided_direction(normal: vec3<f32>, guide: DirectionGuide, u: f32, v: f32) -> vec3<f32> {
+    if guide.weight == 0.0 { return hemisphere(normal, u, v); }
+    if u >= guide.weight { return hemisphere(normal, (u - guide.weight) / (1.0 - guide.weight), v); }
+    let cosine = 1.0 - v * (1.0 - guide.cosine);
+    let radius = sqrt(max(1.0 - cosine * cosine, 0.0));
+    let phi = 6.28318530718 * u / guide.weight;
+    let axis = guide.axis;
+    var tangent = vec3(0.0);
+    if abs(axis.z) < 0.999 { tangent = normalize(cross(axis, vec3(0.0, 0.0, 1.0))); }
+    else { tangent = normalize(cross(axis, vec3(0.0, 1.0, 0.0))); }
+    return tangent * (cos(phi) * radius) + cross(axis, tangent) * (sin(phi) * radius) + axis * cosine;
+}
+
+fn sample_emitter_guided(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, sequence: u32, bounce: u32, guide: DirectionGuide) -> Energy {
+    var result: Energy;
+    if params.extra.w == 0.0 { return result; }
+    let stream = source_stream ^ pcg(bounce + 0xa341316cu);
+    let emitter = choose_emitter(position, normal, sample_1d(stream, sequence, 12u));
     let emitter_normal = face_normal(emitter.face);
     let axis = emitter.face / 2u;
     let tangent = select(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), axis == 0u);
@@ -475,10 +517,14 @@ fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, se
     let cosine_pdf = receiver_cosine / 3.14159265359;
     if trace(position + normal * 0.002, direction, distance - 0.008).status != 0u { return result; }
     let material = materials[u32(emitter.sampling.z)];
-    let factor = cosine_pdf / (light_pdf + cosine_pdf);
+    let factor = cosine_pdf / (light_pdf + direction_pdf(normal, direction, guide));
     result.value = material.emission * factor;
     result.radiation = material.emission_extra.x * factor;
     return result;
+}
+fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, sequence: u32, bounce: u32) -> Energy {
+    var guide: DirectionGuide;
+    return sample_emitter_guided(position, normal, source_stream, sequence, bounce, guide);
 }
 // One terminal emission connection drawn from a 50/50 light/cosine mixture.
 // The finite-bounce integrand is unchanged: escaping sky and nonemitting hits
@@ -526,6 +572,7 @@ fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_norma
     var origin = start;
     var direction = first_direction;
     var previous_normal = initial_normal;
+    var previous_pdf = max(dot(initial_normal, first_direction), 0.0) / 3.14159265359;
     var previous_position = start - initial_normal * 0.001;
     for (var bounce = 0u; bounce < DIFFUSE_HITS; bounce += 1u) {
         let hit = trace_diffuse(origin, direction);
@@ -540,7 +587,6 @@ fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_norma
         let material = materials[hit.material];
         let direct = direct_at(hit.position, hit.normal);
         let emission_weight = material.emission_extra.y;
-        let cosine_pdf = max(dot(previous_normal, direction), 0.0) / 3.14159265359;
         let delta = hit.position - origin;
         var selection_pdf = emission_weight / max(params.extra.z, 1e-20);
         if emission_weight > 0.0 && params.extra.w > 0.0 && load_emitter(0u).sampling.w > 0.0 {
@@ -548,13 +594,15 @@ fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_norma
         }
         let light_pdf = selection_pdf * dot(delta, delta) / max(dot(hit.normal, -direction), 1e-8);
         var mis = 1.0;
-        if light_pdf > 0.0 { mis = cosine_pdf / (cosine_pdf + light_pdf); }
+        if light_pdf > 0.0 { mis = previous_pdf / (previous_pdf + light_pdf); }
         if split_first && bounce == 0u { mis = 0.0; }
         var nee: Energy;
+        var guide: DirectionGuide;
         if bounce + 1u == DIFFUSE_HITS {
             nee = sample_terminal_emission(hit.position, hit.normal, stream, sequence, bounce);
         } else {
-            nee = sample_emitter(hit.position, hit.normal, stream, sequence, bounce + 1u);
+            guide = direction_guide(hit.position, hit.normal, stream, sequence, bounce);
+            nee = sample_emitter_guided(hit.position, hit.normal, stream, sequence, bounce + 1u, guide);
         }
         result.value += throughput.value * (material.emission * mis + material.diffuse * (direct.value + nee.value));
         result.radiation += throughput.radiation * (material.emission_extra.x * mis + material.diffuse_extra.x * (direct.radiation + nee.radiation));
@@ -572,7 +620,12 @@ fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_norma
         origin = hit.position + hit.normal * 0.002;
         previous_position = hit.position;
         previous_normal = hit.normal;
-        direction = hemisphere(hit.normal, sample_1d(stream, sequence, 2u + bounce * 2u), sample_1d(stream, sequence, 3u + bounce * 2u));
+        direction = guided_direction(hit.normal, guide, sample_1d(stream, sequence, 2u + bounce * 2u), sample_1d(stream, sequence, 3u + bounce * 2u));
+        previous_pdf = direction_pdf(hit.normal, direction, guide);
+        let cosine_pdf = max(dot(hit.normal, direction), 0.0) / 3.14159265359;
+        if cosine_pdf <= 0.0 || previous_pdf <= 0.0 { break; }
+        throughput.value *= cosine_pdf / previous_pdf;
+        throughput.radiation *= cosine_pdf / previous_pdf;
     }
     record.suffix = result;
     return record;
