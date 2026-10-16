@@ -16,7 +16,7 @@ fn work(fixture: &super::super::research::ResearchFixture, start: u32) -> TraceW
 #[ignore = "native raw hallway/cave sampler qualification"]
 fn conditional_guiding_prefix_study() {
     let reference_path = "target/conditional-guiding-prefix-study.json";
-    let prior: Vec<serde_json::Value> = std::fs::read(reference_path).ok()
+    let prior: Vec<serde_json::Value> = std::env::var("VOXEL_GI_GUIDING_REFERENCE").ok().and_then(|path| std::fs::read(path).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
     let control = tests::native_tracer();
     let mut tracers = vec![(0, control)];
@@ -103,7 +103,7 @@ fn conditional_guiding_prefix_study() {
             eprintln!("reference {name} start={start}");
         }
     }
-    let path = if prior.is_empty() { reference_path } else { "target/conditional-guiding-primary-study.json" };
-    std::fs::write(path, serde_json::to_vec(&rows).unwrap()).unwrap();
+    let path = std::env::var("VOXEL_GI_GUIDING_OUTPUT").unwrap_or_else(|_| reference_path.into());
+    std::fs::write(&path, serde_json::to_vec(&rows).unwrap()).unwrap();
     println!("raw study written to {path}");
 }

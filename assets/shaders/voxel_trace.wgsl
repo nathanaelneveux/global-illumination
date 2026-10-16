@@ -458,22 +458,58 @@ fn choose_emitter(position: vec3<f32>, normal: vec3<f32>, choice: f32) -> Emissi
     return emitter;
 }
 
-// Condition on a separately sampled guide light. Every conditional proposal
-// retains cosine support, so its own PDF suffices: no sum over all emitters.
-// The NEE sample must be independent of the guide selection and must use this
-// SAME proposal PDF for balance MIS with the continuing diffuse ray.
+// A geometry/source-only task proposal, never a radiance-cache measurement.
+// A deterministic hierarchy descent finds a promising source. Its local
+// selection probability estimates concentration (six faces per source voxel),
+// reducing guidance for broad emitting fields. Correctness does not depend on
+// choosing the best source: the cosine mixture retains full support.
+struct GuideAnchor { position: vec3<f32>, weight: f32 }
+fn guide_anchor(position: vec3<f32>, normal: vec3<f32>) -> GuideAnchor {
+    var anchor: GuideAnchor;
+    if GUIDE_RADIUS <= 0.0 || params.extra.w == 0.0 { return anchor; }
+    var emitter = load_emitter(0u);
+    if emitter.sampling.w > 0.0 {
+        var index = 0u;
+        var probability = 1.0;
+        loop {
+            let node = load_node(index);
+            if node.children.x == 0xffffffffu {
+                emitter = load_emitter(node.children.y);
+                emitter.sampling.y = probability;
+                break;
+            }
+            let p = node_left_probability(node, position, normal);
+            if p >= 0.5 { probability *= p; index = node.children.x; }
+            else { probability *= 1.0 - p; index = node.children.y; }
+        }
+    } else {
+        var best = -1.0;
+        for (var i = 0u; i < u32(params.extra.w); i += 1u) {
+            let light = load_emitter(i);
+            let delta = vec3<f32>(light.voxel) + vec3(0.5) + face_normal(light.face) * 0.5 - position;
+            let d2 = max(dot(delta, delta), 0.0001);
+            let direction = delta / sqrt(d2);
+            let score = light.sampling.y * max(dot(normal, direction), 0.0) * max(dot(face_normal(light.face), -direction), 0.0) / d2;
+            if score > best { best = score; emitter = light; }
+        }
+    }
+    anchor.position = vec3<f32>(emitter.voxel) + vec3(0.5);
+    anchor.weight = 0.5 * min(6.0 * emitter.sampling.y, 1.0);
+    return anchor;
+}
+
+// NEE and continuation use the SAME proposal for balance MIS. The guide only
+// changes directions/PDFs, never light energy, path depth or retained history.
 struct DirectionGuide { axis: vec3<f32>, cosine: f32, weight: f32 }
-fn direction_guide(position: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, bounce: u32) -> DirectionGuide {
+fn direction_guide(position: vec3<f32>, anchor: GuideAnchor) -> DirectionGuide {
     var guide: DirectionGuide;
-    if GUIDE_RADIUS <= 0.0 || params.extra.w == 0.0 { return guide; }
-    let choice = sample_1d(stream ^ pcg(bounce + 0x68bc21ebu), sequence, 16u);
-    let emitter = choose_emitter(position, normal, choice);
-    let delta = vec3<f32>(emitter.voxel) + vec3(0.5) - position;
+    if GUIDE_RADIUS <= 0.0 || anchor.weight == 0.0 { return guide; }
+    let delta = anchor.position - position;
     let distance = length(delta);
     if distance <= 0.001 { return guide; }
     guide.axis = delta / distance;
     guide.cosine = min(distance / sqrt(distance * distance + GUIDE_RADIUS * GUIDE_RADIUS), 0.99999);
-    guide.weight = 0.5;
+    guide.weight = anchor.weight;
     return guide;
 }
 fn direction_pdf(normal: vec3<f32>, direction: vec3<f32>, guide: DirectionGuide) -> f32 {
@@ -564,7 +600,7 @@ struct RecordedPath {
     direction: vec3<f32>,
     suffix: Energy,
 }
-fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3<f32>, stream: u32, sequence: u32, first_pdf: f32, split_first: bool) -> RecordedPath {
+fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3<f32>, stream: u32, sequence: u32, first_pdf: f32, split_first: bool, anchor: GuideAnchor) -> RecordedPath {
     var result: Energy;
     var record: RecordedPath;
     record.direction = first_direction;
@@ -601,7 +637,7 @@ fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_norma
         if bounce + 1u == DIFFUSE_HITS {
             nee = sample_terminal_emission(hit.position, hit.normal, stream, sequence, bounce);
         } else {
-            guide = direction_guide(hit.position, hit.normal, stream, sequence, bounce);
+            guide = direction_guide(hit.position, anchor);
             nee = sample_emitter_guided(hit.position, hit.normal, stream, sequence, bounce + 1u, guide);
         }
         result.value += throughput.value * (material.emission * mis + material.diffuse * (direct.value + nee.value));
@@ -631,14 +667,14 @@ fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_norma
     return record;
 }
 
-fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32) -> Energy {
-    let guide = direction_guide(surface, normal, stream, sequence, 3u);
+fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, anchor: GuideAnchor) -> Energy {
+    let guide = direction_guide(surface, anchor);
     let direction = guided_direction(normal, guide, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
     let pdf = direction_pdf(normal, direction, guide);
     let cosine = max(dot(normal, direction), 0.0) / 3.14159265359;
     var result = sample_emitter_guided(surface, normal, stream, sequence, 0u, guide);
     if cosine > 0.0 && pdf > 0.0 {
-        let path = trace_path_record(surface + normal * 0.001, direction, normal, stream, sequence, pdf, false).suffix;
+        let path = trace_path_record(surface + normal * 0.001, direction, normal, stream, sequence, pdf, false, anchor).suffix;
         result.value += path.value * (cosine / pdf);
         result.radiation += path.radiation * (cosine / pdf);
     }
@@ -701,6 +737,7 @@ fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     let center = vec3<f32>(task.voxel) + vec3(0.5);
     let origin = center + normal * 0.501;
     let stream = hash_voxel(task.voxel) ^ pcg(task.face + 1u);
+    let anchor = guide_anchor(center + normal * 0.5, normal);
     var result: FaceResult;
     let direct = direct_at(center + normal * 0.5, normal);
     result.direct = direct.value;
@@ -710,7 +747,7 @@ fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     result.direct_extra.w = direct.custom_visible.z;
     for (var i = 0u; i < params.counts.y; i += 1u) {
         let sequence = task.sequence + i;
-        let sample = trace_receiver(center + normal * 0.5, normal, stream, sequence);
+        let sample = trace_receiver(center + normal * 0.5, normal, stream, sequence, anchor);
         let value = sample.value;
         let radiation = sample.radiation;
         result.mean += value;
@@ -784,7 +821,7 @@ fn trace_paired_faces(@builtin(global_invocation_id) id: vec3<u32>,
             let stream = hash_voxel(task.voxel) ^ pcg(task.face + 1u);
             let sequence = task.sequence + i;
             let direction = hemisphere(normal, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
-            let record = trace_path_record(origin, direction, normal, stream, sequence, max(dot(normal, direction), 0.0) / 3.14159265359, true);
+            let record = trace_path_record(origin, direction, normal, stream, sequence, max(dot(normal, direction), 0.0) / 3.14159265359, true, guide_anchor(center + normal * 0.5, normal));
             own = evaluate_record(record, origin, normal);
             if paired && record_has_energy(record) {
                 let other_origin = vec3<f32>(tasks[partner].voxel) + vec3(0.5) + normal * 0.501;
@@ -881,7 +918,7 @@ fn trace_quad_faces(@builtin(global_invocation_id) id: vec3<u32>,
             let stream=hash_voxel(task.voxel)^pcg(task.face+1u);
             let sequence=task.sequence+sample;
             let direction=hemisphere(normal,sample_1d(stream,sequence,0u),sample_1d(stream,sequence,1u));
-            let record=trace_path_record(origin,direction,normal,stream,sequence,max(dot(normal,direction),0.0)/3.14159265359,true);
+            let record=trace_path_record(origin,direction,normal,stream,sequence,max(dot(normal,direction),0.0)/3.14159265359,true,guide_anchor(center+normal*0.5,normal));
             let q=record_pdf(record,origin,normal);
             if q <= 0.0 || !record_has_energy(record) {
                 let own=evaluate_record(record,origin,normal);
@@ -983,9 +1020,10 @@ fn trace_cooperative_face(face_index: u32, valid: bool, local: u32) {
         let center = vec3<f32>(task.voxel) + vec3(0.5);
         let origin = center + normal * 0.501;
         let stream = hash_voxel(task.voxel) ^ pcg(task.face + 1u);
+        let anchor = guide_anchor(center + normal * 0.5, normal);
         for (var i = lane; i < params.counts.y; i += PATH_LANES) {
             let sequence = task.sequence + i;
-            let sample = trace_receiver(center + normal * 0.5, normal, stream, sequence);
+            let sample = trace_receiver(center + normal * 0.5, normal, stream, sequence, anchor);
             let value = sample.value;
             let radiation = sample.radiation;
             moment.mean += value;
