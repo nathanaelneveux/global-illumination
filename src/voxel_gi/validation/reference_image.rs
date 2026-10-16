@@ -528,7 +528,7 @@ impl ReferenceImage {
                 for prefix in data.prefixes {
                     if super::sample_sweep::evidence_requested() {
                       for &target in super::sample_sweep::evidence_targets() {
-                        let (values, report) = super::sample_sweep::evidence_values(&sites, &prefix, target);
+                        let (values, report) = super::sample_sweep::evidence_values(&sites, &prefix, target, 0);
                         evidence_reports.push(json!({"window":window,"target":target,"support":report}));
                         // Preserve the original 512-target filename for existing analysis tools.
                         let label = if target == 512 {"evidence".into()} else {format!("evidence{target}")};

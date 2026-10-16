@@ -170,7 +170,7 @@ mod tests {
         );
         let mut gather = Gather::default();
         for count in [16, 128, 512] {
-            let limit = crate::voxel_gi::spatial::evidence::candidate_limit(2048, count);
+            let limit = crate::voxel_gi::spatial::evidence::candidate_limit(2048, count, 0);
             let mut times = [Vec::new(), Vec::new()];
             for iteration in 0..10 {
                 for mode in [iteration % 2, 1 - iteration % 2] {

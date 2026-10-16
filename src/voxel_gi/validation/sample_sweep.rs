@@ -11,7 +11,7 @@ use super::super::{
     world::{SurfaceProbe, TransportScene, VoxelMaterialTransportTable},
 };
 use bevy::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -82,7 +82,7 @@ pub(super) fn path_count(faces: usize) -> u64 {
     faces as u64 * u64::from(paths) * STARTS.len() as u64
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) struct Prefix {
     pub paths: u32,
     pub means: Means,
@@ -93,7 +93,7 @@ pub(super) struct Prefix {
     pub gpu_ms: Option<f64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) struct Window {
     pub sequence_start: u32,
     pub prefixes: Vec<Prefix>,
@@ -251,6 +251,7 @@ pub(super) fn evidence_values(
     sites: &[(IVec3, usize)],
     prefix: &Prefix,
     target: u32,
+    max_donors: u32,
 ) -> (Means, serde_json::Value) {
     use super::super::spatial::{Sample, evidence};
     let indices: bevy::platform::collections::HashMap<_, _> = sites
@@ -285,7 +286,7 @@ pub(super) fn evidence_values(
             voxel,
             face,
             samples[i],
-            evidence::candidate_limit(target, prefix.paths),
+            evidence::candidate_limit(target, prefix.paths, max_donors),
             |p, f| indices.get(&(p, f)).map(|&j| samples[j]),
         );
         let result = evidence::resolve(&gather.sites, target, 1.0);
@@ -305,13 +306,16 @@ pub(super) fn evidence_values(
     }
     (
         values,
-        serde_json::json!({"paths":prefix.paths,"target":target,"faces":sites.len(),
+        serde_json::json!({"paths":prefix.paths,"target":target,"max_donors":max_donors,"faces":sites.len(),
         "mean_effective_support":effective/sites.len() as f64,"reached_fraction":reached as f64/sites.len() as f64,
         "mean_borrowed_faces":borrowed as f64/sites.len() as f64,"mean_candidates":candidates as f64/sites.len() as f64,
         "max_candidate_radius":(radius2 as f64).sqrt(),
         "note":"Weighted support heuristic, not independent samples or certified accuracy."}),
     )
 }
+
+#[cfg(test)]
+mod footprint_replay;
 
 #[cfg(test)]
 mod tests {

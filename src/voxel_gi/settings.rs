@@ -27,6 +27,10 @@ pub struct VoxelGiSettings {
     /// positive values choose a bounded adaptive footprint instead. This is not
     /// physical history or an accuracy guarantee. Requires spatial strength > 0.
     pub spatial_evidence_target: u32,
+    /// Maximum unique candidate neighbors in adaptive reconstruction, excluding
+    /// the receiver. Zero retains the legacy radius/work bound. This limits
+    /// footprint and cost, not target support, physical history or blend strength.
+    pub spatial_max_donors: u32,
     /// Experimental refinement ranking by projected RGB error in total light.
     /// Does not change stability, coverage, edit urgency, or the fair world sweep.
     pub visible_refinement: bool,
@@ -59,6 +63,7 @@ impl Default for VoxelGiSettings {
             simulation_sampling_importance: DEFAULT_SIMULATION_SAMPLING_IMPORTANCE,
             spatial_reconstruction: 0.0,
             spatial_evidence_target: 0,
+            spatial_max_donors: 0,
             visible_refinement: false,
             adaptive_updates: true,
             trace_budget_ms: 4.0,

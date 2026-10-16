@@ -384,6 +384,7 @@ impl ResidentAccumulator {
                             super::super::spatial::evidence::candidate_limit(
                                 self.evidence_target,
                                 predicted,
+                                work.spatial_max_donors,
                             ),
                             |address, edge, _| graph.neighbor(address.x, edge),
                         );
@@ -668,7 +669,7 @@ mod tests {
     #[test]
     #[ignore = "native spatial CPU/GPU oracle, unchanged transport/temporal snapshots, partial jobs and disable"]
     fn spatial_reconstruction_matches_oracle_without_feedback() {
-        check_spatial_oracle(0, IVec3::ZERO);
+        check_spatial_oracle(0, IVec3::ZERO, 0);
     }
 
     #[test]
@@ -676,12 +677,22 @@ mod tests {
     fn evidence_reconstruction_matches_oracle_without_feedback() {
         for target in [512, 1024, 2048, 4096] {
             for shift in [IVec3::ZERO, IVec3::new(-16, 0, -16)] {
-                check_spatial_oracle(target, shift);
+                check_spatial_oracle(target, shift, 0);
             }
         }
     }
 
-    fn check_spatial_oracle(target: u32, shift: IVec3) {
+    #[test]
+    #[ignore = "native capped adaptive support oracle, uneven histories, edit caps and unchanged statistics"]
+    fn capped_evidence_matches_oracle_without_feedback() {
+        for cap in [32, 64, 128] {
+            for shift in [IVec3::ZERO, IVec3::new(-16, 0, -16)] {
+                check_spatial_oracle(2048, shift, cap);
+            }
+        }
+    }
+
+    fn check_spatial_oracle(target: u32, shift: IVec3, cap: u32) {
         use super::super::super::spatial::{self, Sample};
         let evidence = target > 0;
         let mut control = super::super::tests::native_tracer();
@@ -702,6 +713,7 @@ mod tests {
         let mut a = TraceWork::from_probes(&probes, false);
         let mut b = TraceWork::from_probes(&probes, false);
         b.spatial_evidence_target = target;
+        b.spatial_max_donors = cap;
         let mut changed = false;
         for step in 0..5 {
             let spp = if evidence {
@@ -787,6 +799,7 @@ mod tests {
                     let word = |offset| {
                         u32::from_le_bytes(header[offset..offset + 4].try_into().unwrap()) as usize
                     };
+                    assert!(cap == 0 || word(12) <= cap as usize);
                     position_gather.collect(
                         key.0,
                         key.1,

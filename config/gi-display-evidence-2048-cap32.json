@@ -1,0 +1,5 @@
+{
+  "spatial_reconstruction": 1.0,
+  "spatial_evidence_target": 2048,
+  "spatial_max_donors": 32
+}

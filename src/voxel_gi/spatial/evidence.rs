@@ -20,11 +20,16 @@ pub(crate) fn position_tag(voxel: IVec3) -> u32 {
 
 /// Candidate search has a hard radius/work bound. Allow extra sites for uneven
 /// weights and rejection; the GPU decides actual support using current history.
-pub(crate) fn candidate_limit(target: u32, history: u32) -> usize {
+pub(crate) fn candidate_limit(target: u32, history: u32, max_donors: u32) -> usize {
     if history >= target {
         return 1;
     }
-    (2 * target.div_ceil(history.max(1)) as usize).clamp(1, MAX_FACES)
+    let maximum = if max_donors == 0 {
+        MAX_FACES
+    } else {
+        (max_donors.min((MAX_FACES - 1) as u32) + 1) as usize
+    };
+    (2 * u64::from(target).div_ceil(u64::from(history.max(1)))).clamp(1, maximum as u64) as usize
 }
 
 /// Reused worker scratch: a breadth-first surface walk, not a per-face hash set
@@ -176,6 +181,19 @@ mod tests {
     use super::*;
     use crate::voxel_gi::spatial::Sample;
 
+    #[test]
+    fn donor_cap_bounds_work_without_changing_late_or_uncapped_gathers() {
+        assert_eq!(candidate_limit(2048, 4, 0), 1024);
+        assert_eq!(candidate_limit(2048, 16, 0), 256);
+        for cap in [32, 64, 128] {
+            assert_eq!(candidate_limit(2048, 4, cap), cap as usize + 1);
+            assert_eq!(candidate_limit(2048, 128, cap), 32);
+            assert_eq!(candidate_limit(2048, 2048, cap), 1);
+        }
+        assert_eq!(candidate_limit(u32::MAX, 0, u32::MAX), MAX_FACES);
+        assert_eq!(candidate_limit(0, 0, 0), 1);
+    }
+
     fn sample(count: u32, value: f32) -> Sample {
         Sample {
             count,
@@ -215,7 +233,7 @@ mod tests {
                 IVec3::ZERO,
                 2,
                 value,
-                candidate_limit(512, count),
+                candidate_limit(512, count, 0),
                 |_, _| Some(value),
             );
             let resolved = resolve(&gather.sites, 512, 1.0);
