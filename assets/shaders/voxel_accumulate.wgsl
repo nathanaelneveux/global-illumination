@@ -1,7 +1,7 @@
 // Persistent measurement storage, independent of the ray estimator. Each face
-// owns eight uint4s: the six existing result records, presentation, then metadata.
+// owns nine uint4s: six result records, temporal RGB, metadata, render transition.
 // Readback is a snapshot of this state, never the authority for advancing rays.
-struct Controls { counts: vec4<u32>, options: vec4<u32> }
+struct Controls { counts: vec4<u32>, options: vec4<u32>, display: vec4<u32> }
 @group(0) @binding(0) var<uniform> settings: Controls;
 @group(0) @binding(1) var<storage, read_write> tasks: array<vec4<u32>>;
 @group(0) @binding(2) var<storage, read_write> output: array<vec4<u32>>;
@@ -17,15 +17,26 @@ fn prepare(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if i >= settings.options.y { return; }
     let input = inputs[i];
-    let base = input.x * 8u;
+    let base = input.x * 9u;
     if input.y != 0xffffffffu {
-        for (var word = 0u; word < 8u; word += 1u) {
-            state[base + word] = seeds[input.y * 8u + word];
+        for (var word = 0u; word < 9u; word += 1u) {
+            state[base + word] = seeds[input.y * 9u + word];
         }
     }
     state[base + 1u].y = min(state[base + 1u].y, input.z);
     if input.w != 0xffffffffu {
         tasks[input.w * 2u + 1u].x = state[base + 1u].z;
+        // Continue from what the renderer would show now, including an
+        // interrupted previous transition. Never blend from a raw/noisy donor.
+        let next_rgb = bitcast<vec3<f32>>(vec3(state[base + 1u].w, state[base + 3u].yz));
+        let previous = bitcast<vec4<f32>>(state[base + 8u]);
+        let duration = state[base + 7u].z;
+        let age = settings.display.x - state[base + 8u].w;
+        // A render frame may precede a pipelined submission's counter. Treat
+        // that as age zero; ordinary u32 wrap still advances the transition.
+        let elapsed = select(age, 0u, age > 0x7fffffffu);
+        let blend = select(1.0, min(f32(elapsed) / f32(max(duration, 1u)), 1.0), duration > 0u && duration <= 32u);
+        state[base + 8u] = vec4(bitcast<vec3<u32>>(mix(previous.rgb, next_rgb, blend)), settings.display.x);
     }
 }
 
@@ -34,7 +45,7 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
     let control = settings.counts;
     let i = id.x;
     if i >= control.x { return; }
-    let base = inputs[i].x * 8u;
+    let base = inputs[i].x * 9u;
     let result = i * 6u;
     let count = min(state[base + 1u].y + control.y, control.w);
     let alpha = min(f32(control.y) / f32(count), 1.0);
@@ -72,7 +83,9 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
         mix(previous.a, confidence, blend),
     ));
     state[base + 7u].y = control.z;
-    state[base + 7u].z = 1u;
+    // UINT_MAX denotes initialized, instantaneous publication.
+    // Its nonzero bits also preserve the existing temporal-clock validity flag.
+    state[base + 7u].z = select(0xffffffffu, settings.display.y, settings.display.y > 0u);
     // Spare result words carry the resolved presentation and its measurement
     // time without enlarging the five-band simulation snapshot.
     state[base + 1u].w = state[base + 6u].x;
@@ -101,7 +114,7 @@ fn reconstruct_spatial(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if i >= settings.counts.x { return; }
     let job = spatial_jobs[i * 11u];
-    let base = job.x * 8u;
+    let base = job.x * 9u;
     if state[base + 7u].x != job.y { return; }
     let center = bitcast<vec4<f32>>(state[base + 6u]);
     let mean = bitcast<vec4<f32>>(state[base]).rgb;
@@ -115,7 +128,7 @@ fn reconstruct_spatial(@builtin(global_invocation_id) id: vec3<u32>) {
         for (var n = 0u; n < 20u; n += 1u) {
             let packed = spatial_jobs[i * 11u + 1u + n / 2u];
             let address = select(packed.xy, packed.zw, n % 2u != 0u);
-            let donor = address.x * 8u;
+            let donor = address.x * 9u;
             if address.y == 0u || donor + 7u >= arrayLength(&state) { continue; }
             if state[donor + 7u].x != address.y { continue; }
             let count = state[donor + 1u].y;
@@ -155,7 +168,7 @@ fn unpack_position_tag(tag: u32) -> vec3<u32> {
 fn reconstruct_evidence(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= settings.counts.x { return; }
     let job = spatial_jobs[id.x];
-    let base = job.x * 8u;
+    let base = job.x * 9u;
     if state[base + 7u].x != job.y { return; }
     let count = state[base + 1u].y;
     let evidence_goal = f32(settings.options.w);
@@ -174,7 +187,7 @@ fn reconstruct_evidence(@builtin(global_invocation_id) id: vec3<u32>) {
     var squares = n;
     for (var i = 0u; i < job.w; i += 1u) {
         let candidate = spatial_donors[job.z + i];
-        let donor = candidate.x * 8u;
+        let donor = candidate.x * 9u;
         if candidate.y == 0u || donor + 7u >= arrayLength(&state) { continue; }
         if state[donor + 7u].x != candidate.y { continue; }
         let donor_count = f32(state[donor + 1u].y);

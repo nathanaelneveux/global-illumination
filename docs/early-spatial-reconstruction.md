@@ -1097,3 +1097,52 @@ Only read-only metadata checks and source/document editing ran alongside them.
 The final executable was rebuilt from the selected compact-CPU branch after
 the isolated GPU trials. Cargo object/incremental cleanup removed regenerable
 build files only; saved reference data and all comparison captures were kept.
+
+## Live publication investigation — 2026-10-16
+
+Frozen prefix images do not qualify live arrival cadence. New `live-cave` and
+`live-hallway` profiles keep normal terrain, adaptive scheduling and the chosen
+2048 reconstruction; the hallway view looks away from its emitter. Both ran
+182 seconds at 2560×1440, development profile, Apple M4/Metal, seed 7, textures
+on, corner sun/indirect, AO off, with the moving background loader.
+
+At `a7e1bf4`, cave run `live-cave-1792159942800179000-70351` had approximately
+0.7-second median refresh intervals on near walls; far-wall p95 intervals were
+2.2–3.4 seconds. Reconstruction updates only selected receivers, not every
+neighbor whenever a donor changes. Each completed target was displayed as an
+instantaneous step. This explains a source of block/section-wise motion without
+claiming every observed discontinuity has been isolated.
+
+The render-transition change retains the current displayed RGB and advances
+to new targets over eight frames. Native tests verify interruption continuity,
+counter wrap, pipelined counter order, and unchanged physical means, moments,
+counts, sequences and pre-spatial feedback. The spatial CPU/GPU oracle still
+passes with uneven edit histories. It costs 16 additional GPU bytes per face;
+there is no new readback or per-frame CPU traversal. Zero transition frames is
+the explicit comparison control. It does not make stale faces refresh sooner.
+
+Candidate `523e872` plus the render-transition diff (later committed with this
+record), run `live-cave-1792160879912502000-71210`, completed with valid nonblank
+captures and clean render logs. Offscreen settling cadence p99 was
+30.27→30.46 ms; transport timestamp median 3.964→3.966 ms; total traced paths
+429.5M→483.1M; median observed wall history 4320→4827. This preliminary pair
+does not show starvation or an obvious large regression. It is **not** evidence
+of a speedup or 60 FPS: offscreen cadence is not windowed pacing, and the
+baseline included a CPU-only test build during part of its run. Still images
+qualify retained appearance, not perceptual smoothness in motion.
+
+Hallway run `live-hallway-1792159745216274000-70155` reached roughly 3.6–9.3k
+paths on the observed floor after three minutes. Some dark-end estimates still
+had 16–35% relative statistical standard error. The current reconstruction
+stops borrowing at 2048 paths even in this case. That count was calibrated in
+the cave; it is not a universal confidence threshold. In contrast, the observed
+cave wall receivers crossing 2048 had median/p95 relative RGB standard error
+3.8%/4.8% (a diagnostic, not a replacement for the FLIP calibration).
+
+Repeat `live-hallway-1792160149194118000-70580` includes two frozen 65,536-path
+references. Some dark receivers have substantial replica disagreement, so these
+are not yet an accurate-enough target for judging subtle hallway falloff.
+High variance is measured; a sampler defect is not ruled out. Do not silently
+raise the evidence target, alter transport/history, or call these live tails
+ground truth. Larger disjoint references and independent cosine checks are the
+next qualification step.

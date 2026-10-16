@@ -5,7 +5,7 @@ use super::super::world::{AIR, FACE_OFFSETS, REGION_EDGE};
 use super::*;
 use bevy::platform::collections::{HashMap, HashSet};
 
-const RECORD_BYTES: usize = 128;
+const RECORD_BYTES: usize = 144;
 const DONOR_BYTES: usize = 8;
 const SHADER: &str = include_str!("../../../assets/shaders/voxel_accumulate.wgsl");
 type Key = (IVec3, usize);
@@ -457,6 +457,10 @@ impl ResidentAccumulator {
             (self.input_bytes.len() / 16) as u32,
             spatial_strength.to_bits(),
             self.evidence_target,
+            work.display_frame,
+            work.display_transition_frames,
+            0,
+            0,
         ];
         self.control.upload(
             device,
@@ -617,6 +621,7 @@ fn encode_seed(
     words[13] = words[25];
     words[14] = words[26];
     words[15] = words[27];
+    words.copy_within(24..27, 32);
     if let Some(time) = face.updated_at {
         words[29] = if time >= origin {
             time.duration_since(origin).as_millis() as u32
@@ -631,6 +636,54 @@ fn encode_seed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "native frame-continuous RGB targets; unchanged physical and temporal feedback"]
+    fn resident_display_transition_retargets_continuously_without_feedback() {
+        let mut control = super::super::tests::native_tracer();
+        control.enable_resident().unwrap();
+        let mut gpu = GpuTracer::new(control.context.clone()).unwrap();
+        gpu.enable_resident().unwrap();
+        let fixture = super::super::refinement::research_fixture(2);
+        let emitters = Arc::new(EmissionDistribution::build(&fixture.scene, &fixture.materials));
+        let probe = SurfaceProbe::new(IVec3::new(8, 4, 8), 4);
+        let mut a = TraceWork::from_probes(&[probe.clone()], false);
+        let mut b = TraceWork::from_probes(&[probe], false);
+        b.display_transition_frames = 8;
+        let rgb = |words: &[u32], offset: usize| {
+            Vec3::new(f32::from_bits(words[offset]), f32::from_bits(words[offset + 1]), f32::from_bits(words[offset + 2]))
+        };
+        let mut previous: Option<Vec<u32>> = None;
+        // Includes interrupted transitions, completion, counter wrap and a
+        // submission one frame ahead of the visible renderer's counter.
+        for (step, frame) in [u32::MAX - 5, u32::MAX - 1, 2, 20, 19].into_iter().enumerate() {
+            a.display_frame = frame;
+            b.display_frame = frame;
+            for (tracer, work) in [(&mut control, &mut a), (&mut gpu, &mut b)] {
+                tracer.resident.as_mut().unwrap().clock_ms = Some(1000 + step as u32 * 50);
+                tracer.trace_compact(fixture.scene.clone(), &fixture.sources, &fixture.materials,
+                    work, 16, &emitters, false).unwrap();
+            }
+            assert_eq!(a.faces[0].radiance, b.faces[0].radiance);
+            assert_eq!(a.faces[0].second_moment, b.faces[0].second_moment);
+            assert_eq!(a.faces[0].presentation, b.faces[0].presentation);
+            assert_eq!(a.faces[0].samples, b.faces[0].samples);
+            assert_eq!(a.faces[0].sequence, b.faces[0].sequence);
+            let words = read_state(&gpu);
+            assert_eq!(words[35], frame);
+            assert_eq!(words[30], 8);
+            if let Some(old) = previous {
+                let age = frame.wrapping_sub(old[35]);
+                let blend = if age > i32::MAX as u32 { 0.0 } else { (age as f32 / 8.0).min(1.0) };
+                let target = Vec3::new(f32::from_bits(old[7]), f32::from_bits(old[13]), f32::from_bits(old[14]));
+                let expected = rgb(&old, 32).lerp(target, blend);
+                assert!((rgb(&words, 32) - expected).abs().max_element() < 0.000001);
+            } else {
+                assert_eq!(rgb(&words, 32), Vec3::ZERO);
+            }
+            previous = Some(words);
+        }
+    }
 
     fn read_state(gpu: &GpuTracer) -> Vec<u32> {
         let resident = gpu.resident.as_ref().unwrap();
@@ -768,7 +821,7 @@ mod tests {
             }
             let words = read_state(&gpu);
             let sample = |slot: &Slot| {
-                let base = slot.index as usize * 32;
+                let base = slot.index as usize * (RECORD_BYTES / 4);
                 let vec = |offset| {
                     Vec3::new(
                         f32::from_bits(words[base + offset]),
@@ -843,7 +896,7 @@ mod tests {
                         b.spatial_reconstruction,
                     )
                 };
-                let base = slot.index as usize * 32;
+                let base = slot.index as usize * (RECORD_BYTES / 4);
                 let actual = Vec3::new(
                     f32::from_bits(words[base + 7]),
                     f32::from_bits(words[base + 13]),

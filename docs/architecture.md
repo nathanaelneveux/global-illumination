@@ -446,6 +446,18 @@ supplies display values. Spatial output never feeds transport, moments, temporal
 history, scheduling or simulation readback. The CPU reference keeps the original
 corner display. See [reconstruction and cost evidence](early-spatial-reconstruction.md).
 
+Resident presentation also retains the currently displayed RGB when a new
+target arrives and interpolates toward that target over eight render frames.
+This final transition runs in the material, using Bevy's shared frame counter;
+it continues while transport works on other receivers. Interrupted transitions
+start from their current interpolated value, not an older endpoint. It adds no
+readback, per-frame CPU probe loop or recursive spatial feedback. Counter wrap
+and pipelined frames preceding a submission are handled explicitly. The
+`display_transition_frames` setting is capped at 32; zero restores instantaneous
+publication (`config/gi-display-instant.json`). This smooths arrival steps, not
+sampling error, refresh starvation or direct-sun updates. Eight frames is about
+133 ms at 60 Hz, with queued submission time counting toward that interval.
+
 Newly exposed faces can borrow low-confidence display from measured, compatible
 pre-edit neighbors connected through known air. Synthetic seeds never become
 donors in the same publication and never increment measurements or moments.
@@ -635,7 +647,8 @@ Proposal-cache changes preserve valid lighting history. Display confidence and
 smoothing remain RGB-only; the current conservative sleep heuristic still checks
 all bands. Demand-specific simulation tolerances/ticks remain future host work.
 
-The resident record is 128 bytes per allocated face, plus the CPU scheduling/
+The resident record is 144 bytes per allocated face (including a 16-byte
+render-transition record), plus the CPU scheduling/
 simulation snapshot and ownership index. Render probes grow from 208 to 256 bytes
 to carry six addresses. These are deliberate memory costs, not a claim that GPU
 residency removes CPU memory. Debug temporal diagnostics reconstruct from the

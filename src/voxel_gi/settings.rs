@@ -45,6 +45,10 @@ pub struct VoxelGiSettings {
     pub display_upload_interval: Duration,
     /// Presentation-only temporal response. Does not filter simulation energy.
     pub display_response: Duration,
+    /// Render-time transition between completed resident RGB targets. Unlike
+    /// estimator filtering, this advances on every rendered frame even when a
+    /// face waits for transport. Zero is the instantaneous publication control.
+    pub display_transition_frames: u32,
     /// Settled faces still receive verification rays at this cadence. This is
     /// eligibility, not a deadline: loaded-world size and work budget matter.
     pub stable_audit_interval: Duration,
@@ -71,6 +75,7 @@ impl Default for VoxelGiSettings {
             scene_publish_budget: Duration::from_millis(2),
             display_upload_interval: Duration::from_millis(50),
             display_response: Duration::from_millis(75),
+            display_transition_frames: 8,
             stable_audit_interval: Duration::from_secs(2),
             stable_min_samples: 64,
             stable_relative_error: 0.12,

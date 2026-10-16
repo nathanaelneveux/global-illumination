@@ -136,14 +136,19 @@ fn lookup_face(voxel: vec3<i32>, face: u32) -> vec4<f32> {
 fn resolved_face(index: u32, face: u32) -> vec4<f32> {
     let fallback = transport_probes[index].faces[face];
     let address = transport_probes[index].resident[face];
-    let base = address.x * 8u;
-    if fallback.w > 0.0 && address.y != 0u && base + 7u < arrayLength(&resident_faces) {
+    let base = address.x * 9u;
+    if fallback.w > 0.0 && address.y != 0u && base + 8u < arrayLength(&resident_faces) {
         if resident_faces[base + 7u].x == address.y {
             // Final presentation is separate from the unfiltered temporal
             // resolve at record six. Spatial reconstruction never feeds back.
             let display = bitcast<vec4<f32>>(vec4(resident_faces[base + 1u].w, resident_faces[base + 3u].yzw));
+            let previous = bitcast<vec4<f32>>(resident_faces[base + 8u]);
+            let duration = resident_faces[base + 7u].z;
+            let age = mesh_view_bindings::globals.frame_count - resident_faces[base + 8u].w;
+            let elapsed = select(age, 0u, age > 0x7fffffffu);
+            let blend = select(1.0, min(f32(elapsed) / f32(max(duration, 1u)), 1.0), duration > 0u && duration <= 32u);
             let custom = bitcast<vec4<f32>>(resident_faces[base + 5u]).yzw;
-            return vec4(display.rgb + custom, max(display.a, 0.03125));
+            return vec4(mix(previous.rgb, display.rgb, blend) + custom, max(display.a, 0.03125));
         }
     }
     return fallback;

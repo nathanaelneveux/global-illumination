@@ -13,6 +13,9 @@ pub(crate) struct TraceWork {
     /// Immutable model snapshot for this batch, shared by both backends.
     pub transport: super::TransportSettings,
     pub response_seconds: f32,
+    /// Same wrapping frame counter as Bevy's render Globals uniform.
+    pub display_frame: u32,
+    pub display_transition_frames: u32,
     pub spatial_reconstruction: f32,
     pub spatial_evidence_target: u32,
     pub spatial_max_donors: u32,

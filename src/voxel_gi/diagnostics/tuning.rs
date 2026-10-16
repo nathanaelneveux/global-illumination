@@ -104,6 +104,7 @@ fn parse_settings(json: &str) -> Result<VoxelGiSettings, String> {
     settings.display_response = settings
         .display_response
         .clamp(Duration::from_millis(10), Duration::from_millis(500));
+    settings.display_transition_frames = settings.display_transition_frames.min(32);
     settings.scene_publish_budget = settings.scene_publish_budget.min(Duration::from_millis(8));
     settings.display_upload_interval = settings
         .display_upload_interval
@@ -241,6 +242,8 @@ fn contents(
     egui::CollapsingHeader::new("Presentation — live, does not alter transport")
         .default_open(true).show(ui, |ui| {
             duration_slider(ui, &mut settings.display_response, 10.0..=500.0, "Temporal response (ms)");
+            ui.add(egui::Slider::new(&mut settings.display_transition_frames, 0..=32).text("Publication transition (frames)"))
+                .on_hover_text("Blend completed resident RGB targets on every rendered frame. Zero is instantaneous publication. Does not change measurements or delay simulation delivery.");
             ui.small("Larger = slower/smoother. Evidence and noise limits can dominate this time constant; it is not a settling deadline.");
             ui.add(egui::Slider::new(&mut display.intensity, 0.0..=3.0).text("Indirect display gain"));
             ui.horizontal(|ui| {

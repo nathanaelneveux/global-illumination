@@ -76,6 +76,7 @@ pub(super) fn start_trace_task(
     settings: Res<VoxelGiSettings>,
     visual_weights: Option<Res<super::VoxelGiVisualWeights>>,
     startup: Option<Res<super::VoxelGiStartup>>,
+    frame: Option<Res<bevy::diagnostic::FrameCount>>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
     let _timing = timings.main_scope(super::telemetry::MainStage::TraceDispatch);
@@ -130,6 +131,8 @@ pub(super) fn start_trace_task(
     };
     selected.transport = runtime.transport;
     selected.response_seconds = settings.display_response_seconds();
+    selected.display_frame = frame.as_ref().map_or(0, |frame| frame.0);
+    selected.display_transition_frames = settings.display_transition_frames.min(32);
     selected.spatial_reconstruction = settings.spatial_reconstruction;
     selected.spatial_evidence_target = settings.spatial_evidence_target.min(4096);
     selected.spatial_max_donors = settings.spatial_max_donors;

@@ -3160,7 +3160,7 @@ mod tests {
         for (generation, count) in [1, 64, 3, 3, 128, 8].into_iter().enumerate() {
             let resident_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("resident identity regression"),
-                size: count as u64 * 128,
+                size: count as u64 * 144,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
