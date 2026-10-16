@@ -1,5 +1,22 @@
 # Early spatial reconstruction — October 15, 2026
 
+## Current selection — October 16
+
+The user selected the uncapped 2048-evidence look over the capped alternatives.
+`voxel-global-illumination` now includes the tested `39780e8` lineage; defaults
+are strength one, target 2048, extra donor cap zero. This retains the existing
+radius/work bound and compact CPU walk. Rejected GPU-walk and packed-sample
+branches remain unmerged. Prior native/image/edit/performance evidence below is
+reused for the unchanged implementation, not claimed as a new run.
+
+Use `config/gi-display-unfiltered.json` for the no-adaptive-spatial control.
+`gi-adaptive-spatial.json` explicitly retains the older fixed stencil, and
+`gi-visible-refinement.json` keeps spatial reconstruction off to isolate ranking.
+The following sections record the experiments chronologically: their statements
+that spatial reconstruction was opt-in describe those historical baselines.
+Sampler qualification must remain separate from presentation qualification;
+see [the testing contract](validation.md#separate-sampling-accuracy-from-presentation).
+
 ## Purpose and controls
 
 Reduce spatial noise early without changing the qualified temporal response,

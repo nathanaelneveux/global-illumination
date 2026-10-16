@@ -81,6 +81,33 @@ or noisy. Retain logs and captures under ignored `target/`, not Git.
 
 ## Choose the relevant check
 
+### Separate sampling accuracy from presentation
+
+The preferred resident display now uses uncapped 2048-evidence reconstruction.
+Do not let that hide estimator regressions or inflate apparent sample efficiency:
+
+- **Sampler qualification:** compare raw frozen-scene prefixes at matched path
+  counts and native compute budgets against the same qualified reference, over
+  the same disjoint sequence windows. `sample_sweep` reads physical means directly
+  and renders `samples-*` without temporal/adaptive spatial filtering, regardless
+  of gameplay defaults. Ordinary corner interpolation and materials stay fixed.
+  Reuse variants need their own raw-prefix comparison, including correlation.
+- **Presentation qualification:** apply reconstruction to those identical saved
+  prefixes, then compare noise, FLIP, bias/detail and edit response separately.
+  Borrowed evidence does not increase the physical sample count. A smoother image
+  alone cannot lower the calibrated raw-sampler threshold.
+- **Gameplay cost:** compare full presentation with matched settings and background
+  loading. `config/gi-display-unfiltered.json` explicitly disables adaptive spatial
+  reconstruction; unlike frozen prefixes it retains normal temporal response.
+  Omitting `VOXEL_GI_SETTINGS` now enables reconstruction and is no longer an off
+  control. Report cadence/freshness separately from fixed-prefix accuracy.
+
+Report average FLIP across windows, worst-window mean FLIP, and worst regional
+tile separately. These answer different questions; an average must not conceal a
+localized regression. The provisional smooth-wall noise envelope complements,
+not replaces, the existing user-calibrated FLIP guard. Change a quality threshold
+only with new matched evidence and visual agreement, not to pass a candidate.
+
 | Change | First useful check |
 | --- | --- |
 | Documentation/workflow | Diff and link review; no renderer run |

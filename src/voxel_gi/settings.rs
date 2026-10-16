@@ -19,11 +19,11 @@ pub struct VoxelGiSettings {
     /// Defaults to 0.125 on every backend, independently of path reuse; use one
     /// for equal-band sampling. This is not a fixed ratio of sample counts.
     pub simulation_sampling_importance: f32,
-    /// Experimental resident-only, nonrecursive spatial RGB reconstruction.
+    /// Resident-only, nonrecursive spatial RGB reconstruction.
     /// Zero is the unchanged corner display; one enables uncertainty-weighted
     /// connected-surface filtering. Never changes transport or simulation data.
     pub spatial_reconstruction: f32,
-    /// Experimental display-evidence target. Zero selects the fixed stencil;
+    /// Display-evidence target. Zero selects the fixed stencil;
     /// positive values choose a bounded adaptive footprint instead. This is not
     /// physical history or an accuracy guarantee. Requires spatial strength > 0.
     pub spatial_evidence_target: u32,
@@ -61,8 +61,8 @@ impl Default for VoxelGiSettings {
             transport: TransportSettings::default(),
             samples_per_dispatch: 16,
             simulation_sampling_importance: DEFAULT_SIMULATION_SAMPLING_IMPORTANCE,
-            spatial_reconstruction: 0.0,
-            spatial_evidence_target: 0,
+            spatial_reconstruction: 1.0,
+            spatial_evidence_target: 2048,
             spatial_max_donors: 0,
             visible_refinement: false,
             adaptive_updates: true,
@@ -195,6 +195,35 @@ pub(super) fn synchronize_transport_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preferred_spatial_default_has_explicit_unfiltered_and_fixed_controls() {
+        let settings = VoxelGiSettings::default();
+        let preset: VoxelGiSettings =
+            serde_json::from_str(include_str!("../../config/gi-display-evidence-2048.json"))
+                .unwrap();
+        assert_eq!(settings, preset);
+        assert_eq!(settings.spatial_reconstruction, 1.0);
+        assert_eq!(settings.spatial_evidence_target, 2048);
+        assert_eq!(settings.spatial_max_donors, 0);
+        let control: VoxelGiSettings =
+            serde_json::from_str(include_str!("../../config/gi-display-unfiltered.json")).unwrap();
+        assert_eq!(control.spatial_reconstruction, 0.0);
+        assert_eq!(control.spatial_evidence_target, 0);
+        assert_eq!(control.transport, settings.transport);
+        assert_eq!(
+            control.sampling_importance(),
+            settings.sampling_importance()
+        );
+        let fixed: VoxelGiSettings =
+            serde_json::from_str(include_str!("../../config/gi-adaptive-spatial.json")).unwrap();
+        assert_eq!(fixed.spatial_reconstruction, 1.0);
+        assert_eq!(fixed.spatial_evidence_target, 0);
+        let ranking: VoxelGiSettings =
+            serde_json::from_str(include_str!("../../config/gi-visible-refinement.json")).unwrap();
+        assert!(ranking.visible_refinement);
+        assert_eq!(ranking.spatial_reconstruction, 0.0);
+    }
 
     #[test]
     fn tuning_limits_are_finite_and_defaults_roundtrip() {

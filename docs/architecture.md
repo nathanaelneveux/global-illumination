@@ -430,13 +430,21 @@ faces update in place, preserving untouched faces and live topology indices.
 
 ## Temporal and spatial display
 
-Temporal filtering runs on CPU result merge, once per updated face. It blends
+Temporal filtering runs on resident GPU accumulation (or CPU result merge in the
+fallback), once per updated face. It blends
 that face's measured indirect RGB with its own previous display. The base
 time response is `1 - exp(-elapsed / response_seconds)`. Sample evidence and
 visible-band noise further limit the blend; noisy dark estimates are deliberately
 slow. Brightness-compressed weights suppress isolated HDR jumps without imposing
 a permanent brightness ceiling. Confidence weights evolve with the filtered
 value. This is biased presentation, not a modified physical estimator.
+
+Resident RGB then uses nonrecursive, connected-coplanar evidence reconstruction,
+with the user-selected target 2048 and no extra donor cap. The radius/work bound
+still applies. Compatible raw statistics determine donor weights; temporal RGB
+supplies display values. Spatial output never feeds transport, moments, temporal
+history, scheduling or simulation readback. The CPU fallback keeps the original
+corner display. See [reconstruction and cost evidence](early-spatial-reconstruction.md).
 
 Newly exposed faces can borrow low-confidence display from measured, compatible
 pre-edit neighbors connected through known air. Synthetic seeds never become

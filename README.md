@@ -63,10 +63,13 @@ study. Reuse costs more per batch and is not a universal throughput win. See
 `VOXEL_GI_BACKEND=sync` keeps the synchronous backend available; add the equal-band
 preset to reproduce its historical sampling priority too.
 
-Early spatial RGB reconstruction and total-light-aware refinement are opt-in
-experiments, not new stable defaults. See [controls, architecture and image
-evidence](docs/early-spatial-reconstruction.md). The 2048 display preset retains
-its full adaptive footprint; `gi-display-evidence-2048-cap32/64/128.json`
+Early spatial RGB reconstruction now defaults to the user-selected **2048
+evidence target with its full adaptive footprint**, without an extra donor cap.
+It filters presentation only, never physical samples or simulation data.
+Use `VOXEL_GI_SETTINGS=config/gi-display-unfiltered.json` for the unfiltered
+control; sampler accuracy must be qualified separately from this reconstruction.
+Total-light-aware refinement remains opt-in. See [controls, architecture and image
+evidence](docs/early-spatial-reconstruction.md). `gi-display-evidence-2048-cap32/64/128.json`
 presets explicitly trade maximum candidate neighbors for cost. The 64-neighbor
 option improves measured cave throughput, but loses four-sample smoothness and
 has not qualified as a universal edit-response improvement.
