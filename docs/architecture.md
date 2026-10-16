@@ -720,6 +720,8 @@ the active pipeline changes; unchanged buffer identities alone are insufficient.
 Sky has its own pipeline and is independent of these variants.
 
 Source-informed guiding is a proposal choice, not part of `TransportSettings`.
+It is experimental/off by default: sparse-hallway gains did not survive the
+whole-cave worst-patch visual gate at the accepted sample count.
 It mixes cosine sampling with a source-directed spherical lobe and applies the
 same PDF to throughput and emitter MIS, including the terminal connection.
 The light-tree PMF remains distinct from the source-concentration heuristic.
@@ -731,7 +733,9 @@ history; neither old measurements nor a missing guide are replaced by invented
 energy. A zero-weight guide is the intentional cosine proposal, not an error
 fallback. The [hallway investigation](hallway-path-outliers.md) records the
 variance reduction, extra raw-sampling cost, rejected alternatives, and the
-independent correctness audit that removed biased path truncation.
+independent correctness audit that removed biased path truncation, and the
+full-image gate that revoked its default promotion. This is an explicit
+configuration decision, not a silent runtime fallback or scene-name special case.
 
 The normalized model is captured on `TraceWork` for CPU/GPU parity. A model change
 calls `invalidate_model`: outstanding old-model results are

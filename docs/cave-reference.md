@@ -81,7 +81,8 @@ against a newly baked reference on the very same scene. See the
 comparison at 4 through 8,192 paths in four sequence windows. Both arms use the
 same frozen geometry, RGB sampling importance, 512-face batches, and raw
 independent paths; neither uses reuse, temporal filtering or adaptive spatial
-reconstruction. Candidate settings must have guiding enabled. It rejects
+reconstruction. Use `VOXEL_GI_SETTINGS=config/gi-guiding.json` to enable the
+experimental candidate (the normal default is off). It rejects
 combination with reuse/spatial/evidence sweeps. The shared disjoint high-sample
 reference remains unguided with equal-band importance. Analyze candidate and
 control with `tools/cave_sample_analysis.py RUN --perceptual` and the same

@@ -50,16 +50,16 @@ may be noisier. This sampling priority is independent of path reuse and applies
 to every backend. `config/gi-equal-band.json` selects equal-band importance;
 it does not disable guiding. Explicit values in settings files remain respected.
 
-Source-informed path guiding also defaults on. It addresses rare high-energy
-indirect paths that left repeatable bright faces in the long hallway. It changes
-sampling directions and MIS PDFs, not energy, history retention, or spatial
-smoothing. A small GPU preparation pass adds no CPU readback. The measured
-normal-world trade-off is about 16% fewer raw paths at the same compute budget;
-the live hallway's 30-second raw error beats the old three-minute result.
-Use `VOXEL_GI_SETTINGS=config/gi-guiding-control.json cargo run --locked` for
-the unguided control. See [diagnosis, evidence and limits](docs/hallway-path-outliers.md).
+Source-informed path guiding is **experimental and defaults off**. It reduces
+rare high-energy hallway outliers, but the full corrected cave image study
+fails the existing visual target at 2048 paths (first passes at 8192); the
+matched unguided control passes at 2048. It also has sampling overhead. This
+disqualifies its earlier promotion as a universal default. To investigate the
+hallway benefit, use `VOXEL_GI_SETTINGS=config/gi-guiding.json cargo run --locked`.
+The known sparse-hallway variance remains a follow-up, not a solved default.
+See [diagnosis, evidence and limits](docs/hallway-path-outliers.md).
 
-The qualified path-reuse experiment is still opt-in:
+The historically qualified path-reuse experiment is still opt-in:
 
 ```sh
 VOXEL_GI_BACKEND=reuse VOXEL_GI_SETTINGS=config/gi-guiding-control.json cargo run --locked
@@ -71,7 +71,9 @@ RGB-prioritized control first passes at 2048 in the subsequent matched spatial
 study. Reuse costs more per batch and is not a universal throughput win. See
 [measurements and tradeoffs](docs/resident-path-reuse.md).
 Those historical results used guiding off; the combined reuse/guiding mode has
-not been qualified. Reproducing older equal-band results requires both
+not been qualified. Reuse needs renewed qualification after the transport
+correctness fixes, including its separate reconnection visibility. Reproducing
+older equal-band results requires both
 `simulation_sampling_importance: 1.0` and `emitter_guiding: false` in the preset.
 `VOXEL_GI_BACKEND=sync` keeps the synchronous backend available; add the equal-band
 preset to reproduce its historical sampling priority too.
