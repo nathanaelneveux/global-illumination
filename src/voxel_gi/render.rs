@@ -2838,7 +2838,7 @@ mod tests {
             assert!(is_probe);
             sent.push((offset, bytes.to_vec()));
         }).unwrap();
-        assert_eq!(sent, vec![(GPU_PROBE_BYTES + 144, vec![42u32.to_le_bytes(); 4].concat())]);
+        assert_eq!(sent, vec![(GPU_PROBE_BYTES + 144, [42u32.to_le_bytes(); 4].concat())]);
         state.patch_probe(1, probe);
         assert!(state.pending_probes.is_empty(), "identical publication adds no transfer");
         probe.direct_sky[0].x = 9;

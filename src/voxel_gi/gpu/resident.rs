@@ -647,7 +647,7 @@ mod tests {
         let fixture = super::super::refinement::research_fixture(2);
         let emitters = Arc::new(EmissionDistribution::build(&fixture.scene, &fixture.materials));
         let probe = SurfaceProbe::new(IVec3::new(8, 4, 8), 4);
-        let mut a = TraceWork::from_probes(&[probe.clone()], false);
+        let mut a = TraceWork::from_probes(std::slice::from_ref(&probe), false);
         let mut b = TraceWork::from_probes(&[probe], false);
         b.display_transition_frames = 8;
         let rgb = |words: &[u32], offset: usize| {
