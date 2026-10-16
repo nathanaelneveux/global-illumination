@@ -111,6 +111,14 @@ fn shader(iid: bool, roulette: bool, legacy_cutoff: bool) -> String {
     shader
 }
 
+fn legacy_visibility_shader(source: &str) -> String {
+    replace_once(
+        source,
+        "if trace(shadow_origin, shadow_delta / shadow_distance, shadow_distance).status != 0u { return result; }",
+        "if trace(position + normal * 0.002, direction, distance - 0.008).status != 0u { return result; }",
+    )
+}
+
 #[test]
 fn correctness_audit_shader_variants_validate() {
     for iid in [false, true] {
@@ -243,7 +251,7 @@ fn native_low_throughput_path_keeps_bright_suffix() {
 #[ignore = "paired native dispatch cost; run without another GI app or compiler"]
 fn cutoff_removal_dispatch_cost() {
     let native = tests::native_tracer();
-    let mut variants: Vec<_> = [
+    let variants: Vec<_> = [
         ("unguided", false, false),
         ("legacy_guided", true, true),
         ("corrected_guided", true, false),
@@ -258,6 +266,30 @@ fn cutoff_removal_dispatch_cost() {
         )
     })
     .collect();
+    dispatch_cost(variants, "target/cutoff-removal-dispatch-cost.json");
+}
+
+#[test]
+#[ignore = "paired endpoint-visibility GPU cost; run without other GPU work or compilation"]
+fn endpoint_visibility_dispatch_cost() {
+    let native = tests::native_tracer();
+    let variants = [
+        ("legacy-endpoints", legacy_visibility_shader(SHADER)),
+        ("corrected-endpoints", SHADER.to_owned()),
+    ]
+    .into_iter()
+    .map(|(name, source)| {
+        (
+            name,
+            true,
+            GpuTracer::with_shader(native.context.clone(), true, &source).unwrap(),
+        )
+    })
+    .collect();
+    dispatch_cost(variants, "target/endpoint-visibility-dispatch-cost.json");
+}
+
+fn dispatch_cost(mut variants: Vec<(&str, bool, GpuTracer)>, output: &str) {
     let mut rows = Vec::new();
     for (name, fixture) in [
         ("hallway", crate::voxel_gi::research::hallway_loaded()),
@@ -274,8 +306,9 @@ fn cutoff_removal_dispatch_cost() {
             work.probes.last_mut().unwrap().sky_requested = false;
         }
         for round in 0..26 {
-            for offset in 0..3 {
-                let (variant, guided, gpu) = &mut variants[(offset + round as usize) % 3];
+            for offset in 0..variants.len() {
+                let index = (offset + round as usize) % variants.len();
+                let (variant, guided, gpu) = &mut variants[index];
                 work.emitter_guiding = *guided;
                 for face in &mut work.faces {
                     face.sequence = round * 16;
@@ -301,11 +334,7 @@ fn cutoff_removal_dispatch_cost() {
             }
         }
     }
-    std::fs::write(
-        "target/cutoff-removal-dispatch-cost.json",
-        serde_json::to_vec_pretty(&rows).unwrap(),
-    )
-    .unwrap();
+    std::fs::write(output, serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
 }
 
 #[test]

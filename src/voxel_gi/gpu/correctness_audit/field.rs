@@ -465,11 +465,7 @@ fn grazing_emitter_plane_matches_view_factor() {
     ));
     let expected = research::grazing_emitter_view_factor();
     let native = tests::native_tracer();
-    let legacy = replace_once(
-        &shader(true, true, false),
-        "if trace(shadow_origin, shadow_delta / shadow_distance, shadow_distance).status != 0u { return result; }",
-        "if trace(position + normal * 0.002, direction, distance - 0.008).status != 0u { return result; }",
-    );
+    let legacy = legacy_visibility_shader(&shader(true, true, false));
     for (name, source) in [
         ("corrected", shader(true, true, false)),
         ("cosine-only", cosine_shader()),
