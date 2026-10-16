@@ -533,3 +533,134 @@ Detailed results: `target/evidence-target-image-quality.json`,
 `cave-evidence-support.json`. The combined image
 `evidence-evidence1024-evidence2048-evidence4096-overview-window-0.png` in that run
 shows 4/16/128 paths, with the reference in the final column.
+
+## Preserving the 2048 look while reducing cost (`bfffadf`)
+
+The user selected 2048 as the preferred visual target after reviewing the
+matched images. Keep that target fixed while optimizing implementation cost;
+do not substitute less smoothing and call it a speedup. The numerical match
+with the original 2048-path visual calibration is not an equivalence: borrowed,
+correlated display support is not 2048 independent measurements at a receiver.
+
+Selected implementation branch: `codex/gi-evidence-topology`. Baseline
+`963d0ca` is preserved on `codex/gi-evidence-target-sweep` (its native code is
+unchanged from `1b327e6`). Two independently verified checkpoints:
+
+- `ba3226d`: worker-owned, stable-slot coplanar adjacency replaces repeated
+  world-position hash lookups. Each node stores four neighboring slot indices
+  and its incarnation. Insertion/retirement/recycling maintain both endpoints;
+  reseeding updates identity without rebuilding geometry. Only topology is
+  cached, never radiance, donor lists or history-dependent decisions. The same
+  bounded breadth-first walk preserves donor order and all weighting rules.
+  Storage is 20 bytes per allocated slot plus vector spare capacity, only while
+  adaptive reconstruction is enabled; disabling releases the topology.
+- `bfffadf`: donor records shrink from 16 to 8 bytes, retaining full slot and
+  incarnation identities. Coordinates modulo 64 fit in an existing spare
+  resident metadata word. Since the gather radius is 16, the GPU recovers exact
+  signed local distances across periodic boundaries. These tags are distance
+  metadata, never identities. Resident records remain 128 bytes. Donor upload
+  traffic is halved, not total GI traffic or total GI memory.
+
+Transport, retention, temporal smoothing, compatibility, support target and
+the partial-final-donor rule are unchanged. No BVW change. Spatial filtering
+remains opt-in; use `VOXEL_GI_SETTINGS=config/gi-display-evidence-2048.json`.
+
+### Cost qualification
+
+Apple M4/Metal, 16 GiB, macOS 26.6.2, Rust 1.95, optimized development profile,
+2560×1440 offscreen; preferred corner display, textures on, baked AO off,
+independent RGB-prioritized paths, 16 paths/dispatch, 3 bounces/reach 768,
+4 ms trace budget, spatial strength 1/target 2048. Both profiles include
+background terrain. No concurrent compiler, GPU test or image analysis during
+timed runs. All runs completed with valid nonblank captures, expected edit
+events and clean render logs. These are **offscreen app-cadence measurements,
+not windowed FPS or a 60-FPS qualification**.
+
+Isolated CPU benchmark: 9216 planar faces, ten alternating measurements,
+median gather time. Hash lookup → indexed adjacency is 32.409→22.711 ms at
+history 16, 3.155→1.925 ms at 128, and .543→.288 ms at 512 (30–47% lower).
+Building this topology took .243 ms and 184320 bytes. This is not a whole-frame
+speedup and does not include the rest of transport.
+
+Two full baseline/selected pairs were run in opposite order:
+
+| Pair | Version | Cave paths | Startup worker p95 | Later worker p95 | Startup / later frame p99 | Response paths |
+|---|---|---:|---:|---:|---:|---:|
+| 1 | Baseline | 151.79M | 21.82 ms | 12.81 ms | 29.09 / 30.70 ms | 65.80M |
+| 1 | Selected | 162.79M | 14.53 ms | 8.52 ms | 26.63 / 30.16 ms | 65.76M |
+| 2 | Baseline | 153.84M | 22.75 ms | 12.66 ms | 29.74 / 29.76 ms | 71.13M |
+| 2 | Selected | 158.55M | 13.13 ms | 8.30 ms | 27.79 / 29.55 ms | 64.07M |
+
+Cave worker p95 falls 33–42%; throughput rises 7.2% and 3.1%. Startup near-field
+age p95 improves 973→791 ms and 995→777 ms; later freshness is similar
+(863→833 ms, 847→849 ms). Response throughput is unchanged in pair 1 but
+**9.9% lower in pair 2**. Its per-phase frame-time and freshness results are
+mixed. Do not generalize the cave gain to all workloads, dismiss the response
+regression as proven measurement noise, or claim faster frames by ignoring
+transport. The robust result is cheaper CPU preparation and smaller uploads.
+
+Run IDs (suffixes include timestamp and process; all under `target/gi-validation/`):
+
+| Version | Response | Cave |
+|---|---|---|
+| Baseline pair 1 | `response-1792107474745847000-34431` | `cave-1792107505189303000-34429` |
+| Adjacency only | `response-1792107828685116000-34739` | `cave-1792107859098245000-34732` |
+| Selected pair 1 | `response-1792108050081340000-34927` | `cave-1792108080500009000-34921` |
+| Cooperative trial | `response-1792108373892550000-35165` | `cave-1792108404351211000-35159` |
+| Selected pair 2 | `response-1792108593091946000-35285` | `cave-1792108623514375000-35309` |
+| Baseline pair 2 | `response-1792108709871339000-35419` | `cave-1792108740278205000-35436` |
+
+Baseline pair 1 used the already-built baseline executable while adjacency
+source was being prepared; those source changes were not in that executable.
+Later native runs correspond to the listed checkpoint commits. Final executable
+was rebuilt from `bfffadf` after returning from the baseline repeat.
+
+### Images, edit response and limits
+
+Native CPU/GPU oracle checks preserve the original filter output within 1e-5
+at all four targets, with heterogeneous histories, edit caps and wrap-crossing
+coordinates. Physical means, moments, counts, sequences and temporal snapshots
+remain unchanged. Thus the expensive frozen prefix sweep does not need repeating
+for these exact-formula optimizations.
+
+Live cave 15-second mean FLIP against the existing frozen reference improves
+.131208→.121307 and .130913→.122640. Broad residual RMS improves
+.010328→.008660 and .010209→.008826. At 30–60 seconds the compared images are
+nearly identical in measured error (mean FLIP about .116–.117). These live
+streaming worlds differ from the frozen reference's residency: this is a
+comparative image check, **not a new certified convergence pass**. Candidate
+15/60-second images and one-second emitter add/remove captures were inspected.
+
+One-second edit FLIP, baseline→selected, against each pair's common observed
+tail (not ground truth):
+
+| Pair | Cavity | Emitter add | Emitter remove |
+|---|---:|---:|---:|
+| 1 | .073439→.087561 | .451351→.385253 | .357466→.324168 |
+| 2 | .080694→.074624 | .388635→.389079 | .304026→.355465 |
+
+Own-tail comparisons retain the cavity/removal direction reversals; addition
+is effectively tied in pair 2. Cross-run tail disagreements are
+.017038/.037697/.016762 in pair 1 and .020871/.023120/.023783 in pair 2.
+No reproducible universal edit-settling improvement is established.
+
+A further cooperative GPU trial (`2321005`, `codex/gi-evidence-cooperative`)
+evaluates 32 donors in parallel but preserves the ordered final fold and
+partial-donor rule. It passes parity/lifecycle checks; compared with selected
+pair 1 it increases response paths 3.3% but reduces cave paths 4.0%. Keep it
+separate, not selected: neither correctness nor one favorable profile proves
+a cost win. The next isolated cost investigation should distinguish GPU
+reconstruction from tracing/scheduling before altering the visual formula.
+
+**Decision:** retain indexed adjacency and compact uploads as the selected
+2048 implementation, with the response-throughput limitation above recorded.
+Do not promote a universal FPS/settling claim or silently change global
+defaults. Focused topology/spatial unit tests, native four-target/two-origin
+oracle, native growth/retirement/recycling/disable/re-enable lifecycle checks,
+strict all-target Clippy and build passed. No routine stress/full-suite rerun.
+
+Detailed artifacts: `target/evidence-topology-bench.log`,
+`target/evidence-packed-{native,lifecycle,clippy}.log`,
+`target/evidence-optimized-cave-quality.json`,
+`target/evidence-optimized-edit-quality.json`, and
+`target/evidence-optimized-repeat-edit-quality.json`.
