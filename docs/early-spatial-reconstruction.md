@@ -1146,3 +1146,62 @@ High variance is measured; a sampler defect is not ruled out. Do not silently
 raise the evidence target, alter transport/history, or call these live tails
 ground truth. Larger disjoint references and independent cosine checks are the
 next qualification step.
+
+### Higher-sample hallway cross-check
+
+Run `live-hallway-1792161245235760000-71464` used `2304b5e` plus the independent
+reference diagnostic committed as `421d808` (no additional runtime algorithm
+change). Same hardware, development profile, viewport, preferred settings and
+background loader as above; the eight-frame render transition was enabled.
+All five captures were valid/nonblank, the render log was clean and the process
+exited successfully after reference collection. The reference phase is excluded
+from workload timings.
+
+Two disjoint GPU replicas used **1,048,576 paths each**, beginning at 4,194,304
+and 5,242,880. Independent random-cosine CPU estimates used 1,048,576 paths at
+floor offsets 4, 24 and 64 from the emitter. These CPU checks use no emitter
+proposal or MIS; they share the scene/material/transport model, so they are not
+an independent check of those inputs. GPU replica means were within 0.46, 1.05
+and 0.38 CPU standard errors for RGB respectively; IR was within 0.85 standard
+errors at all three positions. Ionizing energy was zero in both estimators.
+This gives no evidence of a large estimator bias at the sampled positions;
+it is not proof that every sampling or rendering path is correct.
+
+The last live physical means, compared with the average of the two GPU replicas:
+
+| Floor offset | Live history | Live relative error | Live relative standard error | GPU replica disagreement |
+| ---: | ---: | ---: | ---: | ---: |
+| 4 | 6,675 | 0.69% | 2.55% | 0.11% |
+| 12 | 7,219 | 4.28% | 8.26% | 0.47% |
+| 24 | 7,219 | 5.19% | 11.12% | 0.87% |
+| 32 | 6,832 | 10.10% | 17.18% | 3.71% |
+| 48 | 6,672 | 8.35% | 18.91% | 5.59% |
+| 64 | 3,312 | 2.09% | 38.08% | 3.01% |
+| 79 | 3,424 | 45.62% | 43.25% | 10.82% |
+
+These are linear red-channel diagnostics; this scene's fixed emitter spectrum
+makes the relative RGB values equivalent. They are **not FLIP scores** or
+rendered spatial-noise measurements. Relative standard error is
+`sqrt(max(second_moment - mean^2, 0) / history) / abs(mean)`, an empirical
+diagnostic rather than a calibrated confidence interval for this sampler.
+Replica disagreement is their absolute difference divided by their average.
+The far reference itself remains uncertain; in particular, a low live error at
+offset 64 does not mean that receiver has reliably converged. The independent
+CPU check there also has 15.6% relative standard error.
+
+The live sequence is only 16–64 ahead of retained history at these sites. The
+persistent noise is therefore not explained by repeated large history resets
+in this run. A measured failure of the current presentation heuristic is that
+all these receivers have already stopped spatial borrowing at 2048 despite
+widely different uncertainty. Do not solve this by calling a larger path count
+universally sufficient. A future variance-aware support experiment must retain
+the approved count-based control, test gradient preservation and edits, and
+measure the added neighborhood cost separately from any raw sampler change.
+
+**Status:** failure contracts, narrower display uploads and render-frame RGB
+transitions are integrated. The hallway's persistent spatial variance and
+uneven receiver refresh intervals remain open; neither is claimed fixed by the
+transition. GPU-resident RGB still renders without a CPU round trip. Scheduler/
+simulation snapshots and the sky-result CPU-to-display round trip remain;
+changed-byte uploads reduce the latter's outgoing payload, not its ownership
+or synchronization steps. No windowed 60-FPS claim is made from these runs.
