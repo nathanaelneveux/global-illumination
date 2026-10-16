@@ -389,9 +389,9 @@ impl ReferenceImage {
             let mut gpu = GpuTracer::new(device.clone())?;
             let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
             let prioritized = Arc::new(EmissionDistribution::with_importance(&scene, &materials, importance));
-            let mut control_gpu = if super::sample_sweep::reuse_requested() {
+            let mut control_gpu = if super::sample_sweep::paired_requested() {
                 let mut tracer=GpuTracer::new(device.clone())?;
-                tracer.enable_resident()?;
+                if super::sample_sweep::reuse_requested() { tracer.enable_resident()?; }
                 Some(tracer)
             } else {None};
             let mut reuse = if super::sample_sweep::reuse_requested() {
@@ -403,9 +403,11 @@ impl ReferenceImage {
                 super::sample_sweep::run(reuse.as_mut().unwrap_or(&mut gpu), &scene, &sources, &materials,
                     transport, &prioritized, &sites, &worker_progress, false, emitter_guiding)?
             } else { Vec::new() };
-            let control = if sweep_requested && reuse.is_some() {
-                super::sample_sweep::run(control_gpu.as_mut().unwrap(), &scene, &sources, &materials,
-                    transport, &emitters, &sites, &worker_progress, true, false)?
+            let control_importance = if super::sample_sweep::guiding_requested() {importance} else {EnergySpectrum::ONE};
+            let control_emitters = if super::sample_sweep::guiding_requested() {&prioritized} else {&emitters};
+            let control = if sweep_requested && let Some(control_gpu) = control_gpu.as_mut() {
+                super::sample_sweep::run(control_gpu, &scene, &sources, &materials,
+                    transport, control_emitters, &sites, &worker_progress, true, false)?
             } else {Vec::new()};
             if sweep_requested {
                 std::fs::write(worker_output.join("cave-sample-sweep.json"),
@@ -423,7 +425,10 @@ impl ReferenceImage {
                     std::fs::write(worker_output.join("cave-control-sweep.json"),
                         serde_json::to_vec(&json!({"schema_version":1,"scene_generation":generation,
                         "origin":origin.to_array(),"transport":transport,"face_count":sites.len(),
-                        "sampler":"resident-independent-paths","emitter_guiding":false,"batch_faces":2048,"windows":control})).unwrap())
+                        "sampler":if super::sample_sweep::reuse_requested(){"resident-independent-paths"}else{"independent-paths"},
+                        "emitter_guiding":false,"batch_faces":if super::sample_sweep::reuse_requested(){2048}else{512},
+                        "sampling_importance":[control_importance.visible.x,control_importance.visible.y,control_importance.visible.z,control_importance.infrared,control_importance.ionizing],
+                        "windows":control})).unwrap())
                         .map_err(|e|e.to_string())?;
                 }
             }

@@ -24,10 +24,13 @@ pub(super) const COUNTS: &[u32] = &[
 // Include the real startup prefix and unaligned windows. All are disjoint from
 // one another and the reference's 4,194,304 / 6,291,456 starts, below 2^24.
 const STARTS: [u32; 4] = [0, 574_117, 1_853_903, 3_102_719];
+const GUIDING_COUNTS: &[u32] = &[4, 16, 64, 128, 256, 512, 1024, 1536, 2048, 4096, 8192];
 pub(super) type Means = Vec<[f64; 5]>;
 
 pub(super) fn requested() -> bool {
-    std::env::var("VOXEL_GI_VALIDATE_SAMPLE_SWEEP").is_ok_and(|v| v == "1") || spatial_requested()
+    std::env::var("VOXEL_GI_VALIDATE_SAMPLE_SWEEP").is_ok_and(|v| v == "1")
+        || spatial_requested()
+        || guiding_requested()
 }
 
 pub(super) fn spatial_requested() -> bool {
@@ -72,8 +75,20 @@ pub(super) fn reuse_requested() -> bool {
     std::env::var("VOXEL_GI_VALIDATE_REUSE_SWEEP").is_ok_and(|v| v == "1")
 }
 
+/// Proposal-only comparison: both arms use RGB-prioritized independent paths,
+/// identical prefixes/batches, and no temporal or adaptive spatial filtering.
+pub(super) fn guiding_requested() -> bool {
+    std::env::var("VOXEL_GI_VALIDATE_GUIDING_SWEEP").is_ok_and(|v| v == "1")
+}
+
+pub(super) fn paired_requested() -> bool {
+    reuse_requested() || guiding_requested()
+}
+
 fn counts(control: bool) -> &'static [u32] {
-    if evidence_targets_requested() {
+    if guiding_requested() {
+        GUIDING_COUNTS
+    } else if evidence_targets_requested() {
         &[4, 16, 64, 128, 256, 512, 1024, 1280, 1536, 2048]
     } else if evidence_requested() {
         &[1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
@@ -90,7 +105,7 @@ fn counts(control: bool) -> &'static [u32] {
 
 pub(super) fn path_count(faces: usize) -> u64 {
     let paths = *counts(false).last().unwrap()
-        + if reuse_requested() {
+        + if paired_requested() {
             *counts(true).last().unwrap()
         } else {
             0
@@ -134,6 +149,14 @@ pub(super) fn run(
     control: bool,
     emitter_guiding: bool,
 ) -> Result<Vec<Window>, String> {
+    if guiding_requested() && (reuse_requested() || spatial_requested()) {
+        return Err("GUIDING_SWEEP must be isolated from reuse and spatial/evidence sweeps".into());
+    }
+    if guiding_requested() && emitter_guiding == control {
+        return Err(
+            "GUIDING_SWEEP requires guiding enabled for candidate and disabled for control".into(),
+        );
+    }
     let mut windows = Vec::new();
     for sequence_start in STARTS {
         let mut prefixes: Vec<_> = counts(control)
@@ -363,7 +386,10 @@ mod tests {
 
     #[test]
     fn prefix_windows_are_disjoint_below_history_ceiling_and_sampler_period() {
-        assert!(COUNTS.windows(2).all(|v| v[0] < v[1]));
+        for counts in [COUNTS, GUIDING_COUNTS] {
+            assert!(counts.windows(2).all(|v| v[0] < v[1]));
+            assert!(*counts.last().unwrap() < super::super::super::tracer::HISTORY_LIMIT);
+        }
         let max = *COUNTS.last().unwrap();
         assert!(max < super::super::super::tracer::HISTORY_LIMIT);
         let starts = [STARTS.as_slice(), &[4_194_304, 6_291_456]].concat();
