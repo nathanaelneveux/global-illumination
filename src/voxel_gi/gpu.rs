@@ -245,6 +245,7 @@ pub(crate) struct GpuTracer {
     #[cfg(test)]
     fixed_path_lanes: Option<u32>,
     sky_pipeline: ComputePipeline,
+    guide_pipeline: Option<ComputePipeline>,
     pub sky_cache: super::sky_cache::SkyCache,
     #[cfg(test)]
     duplicate_sky_for_benchmark: bool,
@@ -270,6 +271,7 @@ pub(crate) struct GpuTracer {
     output: UploadBuffer,
     bindings: Option<CachedBindings<9>>,
     sky_bindings: Option<CachedBindings<7>>,
+    guide_bindings: Option<CachedBindings<7>>,
     readbacks: Vec<UploadBuffer>,
     timestamps: Option<wgpu::QuerySet>,
     timestamp_resolve: UploadBuffer,
@@ -413,6 +415,7 @@ impl GpuTracer {
             #[cfg(test)]
             fixed_path_lanes: None,
             sky_pipeline,
+            guide_pipeline: None,
             sky_cache: default(),
             #[cfg(test)]
             duplicate_sky_for_benchmark: false,
@@ -446,6 +449,7 @@ impl GpuTracer {
             ),
             bindings: None,
             sky_bindings: None,
+            guide_bindings: None,
             readbacks: Vec::new(),
             timestamps,
             timestamp_resolve: UploadBuffer::new(
@@ -820,13 +824,15 @@ impl GpuTracer {
         self.tasks.upload(device, queue, &self.task_bytes)?;
         let face_bytes = face_count * RESULT_BYTES;
         let readback_bytes = face_bytes + sky_pending.len() * SKY_RESULT_BYTES;
+        let prepare_guides = work.emitter_guiding && !sky_only && face_count > 0;
+        let guide_bytes = if prepare_guides { face_count * 16 } else { 0 };
         let timestamp_count = if self.resident.is_some() && face_count > 0 {
             6
         } else {
             2
         };
         let timestamp_bytes = timestamp_count as u64 * 8;
-        self.output.ensure(device, readback_bytes)?;
+        self.output.ensure(device, readback_bytes + guide_bytes)?;
         let mut readback = self.readbacks.pop().unwrap_or_else(|| {
             UploadBuffer::new(
                 device,
@@ -857,6 +863,14 @@ impl GpuTracer {
             self.bindings = None;
         }
         let sky_ids = [0, 1, 2, 3, 5, 6, 7].map(|index| ids[index]);
+        let guide_ids = [0, 1, 2, 3, 6, 7, 8].map(|index| ids[index]);
+        if self
+            .guide_bindings
+            .as_ref()
+            .is_some_and(|cached| cached.buffers != guide_ids)
+        {
+            self.guide_bindings = None;
+        }
         if self
             .singleton_bindings
             .as_ref()
@@ -904,6 +918,20 @@ impl GpuTracer {
                 [0, 1, 2, 3, 5, 6, 7].map(|index| (index as u32, buffers[index])),
             ))
         };
+        let guide_bindings = prepare_guides.then(|| {
+            cached_bindings(
+                &mut self.guide_bindings,
+                device,
+                || {
+                    self.guide_pipeline
+                        .as_ref()
+                        .unwrap()
+                        .get_bind_group_layout(0)
+                        .into()
+                },
+                [0, 1, 2, 3, 6, 7, 8].map(|index| (index as u32, buffers[index])),
+            )
+        });
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("GI bounded transport batch"),
         });
@@ -933,6 +961,11 @@ impl GpuTracer {
                     }
                 }),
             });
+            if let Some(bindings) = guide_bindings {
+                pass.set_pipeline(self.guide_pipeline.as_ref().unwrap());
+                pass.set_bind_group(0, &**bindings, &[]);
+                pass.dispatch_workgroups((face_count as u32).div_ceil(64), 1, 1);
+            }
             if let Some(bindings) = bindings {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &**bindings, &[]);
@@ -1160,6 +1193,7 @@ impl GpuTracer {
             }
             if emitter_guiding {
                 constants.push(("GUIDE_RADIUS", f64::from(super::guiding::RADIUS)));
+                constants.push(("GUIDES_PREPARED", 1.0));
             }
             let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("Voxel transport quality variant"),
@@ -1179,6 +1213,28 @@ impl GpuTracer {
             pipeline
         };
         self.pipeline = pipeline;
+        if emitter_guiding && self.guide_pipeline.is_none() {
+            let device = &self.context.device;
+            let scope = device
+                .wgpu_device()
+                .push_error_scope(wgpu::ErrorFilter::Validation);
+            self.guide_pipeline = Some(device.create_compute_pipeline(
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("GI source proposal preparation"),
+                    layout: None,
+                    module: &self.module,
+                    entry_point: Some("prepare_guides"),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &[("GUIDE_RADIUS", f64::from(super::guiding::RADIUS))],
+                        ..default()
+                    },
+                    cache: None,
+                },
+            ));
+            if let Some(error) = bevy::tasks::block_on(scope.pop()) {
+                return Err(error.to_string());
+            }
+        }
         if self.entry == "trace_quad_faces" {
             self.singleton_lanes = if samples >= 16 { 8 } else { 4 };
             let mut constants = vec![
@@ -1188,6 +1244,7 @@ impl GpuTracer {
             ];
             if emitter_guiding {
                 constants.push(("GUIDE_RADIUS", f64::from(super::guiding::RADIUS)));
+                constants.push(("GUIDES_PREPARED", 1.0));
             }
             let scope = self
                 .context

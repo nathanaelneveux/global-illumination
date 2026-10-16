@@ -4,6 +4,7 @@
 override DIFFUSE_HITS: u32 = 3u;
 // Experimental conditional emitter-neighborhood proposal; zero is the control.
 override GUIDE_RADIUS: f32 = 0.0;
+override GUIDES_PREPARED: bool = false;
 override LIMITED_REACH: bool = false;
 override PATH_LANES: u32 = 4u;
 struct Params {
@@ -540,6 +541,27 @@ fn guide_anchor(position: vec3<f32>, normal: vec3<f32>) -> GuideAnchor {
     return anchor;
 }
 
+// Ephemeral proposal scratch follows the physical results and packed sky
+// results. It is GPU-only: no simulation/display readback includes this tail.
+fn guide_offset(face: u32) -> u32 {
+    return params.counts.x * 6u + u32(params.minimum.w) * 2u + face;
+}
+@compute @workgroup_size(64)
+fn prepare_guides(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= params.counts.x { return; }
+    let task = tasks[id.x];
+    let normal = face_normal(task.face);
+    let anchor = guide_anchor(vec3<f32>(task.voxel) + vec3(0.5) + normal * 0.5, normal);
+    results[guide_offset(id.x)] = bitcast<vec4<u32>>(vec4(anchor.position, anchor.weight));
+}
+fn task_guide(face: u32, position: vec3<f32>, normal: vec3<f32>) -> GuideAnchor {
+    if GUIDES_PREPARED {
+        let value = bitcast<vec4<f32>>(results[guide_offset(face)]);
+        return GuideAnchor(value.xyz, value.w);
+    }
+    return guide_anchor(position, normal);
+}
+
 // NEE and continuation use the SAME proposal for balance MIS. The guide only
 // changes directions/PDFs, never light energy, path depth or retained history.
 struct DirectionGuide { axis: vec3<f32>, g: f32, weight: f32 }
@@ -607,7 +629,7 @@ fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, se
     var guide: DirectionGuide;
     return sample_emitter_guided(position, normal, source_stream, sequence, bounce, guide);
 }
-// One terminal emission connection drawn from a 50/50 light/cosine mixture.
+// One terminal emission connection from a 50/50 light/directional mixture.
 // The finite-bounce integrand is unchanged: escaping sky and nonemitting hits
 // contribute zero here. No brightness clamp or extra connection ray is added.
 fn sample_terminal_emission(position: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, bounce: u32, guide: DirectionGuide) -> Energy {
@@ -780,9 +802,8 @@ fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     let task = tasks[id.x];
     let normal = face_normal(task.face);
     let center = vec3<f32>(task.voxel) + vec3(0.5);
-    let origin = center + normal * 0.501;
     let stream = hash_voxel(task.voxel) ^ pcg(task.face + 1u);
-    let anchor = guide_anchor(center + normal * 0.5, normal);
+    let anchor = task_guide(id.x, center + normal * 0.5, normal);
     var result: FaceResult;
     let direct = direct_at(center + normal * 0.5, normal);
     result.direct = direct.value;
@@ -866,7 +887,7 @@ fn trace_paired_faces(@builtin(global_invocation_id) id: vec3<u32>,
             let stream = hash_voxel(task.voxel) ^ pcg(task.face + 1u);
             let sequence = task.sequence + i;
             let direction = hemisphere(normal, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
-            let record = trace_path_record(origin, direction, normal, stream, sequence, max(dot(normal, direction), 0.0) / 3.14159265359, true, guide_anchor(center + normal * 0.5, normal));
+            let record = trace_path_record(origin, direction, normal, stream, sequence, max(dot(normal, direction), 0.0) / 3.14159265359, true, task_guide(face, center + normal * 0.5, normal));
             own = evaluate_record(record, origin, normal);
             if paired && record_has_energy(record) {
                 let other_origin = vec3<f32>(tasks[partner].voxel) + vec3(0.5) + normal * 0.501;
@@ -963,7 +984,7 @@ fn trace_quad_faces(@builtin(global_invocation_id) id: vec3<u32>,
             let stream=hash_voxel(task.voxel)^pcg(task.face+1u);
             let sequence=task.sequence+sample;
             let direction=hemisphere(normal,sample_1d(stream,sequence,0u),sample_1d(stream,sequence,1u));
-            let record=trace_path_record(origin,direction,normal,stream,sequence,max(dot(normal,direction),0.0)/3.14159265359,true,guide_anchor(center+normal*0.5,normal));
+            let record=trace_path_record(origin,direction,normal,stream,sequence,max(dot(normal,direction),0.0)/3.14159265359,true,task_guide(face,center+normal*0.5,normal));
             let q=record_pdf(record,origin,normal);
             if q <= 0.0 || !record_has_energy(record) {
                 let own=evaluate_record(record,origin,normal);
@@ -1060,14 +1081,19 @@ fn trace_singleton_faces(@builtin(global_invocation_id) id: vec3<u32>,
 fn trace_cooperative_face(face_index: u32, valid: bool, local: u32) {
     let lane = local % PATH_LANES;
     var anchor: GuideAnchor;
-    if GUIDE_RADIUS > 0.0 {
+    if GUIDES_PREPARED {
+        if valid {
+            let value = bitcast<vec4<f32>>(results[guide_offset(face_index)]);
+            anchor = GuideAnchor(value.xyz, value.w);
+        }
+    } else if GUIDE_RADIUS > 0.0 {
         // Source selection and visibility are identical for all path lanes.
         // Publish one proposal per receiver, not eight redundant searches.
         if lane == 0u {
             if valid {
                 let task = tasks[face_index];
                 let normal = face_normal(task.face);
-                anchor = guide_anchor(vec3<f32>(task.voxel) + vec3(0.5) + normal * 0.5, normal);
+                anchor = task_guide(face_index, vec3<f32>(task.voxel) + vec3(0.5) + normal * 0.5, normal);
             }
             face_guides[local / PATH_LANES] = anchor;
         }
@@ -1079,7 +1105,6 @@ fn trace_cooperative_face(face_index: u32, valid: bool, local: u32) {
         let task = tasks[face_index];
         let normal = face_normal(task.face);
         let center = vec3<f32>(task.voxel) + vec3(0.5);
-        let origin = center + normal * 0.501;
         let stream = hash_voxel(task.voxel) ^ pcg(task.face + 1u);
         for (var i = lane; i < params.counts.y; i += PATH_LANES) {
             let sequence = task.sequence + i;

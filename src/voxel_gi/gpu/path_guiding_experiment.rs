@@ -12,6 +12,63 @@ fn work(fixture: &super::super::research::ResearchFixture, start: u32) -> TraceW
     work
 }
 
+#[test]
+#[ignore = "native guide scratch growth, sky overlap and inline parity"]
+fn prepared_guides_match_inline_with_sky_and_buffer_growth() {
+    let fixture = super::super::research::cave();
+    let emitters = Arc::new(EmissionDistribution::build(
+        &fixture.scene,
+        &fixture.materials,
+    ));
+    let mut prepared = tests::native_tracer();
+    let shader = SHADER.replace(
+        "override GUIDE_RADIUS: f32 = 0.0;",
+        "override GUIDE_RADIUS: f32 = 2.0;",
+    );
+    let mut inline = GpuTracer::with_shader(prepared.context.clone(), true, &shader).unwrap();
+    for count in [1, 257, 3] {
+        let build = |guided| {
+            let mut work = TraceWork {
+                emitter_guiding: guided,
+                ..default()
+            };
+            for probe in fixture.receivers.iter().cycle().take(count) {
+                work.push(probe, probe.face_mask, 0, 0, false, u32::MAX, u32::MAX);
+            }
+            work
+        };
+        let (mut a, mut b) = (build(true), build(false));
+        for (gpu, work) in [(&mut prepared, &mut a), (&mut inline, &mut b)] {
+            gpu.trace_compact(
+                fixture.scene.clone(),
+                &fixture.sources,
+                &fixture.materials,
+                work,
+                16,
+                &emitters,
+                false,
+            )
+            .unwrap();
+        }
+        for (a, b) in a.probes.iter().zip(&b.probes) {
+            assert_eq!(a.sky, b.sky);
+        }
+        for (a, b) in a.faces.iter().zip(&b.faces) {
+            assert_eq!(a.samples, b.samples);
+            assert_eq!(a.sequence, b.sequence);
+            for (x, y) in super::super::research::channels(a.radiance)
+                .into_iter()
+                .zip(super::super::research::channels(b.radiance))
+            {
+                assert!(
+                    (x - y).abs() <= 0.00001 + (x.abs() + y.abs()) * 0.0001,
+                    "{count} faces: {x} != {y}"
+                );
+            }
+        }
+    }
+}
+
 /// Paired actual-dispatch-size cost, separate from the sparse 128-path study.
 /// Repeat receivers only to fill workgroups; no display/queue scheduling claim.
 #[test]
