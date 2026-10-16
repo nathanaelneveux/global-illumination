@@ -29,7 +29,7 @@ its exact contribution differs from the streamed world's.
 
 ## Experimental proposal, not a lighting-model change
 
-The `emitter_guiding` setting (initially opt-in; default decision below) mixes cosine sampling with a
+The experimental `emitter_guiding` setting mixes cosine sampling with a
 smooth source-directed spherical lobe. A task chooses a geometry/source-only
 anchor; every path uses its explicit PDF in throughput and emission MIS,
 including terminal connections. No radiance clipping, borrowed samples,
@@ -178,7 +178,8 @@ Captures are nonblank, assets/targets valid, and render logs clean. The earlier
 unused test-only import warning was subsequently removed; it was not a rendering
 failure. Do not interpret slightly better p99 as a measured speedup.
 
-Enable guiding by default for the demonstrated large reduction in persistent
+Historical promotion, **superseded by the whole-cave image gate below**:
+enable guiding by default for the demonstrated large reduction in persistent
 hallway error, while retaining `config/gi-guiding-control.json` and the tuning
 checkbox. No smoothing strength, retained-history rule, bounce count, light
 range, or BVW code changes accompany this decision. The residual raw-throughput
@@ -400,3 +401,14 @@ After the capture run, native guided CPU/GPU prefix parity and the 20-step
 resident accumulation/lifecycle parity checks pass (all five bands). Their logs
 are `target/visibility-fix-{native,resident}-parity.log`; these accuracy checks
 overlapped CPU image analysis and are not timing evidence.
+
+Final defaults integration: clean `92dbfe3`,
+`cave-1792180515078134000-80241`, 62-second offscreen cave with background
+streaming. The report confirms guiding off, RGB importance .125 for simulation,
+uncapped 2048-evidence reconstruction, 75 ms display response, 16 paths/dispatch
+and the unchanged 4 ms budget. All three capture guards pass, assets are verified,
+render logs are clean, and the 60-second image was visually inspected. This is
+startup/streaming/display integration evidence, not a new independent reference,
+quantified live convergence result, or a 60-FPS certificate. The default/preset
+test, strict all-target Clippy and development build also pass. No changes to
+BVW, history retention, ray range or bounce count were made in this qualification.
