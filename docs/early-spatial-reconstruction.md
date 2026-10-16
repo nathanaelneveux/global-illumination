@@ -17,6 +17,9 @@ that spatial reconstruction was opt-in describe those historical baselines.
 Sampler qualification must remain separate from presentation qualification;
 see [the testing contract](validation.md#separate-sampling-accuracy-from-presentation).
 
+The [1536 follow-up](#uncapped-1536-follow-up--october-16) retains that default:
+1536 improves FLIP fidelity but gives back some mid-prefix wall smoothness.
+
 ## Purpose and controls
 
 Reduce spatial noise early without changing the qualified temporal response,
@@ -957,6 +960,137 @@ Additional run IDs:
 - Response cap64 1/2: `response-1792117320411074000-40230`,
   `response-1792117665180274000-40644`.
 - Runtime image comparison: `target/footprint-cap64-edit-quality.json`.
+
+## Uncapped 1536 follow-up — October 16
+
+**Decision:** integrate the user-selected uncapped 2048 reconstruction as the
+default (`7e9b764`), retaining `config/gi-display-evidence-1536.json` as a useful
+comparison, not a replacement. Both have extra donor cap zero. There is no
+estimator, history-retention, temporal-response or BVW change. Sampling accuracy
+must be measured without the adaptive reconstruction; it cannot inherit credit
+for presentation smoothing. The lower target is not unconditionally worse, but
+its fidelity/smoothness tradeoff does not supersede the user's stated preference.
+
+### Matched images and reference
+
+Native `b3b2213`, M4/Metal, 16 GiB, macOS 26.6.2, Rust 1.95.0, Bevy 0.19.1,
+development app opt1/dependencies opt3; 2560×1440 headless, PPD 67, preferred
+corners/textures/AO off, RGB/nonvisual importance 1/.125. Only the documentation
+update to `resident-path-reuse.md` was dirty. No concurrent compiler or other
+GPU test. Reference setup used background terrain and the whole-cave residency
+camera; transport froze after the ordinary 62-second prelude.
+
+The old ignored captures/prefix files were absent, so this run regenerated the
+reference instead of assuming replay equivalence. Run
+`cave-1792154434865416000-59939` has 15163 receiver faces, generation 57,
+zero unknown/mismatched fixture voxels, eight passing independent cosine checks,
+and two qualified 131072-path replicas. Replica RGB p99/max disagreement is
+.008162806/.015106527. All 168 captures (165 frozen plus three prelude captures)
+have valid nonblank targets; logs are clean. Mean/held reference PNGs have the
+same SHA-256 `f55696ebecd28382da0f2d975986520f1e571f562ac8616e170d9016c9bd686a`.
+This differs from the historical PNG hash, so the analysis does **not** apply or
+recalibrate its provisional normalized noise envelope. Instead it compares
+1536/2048 wall noise within this same qualified bake.
+
+Both targets, raw controls and the older fixed filter consume identical physical
+prefixes in four disjoint sequence windows. These are fixed-work presentation
+comparisons, not gameplay convergence times. Reference/candidate images and
+early/late contact sheets were inspected. Average FLIP below averages all pixels
+and then the four windows; worst tile is the maximum 32×32 tile mean across
+windows. Wall noise is the reference-relative OKLab band-RMS diagnostic on the
+two established wall interiors, using the worst region/window. Lower is better
+for each metric; they measure different aspects of appearance.
+
+| Local paths | Average FLIP 1536 / 2048 | Worst tile 1536 / 2048 | Wall noise 1536 ÷ 2048 |
+|---:|---:|---:|---:|
+| 4 | .148348 / .154313 | .671912 / .683156 | 1.030 |
+| 16 | .107582 / .110870 | .613861 / .638380 | .997 |
+| 64 | .070321 / .072522 | .405756 / .433174 | 1.204 |
+| 128 | .057926 / .059187 | .302474 / .338659 | 1.182 |
+| 256 | .048052 / .048185 | .199576 / .244145 | 1.110 |
+| 512 | .039305 / .039432 | .164140 / .166165 | 1.077 |
+| 1024 | .034285 / .034886 | .121607 / .129320 | 1.057 |
+| 1280 | .029296 / .032886 | .088408 / .119240 | 1.053 |
+| 1536 | .026403 / .029113 | .075842 / .102856 | 1.060 |
+| 2048 | .023757 / .023757 | .067606 / .067606 | 1.000 |
+
+1536 improves average FLIP at every tested prefix before 2048 and also improves
+worst local tile error. Thus this is **not primarily average versus worst FLIP**:
+2048's advantage is smoother mid-prefix walls, particularly at 64–128 paths.
+The worst-window full-image mean likewise favors 1536 except at 256 paths
+(.050083 versus .049559); the full measurements retain all four windows.
+At four paths, mean signed wall-lightness biases for left/right are
+.00488/.00686 with 1536 and .00591/.00810 with 2048. From 128 onward each
+target's absolute regional mean bias stays below .0005 through 1024. Smoother
+walls do not establish more accurate emitter halos or color details.
+
+Using average FLIP alone would first accept target1536 at 1536 actual paths,
+versus 2048 for target2048. But target1536's worst tile at that checkpoint is
+.075842, above the existing .072964 guard. **Both first pass the unchanged image
+guard at 2048.** The separate raw-sampler qualification, including physical
+face/corner gates, also still first passes at 2048. No sampling-efficiency gain
+or new global visual threshold is claimed. Above its target, reconstruction
+returns the face's own estimate; it is not a permanent blur.
+
+At 16 paths, target1536 visits 179.5 candidates and borrows 98.5 faces on average,
+versus 236.9/129.7 for target2048 (window zero). At 128 those values are
+22.2/11.9 versus 29.9/15.9. At four paths both can still reach radius 16. The
+evidence target controls support and adaptive search; neither preset adds a hard
+neighbor cap. Borrowed support remains heuristic, not independent physical rays.
+
+### Streamed runtime/edit screening
+
+Same `b3b2213` executable, 16 paths/dispatch, 4-ms work budget, ordinary background
+terrain, default temporal/retention policies and uncapped targets. One cave pair
+ran 2048 then 1536; one response pair ran 1536 then 2048. No concurrent image
+analysis/compiler/GPU workload. All three cave captures and all fourteen response
+captures per run are valid; all cavity/add/remove events occurred; logs are clean.
+These are preliminary pairs, not a replicated small-gain claim or windowed FPS.
+
+| Workload | 2048 paths | 1536 paths | Difference |
+|---|---:|---:|---:|
+| Cave | 177.67M | 186.01M | +4.7% |
+| Response | 74.28M | 80.80M | +8.8% |
+
+Cave startup/settling worker p95 falls 13.20/7.74→10.18/6.60 ms; offscreen frame
+p99 is similar, 27.10/28.38→26.59/28.23 ms. Near-age p95 slightly worsens
+722/757→734/793 ms. Residency differs (1130/1123 maximum pages; response
+601/657). More total paths do not prove faster nearby settling.
+
+Response own-tail FLIP at one second, 2048→1536: cavity .081301→.076864,
+emitter addition .244853→.331872, removal .364670→.313338. Against the common
+2048 observed tails, 1536 gives .064563/.332898/.315476. Cross-run final-tail
+differences are .030693/.023689/.024265. These are **observed tails, not qualified
+truth**; scheduling/residency varies. The weaker emitter-add result and mixed
+freshness rule out declaring a universal response improvement. No extra repeats
+were needed to retain the already-approved 2048 default.
+
+Run IDs and analysis:
+
+- Cave 2048 / 1536: `cave-1792154906326249000-60128`,
+  `cave-1792154968925475000-60140`.
+- Response 2048 / 1536: `response-1792155061943887000-60181`,
+  `response-1792155031506281000-60163`.
+- `target/evidence-1536-{quality,raw-transport,raw-quality,edit-quality}.json`;
+  logs `target/evidence-1536-*.log`; full images/prefixes under the frozen run.
+- Early contact sheet: `evidence1536-evidence2048-paired-4-16-128-overview-window-0.png`;
+  late: `evidence1536-evidence2048-paired-256-512-1024-overview-window-0.png`.
+
+Verification: four settings tests; three prefix/control tests; native CPU/GPU
+oracle at 512/1024/1536/2048/4096 across two origins with uneven edit histories,
+unchanged physical/temporal statistics and disabling; eight Python noise/replay
+tests; `cargo build`; diff review. No broad toggle stress or BVW changes.
+
+### Implication for path sharing
+
+Better raw sampling could reduce the evidence target needed for the preferred
+smooth look. Qualify that in two stages: first raw error versus path count **and
+compute cost**, then reconstruction at lower targets on the same saved prefixes,
+followed by streamed edits if promoting. Correlated shared paths can lower
+neighbor-to-neighbor noise without equal growth in independent information.
+Therefore a lower raw threshold is promising evidence, not an automatic
+proportional reduction in the display target. The raw means/moments, pre-spatial
+temporal history and simulation values remain separate architectural layers.
 
 Timing runs had no concurrent build, transport test or heavy image analysis.
 Only read-only metadata checks and source/document editing ran alongside them.
