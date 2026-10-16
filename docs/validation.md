@@ -393,6 +393,11 @@ raw matched-prefix sampler controls or establish windowed frame pacing.
   (allowed 2–128). Replica ranges remain disjoint and below the direction
   sequence period. Inspect replica disagreement before calling either one a
   settled target; a larger path count alone is not qualification.
+  `VOXEL_GI_VALIDATE_REFERENCE_CPU_SITES=10,70,190` additionally runs the independent
+  random cosine estimator (no emitter proposals or MIS) at those temporal-site
+  indices, one million paths each, after GPU reference collection. Up to eight
+  sites are allowed; means and standard errors are saved, not silently treated
+  as a pass. This is an expensive opt-in diagnosis, not a routine gameplay test.
 - Coverage is at least one path sample per exposed face. Bootstrap targets eight.
   Record published/loaded geometry and pending ingestion alongside percentages;
   an early tiny field can be 100% covered while most terrain is not published.

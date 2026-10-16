@@ -143,6 +143,15 @@ impl ReferenceRun {
         let stride = (blocks * PATHS_PER_BLOCK).max(1_048_576);
         // Both replicas must remain disjoint and below the direction period.
         assert!(REFERENCE_SEQUENCE_START + stride + blocks * PATHS_PER_BLOCK < 1 << 24);
+        let cpu_sites: Vec<usize> = match std::env::var("VOXEL_GI_VALIDATE_REFERENCE_CPU_SITES") {
+            Ok(value) => value.split(',').map(|value| value.parse::<usize>()
+                .ok().filter(|&index| index < sites.len())
+                .ok_or("REFERENCE_CPU_SITES must list valid receiver indices"))
+                .collect::<Result<_, _>>()?,
+            Err(std::env::VarError::NotPresent) => Vec::new(),
+            Err(error) => return Err(error.to_string()),
+        };
+        if cpu_sites.len() > 8 { return Err("REFERENCE_CPU_SITES is limited to eight receivers".into()); }
         self.task = Some(AsyncComputeTaskPool::get().spawn(async move {
             let mut gpu = GpuTracer::new(device)?;
             let emitters = std::sync::Arc::new(EmissionDistribution::build(&scene, &materials));
@@ -216,11 +225,18 @@ impl ReferenceRun {
             }
             let corners: Vec<_> = references.iter().map(|r| patch.reconstruct(r)).collect();
             let faces: Vec<_> = references.iter().map(|r| &r[..sites.len()]).collect();
+            let cpu: Vec<_> = cpu_sites.into_iter().map(|index| {
+                let (voxel, face) = sites[index];
+                let estimate = super::reference_oracle::estimate(&scene, &materials, &sources,
+                    transport, voxel, face, 1_048_576);
+                json!({"site":index,"voxel":voxel.to_array(),"face":face,"estimate":estimate})
+            }).collect();
             let data = json!({"schema_version":2,"scene_generation":revision,
                 "regions":scene.regions.len(),"paths_per_replicate":PATHS_PER_BLOCK * blocks,
                 "sequence_start":REFERENCE_SEQUENCE_START,"replicate_stride":stride,
                 "transport":transport,"sites":sites.iter().map(|(v,f)|json!({"voxel":v.to_array(),"face":f})).collect::<Vec<_>>(),
                 "references":faces,"corner_references":corners,
+                "independent_cosine_checks":cpu,
                 "patch_sites":patch.sites.iter().map(|(v,f)|json!({"voxel":v.to_array(),"face":f})).collect::<Vec<_>>(),
                 "corner_members":patch.corners,"patch_references":references,
                 "note":"Exact frozen end-of-workload scene; two disjoint high-sample sequence blocks. Corners use the renderer's connected coplanar reconstruction at converged equal confidence. Computed after timing/captures. Early error is relative to the final scene, not time-varying ground truth or tone-mapped pixel error."});
