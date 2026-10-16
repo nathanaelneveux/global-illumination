@@ -765,3 +765,96 @@ Reproduce with `python tools/spatial_noise_quality.py FROZEN_RUN`. Results:
 `target/evidence-cost-{off,on}-{cave,response}.log`. Five focused noise tests
 and four existing spatial analysis tests pass. No Rust/runtime modification,
 build or full-suite rerun for this analysis extension.
+
+## Maximum footprint and search-cost experiments (2026-10-15)
+
+These experiments hold the preferred 2048 support target, strength, physical
+sampling, temporal history and corner presentation fixed. `spatial_max_donors`
+is a hard **candidate-count** ceiling (excluding the receiver), not a radius,
+blend-strength limit or certified independent-sample count. Zero preserves the
+existing radius-16/work bound. A connected walk can still travel farther around
+a hole than a compact patch with the same number of candidates.
+
+### Fixed caps: useful option, not a universal replacement
+
+Native `5b5282f` exports the existing qualified four-window raw prefixes through
+the native filter oracle, without retracing transport. Replay
+`cave-1792115454656276000-38373` has 65 planned frames plus its initial live frame,
+an exact receiver-identity/order check, clean logs and a complete geometry audit.
+The reference and all 16 uncapped control images reproduce the originals within
+rare one-code-value final-render rounding. The reference wall crops are exact;
+whole-reference changed pixels are 0.0204%, maximum 1/255, mean 2.75e-7.
+`tools/spatial_replay_quality.py` enforces those equivalence bounds before
+applying the unchanged provisional noise calibration and FLIP comparison.
+
+Maximum noise across both walls/four sequence windows, normalized to the
+previously preferred envelope (1.0); this is **not** a new settling gate:
+
+| Maximum candidate donors | 4 paths | 16 paths | 64 paths | 128 paths |
+|---|---:|---:|---:|---:|
+| Original adaptive bound | 1.000 | .747 | .687 | .890 |
+| 128 | 1.457 | .715 | .687 | .890 |
+| 64 | 1.942 | .825 | .687 | .890 |
+| 32 | 3.004 | 1.401 | .689 | .890 |
+
+At 16 paths, worst-window whole-image FLIP is .115131 uncapped, .114656 with
+128, .108261 with 64, and .105425 with 32. Lower FLIP does not make the visibly
+noisier four-path wall preferable. All caps weaken that four-path appearance;
+keep them opt-in, especially if reducing batch size later. At 64+ paths the
+64/128 caps do not change the search at all; at 128+ none of these caps changes
+it. The maximum-neighborhood idea is therefore most relevant to very early
+and uneven post-edit histories, not the whole refinement period.
+
+A preliminary streamed cave pair (same native `5b5282f`, HEAD `6aba4f6` only
+adds Python analysis) compares cap128 `cave-1792115735902187000-38617` with
+uncapped `cave-1792115840593454000-38703`: 168.35M vs 167.04M paths (+0.8%,
+not a reliable throughput gain); startup/settling worker p95 9.37/5.90 vs
+13.50/8.34 ms (about 30% lower). Offscreen frame p99 29.65/28.18 vs
+34.37/29.60 ms; near-age p95 763/834 vs 789/819 ms. This does not justify
+trading away the four-path look. Presets remain available for visual comparison.
+
+### GPU walk: correct, but rejected on this hardware
+
+Branch `codex/gi-evidence-gpu-walk`, runtime `9197051`, test checkpoint `a9bd4f2`,
+moves the ordered surface BFS onto the GPU, uploading changed slot adjacency
+and using disjoint work queues. It preserves the support weights, radius and
+nonrecursive inputs. Native oracles pass all four targets, three caps, all six
+orientations, coordinate wraps and unequal histories; lifecycle tests cover
+growth, retirement, reuse and disable/re-enable. It is not rejected for accuracy.
+
+It cuts startup CPU work but loses complete-pipeline throughput: cave 131.44M
+vs 167.04M paths (-21.3%), with settling near-age p95 1360 vs 819 ms. Response
+59.11M vs 74.15M (-20.3%). Cave startup worker p95 falls 13.50→4.53 ms, but
+later work and freshness regress. A likely follow-up would need a different
+GPU traversal/layout and sparse-update strategy, not simply tuning the cap.
+Do not merge this version. The branch preserves the unsuccessful experiment.
+
+GPU runs: `cave-1792116111708896000-38917`,
+`response-1792116191248769000-38993`; response control:
+`response-1792115988692092000-38795`. All these comparisons use Apple M4/Metal,
+debug opt1/deps opt3, 2560×1440 headless capture, default budgets, background
+terrain and preferred corner modes. They are not windowed FPS measurements.
+
+### Exact-output compact CPU walk
+
+`66b954d` keeps the search on the worker but precomputes the invariant bounded
+grid transitions in an 8.5 KiB table. Its queue uses compact relative-cell
+indices; the existing resident GPU metadata still supplies distances. No
+per-face radiance/neighborhood cache is added, and no footprint is reduced.
+The old coordinate walk remains an independent debug/test oracle, excluded
+from release builds. The ordered six-orientation topology and native
+four-target/three-cap presentation comparisons pass, including edit weights.
+
+Nine rotating-order isolated trials over 9216 slots: indexed→compact median
+search costs are 22.746→12.174 ms at history16, 1.920→1.058 ms at128, and
+.289→.187 ms at512. These establish a 35–47% search-cost reduction, not an
+equivalent total-frame or settling-time gain. Strict Clippy and build pass.
+Runtime qualification is recorded below when complete.
+
+Reproduction artifacts: `target/footprint-replay/manifest.json`,
+`target/footprint-quality.json`, `target/footprint-{base,cap128,gpu,fast}-*.log`.
+Run the ignored `export_footprint_replay` test with `GI_FOOTPRINT_SOURCE` pointing
+at the saved qualified sweep and `GI_FOOTPRINT_OUTPUT` at a new directory;
+render its manifest through `VOXEL_GI_VALIDATE_NEAR_HISTORY`. Compare using
+`python tools/spatial_replay_quality.py SOURCE REPLAY`. The contact-sheet tool
+accepts `--images REPLAY` while keeping `SOURCE` metadata authoritative.
