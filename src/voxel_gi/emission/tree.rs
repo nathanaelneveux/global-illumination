@@ -112,7 +112,7 @@ pub(super) fn dominant(
     faces: &[EmissiveFace],
     position: Vec3,
     normal: Vec3,
-    mut visible: impl FnMut(IVec3) -> bool,
+    mut visible: impl FnMut(GuideSource) -> Option<bool>,
 ) -> Option<(usize, f32)> {
     let mut index = 0;
     let mut probability = 1.0;
@@ -125,7 +125,10 @@ pub(super) fn dominant(
         if node.left == u32::MAX {
             let voxel = faces[node.right as usize].voxel;
             if voxel != previous_rejected {
-                if visible(voxel) {
+                if visible(GuideSource {
+                    voxel,
+                    concentration: probability,
+                })? {
                     return Some((node.right as usize, probability));
                 }
                 previous_rejected = voxel;

@@ -12,9 +12,12 @@ fn hallway_guide_anchors() {
     for index in [10, 70, 98, 140, 172, 193, 208, 209, 235] {
         let p = fixture.receivers[index].voxel;
         let surface = p.as_vec3() + Vec3::new(0.5, 1., 0.5);
-        let visible = |voxel: IVec3| {
+        let visible = |source: super::super::emission::GuideSource| {
+            let voxel = source.voxel;
             let delta = voxel.as_vec3() + Vec3::splat(0.5) - surface;
-            matches!(fixture.scene.trace_ray_result(surface+Vec3::Y*0.002,delta.normalize(),delta.length()+0.01), TraceResult::Hit(hit) if hit.voxel == voxel)
+            Some(
+                matches!(fixture.scene.trace_ray_result(surface+Vec3::Y*0.002,delta.normalize(),delta.length()+0.01), TraceResult::Hit(hit) if hit.voxel == voxel),
+            )
         };
         println!(
             "GUIDE receiver={p:?} anchor={:?}",

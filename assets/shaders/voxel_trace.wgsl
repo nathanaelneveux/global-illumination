@@ -464,6 +464,12 @@ fn choose_emitter(position: vec3<f32>, normal: vec3<f32>, choice: f32) -> Emissi
 // reducing guidance for broad emitting fields. Correctness does not depend on
 // choosing the best source: the cosine mixture retains full support.
 struct GuideAnchor { position: vec3<f32>, weight: f32 }
+fn guide_weight(position: vec3<f32>, voxel: vec3<i32>, concentration: f32) -> f32 {
+    let delta = vec3<f32>(voxel) + vec3(0.5) - position;
+    let distance2 = dot(delta, delta);
+    let focus = distance2 / (distance2 + 256.0 * GUIDE_RADIUS * GUIDE_RADIUS);
+    return 0.5 * min(6.0 * concentration, 1.0) * focus;
+}
 fn guide_anchor(position: vec3<f32>, normal: vec3<f32>) -> GuideAnchor {
     var anchor: GuideAnchor;
     if GUIDE_RADIUS <= 0.0 || params.extra.w == 0.0 { return anchor; }
@@ -480,7 +486,11 @@ fn guide_anchor(position: vec3<f32>, normal: vec3<f32>) -> GuideAnchor {
             if node.children.x == 0xffffffffu {
                 emitter = load_emitter(node.children.y);
                 emitter.sampling.y = probability;
+                // A weak proposal cannot materially address a concentrated
+                // indirect path. Keep the cosine control without visibility
+                // queries; this is proposal pruning, not an energy cutoff.
                 if any(emitter.voxel != previous_rejected) {
+                    if guide_weight(position, emitter.voxel, probability) < 0.05 { return anchor; }
                     let center = vec3<f32>(emitter.voxel) + vec3(0.5);
                     let delta = center - position;
                     let distance = length(delta);
@@ -526,9 +536,8 @@ fn guide_anchor(position: vec3<f32>, normal: vec3<f32>) -> GuideAnchor {
         }
     }
     anchor.position = vec3<f32>(emitter.voxel) + vec3(0.5);
-    let distance2 = dot(anchor.position - position, anchor.position - position);
-    let focus = distance2 / (distance2 + 256.0 * GUIDE_RADIUS * GUIDE_RADIUS);
-    anchor.weight = 0.5 * min(6.0 * emitter.sampling.y, 1.0) * focus;
+    anchor.weight = guide_weight(position, emitter.voxel, emitter.sampling.y);
+    if anchor.weight < 0.05 { anchor.weight = 0.0; }
     return anchor;
 }
 
@@ -548,6 +557,7 @@ fn direction_guide(position: vec3<f32>, anchor: GuideAnchor) -> DirectionGuide {
 }
 fn direction_pdf(normal: vec3<f32>, direction: vec3<f32>, guide: DirectionGuide) -> f32 {
     let cosine = max(dot(normal, direction), 0.0) / 3.14159265359;
+    if guide.weight == 0.0 { return cosine; }
     let denominator = (1.0 - guide.g) * (1.0 - guide.g) + 2.0 * guide.g * (1.0 - clamp(dot(guide.axis, direction), -1.0, 1.0));
     let lobe = (1.0 - guide.g * guide.g) / (12.56637061436 * denominator * sqrt(denominator));
     return (1.0 - guide.weight) * cosine + guide.weight * lobe;

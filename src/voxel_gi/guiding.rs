@@ -14,6 +14,12 @@ use bevy::prelude::*;
 
 pub(crate) const RADIUS: f32 = 2.0;
 
+fn weight(position: Vec3, voxel: IVec3, concentration: f32) -> f32 {
+    let distance2 = (voxel.as_vec3() + Vec3::splat(0.5)).distance_squared(position);
+    let focus = distance2 / (distance2 + 256.0 * RADIUS * RADIUS);
+    0.5 * (6.0 * concentration).min(1.0) * focus
+}
+
 #[derive(Clone, Copy, Default)]
 pub(crate) struct GuideAnchor {
     position: Vec3,
@@ -27,23 +33,28 @@ impl GuideAnchor {
         position: Vec3,
         normal: Vec3,
     ) -> Self {
-        let visible = |voxel: IVec3| {
+        let visible = |source: super::emission::GuideSource| {
+            let voxel = source.voxel;
+            if weight(position, voxel, source.concentration) < 0.05 {
+                return None;
+            }
             let delta = voxel.as_vec3() + Vec3::splat(0.5) - position;
             let distance = delta.length();
-            distance > 0.001
-                && matches!(scene.trace_ray_result(
+            Some(
+                distance > 0.001
+                    && matches!(scene.trace_ray_result(
                 position + normal * 0.002, delta / distance, distance + 0.01),
-                TraceResult::Hit(hit) if hit.voxel == voxel)
+                    TraceResult::Hit(hit) if hit.voxel == voxel),
+            )
         };
         let Some(source) = emitters.guide_at(position, normal, visible) else {
             return Self::default();
         };
         let center = source.voxel.as_vec3() + Vec3::splat(0.5);
-        let distance2 = center.distance_squared(position);
-        let focus = distance2 / (distance2 + 256.0 * RADIUS * RADIUS);
+        let weight = weight(position, source.voxel, source.concentration);
         Self {
             position: center,
-            weight: 0.5 * (6.0 * source.concentration).min(1.0) * focus,
+            weight: if weight < 0.05 { 0.0 } else { weight },
         }
     }
 
@@ -71,6 +82,9 @@ pub(crate) struct DirectionGuide {
 impl DirectionGuide {
     pub fn pdf(self, normal: Vec3, direction: Vec3) -> f32 {
         let cosine = normal.dot(direction).max(0.0) / std::f32::consts::PI;
+        if self.weight == 0.0 {
+            return cosine;
+        }
         let denominator = (1.0 - self.g).powi(2)
             + 2.0 * self.g * (1.0 - self.axis.dot(direction).clamp(-1.0, 1.0));
         let lobe = (1.0 - self.g * self.g)

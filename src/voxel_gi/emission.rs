@@ -234,7 +234,7 @@ impl EmissionDistribution {
         &self,
         position: Vec3,
         normal: Vec3,
-        visible: impl FnMut(IVec3) -> bool,
+        visible: impl FnMut(GuideSource) -> Option<bool>,
     ) -> Option<GuideSource> {
         if !self.tree.is_empty() {
             let (index, probability) =
