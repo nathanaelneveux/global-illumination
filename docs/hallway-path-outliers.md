@@ -7,6 +7,13 @@ The independent audits also found and fixed deterministic path-truncation
 (`6c9d848`) and grazing emitter self-shadowing (`803f148`) bugs. Those corrections
 remain on both estimators; no smoothing/history adjustment compensates for them.
 
+The [prefix/recovery audit](#prefix-and-live-recovery-audit) below explains the
+remaining witness more narrowly: resident accumulation does not overweight it,
+and replacing QMC with a separate pseudorandom mapping does not eliminate heavy
+tails. Roulette amplifies the known path, while low per-face sampling throughput
+makes its recovery slow. This is not a certificate that all sampling bugs are
+gone, nor acceptance of the hallway's visible result.
+
 ## Reproduced failure (2026-10-16)
 
 Production baseline: `c02d99a`, Apple M4 / Metal, macOS 26.6.2, development
@@ -412,3 +419,109 @@ startup/streaming/display integration evidence, not a new independent reference,
 quantified live convergence result, or a 60-FPS certificate. The default/preset
 test, strict all-target Clippy and development build also pass. No changes to
 BVW, history retention, ray range or bounce count were made in this qualification.
+
+## Prefix and live recovery audit
+
+Diagnostic code: `a332f91`, on runtime baseline `aee3014`. No estimator,
+scheduler, history, presentation, or BVW change. Apple M4 / Metal, optimized
+development/test profiles. The three focused tests and strict all-target
+Clippy pass. These tests supplement, rather than replace, the independent
+SplitMix64 cosine reference above.
+
+```sh
+cargo test --locked --offline hallway_raw_prefix_recovery_audit -- --ignored --nocapture
+cargo test --locked --offline hallway_resident_outlier_weight_matches_raw_sum -- --ignored --nocapture
+cargo test --locked --offline hallway_known_path_weight_ledger -- --ignored --nocapture
+```
+
+The raw study measures each path separately at receivers 193 and 208 in the
+sealed, loaded-hallway fixture. It compares production QMC and the existing
+counter-hashed pseudorandom shader control, each with/without roulette. Four
+131072-path windows start at 0, 1048576, 2097152 and 3145728: 4,194,304 paths in
+total. There is no guiding, reuse, history cap, smoothing, adaptive scheduling,
+or spatial reconstruction. QMC windows are deterministic, not independent IID
+replicas; reported within-path standard errors are diagnostics, not certified
+confidence intervals. The test collects tails and prefixes, not a quality pass.
+
+Receiver 208, window zero, raw red means:
+
+| Paths | Production | Same sequence, no roulette |
+| --- | --- | --- |
+| 2240, before witness | 0.000077693 | 0.000076854 |
+| 2256, after witness | 0.000436936 | 0.000185403 |
+| 4096 | 0.000272975 | 0.000134713 |
+| 8192 | 0.000175970 | 0.000110616 |
+| 16384 | 0.000265196 | 0.000134617 |
+| 131072 | 0.000158246 | 0.000124713 |
+
+For context, the prior independent mean is 0.000134841 with estimated standard
+error 0.000003151. Its integrator/model is unchanged by the endpoint correction;
+the reference was reused, not rerun. These raw numbers are **not FLIP scores**
+and do not establish a visually settled sample threshold. At 2256 paths a single
+production sample supplies 82.3% of the accumulated red. Subsequent samples
+dilute it, but another outlier raises the mean again by 16384. That is different
+from an accumulator becoming permanently stuck.
+
+The pseudorandom control also produces severe tails: at receiver 208/window
+zero its largest sample supplies 70.6% of the first 2048-path sum. In another
+window, one sample still supplies 39.1% after 131072 paths. Thus replacing the
+low-discrepancy sequence does not by itself solve the symptom. This does not
+prove every joint distribution or estimator branch is correct.
+
+The exact CPU ledger accounts for production path 2243 in the loaded fixture:
+
+- The path hits the nearby ceiling, crosses 74.05 voxels to the far end wall,
+  then hits the floor near the emitter. The final light connection is 1.231
+  voxels long; it is not a 74-voxel direct connection to the original receiver.
+- Two RGB reflectances of 0.55 leave throughput 0.3025. Roulette retains this
+  path with probability 0.3025 and multiplies survivors by 3.305785, restoring
+  RGB throughput to 1. The coin is 0.210680.
+- The last connection selects a unit-area emitter face with probability
+  0.393622; querying its PMF independently through the light tree agrees. Its
+  light PDF is 0.619246 and cosine PDF 0.0405303. The 50/50 terminal mixture
+  gives a factor of 0.122861. Emission red 12 and final reflectance 0.55 yield
+  **0.810881** red for this path. Without roulette the same contribution is
+  about **0.245292**. This ledger checks arithmetic, not an independent oracle.
+- None of this is an extra history weight. The resident replay of every
+  16-path batch through 8192 agrees with f64 sums of individually measured
+  native paths, for means and second moments in all five bands. Counts and
+  sequence counters agree exactly. This test has no streaming or invalidation;
+  existing lifecycle tests separately cover those operations.
+
+### Current-default streamed reproduction
+
+Run `live-hallway-1792183567358576000-81869` used runtime `aee3014` plus the
+test-only audit diff (including the ledger added during the run). Nothing in
+the running non-test binary was changed. 182 seconds, headless 2560×1440,
+background loading on, 1517 maximum loaded pages, guiding off, 16 paths/batch,
+4 ms trace budget, corner sunlight/indirect, textures on, AO off, uncapped
+2048-evidence reconstruction. All five capture guards passed, the 120-second
+image was inspected, assets loaded, and no warnings/render errors occurred.
+No second GPU workload or compilation overlapped the running app. These are
+offscreen cadence observations, **not interactive FPS measurements**.
+
+Receiver 208 reached sequence 2256 at 108.57 seconds, jumping from red
+0.000073122 to 0.000537129. At 181.77 seconds it had reached sequence 3968 and
+red 0.000333844: it corrected downward by 37.8%, but remained conspicuously
+affected. The last minute supplied only 22.71 new paths/second. All 248 accepted
+counter advances were +16, with no backwards step. Effective history at the
+end was 3936; the counter/history difference reflects early history caps, not
+repeated sampling. Only two accepted states were marked stable, so the sparse
+stable-audit policy was not the principal explanation in this reproduction.
+The camera stayed beside the lamp; this does not qualify walking up to every
+reported bad face or all edit/streaming interleavings. No fresh frozen live
+reference was baked in this run.
+
+**Conclusion:** the known witness combines a very heavy-tailed estimator,
+roulette amplification and low per-face throughput. Its merge does not multiply
+the ray's weight again, and the raw control demonstrates recovery rather than
+a fixed wrong value. There is still no universal sampling correctness or
+hallway quality certificate. Disabling roulette is a diagnostic, not a promoted
+optimization: its additional ray cost and full cave quality need qualification.
+Any next sampling change must improve early prefixes and tail behavior at equal
+cost, not merely agree at millions of paths or hide the tails with smoothing.
+
+Evidence under ignored `target/`: `hallway-prefix-recovery.{json,log}`,
+`hallway-resident-recovery.{json,log}`, `hallway-path-2243-ledger.json`,
+`hallway-path-ledger.log`, `hallway-sampling-diagnosis-clippy.log`,
+`hallway-sampling-diagnosis-live.log`, and the run's `temporal.json`/`report.json`.
