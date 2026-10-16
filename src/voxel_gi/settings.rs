@@ -215,6 +215,7 @@ mod tests {
             serde_json::from_str(include_str!("../../config/gi-display-unfiltered.json")).unwrap();
         assert_eq!(control.spatial_reconstruction, 0.0);
         assert_eq!(control.spatial_evidence_target, 0);
+        assert_eq!(control.display_transition_frames, 0);
         assert_eq!(control.transport, settings.transport);
         assert_eq!(
             control.sampling_importance(),

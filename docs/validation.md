@@ -353,6 +353,9 @@ forces uniform histories, or replaces scheduling with an offline prefix bake.
 Temporal records are still **pre-spatial** CPU feedback, not final rendered RGB.
 These views diagnose live publication and sampling; they do not supersede the
 raw matched-prefix sampler controls or establish windowed frame pacing.
+The explicit `gi-display-unfiltered.json` control also disables the final
+render-frame transition. Physical prefix exports are unchanged by that
+transition; it must not be mistaken for improved sampler accuracy.
 
 - `VOXEL_GI_VALIDATE_FRAME_TIMINGS=1` adds per-frame intervals and the previous
   Update's seven GI system-body times to `measurements.frame_timeline`, with
