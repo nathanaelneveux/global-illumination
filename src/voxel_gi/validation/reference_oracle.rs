@@ -12,7 +12,7 @@ use super::super::{
 use bevy::prelude::*;
 
 #[derive(Clone, Debug, serde::Serialize)]
-pub(super) struct Estimate {
+pub(in crate::voxel_gi) struct Estimate {
     pub paths: u32,
     pub mean: [f64; 5],
     pub standard_error: [f64; 5],
@@ -31,11 +31,27 @@ pub(super) fn estimate(
     face: usize,
     paths: u32,
 ) -> Estimate {
+    estimate_seeded(scene, materials, sources, transport, voxel, face, paths, 0)
+}
+
+/// Independent random replicas for estimator audits. Seed zero preserves the
+/// original offline reference stream. No production sampler code is used.
+pub(in crate::voxel_gi) fn estimate_seeded(
+    scene: &TransportScene,
+    materials: &VoxelMaterialTransportTable,
+    sources: &TransportSources,
+    transport: TransportSettings,
+    voxel: IVec3,
+    face: usize,
+    paths: u32,
+    seed: u64,
+) -> Estimate {
     assert!(paths > 1);
     let transport = transport.normalized();
     let normal = FACE_OFFSETS[face].as_vec3();
     let surface = voxel.as_vec3() + Vec3::splat(0.5) + normal * 0.5;
     let mut random = Random::new(voxel, face);
+    random.0 ^= seed;
     let mut sum = [0.0; 5];
     let mut square = [0.0; 5];
     for _ in 0..paths {

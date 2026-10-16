@@ -38,6 +38,9 @@ mod light_tree_experiment;
 #[cfg(test)]
 #[path = "gpu/path_guiding_experiment.rs"]
 mod path_guiding_experiment;
+
+#[cfg(test)]
+mod correctness_audit;
 #[cfg(test)]
 mod task_tests;
 #[cfg(test)]

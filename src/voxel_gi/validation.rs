@@ -8,7 +8,7 @@ mod metrics;
 mod profiles;
 mod reference;
 mod reference_image;
-mod reference_oracle;
+pub(super) mod reference_oracle;
 mod response;
 pub(super) mod retention_audit;
 mod sample_sweep;
