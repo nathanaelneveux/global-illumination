@@ -45,7 +45,7 @@ pub(super) struct ResidentAccumulator {
     spatial_bytes: Vec<u8>,
     spatial_donors: UploadBuffer,
     donor_bytes: Vec<u8>,
-    evidence_gather: super::super::spatial::evidence::Gather<UVec2>,
+    evidence_gather: super::super::spatial::evidence::IndexedGather<UVec2>,
     evidence_topology: Option<topology::SurfaceTopology>,
     topology_new: Vec<Key>,
     evidence_target: u32,
@@ -379,16 +379,16 @@ impl ResidentAccumulator {
                     let predicted = face.samples.min(face.history_cap).saturating_add(samples);
                     if predicted < self.evidence_target {
                         let graph = self.evidence_topology.as_ref().expect("adaptive topology");
-                        self.evidence_gather.collect_connected(
+                        self.evidence_gather.collect(
                             face.resident,
                             super::super::spatial::evidence::candidate_limit(
                                 self.evidence_target,
                                 predicted,
                                 work.spatial_max_donors,
                             ),
-                            |address, edge, _| graph.neighbor(address.x, edge),
+                            |address, edge| graph.neighbor(address.x, edge),
                         );
-                        for &(_, address) in &self.evidence_gather.sites[1..] {
+                        for address in self.evidence_gather.values().skip(1) {
                             let bytes = address.to_array().map(u32::to_le_bytes);
                             self.donor_bytes.extend_from_slice(bytes.as_flattened());
                         }

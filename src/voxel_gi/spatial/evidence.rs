@@ -7,6 +7,88 @@ const EDGE: usize = (RADIUS * 2 + 1) as usize;
 const CELLS: usize = EDGE * EDGE;
 const MAX_FACES: usize = 1024;
 
+// Geometry of the bounded search is invariant. Precompute its four transitions
+// once instead of repeating coordinate/radius arithmetic for every receiver.
+const CELL_EDGES: [[u16; 4]; CELLS] = {
+    let mut edges = [[u16::MAX; 4]; CELLS];
+    let directions = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+    let mut cell = 0;
+    while cell < CELLS {
+        let x = (cell % EDGE) as i32 - RADIUS;
+        let y = (cell / EDGE) as i32 - RADIUS;
+        let mut edge = 0;
+        while edge < 4 {
+            let qx = x + directions[edge].0;
+            let qy = y + directions[edge].1;
+            if qx * qx + qy * qy <= RADIUS * RADIUS {
+                edges[cell][edge] = ((qy + RADIUS) as usize * EDGE + (qx + RADIUS) as usize) as u16;
+            }
+            edge += 1;
+        }
+        cell += 1;
+    }
+    edges
+};
+
+/// Compact indexed walk for production. Relative coordinates are implicit in
+/// a small immutable grid; the resident shader already owns distance metadata.
+/// Keep the coordinate-based Gather below as an independent ordering oracle.
+pub(crate) struct IndexedGather<T> {
+    sites: Vec<(u16, T)>,
+    visited: [u64; CELLS.div_ceil(64)],
+}
+
+impl<T> Default for IndexedGather<T> {
+    fn default() -> Self {
+        Self {
+            sites: Vec::new(),
+            visited: [0; CELLS.div_ceil(64)],
+        }
+    }
+}
+
+impl<T: Copy> IndexedGather<T> {
+    pub fn values(&self) -> impl Iterator<Item = T> + '_ {
+        self.sites.iter().map(|&(_, value)| value)
+    }
+
+    pub fn collect(
+        &mut self,
+        center: T,
+        limit: usize,
+        mut neighbor: impl FnMut(T, usize) -> Option<T>,
+    ) {
+        const CENTER: usize = CELLS / 2;
+        self.sites.clear();
+        self.visited.fill(0);
+        self.sites.push((CENTER as u16, center));
+        self.visited[CENTER / 64] = 1 << (CENTER % 64);
+        let limit = limit.min(MAX_FACES);
+        let mut cursor = 0;
+        while cursor < self.sites.len() && self.sites.len() < limit {
+            let (cell, value) = self.sites[cursor];
+            cursor += 1;
+            for (edge, next) in CELL_EDGES[cell as usize].into_iter().enumerate() {
+                if next == u16::MAX {
+                    continue;
+                }
+                let mask = 1 << (next % 64);
+                let visited = &mut self.visited[next as usize / 64];
+                if *visited & mask != 0 {
+                    continue;
+                }
+                *visited |= mask;
+                if let Some(value) = neighbor(value, edge) {
+                    self.sites.push((next, value));
+                    if self.sites.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Coordinates modulo 64 recover exact donor distances because every axis of
 /// the bounded gather is strictly within half that period. This is distance
 /// metadata, never identity: full slot/incarnation ownership remains separate.
@@ -36,11 +118,13 @@ pub(crate) fn candidate_limit(target: u32, history: u32, max_donors: u32) -> usi
 /// or a radius-squared allocation. The small bitset prevents duplicate donors
 /// and repeated lookups at gaps. Same-normal paths may go around holes, never
 /// across them or around a solid corner to a differently oriented surface.
+#[cfg(any(test, debug_assertions))]
 pub(crate) struct Gather<T> {
     pub sites: Vec<(IVec2, T)>,
     visited: [u64; CELLS.div_ceil(64)],
 }
 
+#[cfg(any(test, debug_assertions))]
 impl<T> Default for Gather<T> {
     fn default() -> Self {
         Self {
@@ -50,6 +134,7 @@ impl<T> Default for Gather<T> {
     }
 }
 
+#[cfg(any(test, debug_assertions))]
 impl<T: Copy> Gather<T> {
     pub fn collect(
         &mut self,

@@ -79,7 +79,7 @@ impl SurfaceTopology {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voxel_gi::spatial::evidence::Gather;
+    use crate::voxel_gi::spatial::evidence::{Gather, IndexedGather};
 
     fn slot(index: u32) -> Slot {
         Slot {
@@ -95,6 +95,7 @@ mod tests {
     fn compare(graph: &SurfaceTopology, slots: &HashMap<Key, Slot>) {
         let mut hashed = Gather::default();
         let mut indexed = Gather::default();
+        let mut compact = IndexedGather::default();
         for (&(voxel, face), slot) in slots {
             for limit in [1, 4, 32, 256, 1024] {
                 let center = UVec2::new(slot.index, slot.incarnation);
@@ -107,6 +108,11 @@ mod tests {
                 assert_eq!(
                     hashed.sites, indexed.sites,
                     "{voxel:?}/{face}, limit={limit}"
+                );
+                compact.collect(center, limit, |s, edge| graph.neighbor(s.x, edge));
+                assert_eq!(
+                    compact.values().collect::<Vec<_>>(),
+                    hashed.sites.iter().map(|s| s.1).collect::<Vec<_>>()
                 );
             }
         }
@@ -169,11 +175,12 @@ mod tests {
             graph.nodes.capacity() * std::mem::size_of::<Node>()
         );
         let mut gather = Gather::default();
+        let mut compact = IndexedGather::default();
         for count in [16, 128, 512] {
             let limit = crate::voxel_gi::spatial::evidence::candidate_limit(2048, count, 0);
-            let mut times = [Vec::new(), Vec::new()];
-            for iteration in 0..10 {
-                for mode in [iteration % 2, 1 - iteration % 2] {
+            let mut times = [Vec::new(), Vec::new(), Vec::new()];
+            for iteration in 0..9 {
+                for mode in [iteration % 3, (iteration + 1) % 3, (iteration + 2) % 3] {
                     let start = Instant::now();
                     for (&(voxel, face), slot) in &slots {
                         let center = UVec2::new(slot.index, slot.incarnation);
@@ -183,10 +190,13 @@ mod tests {
                                     .get(&(p, f))
                                     .map(|s| UVec2::new(s.index, s.incarnation))
                             });
-                        } else {
+                        } else if mode == 1 {
                             gather.collect_connected(center, limit, |s, edge, _| {
                                 graph.neighbor(s.x, edge)
                             });
+                        } else {
+                            compact.collect(center, limit, |s, edge| graph.neighbor(s.x, edge));
+                            black_box(compact.values().last());
                         }
                         black_box(&gather.sites);
                     }
@@ -197,8 +207,8 @@ mod tests {
                 t.sort_by(f64::total_cmp);
             }
             eprintln!(
-                "history={count} limit={limit} hash_p50_ms={:.3} indexed_p50_ms={:.3}",
-                times[0][5], times[1][5]
+                "history={count} limit={limit} hash_p50_ms={:.3} indexed_p50_ms={:.3} compact_p50_ms={:.3}",
+                times[0][4], times[1][4], times[2][4]
             );
         }
     }
