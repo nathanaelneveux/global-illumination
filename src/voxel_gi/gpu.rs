@@ -246,8 +246,6 @@ pub(crate) struct GpuTracer {
     fixed_path_lanes: Option<u32>,
     sky_pipeline: ComputePipeline,
     guide_pipeline: Option<ComputePipeline>,
-    cosine_pipeline: Option<ComputePipeline>,
-    cosine_pipelines: bevy::platform::collections::HashMap<(u32, bool, u32), ComputePipeline>,
     pub sky_cache: super::sky_cache::SkyCache,
     #[cfg(test)]
     duplicate_sky_for_benchmark: bool,
@@ -274,7 +272,6 @@ pub(crate) struct GpuTracer {
     bindings: Option<CachedBindings<9>>,
     sky_bindings: Option<CachedBindings<7>>,
     guide_bindings: Option<CachedBindings<7>>,
-    cosine_bindings: Option<CachedBindings<9>>,
     readbacks: Vec<UploadBuffer>,
     timestamps: Option<wgpu::QuerySet>,
     timestamp_resolve: UploadBuffer,
@@ -419,8 +416,6 @@ impl GpuTracer {
             fixed_path_lanes: None,
             sky_pipeline,
             guide_pipeline: None,
-            cosine_pipeline: None,
-            cosine_pipelines: default(),
             sky_cache: default(),
             #[cfg(test)]
             duplicate_sky_for_benchmark: false,
@@ -455,7 +450,6 @@ impl GpuTracer {
             bindings: None,
             sky_bindings: None,
             guide_bindings: None,
-            cosine_bindings: None,
             readbacks: Vec::new(),
             timestamps,
             timestamp_resolve: UploadBuffer::new(
@@ -862,13 +856,6 @@ impl GpuTracer {
         // sky cache could retain an obsolete, large output buffer indefinitely.
         let ids = buffers.map(|buffer| buffer.buffer.id());
         if self
-            .cosine_bindings
-            .as_ref()
-            .is_some_and(|cached| cached.buffers != ids)
-        {
-            self.cosine_bindings = None;
-        }
-        if self
             .bindings
             .as_ref()
             .is_some_and(|cached| cached.buffers != ids)
@@ -945,20 +932,6 @@ impl GpuTracer {
                 [0, 1, 2, 3, 6, 7, 8].map(|index| (index as u32, buffers[index])),
             )
         });
-        let cosine_bindings = (prepare_guides && self.cosine_pipeline.is_some()).then(|| {
-            cached_bindings(
-                &mut self.cosine_bindings,
-                device,
-                || {
-                    self.cosine_pipeline
-                        .as_ref()
-                        .unwrap()
-                        .get_bind_group_layout(0)
-                        .into()
-                },
-                std::array::from_fn(|index| (index as u32, buffers[index])),
-            )
-        });
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("GI bounded transport batch"),
         });
@@ -992,15 +965,6 @@ impl GpuTracer {
                 pass.set_pipeline(self.guide_pipeline.as_ref().unwrap());
                 pass.set_bind_group(0, &**bindings, &[]);
                 pass.dispatch_workgroups((face_count as u32).div_ceil(64), 1, 1);
-            }
-            if let Some(bindings) = cosine_bindings {
-                pass.set_pipeline(self.cosine_pipeline.as_ref().unwrap());
-                pass.set_bind_group(0, &**bindings, &[]);
-                pass.dispatch_workgroups(
-                    (face_count as u32).div_ceil(self.faces_per_workgroup),
-                    1,
-                    1,
-                );
             }
             if let Some(bindings) = bindings {
                 pass.set_pipeline(&self.pipeline);
@@ -1210,8 +1174,6 @@ impl GpuTracer {
             lanes,
             emitter_guiding,
         );
-        let split_guides =
-            emitter_guiding && matches!(self.entry, "trace_faces" | "trace_faces_parallel");
         if key == self.pipeline_key {
             return Ok(());
         }
@@ -1232,7 +1194,6 @@ impl GpuTracer {
             if emitter_guiding {
                 constants.push(("GUIDE_RADIUS", f64::from(super::guiding::RADIUS)));
                 constants.push(("GUIDES_PREPARED", 1.0));
-                constants.push(("SPLIT_GUIDES", f64::from(split_guides)));
             }
             let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("Voxel transport quality variant"),
@@ -1252,46 +1213,6 @@ impl GpuTracer {
             pipeline
         };
         self.pipeline = pipeline;
-        self.cosine_pipeline = if split_guides {
-            let cosine_key = (key.0, key.1, key.2);
-            if let Some(pipeline) = self.cosine_pipelines.get(&cosine_key) {
-                Some(pipeline.clone())
-            } else {
-                let device = &self.context.device;
-                let scope = device
-                    .wgpu_device()
-                    .push_error_scope(wgpu::ErrorFilter::Validation);
-                let mut constants = vec![
-                    ("DIFFUSE_HITS", key.0 as f64),
-                    ("LIMITED_REACH", f64::from(key.1)),
-                    ("GUIDE_RADIUS", 0.0),
-                    ("GUIDES_PREPARED", 1.0),
-                    ("SPLIT_GUIDES", 1.0),
-                ];
-                if self.adaptive_lanes {
-                    constants.push(("PATH_LANES", f64::from(lanes)));
-                }
-                let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("GI receivers without a useful guide"),
-                    layout: None,
-                    module: &self.module,
-                    entry_point: Some(self.entry),
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &constants,
-                        ..default()
-                    },
-                    cache: None,
-                });
-                if let Some(error) = bevy::tasks::block_on(scope.pop()) {
-                    return Err(error.to_string());
-                }
-                self.cosine_pipelines.insert(cosine_key, pipeline.clone());
-                Some(pipeline)
-            }
-        } else {
-            None
-        };
-        self.cosine_bindings = None;
         if emitter_guiding && self.guide_pipeline.is_none() {
             let device = &self.context.device;
             let scope = device
