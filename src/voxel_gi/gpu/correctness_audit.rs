@@ -7,6 +7,7 @@ use crate::voxel_gi::{TransportSettings, validation::reference_oracle};
 
 mod field;
 mod recovery;
+mod sampler_dimensions;
 mod short_paths;
 
 /// Raw block-averaged estimates. A duplicated receiver represents a disjoint

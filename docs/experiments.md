@@ -26,6 +26,7 @@ comparison infrastructure is `9186a55`. Winners were merged into
 | `directional-guide` | `f8fba72` | Reject four azimuth sectors: higher room error and disturbed open-sky sampling; added probe memory was not justified. |
 | `terminal-work` | `ab4cfdd` | Keep isolated: removing unused terminal-bounce preparation showed only a small preliminary gain. |
 | `sampler-cost` | `ac9af28` | Keep isolated: constant Halton radices gave no compelling overall gain. |
+| `sampler-dimension-recheck` (this branch) | see section | Reject all-dimension Sobol again: Halton's small-count correlation does not show in field error; hallway error is estimator-dominated. |
 | `ray-reciprocals` | `0850c91` | Reject: no demonstrated throughput gain from explicit reciprocal reuse. |
 | `wavefront` | `f0044d6` | Reject dense per-bounce passes: extra scratch and dispatches, slower open terrain, no room gain. |
 | `scrambled-sobol` | `2034e48` | Do not promote all dimensions: strong sky/emitter improvement, but worse early room error. |
@@ -89,6 +90,43 @@ Evidence: `target/emitter-sobol-paired-study.log`,
 stratification through high sequence blocks, normalized cosine sampling and exact
 preservation of all twelve old path dimensions. Native CPU/GPU standard and
 emissive-room references report RMS 0.000000, including edits and extra bands.
+
+## Path-dimension sampler recheck (October 17)
+
+Rotated Halton correlates its high prime bases at small counts. Roulette (dimension
+9, base 29) and the terminal light/cosine choice (dimension 10, base 31) have a mean
+absolute correlation of 0.58 over 16 samples. Their 4x4 coverage is 3.5x worse than
+independent samples at 16 paths and 6.5x worse at 256. The terminal-direction pair
+(17/19) is about 2x worse at 16 paths. The terminal mixture introduced dimensions
+6, 7 and 10 on October 10, after the October 8 all-dimension Sobol check.
+`sampling.rs` checks joint coverage only at 65,536 samples.
+
+The hypothesis was that this explained persistent per-face early noise. The
+ignored native test `sampler_dimension_study` tests it. It compares production
+Halton, padded Owen-scrambled Sobol for every dimension, and an IID counter control
+on the same estimator and fixtures. Fixtures: 237 loaded-hallway sites and 165 cave
+material sites; six disjoint starts; prefixes 16 to 2048. References are two
+disjoint 262,144-path IID blocks. Apple M4 / Metal, optimized dependency test
+profile, no app running. Analysis: `tools/sampler_dimension_analysis.py`.
+
+Median per-face relative RGB error (max channel / reference max channel):
+
+| Fixture | Paths | Halton | Sobol | IID |
+| --- | ---: | ---: | ---: | ---: |
+| Cave | 16 | .1943 | .1733 | .1994 |
+| Cave | 256 | .0416 | .0437 | .0537 |
+| Cave | 2048 | .0133 | .0142 | .0196 |
+| Hallway | 16 | .5407 | .5192 | .5581 |
+| Hallway | 256 | .4202 | .4067 | .4098 |
+| Hallway | 2048 | .2627 | .2543 | .2636 |
+
+**Decision: reject.** The sequence correlation is real, but it does not appear in
+field error. Halton stays slightly ahead of all-Sobol in the cave from 64 paths.
+In the hallway all three samplers are equal, and the mean squared error is
+dominated by heavy tails for every sampler. The hallway's 26% median error at
+2048 paths does not depend on the sampler: it comes from the estimator. Its
+reference blocks disagree by up to 15% at p95, so hallway values are diagnostic
+only. Evidence: ignored `target/sampler-dimension-study.json`.
 
 ## Explicit sunlight demand
 
