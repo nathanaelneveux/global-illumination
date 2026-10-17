@@ -662,6 +662,7 @@ pub(super) fn run_validation(
             "adaptive_updates": settings.adaptive_updates, "display_response_ms": settings.display_response.as_secs_f32() * 1000.0,
             "display_transition_frames": settings.display_transition_frames,
             "history_limit": settings.history_limit, "history_recency": settings.history_recency,
+            "history_change_threshold": settings.history_change_threshold,
             "spatial_evidence_target": settings.spatial_evidence_target,
             "display_upload_interval_ms": settings.display_upload_interval.as_secs_f32() * 1000.0,
             "stable_min_samples": settings.stable_min_samples, "stable_relative_error": settings.stable_relative_error,

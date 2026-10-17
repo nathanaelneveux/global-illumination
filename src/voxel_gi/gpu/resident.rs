@@ -476,7 +476,7 @@ impl ResidentAccumulator {
             } else {
                 1.0f32.to_bits()
             },
-            0,
+            work.history_change_threshold.max(0.0).to_bits(),
         ];
         self.control.upload(
             device,

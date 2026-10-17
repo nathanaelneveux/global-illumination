@@ -27,6 +27,12 @@ pub struct VoxelGiSettings {
     /// i of n weighs (i/n)^(k-1): early cache values fade as n^-k instead of
     /// n^-1, at a variance cost of k^2/(2k-1). The fixed point is unchanged.
     pub history_recency: f32,
+    /// Change detector, in standard errors; zero disables it. When a fresh
+    /// batch differs from the retained mean (RGB or IR) by more than this,
+    /// the prior weight is cut to four batches before merging. History noise
+    /// is estimated from the face's own second moment, so heavy-tailed faces
+    /// are rarely cut by a batch that merely missed a rare bright path.
+    pub history_change_threshold: f32,
     /// Resident-only, nonrecursive spatial RGB reconstruction.
     /// Zero is the unchanged corner display; one enables uncertainty-weighted
     /// connected-surface filtering. Never changes transport or simulation data.
@@ -75,6 +81,7 @@ impl Default for VoxelGiSettings {
             simulation_sampling_importance: DEFAULT_SIMULATION_SAMPLING_IMPORTANCE,
             history_limit: super::tracer::HISTORY_LIMIT,
             history_recency: 1.0,
+            history_change_threshold: 0.0,
             spatial_reconstruction: 1.0,
             spatial_evidence_target: 1024,
             spatial_max_donors: 0,
@@ -128,6 +135,13 @@ impl VoxelGiSettings {
             self.history_recency.clamp(1.0, 4.0)
         } else {
             1.0
+        }
+    }
+    pub(super) fn history_change_threshold(&self) -> f32 {
+        if self.history_change_threshold.is_finite() {
+            self.history_change_threshold.clamp(0.0, 100.0)
+        } else {
+            0.0
         }
     }
     pub(super) fn batch_samples(&self) -> u32 {

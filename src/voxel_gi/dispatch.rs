@@ -124,6 +124,7 @@ pub(super) fn start_trace_task(
     selected.response_seconds = settings.display_response_seconds();
     selected.history_limit = settings.history_limit();
     selected.history_recency = settings.history_recency();
+    selected.history_change_threshold = settings.history_change_threshold();
     selected.display_frame = frame.as_ref().map_or(0, |frame| frame.0);
     selected.display_transition_frames = settings.display_transition_frames.min(32);
     selected.spatial_reconstruction = settings.spatial_reconstruction;
