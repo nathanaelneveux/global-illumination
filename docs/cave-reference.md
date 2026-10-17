@@ -90,6 +90,14 @@ command with `--control`. The control JSON now explicitly records its sampling
 importance and sampler backend. The older reuse comparison retains its original
 equal-band resident control; do not conflate that with this proposal-only test.
 
+`VOXEL_GI_VALIDATE_ROULETTE_SWEEP=1` uses the same matched prefix counts and
+capture workflow to compare the ordinary estimator against a diagnostic shader
+that completes short paths without early roulette. It requires guiding off and
+rejects reuse or spatial/evidence sweeps. Both arms use RGB-prioritized emission
+sampling; the reference stays on the ordinary equal-band estimator. The sweep
+JSON records `early_roulette` in each arm. This flag does not change gameplay;
+evaluate raw errors and rendered worst patches before accepting its extra cost.
+
 An empirical qualification requires eight passing independent estimator checks,
 replica RGB difference p99 <=1%, and maximum <=5%, with a .02 RGB norm floor.
 These are agreement checks, not mathematical confidence guarantees. A failed

@@ -31,6 +31,7 @@ pub(super) fn requested() -> bool {
     std::env::var("VOXEL_GI_VALIDATE_SAMPLE_SWEEP").is_ok_and(|v| v == "1")
         || spatial_requested()
         || guiding_requested()
+        || roulette_requested()
 }
 
 pub(super) fn spatial_requested() -> bool {
@@ -81,12 +82,18 @@ pub(super) fn guiding_requested() -> bool {
     std::env::var("VOXEL_GI_VALIDATE_GUIDING_SWEEP").is_ok_and(|v| v == "1")
 }
 
+/// Matched estimator comparison, with early roulette disabled only in the
+/// diagnostic candidate. This does not change the gameplay sampler.
+pub(super) fn roulette_requested() -> bool {
+    std::env::var("VOXEL_GI_VALIDATE_ROULETTE_SWEEP").is_ok_and(|v| v == "1")
+}
+
 pub(super) fn paired_requested() -> bool {
-    reuse_requested() || guiding_requested()
+    reuse_requested() || guiding_requested() || roulette_requested()
 }
 
 fn counts(control: bool) -> &'static [u32] {
-    if guiding_requested() {
+    if guiding_requested() || roulette_requested() {
         GUIDING_COUNTS
     } else if evidence_targets_requested() {
         &[4, 16, 64, 128, 256, 512, 1024, 1280, 1536, 2048]
@@ -149,6 +156,11 @@ pub(super) fn run(
     control: bool,
     emitter_guiding: bool,
 ) -> Result<Vec<Window>, String> {
+    if roulette_requested()
+        && (reuse_requested() || spatial_requested() || guiding_requested() || emitter_guiding)
+    {
+        return Err("ROULETTE_SWEEP requires independent unguided paths and no spatial sweep".into());
+    }
     if guiding_requested() && (reuse_requested() || spatial_requested()) {
         return Err("GUIDING_SWEEP must be isolated from reuse and spatial/evidence sweeps".into());
     }
