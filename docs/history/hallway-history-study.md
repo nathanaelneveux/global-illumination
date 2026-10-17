@@ -2,7 +2,7 @@
 
 This study separates distance from scene/material/source differences in the
 earlier house-versus-cave comparisons. Runtime retention, transport, emitter
-falloff and display smoothing remain unchanged. See [structures](structures.md)
+falloff and display smoothing remain unchanged. See [structures](../structures.md)
 for the walking route and optional same-world spawn shortcut.
 
 ## Fixture and controls

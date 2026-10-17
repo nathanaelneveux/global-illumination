@@ -2,8 +2,8 @@
 
 Archived from README at 831931d. This is an evidence record, not the current design
 or testing recipe. Superseded experiments and rejected hypotheses are intentionally
-retained. Start with the [current README](../README.md), [architecture](architecture.md),
-and [validation guide](validation.md). Artifact paths are machine-local and may no
+retained. Start with the [current README](../../README.md), [architecture](../architecture.md),
+and [validation guide](../validation.md). Artifact paths are machine-local and may no
 longer exist after local cleanup; tracked summaries are not substitute raw data.
 
 ---
@@ -33,7 +33,7 @@ The implementation draws on [vxray](https://github.com/Nelarius/vxray), its [dev
 - Sparse display uploads preserve stable slots during edits. Topology patches preflight all allocations and hash insertions before publishing anything. Growing the cache keeps updating the previous display, and the replacement merges newer measurements in its installation frame rather than briefly showing the old worker snapshot. Invalidation preserves display blending weights as well as values; replacement weights change with the filtered estimate. No additional edit debounce is used.
 - Display-cache rebuilds publish fresh buffer identities and generation-owned patch queues. In-flight render frames retain their old generation; paired hash/probe uploads are bounds-checked and deferred updates are retained. Sparse geometry edits publish removed/added addresses and changed face values atomically, bypassing the ordinary value-upload timer. Shader bounds use the generation's allocated capacity so old extracted materials already accept new slots.
 
-The core lives in [`src/voxel_gi/`](../src/voxel_gi):
+The core lives in [`src/voxel_gi/`](../../src/voxel_gi):
 
 ```text
 BVW streamed chunks + edits
@@ -255,7 +255,7 @@ workload; keep `gameplay` for coupled performance comparisons.
 
 Its October 5 schema-2 `gameplay` run on Apple M4/Metal, 2560×1440, FIFO, development build and default settings completed 80 edits/restores and five streaming moves. Editing frame p50/p99 were 16.79/28.92 ms; first-fresh-receiver latency p50/p95 was 154.61/183.44 ms (maximum 420.05 ms), with zero pending or superseded watches at completion. This is a single harness-verification run, not evidence of a comparative speedup or visual convergence. Full local artifacts: `target/gi-validation/gameplay-1791217759852541000-95006/`.
 
-From here, commit each coherent, verified change separately and checkpoint before a new performance/architecture experiment. Keep commits buildable, include the verification actually performed and known limitations, and record benchmark results against the exact revision plus any dirty diff. Preserve a compact measurement summary in commit history or tracked documentation; screenshots/logs can remain under `target/`. Do not accumulate multiple independent performance experiments into one uncommitted state. The repository's [agent workflow](../AGENTS.md) makes this the default for future work.
+From here, commit each coherent, verified change separately and checkpoint before a new performance/architecture experiment. Keep commits buildable, include the verification actually performed and known limitations, and record benchmark results against the exact revision plus any dirty diff. Preserve a compact measurement summary in commit history or tracked documentation; screenshots/logs can remain under `target/`. Do not accumulate multiple independent performance experiments into one uncommitted state. The repository's [agent workflow](../../AGENTS.md) makes this the default for future work.
 
 ## Architecture and cost audit (October 5, 2026)
 
@@ -965,7 +965,7 @@ the existing patch-bounds regression is not a proof of unlimited cache capacity.
 
 ## Configuration
 
-Terrain settings remain hot-reloadable in [`assets/config/default.prototype.ron`](../assets/config/default.prototype.ron). Mesh ambient occlusion is disabled by default so it does not bake a second approximation into the ray-traced indirect result.
+Terrain settings remain hot-reloadable in [`assets/config/default.prototype.ron`](../../assets/config/default.prototype.ron). Mesh ambient occlusion is disabled by default so it does not bake a second approximation into the ray-traced indirect result.
 
 For a sky-light A/B comparison, leave F5 on its default corner blending and press F7 to switch from cached corner sunlight to Bevy per-pixel sunlight; press it again to restore the default. Diffuse sky/environment lighting remains in the voxel cache in either mode. Point lights and other materials retain their normal Bevy rendering. The cached sun uses voxel-ray visibility and a diffuse Lambertian response, with Bevy's camera exposure; it intentionally omits the sun's view-dependent specular lobe. Thus this compares the full diffuse voxel-lit look, not only two shadow filters. Cached direct sun can lag edits/source changes just like the GI field. F4 can disable indirect GI without disabling the selected direct-sun mode. Switching modes changes neither transport sources nor simulation estimates and does not restart sampling.
 
@@ -985,4 +985,4 @@ For a same-revision scheduling A/B baseline, use `VOXEL_GI_CONTINUOUS=1 cargo ru
 
 ## License
 
-Licensed under `CC0-1.0 OR MIT OR Apache-2.0`. See [LICENSE-CC0-1.0.txt](../LICENSE-CC0-1.0.txt), [LICENSE-MIT.txt](../LICENSE-MIT.txt), and [LICENSE-Apache-2.0.txt](../LICENSE-Apache-2.0.txt).
+Licensed under `CC0-1.0 OR MIT OR Apache-2.0`. See [LICENSE-CC0-1.0.txt](../../LICENSE-CC0-1.0.txt), [LICENSE-MIT.txt](../../LICENSE-MIT.txt), and [LICENSE-Apache-2.0.txt](../../LICENSE-Apache-2.0.txt).

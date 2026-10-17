@@ -30,7 +30,7 @@ accepted 2,048-path appearance; the original measurements below are retained.
    goal on a separate, qualified reference scene. `SamplingCalibration` recomputes
    this from all four complete sample-sweep windows, requiring that higher tested
    prefixes continue to pass. Current raw-face RGB p99/max goals are 5%/10%, and
-   the [composed cave sweep](cave-sampling.md) gives **Q = 3,072**. This is not a
+   the [composed cave sweep](../cave-sampling.md) gives **Q = 3,072**. This is not a
    perceptual score or an IR/radiation quality certificate.
 3. **Change prior:** `D(d) = (48 / max(48, d))²`, using the smaller geometry or
    changed-sunlight distance. This is an experimental normalized change estimate,
@@ -235,7 +235,7 @@ Input SHA-256 values in `sun-retention-qualified-study.json`:
 
 ## User-calibrated follow-up
 
-The user subsequently accepted the [2,048-path visual target](cave-sampling.md#user-calibrated-visual-target).
+The user subsequently accepted the [2,048-path visual target](../cave-sampling.md#user-calibrated-visual-target).
 Add `--quality-profile tools/quality_profiles/cave-user-2048.json` to the replay
 command and use `--output target/sun-retention-user-2048-study.json`. Omitting
 the option preserves the original raw 5%/10% calibration for reproduction.

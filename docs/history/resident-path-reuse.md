@@ -6,7 +6,7 @@ Uncapped 2048-evidence spatial reconstruction became the user-selected default
 on October 16; visible ranking and wider sharing remain opt-in. These display
 improvements are not a new raw-sampler convergence threshold. Reproduce the
 historical unfiltered control with `config/gi-display-unfiltered.json` and keep
-[sampler and presentation qualification separate](validation.md#separate-sampling-accuracy-from-presentation).
+[sampler and presentation qualification separate](../validation.md#separate-sampling-accuracy-from-presentation).
 
 Baseline `e3b46be` is preserved as
 `codex/gi-baseline-residency-reuse-20261015`. All experiments are local. BVW,

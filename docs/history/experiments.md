@@ -230,7 +230,7 @@ brightening and darkening references before promotion.
 
 The next series starts at `af4a724`, preserved as
 `experiment/gi-baseline-naadf-source-20261008`. Source findings are pinned in
-[the research notes](research.md#source-implementation-findings). These are
+[the research notes](../research.md#source-implementation-findings). These are
 CPU acceleration-construction changes; GI paths, source evaluation, history,
 presentation and the GPU shader are unchanged. No external implementation was
 copied. Winners were merged at `ee136fc` and `01d7e43`; rejected early termination

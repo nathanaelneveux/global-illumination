@@ -81,7 +81,7 @@ Primary indirect corners are not promoted. In the actual house selection,
 adapting the current oriented estimator requires 1,324 connected corner states
 versus 1,019 face states. This does not rule out a different directional corner
 representation; it rules out assuming a free sample-count reduction. See the
-[research decisions](research.md#why-indirect-corners-are-still-an-experiment).
+[research decisions](../research.md#why-indirect-corners-are-still-an-experiment).
 
 ## Verification
 
@@ -102,7 +102,7 @@ Focused verification is recorded in each code commit. At `8546ef3`:
 ### End-to-end evidence
 
 Machine: Apple M4, Metal, Rust 1.95.0. Development profile with the shared-cache
-configuration in [validation](validation.md#shared-cargo-cache). No simultaneous
+configuration in [validation](../validation.md#shared-cargo-cache). No simultaneous
 compiler/GPU benchmark. Captures use Bevy offscreen 2560 × 1440, 60 Hz schedule
 runner, no OS window/swapchain. Textures on, AO off, shared-corner sun and
 corner-reconstructed indirect; seed 7, terrain period 256. Defaults: 4 ms trace
@@ -166,7 +166,7 @@ records the relevant prior work, what is unimplemented and the acceptance criter
 
 ## October 14 external-review follow-up
 
-Reconciled [the independent source review](../CODE_REVIEW_2026-10-13.txt), checked
+Reconciled [the independent source review](CODE_REVIEW_2026-10-13.txt), checked
 at `a68a1d8`, against current baseline `885deeb`. These are focused robustness/work
 removal fixes, not a new estimator or another retention calibration.
 
@@ -195,7 +195,7 @@ no FPS improvement, faster visual settling or all-residency support is claimed.
 The existing whole-range policy, transport samples, presentation and BVW are
 unchanged. Capacity checks prevent unsupported allocations; they are not general
 physical-memory exhaustion recovery. See the current display contract in
-[architecture](architecture.md#temporal-and-spatial-display).
+[architecture](../architecture.md#temporal-and-spatial-display).
 
 Subsequent input/delta work is recorded below. This table records disposition
 at that checkpoint; the [focused follow-up](#october-14-focused-follow-up-review)
@@ -237,7 +237,7 @@ Baseline: clean `5364955`. Three local, buildable code checkpoints:
   stress were not rerun. Clippy was run after the code commits, with only
   documentation changes in progress.
 
-The [current input contract](architecture.md#host-input-contract) requires all
+The [current input contract](../architecture.md#host-input-contract) requires all
 tracked-mode writers to use the gateway or report unknown input. Sparse edits
 currently persist across unload/reload and consume memory per distinct edited
 position. The eight-transition delta journal is key-only and bounded in versions,
@@ -259,7 +259,7 @@ suggestion. Reviewed production ownership and hot paths in input, scene/delta
 construction, sources/materials, retention, scheduling, worker transfer/merge,
 packing, sunlight, display publication, diagnostics and the host integration.
 Checked those contracts against the primary sources recorded in
-[research](research.md#october-14-focused-source-and-production-comparison).
+[research](../research.md#october-14-focused-source-and-production-comparison).
 No BVW, shader, estimator, history-curve, smoothing or debounce change.
 
 ### Implemented findings

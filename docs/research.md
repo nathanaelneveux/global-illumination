@@ -14,7 +14,7 @@ The [October 14 comparison](#october-14-focused-source-and-production-comparison
 adds a versioned Solari 0.19.1 source check, production integration lessons and
 2025–2026 reuse research. It does not promote another estimator.
 
-The [October 9 many-emitter decision pass](research-2026-10-09.md) concludes the
+The [October 9 many-emitter decision pass](history/research-2026-10-09.md) concludes the
 next five candidates. A spatial voxel-emitter hierarchy is now retained. GPU
 residency and guarded edit differences remain isolated directions; retained
 temporal paths/ReSTCV are deferred; a frozen angular control cache is rejected.
@@ -86,7 +86,7 @@ builder/cache, not copied shader implementations.
   gets a separate visibility ray. This is much more than temporal blending.
 
 **Implications for this engine:** exact uniform-field construction and topology-keyed
-top-level reuse are now measured wins in [the experiment record](experiments.md#naadf-construction-experiments).
+top-level reuse are now measured wins in [the experiment record](history/experiments.md#naadf-construction-experiments).
 The largest unimplemented GI opportunity from this source is world-space reuse
 of individual samples. A receiver-owned design must retain path geometry, proposal
 density and all five energy bands; reconnect with current visibility; invalidate
@@ -111,7 +111,7 @@ It lowers ceiling error at matched GPU budgets, but arbitrary task adjacency
 pairs only 28% of real workload faces. A four-receiver variant was slower and
 failed its high-sample check. Neither is a production default. These are fresh
 spatial MIS experiments, not ReSTIR reservoirs or temporal path history; see
-[the measured results](experiments.md#fresh-spatial-path-reuse).
+[the measured results](history/experiments.md#fresh-spatial-path-reuse).
 
 ### vxray
 
@@ -291,7 +291,7 @@ multi-band tests before considering promotion.
 
 ## Decisions on the five speed directions
 
-The [October 8 experiment results](experiments.md) record completed branches.
+The [October 8 experiment results](history/experiments.md) record completed branches.
 Emitter-only scrambled Sobol sampling and explicit sky demand are now defaults.
 Uniform AADF construction and topology-keyed top-level reuse also remove measured
 scene-building work without changing transport samples. Exact brick repair is
@@ -300,7 +300,7 @@ Vector box stepping, sparse GPU metadata uploads and unchanged packed allocation
 reuse now remove execution/preparation work as well; see the measured scope in
 the experiment record. Re-evaluable fresh paths exist only on an isolated branch;
 retained temporal path samples remain unimplemented.
-The [five-direction decision record](experiments.md#five-direction-decision-pass)
+The [five-direction decision record](history/experiments.md#five-direction-decision-pass)
 separates measured prototypes from defaults. The four-sector guide, dense
 wavefront implementation and broader Sobol variants were not promoted either.
 

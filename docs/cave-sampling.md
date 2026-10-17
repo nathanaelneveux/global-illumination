@@ -262,6 +262,6 @@ pixels were checked. Reference and 2,048 images were inspected. This reuses
 existing qualified captures, not a new reference bake. Evidence:
 `target/cave-user-2048-{acceptance.json,capture-check.log}`.
 
-The [retention follow-up](sun-aware-retention.md#user-calibrated-follow-up) supports
+The [retention follow-up](history/sun-aware-retention.md#user-calibrated-follow-up) supports
 this target while distinguishing a new goal from a better sampler. Runtime
 integration remains separate.

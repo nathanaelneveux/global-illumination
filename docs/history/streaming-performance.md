@@ -151,7 +151,7 @@ Exact ignored artifacts under `target/gi-validation/`:
 - `cave-1791651580682425000-73424`: prior control `0ddc304` from the BVW comparison.
 
 Logs use `target/{streaming,cave,response}-display-*.log`; focused test/build logs
-use `target/display-*.log`. See [display-cache lifetime](architecture.md#display-cache-lifetime)
+use `target/display-*.log`. See [display-cache lifetime](../architecture.md#display-cache-lifetime)
 for the maintained ownership and publication contracts.
 
 ## Follow-up experiments
@@ -665,7 +665,7 @@ visually inspected. Assets verified, exit success, no render validation errors.
 The log includes the normal unsupported-Metal-bindless fallback warning and a
 window-destruction warning on exit; it is not described as warning-free. No
 screen/security settings were changed. This does not certify temporal stability
-or the new [2,048-path appearance target](cave-sampling.md#user-calibrated-visual-target).
+or the new [2,048-path appearance target](../cave-sampling.md#user-calibrated-visual-target).
 
 ## October 14 immutable input and shared delta
 
@@ -674,7 +674,7 @@ immutable tracked input **`ce17a4c`**; same-frame unknown-input ordering correct
 **`254234d`**; shared region-change discovery **`f4f1847`**. All commits are local.
 No BVW, shader, estimator, retention-curve, display-filter or debounce-window
 change. Contracts and memory limits are in
-[architecture](architecture.md#host-input-contract); focused correctness checks
+[architecture](../architecture.md#host-input-contract); focused correctness checks
 are in [the audit](audit.md#october-14-immutable-input-and-shared-delta-qualification).
 
 ### Isolated CPU cost

@@ -37,7 +37,8 @@ accumulation. The default resident path does not wait for CPU delivery to render
 | Construction policy; model/work configuration and revision synchronization | `startup.rs`, `settings.rs` |
 | Thread-transfer payload and result merge | `work.rs` |
 | Source model and Bevy light adaptation | `sources.rs` |
-| Sampling, emitters and transport | `sampling.rs`, `emission.rs`, `guiding.rs`, `tracer.rs`, `gpu.rs`, `voxel_trace.wgsl` |
+| Sampling, emitters and transport | `sampling.rs`, `emission.rs`, `tracer.rs`, `gpu.rs`, `voxel_trace.wgsl` |
+| Surface-cache face lookup | `gpu/face_index.rs` |
 | Stable GPU ownership, accumulation and bounded snapshots | `gpu/resident.rs`, `gpu/readback.rs`, `voxel_accumulate.wgsl` |
 | Shared uncertainty heuristic | `statistics.rs` |
 | Direct-sun visibility cache | `sky.rs`, `sky_cache.rs` |
@@ -117,7 +118,7 @@ Rays normalize direction, offset from surfaces, traverse at most 2,048 steps and
 768 voxel units per segment by default, and distinguish hits, escape and unknown traversal.
 These finite-domain/depth limits are explicit approximations, not an exact
 infinite-domain light solver. Nonzero paths are never discarded solely because
-throughput is small: the next radiance can be large, especially with guiding.
+throughput is small: the next radiance can be large.
 Only exact-zero termination and compensated Russian roulette are retained; the
 old 0.002 cutoff failed the independent estimator audit.
 GPU empty-space box stepping uses vector operations with the scalar reference's
@@ -193,10 +194,25 @@ array, with explicit little-endian words and initialized padding. This removes
 the intermediate typed array without changing the shader ABI. Scratch capacity
 tracks the largest dispatch, not the number of loaded receivers; no path history
 is added. A test-only generic encoder is the byte-layout oracle.
-The [experiment results](experiments.md) explain why Sobol is restricted to
+The [experiment results](history/experiments.md) explain why Sobol is restricted to
 emitter dimensions rather than replacing every path dimension.
 
-Paths evaluate up to three diffuse bounces, analytic visibility, voxel emission,
+### Surface radiance cache
+
+Each resident face stores its measured incident energy: emitter NEE plus the
+continued path. A path that hits a resident face with at least 16 samples ends
+there with `emission * MIS + reflectance * (direct at the hit + that face's
+cached energy)`. The cached value already contains the face's own NEE and
+continuation, so nothing is counted twice. Bounces accumulate through the cache
+over successive updates, which gives infinite-bounce transport. Most paths
+cost one cosine ray plus shadow rays. `gpu/face_index.rs` keeps a GPU
+`(voxel, face) -> slot` table beside the worker's slot map. Uncached hits
+(cold start, faces never scheduled, the synchronous and CPU backends) continue
+explicitly as described below. Rays that reach unloaded regions carry no
+information: they are excluded from a face's sample count, not averaged in as
+black. Evidence and limits: [surface cache](surface-cache.md).
+
+Explicit paths evaluate up to three diffuse bounces, analytic visibility, voxel emission,
 and the directional environment gradient. Analytic point lights use range and
 inverse-square attenuation with a one-unit near-distance clamp. Directional
 lights have no attenuation. All analytic sources are currently evaluated; the
@@ -219,7 +235,7 @@ Source weights include all five scalar channels:
 R, G, B, infrared and ionizing. The tree shares the emitter storage binding,
 adds 64 bytes per node and rebuilds with the worker's emitter snapshot; there is
 no per-receiver allocation or incremental tree refit. See the
-[many-emitter results and tradeoffs](research-2026-10-09.md#spatial-light-hierarchy).
+[many-emitter results and tradeoffs](history/research-2026-10-09.md#spatial-light-hierarchy).
 
 The last diffuse hit has no continuing cosine path to balance an ordinary
 light-only estimate. Instead it draws one emission connection from a 50/50
@@ -228,7 +244,7 @@ This preserves the finite-bounce emission integral while bounding each terminal
 connection by twice the emitter's energy, without clipping or adding another
 connection ray. Sky escapes and nonemitting hits contribute zero to this terminal
 term; it does not extend the environment bounce count. CPU and GPU use the same
-unused terminal path dimensions. See the [cave accuracy study](cave-history-retention.md)
+unused terminal path dimensions. See the [cave accuracy study](history/cave-history-retention.md)
 for the outlier diagnosis, native cost and independent-reference checks.
 
 The core stores normalized energy. It does not attach physical watts, temperature
@@ -275,12 +291,13 @@ are independent. A revision can make an estimate stale without clearing its
 display, rewinding its sequence, or resetting the world sweep.
 
 The default geometry/changed-sunlight policy is the selected
-[whole-range equation](whole-range-history.md): `H(d) = round((d / 12)^4)`, applied
+[whole-range equation](history/whole-range-history.md): `H(d) = round((d / 12)^4)`, applied
 as `min(existing_weight, H(d))`. Distance is receiver-to-change distance. The
 65,536 statistical ceiling implies a 192-block history-binning horizon: past
 that distance the equation cannot reduce a supported weight. This is **not** a
-light or ray cutoff, and 2,048 remains a visual-reference sample count, not the
-statistical ceiling. Changed sunlight contributes its own spatial origins.
+light or ray cutoff. Shorter ceilings, recency weighting and an optional change
+detector (`history_limit`, `history_recency`, `history_change_threshold`) were
+measured against cache feedback; see [surface cache](surface-cache.md). Changed sunlight contributes its own spatial origins.
 
 Legacy geometry control and the unchanged non-geometry policies:
 
@@ -316,25 +333,25 @@ an integration decision. Voxel emission uses scene changes, not this light list.
 Removing, replacing or covering an emitting voxel uses ordinary spatial history:
 old energy decays as new paths arrive, rather than restarting every receiver.
 This trades a bounded history tail for stability; the measured local removal
-response is documented in the [scene-history audit](scene-history-audit.md).
+response is documented in the [scene-history audit](history/scene-history-audit.md).
 It is not an instantaneous extinction guarantee, especially at distant receivers
 retaining large weights or during frequent streaming. All five bands retain the
 same statistical weight. Distance is a response heuristic, not proof of weak
 lighting influence: a very bright distant source can still matter greatly.
 
-The [distance/history qualification](distance-history.md) derives a history cap
+The [distance/history qualification](history/distance-history.md) derives a history cap
 from a bounded lighting change and response budget, then compares real canyon
 loads, remote cave changes and long-range shadows. It supports retaining remote
 compatible history, but rejects distance alone as a general influence bound.
 Spatial retention must also survive bounded-journal eviction; retaining
 more samples without that metadata is not a complete solution.
 
-The preceding [sun-aware retention experiment](sun-aware-retention.md) separates
+The preceding [sun-aware retention experiment](history/sun-aware-retention.md) separates
 spatial evidence, measured sampler quality, stale-light budget and an empirical
 history floor. Changed shared-corner sunlight supplies secondary change origins;
 calibration remeasures paths to a fixed quality goal when sampling improves.
 The conservative offline arm preserves baseline edit responses while retaining
-remote evidence. Its [runtime implementation](runtime-retention.md) introduced
+remote evidence. Its [runtime implementation](history/runtime-retention.md) introduced
 per-page bounded journals with timestamped
 conservative overflow, independent sun-evidence epochs, and immutable page
 snapshots for worker-side distance/weight queries. Selection checks page stamps;
@@ -347,7 +364,7 @@ older calibration curve. `VOXEL_GI_RETENTION=baseline` restores the legacy contr
 alias, not a way to restore the previous curve). Analytic-source/model policies
 in the table remain unchanged.
 
-The default [distance-band overflow summary](distance-band-retention.md) replaces
+The default [distance-band overflow summary](history/distance-band-retention.md) replaces
 the two fallback floors with revision stamps per distance band and origin. It
 reuses worker-computed change-to-page AABB distances and stores no baked sample
 caps. Eight recent exact events and per-receiver consumption epochs remain;
@@ -375,7 +392,7 @@ updates immediately and never becomes incoming simulation energy. New faces
 remain unmeasured. A new receiver's display-prior clock is initialized explicitly,
 independent of its material ID, not as a side effect of resetting measurements.
 No rule tests a house, tunnel, skylight or gameplay material ID inside the
-estimator. The [completed policy controls](scene-history-audit.md#policy-closeout)
+estimator. The [completed policy controls](history/scene-history-audit.md#policy-closeout)
 explain why the remaining history limits and dark-discovery minimum are retained
 as heuristics, not presented as physical requirements.
 
@@ -418,7 +435,7 @@ work allocation, not transport extent, spatial filtering, or the sampling PDF.
 Only receiver membership changes inside these two page rings invalidate the
 local index; distant streaming does not rebuild it or rewind its cursor.
 The reserved global sweep still visits every loaded receiver, including hidden
-simulation bands. The [streaming experiment record](research-2026-10-09.md#refinement-under-continuous-terrain-loading)
+simulation bands. The [streaming experiment record](history/research-2026-10-09.md#refinement-under-continuous-terrain-loading)
 includes the rejected wider-window and separate-lane alternatives.
 
 Only selected measurements cross the worker boundary in `TraceWork`; topology
@@ -430,7 +447,7 @@ The default dispatch adds 16 paths per selected face within the same adaptive
 4-ms transport target. This amortizes receiver scheduling, transfer and merge;
 it does not increase bounce depth, reach, retained history or the work target.
 Smaller batches remain available for more frequent individual-receiver refresh.
-The [paired cave and response evidence](streaming-performance.md#repeated-batch-size-result)
+The [paired cave and response evidence](history/streaming-performance.md#repeated-batch-size-result)
 supports the default, including its early-coverage/refresh-cadence tradeoff.
 
 Publication rejects incompatible receiver geometry and obsolete global-model
@@ -451,11 +468,12 @@ a permanent brightness ceiling. Confidence weights evolve with the filtered
 value. This is biased presentation, not a modified physical estimator.
 
 Resident RGB then uses nonrecursive, connected-coplanar evidence reconstruction,
-with the user-selected target 2048 and no extra donor cap. The radius/work bound
+with target 1024 (chosen with the user-calibrated FLIP gate for the cache
+estimator; see [surface cache](surface-cache.md#display-evidence-target)) and no extra donor cap. The radius/work bound
 still applies. Compatible raw statistics determine donor weights; temporal RGB
 supplies display values. Spatial output never feeds transport, moments, temporal
 history, scheduling or simulation readback. The CPU reference keeps the original
-corner display. See [reconstruction and cost evidence](early-spatial-reconstruction.md).
+corner display. See [reconstruction and cost evidence](history/early-spatial-reconstruction.md).
 
 Resident presentation also retains the currently displayed RGB when a new
 target arrives and interpolates toward that target over eight render frames.
@@ -551,7 +569,7 @@ their exact initialized native buffers are registered before Bevy's asset and
 material preparation; matching size, usage and label prevent duplicate allocation.
 Native tests cover buffer identity, initial/catch-up byte parity, GPU submission,
 generation changes and the CPU fallback. See the
-[publication measurements](streaming-performance.md#bounded-display-publication)
+[publication measurements](history/streaming-performance.md#bounded-display-publication)
 for latency, throughput and remaining stalls.
 
 Each generation owns fresh hash/probe buffer identities and its own shared patch
@@ -673,7 +691,7 @@ display evidence.
 
 Insert `VoxelGiStartup` before adding `VoxelGiPlugin`. It selects
 `TransportBackend::Auto` (required resident compute), `Cpu`,
-explicit `Resident`, opt-in `Reuse`, or the `Synchronous` comparison, and
+explicit `Resident`, or the `Synchronous` comparison, and
 `RetentionPolicy::WholeRange(RetentionSummary)` or the legacy comparison.
 Defaults preserve whole-range retention with distance-band overflow summaries.
 These are per-App construction choices, not live switches. Runtime controls
@@ -704,14 +722,14 @@ pages. The coarse check can reject energy that a longer fine ray would recover.
 
 A per-leg reach is not the same radius for history invalidation. Several legs,
 sun/point visibility and the remaining sky frontier can depend on geometry
-beyond it. The [transport-horizon study](transport-horizon.md) measures this
+beyond it. The [transport-horizon study](history/transport-horizon.md) measures this
 quality tradeoff separately from a future bounded-dependency contract. Its
 canyon fixture is important: the small enclosed cave alone understates useful
 daylight travel distances. Current defaults and invalidation rules are unchanged.
 
 On GPU, depth and finite/default horizon policy are specialization constants.
-The worker lazily caches at most twenty-four face pipelines (three depths × two
-policies × two lane layouts × guided/control sampling);
+The worker lazily caches at most twelve face pipelines (three depths × two
+policies × two lane layouts);
 numeric reach stays in the uniform, so 16→32 does not compile another variant.
 The default path keeps the original traversal loop without a runtime cutoff
 policy argument. First use of a variant can delay that asynchronous batch during
@@ -719,23 +737,10 @@ compilation, not block gameplay. Auto-layout face bindings are recreated wheneve
 the active pipeline changes; unchanged buffer identities alone are insufficient.
 Sky has its own pipeline and is independent of these variants.
 
-Source-informed guiding is a proposal choice, not part of `TransportSettings`.
-It is experimental/off by default: sparse-hallway gains did not survive the
-whole-cave worst-patch visual gate at the accepted sample count.
-It mixes cosine sampling with a source-directed spherical lobe and applies the
-same PDF to throughput and emitter MIS, including the terminal connection.
-The light-tree PMF remains distinct from the source-concentration heuristic.
-A GPU preparation pass writes one temporary 16-byte proposal per selected face
-after the result/sky payload; it introduces no CPU upload/readback or persistent
-world records. Preparation is included in the compute budget. CPU tracing uses
-the same proposal equations directly. Switching proposals preserves physical
-history; neither old measurements nor a missing guide are replaced by invented
-energy. A zero-weight guide is the intentional cosine proposal, not an error
-fallback. The [hallway investigation](hallway-path-outliers.md) records the
-variance reduction, extra raw-sampling cost, rejected alternatives, and the
-independent correctness audit that removed biased path truncation, and the
-full-image gate that revoked its default promotion. This is an explicit
-configuration decision, not a silent runtime fallback or scene-name special case.
+Source-informed guiding and fresh path reuse were removed on the surface-cache
+branch; neither was qualified with cache termination. Their evidence remains in
+[hallway outliers](history/hallway-path-outliers.md) and
+[path reuse](history/resident-path-reuse.md).
 
 The normalized model is captured on `TraceWork` for CPU/GPU parity. A model change
 calls `invalidate_model`: outstanding old-model results are
