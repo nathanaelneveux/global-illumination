@@ -364,7 +364,17 @@ impl ReferenceImage {
         }
         let progress = Arc::new(AtomicU64::new(0));
         let sweep_requested = super::sample_sweep::requested();
-        let total_paths = sites.len() as u64 * u64::from(paths) * 2
+        let cache_mode = super::sample_sweep::cache_requested();
+        let converge_paths: u64 = if cache_mode {
+            super::sample_sweep::CACHE_CONVERGE_BATCHES
+                .iter()
+                .map(|&(_, batches)| u64::from(batches) * 16)
+                .sum::<u64>()
+                * sites.len() as u64
+        } else {
+            0
+        };
+        let total_paths = converge_paths + sites.len() as u64 * u64::from(paths) * 2
             + if sweep_requested {
                 super::sample_sweep::path_count(sites.len())
             } else {
@@ -389,6 +399,28 @@ impl ReferenceImage {
             let mut gpu = GpuTracer::new(device.clone())?;
             let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
             let prioritized = Arc::new(EmissionDistribution::with_importance(&scene, &materials, importance));
+            // Cache mode: converge resident measurements for every site, then
+            // freeze them. The reference and every prefix read that same cache,
+            // so they differ only in their own path count.
+            let _cache_source = if cache_mode {
+                let mut resident = GpuTracer::new(device.clone())?;
+                resident.enable_resident()?;
+                let mut work = TraceWork { transport, ..default() };
+                for &(voxel, face) in &sites {
+                    let probe = SurfaceProbe::new(voxel, 1 << face);
+                    work.push(&probe, 1 << face, 0, 0, false, u32::MAX, u32::MAX);
+                    work.probes.last_mut().unwrap().sky_requested = false;
+                }
+                for (limit, batches) in super::sample_sweep::CACHE_CONVERGE_BATCHES {
+                    resident.set_history_limit(limit)?;
+                    for _ in 0..batches {
+                        resident.trace_compact(scene.clone(), &sources, &materials, &mut work, 16, &prioritized, false)?;
+                        worker_progress.fetch_add(sites.len() as u64 * 16, Ordering::Relaxed);
+                    }
+                }
+                gpu.share_cache_from(&resident)?;
+                Some(resident)
+            } else { None };
             let mut short_paths = if super::sample_sweep::roulette_requested() {
                 Some(GpuTracer::short_path_candidate(device.clone())?)
             } else {None};
@@ -483,12 +515,14 @@ impl ReferenceImage {
             let discrepancy: Vec<_> = replicas[0].iter().zip(&replicas[1])
                 .map(|(a,b)| rgb_error(a, b)).collect();
             let mut oracle_checks = Vec::new();
-            for (local, face) in [
+            // The CPU oracle integrates the finite three-hit target, not the
+            // cache's infinite-bounce fixed point: cache mode relies on replicas.
+            for (local, face) in if cache_mode { vec![] } else { vec![
                 (IVec3::new(4,22,15),0), (IVec3::new(59,9,50),1),
                 (IVec3::new(22,37,59),5), (IVec3::new(8,43,56),3),
                 (IVec3::new(8,4,8),2), (IVec3::new(30,22,32),1),
                 (IVec3::new(7,40,8),3), (IVec3::new(59,37,36),1),
-            ] {
+            ] } {
                 let voxel = origin + local;
                 if let Some(index) = sites.iter().position(|&s| s == (voxel, face)) {
                     let oracle = super::reference_oracle::estimate(&scene, &materials, &sources,
@@ -503,12 +537,13 @@ impl ReferenceImage {
             }
             let discrepancy_summary = percentiles(&discrepancy);
             let rejected_bands: usize = oracle_checks.iter().map(|c| c["rejected_bands"].as_array().unwrap().len()).sum();
-            let qualification = json!({"qualified":rejected_bands==0 && oracle_checks.len()==8
+            let qualification = json!({"qualified":rejected_bands==0 && (cache_mode || oracle_checks.len()==8)
                 && discrepancy_summary["p99"].as_f64().unwrap()<=0.01
                 && discrepancy_summary["max"].as_f64().unwrap()<=0.05,
                 "oracle_rejected_bands":rejected_bands,"oracle_sites":oracle_checks.len(),
                 "replica_relative_rgb_difference":discrepancy_summary,
-                "criteria":"Eight independent cosine checks pass; replica RGB difference p99 <=1%, maximum <=5%. These are empirical agreement checks, not certified confidence bounds."});
+                "cache_mode":cache_mode,
+                "criteria":if cache_mode {"Frozen converged surface cache: replica RGB difference p99 <=1%, maximum <=5%. No finite-depth CPU oracle applies to the infinite-bounce cache."} else {"Eight independent cosine checks pass; replica RGB difference p99 <=1%, maximum <=5%. These are empirical agreement checks, not certified confidence bounds."}});
             let rows: Vec<_> = sites.iter().enumerate().map(|(i, &(voxel,face))| {
                 let p = &base[&voxel];
                 json!({"voxel":voxel.to_array(),"face":face,

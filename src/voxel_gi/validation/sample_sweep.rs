@@ -34,6 +34,16 @@ pub(super) fn requested() -> bool {
         || roulette_requested()
 }
 
+/// Converge the resident surface cache on the frozen scene, then measure the
+/// reference and raw prefixes against that frozen cache.
+pub(super) fn cache_requested() -> bool {
+    std::env::var("VOXEL_GI_VALIDATE_CACHE_SWEEP").is_ok_and(|v| v == "1")
+}
+
+/// Short-history batches reach the cache's feedback fixed point; long-history
+/// batches then average down the cached values' own noise.
+pub(super) const CACHE_CONVERGE_BATCHES: [(u32, u32); 2] = [(256, 640), (65_536, 512)];
+
 pub(super) fn spatial_requested() -> bool {
     std::env::var("VOXEL_GI_VALIDATE_SPATIAL_SWEEP").is_ok_and(|v| v == "1") || evidence_requested()
 }
@@ -227,7 +237,8 @@ pub(super) fn run(
                     progress.fetch_add(chunk.len() as u64 * u64::from(paths), Ordering::Relaxed);
                 }
                 for (i, face) in work.faces.iter().enumerate() {
-                    if face.samples != prefix.paths
+                    // Samples reaching unloaded space are excluded, not black.
+                    if face.samples > prefix.paths
                         || face.sequence != sequence_start + prefix.paths
                     {
                         return Err("Sweep lost its cumulative sample count or sequence".into());

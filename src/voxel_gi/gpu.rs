@@ -213,6 +213,18 @@ impl UploadBuffer {
         Ok(true)
     }
 
+    /// Another handle to the same allocation, for read-only diagnostic binding.
+    fn shared(&self) -> Self {
+        Self {
+            buffer: self.buffer.clone(),
+            capacity: self.capacity,
+            label: self.label,
+            usage: self.usage,
+            #[cfg(test)]
+            uploads: 0,
+        }
+    }
+
     fn upload(
         &mut self,
         device: &RenderDevice,
@@ -276,9 +288,10 @@ pub(crate) struct GpuTracer {
     task_bytes: Vec<u8>,
     output: UploadBuffer,
     bindings: Option<CachedBindings<11>>,
-    /// Bound when no resident cache exists: every face lookup misses, so
-    /// paths continue explicitly (synchronous comparison backend).
-    empty_cache: (UploadBuffer, UploadBuffer),
+    /// Bound when this tracer has no resident cache. By default every face
+    /// lookup misses, so paths continue explicitly (synchronous comparison
+    /// backend). Diagnostics may bind another tracer's frozen cache instead.
+    external_cache: (UploadBuffer, UploadBuffer),
     sky_bindings: Option<CachedBindings<7>>,
     guide_bindings: Option<CachedBindings<7>>,
     readbacks: Vec<UploadBuffer>,
@@ -323,6 +336,27 @@ impl GpuTracer {
         if self.resident.is_none() {
             self.resident = Some(resident::ResidentAccumulator::new(&self.context)?);
         }
+        Ok(())
+    }
+
+    /// Diagnostics: terminate this tracer's paths on another tracer's resident
+    /// measurements, read-only. The source must not trace while this is bound
+    /// if its cache is meant to stay frozen.
+    pub(crate) fn share_cache_from(&mut self, source: &GpuTracer) -> Result<(), String> {
+        let resident = source
+            .resident
+            .as_ref()
+            .ok_or("cache source has no resident measurements")?;
+        let (state, index) = resident.cache_buffers();
+        self.external_cache = (state.shared(), index.shared());
+        Ok(())
+    }
+
+    pub(crate) fn set_history_limit(&mut self, limit: u32) -> Result<(), String> {
+        self.resident
+            .as_mut()
+            .ok_or("history limit applies to resident measurements")?
+            .history_limit = limit;
         Ok(())
     }
 
@@ -468,7 +502,7 @@ impl GpuTracer {
                 BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             ),
             bindings: None,
-            empty_cache: {
+            external_cache: {
                 let mut state = UploadBuffer::new(device, "GI empty resident cache", storage);
                 let mut index = UploadBuffer::new(device, "GI empty face index", storage);
                 state.ensure(device, 16)?;
@@ -876,7 +910,7 @@ impl GpuTracer {
         let (cache_state, cache_index) = self
             .resident
             .as_ref()
-            .map_or((&self.empty_cache.0, &self.empty_cache.1), |resident| {
+            .map_or((&self.external_cache.0, &self.external_cache.1), |resident| {
                 resident.cache_buffers()
             });
         let buffers = [
