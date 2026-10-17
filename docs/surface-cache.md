@@ -145,6 +145,27 @@ retention caps keep counts low, and there k=2 discards most of a face's history.
 Flicker doubles. **Decision: keep 65,536 and recency 1.** The knobs stay for
 scene-specific tuning; the validation report now records them.
 
+## Edit response and the rejected change detector
+
+`response` profile (emitter add at ~20 s, removal at ~25 s, 7 tracked faces,
+one run each, background loading). Settle means staying within 10% of the
+change, as measured by `tools/response_timing.py`:
+
+| Build | Add p50 / p90 | Remove p50 / p90 |
+| --- | --- | --- |
+| Baseline `0790c12` | 1.58 / 3.68 s | 1.15 / 2.96 s |
+| Cache `d53331f` | 1.51 / 1.78 s | 0.93 / 0.93 s |
+| Cache + change detector (z = 4) | 1.77 / 2.28 s | 1.04 / 1.57 s |
+
+The detector (`9102402`, reverted in `9fb1b30`) cut prior weight when a batch
+disagreed with the retained mean by more than z standard errors. It did not
+improve edits, because retention caps already handle them. In `live-hallway` it
+raised flicker p50/p95 to .064/.348, the same as a short history: the first
+rare bright path after a quiet stretch looks like a change. Distance-curve
+retention stays. A loaded chunk is not a free pass either: rays that left the
+loaded area counted as sky, and the new terrain contradicts them. The existing
+curve already leaves faces more than ~190 blocks from a change untouched.
+
 ## Known limits
 
 - With the long ceiling, early under-bounced cache values stay in the running
