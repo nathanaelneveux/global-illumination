@@ -25,5 +25,5 @@
 ## Preferred behavior
 
 - Default to shared-corner direct sunlight and corner-reconstructed indirect GI, textures on, baked AO off. Keep the per-pixel sunlight comparison available.
-- Resident indirect RGB uses the user-selected uncapped 2048-evidence reconstruction by default. Keep `config/gi-display-unfiltered.json` as the explicit no-adaptive-spatial control; uncapped still has the existing radius/work bound.
+- Resident indirect RGB uses uncapped 1024-evidence reconstruction by default. The user asked for it to be chosen with the calibrated FLIP gate after the surface cache halved the raw path count needed (2048 before). Keep `config/gi-display-unfiltered.json` as the explicit no-adaptive-spatial control; uncapped still has the existing radius/work bound.
 - Do not add debounce or promote corner-based indirect transport or other architectural experiments without relevant evidence and the user's intended scope.

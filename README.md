@@ -58,8 +58,12 @@ lives in [path reuse](docs/resident-path-reuse.md) and
 `VOXEL_GI_BACKEND=sync` keeps the synchronous backend; it binds no cache, so
 its paths continue explicitly for up to three hits.
 
-Early spatial RGB reconstruction now defaults to the user-selected **2048
-evidence target with its full adaptive footprint**, without an extra donor cap.
+Early spatial RGB reconstruction defaults to a **1024 evidence target** on this
+branch, with its full adaptive footprint and no extra donor cap. The cache
+estimator passes the user-calibrated FLIP gate at 1024 raw paths, half of the
+old 2048. That target also keeps smooth-wall noise inside the preferred envelope
+at every prefix; see [surface cache](docs/surface-cache.md#display-evidence-target).
+`config/gi-display-evidence-2048.json` restores the previous target.
 It filters presentation only, never physical samples or simulation data.
 Use `VOXEL_GI_SETTINGS=config/gi-display-unfiltered.json` for the unfiltered
 control; sampler accuracy must be qualified separately from this reconstruction.

@@ -76,7 +76,7 @@ impl Default for VoxelGiSettings {
             history_limit: super::tracer::HISTORY_LIMIT,
             history_recency: 1.0,
             spatial_reconstruction: 1.0,
-            spatial_evidence_target: 2048,
+            spatial_evidence_target: 1024,
             spatial_max_donors: 0,
             visible_refinement: false,
             adaptive_updates: true,
@@ -225,11 +225,11 @@ mod tests {
     fn preferred_spatial_default_has_explicit_unfiltered_and_fixed_controls() {
         let settings = VoxelGiSettings::default();
         let preset: VoxelGiSettings =
-            serde_json::from_str(include_str!("../../config/gi-display-evidence-2048.json"))
+            serde_json::from_str(include_str!("../../config/gi-display-evidence-1024.json"))
                 .unwrap();
         assert_eq!(settings, preset);
         assert_eq!(settings.spatial_reconstruction, 1.0);
-        assert_eq!(settings.spatial_evidence_target, 2048);
+        assert_eq!(settings.spatial_evidence_target, 1024);
         assert_eq!(settings.spatial_max_donors, 0);
         let control: VoxelGiSettings =
             serde_json::from_str(include_str!("../../config/gi-display-unfiltered.json")).unwrap();

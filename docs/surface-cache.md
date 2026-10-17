@@ -72,6 +72,40 @@ Energy: the native test `cached_furnace_converges_to_infinite_bounce_series`
 traces all 1,176 interior faces of a closed emissive furnace. Every band converges
 to `E / (1 - r)` within 0.03% using a 256-sample test history.
 
+## Display evidence target
+
+The user-calibrated cave gate (`tools/quality_profiles/cave-user-2048.json`,
+FLIP 1.7 at 67 px/degree) is mean FLIP <= .0274 and worst 32px tile <= .0730.
+It was set where the old estimator's raw output looked indistinguishable from
+the reference (2,048 paths). The display evidence target followed that count.
+
+Frozen-cache sweep, run `cave-1792278749460839000-9510` on `53539d2`.
+`VOXEL_GI_VALIDATE_CACHE_SWEEP=1`, headless cave with background loading,
+15,163 chamber faces, 131,072-path reference replicas. The replicas agree to
+p99 0.2% and max 0.5% RGB, with FLIP .0024 between them. Worst of four windows:
+
+| Paths | Cache raw FLIP / worst tile | Old raw FLIP / worst tile |
+| ---: | --- | --- |
+| 256 | .0327 / .1037 | |
+| 512 | .0230 / .0743 (tile fails by 2%) | |
+| 1024 | .0163 / .0535 **pass** | .0367 / .1045 |
+| 2048 | .0117 / .0342 **pass** | .0274 / .0730 (accepted) |
+
+The cache output reaches the gate at half the paths. At equal paths, evidence
+reconstruction never improved FLIP fidelity: blurring moves shading detail, as
+it did for the old estimator. Its job is early smoothness. Smooth-wall noise uses
+the regions, metric and limit of `cave-spatial-noise-2048.json` (the preferred
+2048 look), measured against this run's own reference
+(`tools/cache_wall_noise.py`). Normalized worst over 4..2048 paths, where <= 1
+is the preferred smoothness: raw 9.49 (within the envelope from 256 paths),
+target 256 1.36, 512 1.04, **1024 0.93**.
+
+1024 meets both calibrations: the raw count that passes FLIP, and
+smoothness inside the envelope at every prefix. It is the branch default.
+Its footprint is about 1/sqrt(2) of 2048's, so less detail is smeared.
+`config/gi-display-evidence-2048.json` restores the old target.
+`tools/cache_flip_gate.py` reproduces the FLIP table.
+
 ## Rejected: 256-sample gameplay history
 
 A short history would bound stale feedback without edit journals. In
@@ -89,5 +123,5 @@ dark corridor faces still have heavy-tailed samples. Gameplay keeps the
   the face.
 - Path reuse, guiding, the synchronous backend and the CPU reference do not use
   the cache. They are candidates for removal on this branch.
-- The display stack (temporal filter, 2048-evidence reconstruction, transition)
-  is unchanged. Retuning it to the lower noise is the next presentation step.
+- The temporal filter and transition are unchanged. The evidence target is now
+  1024 (above).
