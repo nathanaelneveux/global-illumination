@@ -93,3 +93,40 @@ fn cached_furnace_converges_to_infinite_bounce_series() {
         assert!((ratio - 1.0).abs() < 0.02, "band {band}: {measured} != {expected}");
     }
 }
+
+/// Feedback lag under the gameplay ceiling: early under-bounced cache values
+/// stay in a plain running mean. Recency weighting and shorter caps trade
+/// that lag for noise; this records the convergence side of the trade.
+#[test]
+#[ignore = "native resident furnace: convergence lag by history cap and recency"]
+fn cached_furnace_lag_by_history_policy() {
+    let fixture = crate::voxel_gi::research::furnace();
+    let material = fixture.materials.get(4);
+    let emitters = Arc::new(EmissionDistribution::with_importance(
+        &fixture.scene,
+        &fixture.materials,
+        crate::voxel_gi::VoxelGiSettings::default().sampling_importance(),
+    ));
+    let native = tests::native_tracer();
+    let probes = all_interior_faces(&fixture);
+    let r = channels(material.diffuse)[2];
+    let expected = channels(material.emission)[2] / (1.0 - r);
+    for (limit, recency) in [(65_536, 1.0), (65_536, 1.5), (65_536, 2.0), (8_192, 1.0), (2_048, 1.0)] {
+        let mut gpu = GpuTracer::new(native.context.clone()).unwrap();
+        gpu.enable_resident().unwrap();
+        let mut work = TraceWork::from_probes(&probes, false);
+        work.history_limit = limit;
+        work.history_recency = recency;
+        let mut line = String::new();
+        for batch in 1..=400 {
+            gpu.trace_compact(fixture.scene.clone(), &fixture.sources, &fixture.materials,
+                &mut work, 16, &emitters, false).unwrap();
+            if [25, 50, 100, 200, 400].contains(&batch) {
+                let mean: f64 = work.faces.iter().map(|f| f64::from(channels(f.radiance)[2])).sum::<f64>()
+                    / work.faces.len() as f64;
+                line += &format!(" {batch}:{:.4}", mean / f64::from(expected));
+            }
+        }
+        eprintln!("FURNACE_LAG limit={limit} recency={recency} blue r=0.7 fraction of fixed point:{line}");
+    }
+}

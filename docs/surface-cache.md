@@ -113,6 +113,38 @@ A short history would bound stale feedback without edit journals. In
 dark corridor faces still have heavy-tailed samples. Gameplay keeps the
 65,536 ceiling and the existing geometry/source retention caps.
 
+## History ceiling and recency
+
+Question: is there a cap between 256 and 65,536 that works better? Two knobs
+(`history_limit`, `history_recency`) were tested on `d08d72a`.
+
+Native furnace (`cached_furnace_lag_by_history_policy`, r=0.7 band, fraction of
+the fixed point after 25 / 400 batches of 16 paths):
+
+| Policy | 25 | 400 |
+| --- | ---: | ---: |
+| 65,536, recency 1 | .900 | .956 |
+| 65,536, recency 1.5 | .937 | .982 |
+| 65,536, recency 2 | .961 | .993 |
+| 8,192, recency 1 | .900 | .956 |
+| 2,048, recency 1 | .900 | .967 |
+
+`live-hallway`, one run each, same setup as above:
+
+| Policy | Settle p50 / p90 (s) | Late flicker p50 / p95 |
+| --- | --- | --- |
+| 65,536, recency 1 (control) | 9.0 / 91.2 | .0068 / .0457 |
+| 65,536, recency 2 | 20.1 / 125.5 | .0126 / .0863 |
+| 2,048 | 10.4 / 109.3 | .0157 / .0815 |
+| 8,192 | 11.0 / 85.6 | .0069 / .0486 |
+
+A cap only matters once faces reach it. At 2,048 it binds within a few minutes
+and roughly doubles flicker. At 8,192 it rarely binds in a session, so it matches
+the control and changes nothing. Recency removes the furnace lag, but in gameplay
+retention caps keep counts low, and there k=2 discards most of a face's history.
+Flicker doubles. **Decision: keep 65,536 and recency 1.** The knobs stay for
+scene-specific tuning; the validation report now records them.
+
 ## Known limits
 
 - With the long ceiling, early under-bounced cache values stay in the running
