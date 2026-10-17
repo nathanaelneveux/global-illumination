@@ -28,6 +28,7 @@ const RESULT_BYTES: usize = 96;
 const SKY_RESULT_BYTES: usize = 32;
 const TASK_BYTES: usize = 32;
 
+mod face_index;
 mod readback;
 mod resident;
 pub(crate) use readback::Readback;
@@ -233,7 +234,7 @@ pub(crate) struct GpuTracer {
     context: GpuTransportDevice,
     pipeline: ComputePipeline,
     singleton_pipeline: Option<ComputePipeline>,
-    singleton_bindings: Option<CachedBindings<9>>,
+    singleton_bindings: Option<CachedBindings<11>>,
     singleton_lanes: u32,
     module: wgpu::ShaderModule,
     entry: &'static str,
@@ -272,7 +273,10 @@ pub(crate) struct GpuTracer {
     tasks: UploadBuffer,
     task_bytes: Vec<u8>,
     output: UploadBuffer,
-    bindings: Option<CachedBindings<9>>,
+    bindings: Option<CachedBindings<11>>,
+    /// Bound when no resident cache exists: every face lookup misses, so
+    /// paths continue explicitly (synchronous comparison backend).
+    empty_cache: (UploadBuffer, UploadBuffer),
     sky_bindings: Option<CachedBindings<7>>,
     guide_bindings: Option<CachedBindings<7>>,
     readbacks: Vec<UploadBuffer>,
@@ -366,8 +370,8 @@ impl GpuTracer {
             ("trace_faces", 64)
         };
         let device = &context.device;
-        if device.limits().max_storage_buffers_per_shader_stage < 8 {
-            return Err("GPU transport needs eight storage-buffer bindings".into());
+        if device.limits().max_storage_buffers_per_shader_stage < 10 {
+            return Err("GPU transport needs ten storage-buffer bindings".into());
         }
         let error_scope = device
             .wgpu_device()
@@ -462,6 +466,18 @@ impl GpuTracer {
                 BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             ),
             bindings: None,
+            empty_cache: {
+                let mut state = UploadBuffer::new(device, "GI empty resident cache", storage);
+                let mut index = UploadBuffer::new(device, "GI empty face index", storage);
+                state.ensure(device, 16)?;
+                // Mask zero, then one empty entry (face 7): every lookup misses.
+                let words: [u32; 8] = [0, 1, 0, 0, 0, 0, 0, u32::MAX];
+                index.ensure(device, 32)?;
+                context
+                    .queue
+                    .write_buffer(&index.buffer, 0, &encode_words(&words));
+                (state, index)
+            },
             sky_bindings: None,
             guide_bindings: None,
             readbacks: Vec::new(),
@@ -855,6 +871,12 @@ impl GpuTracer {
             )
         });
         readback.ensure(device, readback_bytes + timestamp_bytes as usize)?;
+        let (cache_state, cache_index) = self
+            .resident
+            .as_ref()
+            .map_or((&self.empty_cache.0, &self.empty_cache.1), |resident| {
+                resident.cache_buffers()
+            });
         let buffers = [
             &self.params,
             &self.directory,
@@ -865,6 +887,8 @@ impl GpuTracer {
             &self.tasks,
             &self.output,
             &self.emitters,
+            cache_state,
+            cache_index,
         ];
         // Retire stale groups even when their pass is idle. Otherwise a warm
         // sky cache could retain an obsolete, large output buffer indefinitely.
@@ -1121,8 +1145,14 @@ impl GpuTracer {
             });
             let mean = decode_spectrum(&values[0..4], values[4]);
             let second = decode_spectrum(&values[8..12], values[12]);
-            let count = face.samples.saturating_add(samples).min(HISTORY_LIMIT);
-            let alpha = (samples as f32 / count as f32).min(1.0);
+            // Unloaded-space samples are excluded from both mean and count.
+            let known = values[5] as u32;
+            let count = face.samples.saturating_add(known).min(HISTORY_LIMIT);
+            let alpha = if known == 0 {
+                0.0
+            } else {
+                (known as f32 / count as f32).min(1.0)
+            };
             if self.resident.is_some() {
                 face.radiance = mean;
                 face.second_moment = second;

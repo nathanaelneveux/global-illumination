@@ -47,8 +47,11 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
     if i >= control.x { return; }
     let base = inputs[i].x * 9u;
     let result = i * 6u;
-    let count = min(state[base + 1u].y + control.y, control.w);
-    let alpha = min(f32(control.y) / f32(count), 1.0);
+    // Samples that reached unloaded space carry no information and were not
+    // averaged; only the known count advances history.
+    let fresh_count = u32(bitcast<f32>(output[result + 1u].y));
+    let count = min(state[base + 1u].y + fresh_count, control.w);
+    let alpha = select(0.0, min(f32(fresh_count) / f32(max(count, 1u)), 1.0), fresh_count > 0u);
     let mean = bitcast<vec4<f32>>(output[result]);
     let second = bitcast<vec4<f32>>(output[result + 2u]);
     let previous_mean = bitcast<vec4<f32>>(state[base]);

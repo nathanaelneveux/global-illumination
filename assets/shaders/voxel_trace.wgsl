@@ -69,6 +69,42 @@ struct RayResult {
 // Six float4s per face, followed by two packed uint4s per shared sky corner.
 @group(0) @binding(7) var<storage, read_write> results: array<vec4<u32>>;
 @group(0) @binding(8) var<storage, read> emitter_words: array<vec4<u32>>;
+// Resident measurements (nine uint4s per slot) and the (voxel, face) -> slot
+// index. A path that reaches a measured face ends there with that face's
+// cached incident energy instead of tracing further bounces.
+@group(0) @binding(9) var<storage, read> cache_state: array<vec4<u32>>;
+@group(0) @binding(10) var<storage, read> cache_index: array<vec4<u32>>;
+const CACHE_MIN_SAMPLES: u32 = 16u;
+
+struct CachedEnergy { found: bool, value: vec4<f32>, radiation: f32 }
+fn face_index_of(normal: vec3<f32>) -> u32 {
+    if normal.x != 0.0 { return select(0u, 1u, normal.x < 0.0); }
+    if normal.y != 0.0 { return select(2u, 3u, normal.y < 0.0); }
+    if normal.z != 0.0 { return select(4u, 5u, normal.z < 0.0); }
+    return 6u;
+}
+fn cached_energy(voxel: vec3<i32>, face: u32) -> CachedEnergy {
+    var cached: CachedEnergy;
+    if face > 5u { return cached; }
+    let header = cache_index[0];
+    let mask = header.x;
+    var slot = (hash_voxel(voxel) ^ pcg(face + 1u)) & mask;
+    for (var attempt = 0u; attempt < header.y; attempt += 1u) {
+        let entry = cache_index[slot + 1u];
+        if entry.w == 0xffffffffu { return cached; }
+        if all(bitcast<vec3<i32>>(entry.xyz) == voxel) && (entry.w >> 29u) == face {
+            let base = (entry.w & 0x1fffffffu) * 9u;
+            let words = cache_state[base + 1u];
+            if words.y < CACHE_MIN_SAMPLES { return cached; }
+            cached.found = true;
+            cached.value = bitcast<vec4<f32>>(cache_state[base]);
+            cached.radiation = bitcast<f32>(words.x);
+            return cached;
+        }
+        slot = (slot + 1u) & mask;
+    }
+    return cached;
+}
 
 fn load_emitter(index: u32) -> EmissiveFace {
     let a = emitter_words[index * 2u];
@@ -674,6 +710,8 @@ struct RecordedPath {
     first: RayResult,
     direction: vec3<f32>,
     suffix: Energy,
+    // Reached an unloaded region: no information, excluded from the count.
+    unknown: bool,
 }
 fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3<f32>, stream: u32, sequence: u32, first_pdf: f32, split_first: bool, anchor: GuideAnchor) -> RecordedPath {
     var result: Energy;
@@ -694,7 +732,7 @@ fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_norma
             result.radiation += throughput.radiation * params.extra.x * horizon;
             break;
         }
-        if hit.status == 2u { break; }
+        if hit.status == 2u { record.unknown = true; break; }
         let material = materials[hit.material];
         let direct = direct_at(hit.position, hit.normal);
         let emission_weight = material.emission_extra.y;
@@ -707,6 +745,14 @@ fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_norma
         var mis = 1.0;
         if light_pdf > 0.0 { mis = previous_pdf / (previous_pdf + light_pdf); }
         if split_first && bounce == 0u { mis = 0.0; }
+        // A measured face already holds the incident energy that NEE plus a
+        // continued path would estimate here: end the path with it.
+        let cached = cached_energy(hit.voxel, face_index_of(hit.normal));
+        if cached.found {
+            result.value += throughput.value * (material.emission * mis + material.diffuse * (direct.value + cached.value));
+            result.radiation += throughput.radiation * (material.emission_extra.x * mis + material.diffuse_extra.x * (direct.radiation + cached.radiation));
+            break;
+        }
         var nee: Energy;
         let guide = direction_guide(hit.position, anchor);
         if bounce + 1u == DIFFUSE_HITS {
@@ -743,16 +789,18 @@ fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_norma
     return record;
 }
 
-fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, anchor: GuideAnchor) -> Energy {
+struct ReceiverSample { energy: Energy, known: bool }
+fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, anchor: GuideAnchor) -> ReceiverSample {
     let guide = direction_guide(surface, anchor);
     let direction = guided_direction(normal, guide, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
     let pdf = direction_pdf(normal, direction, guide);
     let cosine = max(dot(normal, direction), 0.0) / 3.14159265359;
-    var result = sample_emitter_guided(surface, normal, stream, sequence, 0u, guide);
+    var result = ReceiverSample(sample_emitter_guided(surface, normal, stream, sequence, 0u, guide), true);
     if cosine > 0.0 && pdf > 0.0 {
-        let path = trace_path_record(surface + normal * 0.001, direction, normal, stream, sequence, pdf, false, anchor).suffix;
-        result.value += path.value * (cosine / pdf);
-        result.radiation += path.radiation * (cosine / pdf);
+        let record = trace_path_record(surface + normal * 0.001, direction, normal, stream, sequence, pdf, false, anchor);
+        result.known = !record.unknown;
+        result.energy.value += record.suffix.value * (cosine / pdf);
+        result.energy.radiation += record.suffix.radiation * (cosine / pdf);
     }
     return result;
 }
@@ -820,21 +868,25 @@ fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     result.direct_extra.y = direct.custom_visible.x;
     result.direct_extra.z = direct.custom_visible.y;
     result.direct_extra.w = direct.custom_visible.z;
+    var known = 0u;
     for (var i = 0u; i < params.counts.y; i += 1u) {
         let sequence = task.sequence + i;
         let sample = trace_receiver(center + normal * 0.5, normal, stream, sequence, anchor);
-        let value = sample.value;
-        let radiation = sample.radiation;
+        if !sample.known { continue; }
+        known += 1u;
+        let value = sample.energy.value;
+        let radiation = sample.energy.radiation;
         result.mean += value;
         result.mean_extra.x += radiation;
         result.second += value * value;
         result.second_extra.x += radiation * radiation;
     }
-    let inverse = 1.0 / f32(params.counts.y);
+    let inverse = 1.0 / f32(max(known, 1u));
     result.mean *= inverse;
     result.mean_extra *= inverse;
     result.second *= inverse;
     result.second_extra *= inverse;
+    result.mean_extra.y = f32(known);
     let offset = id.x * 6u;
     results[offset] = bitcast<vec4<u32>>(result.mean);
     results[offset + 1u] = bitcast<vec4<u32>>(result.mean_extra);
@@ -941,7 +993,7 @@ fn trace_paired_faces(@builtin(global_invocation_id) id: vec3<u32>,
     let inverse = 1.0 / f32(params.counts.y);
     let offset = face * 6u;
     results[offset] = bitcast<vec4<u32>>(total.mean * inverse);
-    results[offset + 1u] = bitcast<vec4<u32>>(vec4(total.radiation.x * inverse, 0.0, 0.0, 0.0));
+    results[offset + 1u] = bitcast<vec4<u32>>(vec4(total.radiation.x * inverse, f32(params.counts.y), 0.0, 0.0));
     results[offset + 2u] = bitcast<vec4<u32>>(total.second * inverse);
     results[offset + 3u] = bitcast<vec4<u32>>(vec4(total.radiation.y * inverse, 0.0, 0.0, 0.0));
     results[offset + 4u] = bitcast<vec4<u32>>(direct.value);
@@ -1050,7 +1102,7 @@ fn trace_quad_faces(@builtin(global_invocation_id) id: vec3<u32>,
     let inverse=1.0/f32(params.counts.y);
     let offset=face*6u;
     results[offset]=bitcast<vec4<u32>>(total.mean*inverse);
-    results[offset+1u]=bitcast<vec4<u32>>(vec4(total.radiation.x*inverse,0.0,0.0,0.0));
+    results[offset+1u]=bitcast<vec4<u32>>(vec4(total.radiation.x*inverse,f32(params.counts.y),0.0,0.0));
     results[offset+2u]=bitcast<vec4<u32>>(total.second*inverse);
     results[offset+3u]=bitcast<vec4<u32>>(vec4(total.radiation.y*inverse,0.0,0.0,0.0));
     results[offset+4u]=bitcast<vec4<u32>>(direct.value);
@@ -1064,6 +1116,7 @@ struct PathMoments {
     mean: vec4<f32>,
     second: vec4<f32>,
     radiation: vec2<f32>,
+    known: u32,
 }
 var<workgroup> path_moments: array<PathMoments, 64>;
 var<workgroup> face_guides: array<GuideAnchor, 64>;
@@ -1118,11 +1171,13 @@ fn trace_cooperative_face(face_index: u32, valid: bool, local: u32) {
         for (var i = lane; i < params.counts.y; i += PATH_LANES) {
             let sequence = task.sequence + i;
             let sample = trace_receiver(center + normal * 0.5, normal, stream, sequence, anchor);
-            let value = sample.value;
-            let radiation = sample.radiation;
+            if !sample.known { continue; }
+            let value = sample.energy.value;
+            let radiation = sample.energy.radiation;
             moment.mean += value;
             moment.second += value * value;
             moment.radiation += vec2(radiation, radiation * radiation);
+            moment.known += 1u;
         }
     }
     path_moments[local] = moment;
@@ -1134,14 +1189,15 @@ fn trace_cooperative_face(face_index: u32, valid: bool, local: u32) {
         total.mean += path_moments[local + i].mean;
         total.second += path_moments[local + i].second;
         total.radiation += path_moments[local + i].radiation;
+        total.known += path_moments[local + i].known;
     }
     let task = tasks[face_index];
     let normal = face_normal(task.face);
     let direct = direct_at(vec3<f32>(task.voxel) + vec3(0.5) + normal * 0.5, normal);
-    let inverse = 1.0 / f32(params.counts.y);
+    let inverse = 1.0 / f32(max(total.known, 1u));
     let offset = face_index * 6u;
     results[offset] = bitcast<vec4<u32>>(total.mean * inverse);
-    results[offset + 1u] = bitcast<vec4<u32>>(vec4(total.radiation.x * inverse, 0.0, 0.0, 0.0));
+    results[offset + 1u] = bitcast<vec4<u32>>(vec4(total.radiation.x * inverse, f32(total.known), 0.0, 0.0));
     results[offset + 2u] = bitcast<vec4<u32>>(total.second * inverse);
     results[offset + 3u] = bitcast<vec4<u32>>(vec4(total.radiation.y * inverse, 0.0, 0.0, 0.0));
     results[offset + 4u] = bitcast<vec4<u32>>(direct.value);

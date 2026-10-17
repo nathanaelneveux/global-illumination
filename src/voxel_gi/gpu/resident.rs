@@ -38,6 +38,8 @@ pub(super) struct ResidentAccumulator {
     #[cfg(test)]
     clock_ms: Option<u32>,
     state: UploadBuffer,
+    face_index: super::face_index::FaceIndex,
+    face_index_buffer: UploadBuffer,
     inputs: UploadBuffer,
     seeds: UploadBuffer,
     control: UploadBuffer,
@@ -109,6 +111,8 @@ impl ResidentAccumulator {
                 "GI resident measurements",
                 storage | BufferUsages::COPY_SRC,
             ),
+            face_index: super::face_index::FaceIndex::new(),
+            face_index_buffer: UploadBuffer::new(device, "GI resident face index", storage),
             inputs: UploadBuffer::new(device, "GI resident jobs", storage),
             seeds: UploadBuffer::new(device, "GI new resident measurements", storage),
             control: UploadBuffer::new(
@@ -170,6 +174,7 @@ impl ResidentAccumulator {
                             .material_at(key.0 + FACE_OFFSETS[key.1])
                             .is_none_or(|m| m == AIR);
                     if !present && let Some(slot) = self.slots.remove(key) {
+                        self.face_index.remove(key.0, key.1);
                         if let Some(graph) = &mut self.evidence_topology {
                             graph.remove(slot.index);
                         }
@@ -223,6 +228,7 @@ impl ResidentAccumulator {
                         self.high_water += 1;
                         index
                     });
+                    self.face_index.insert(key.0, key.1, index);
                     Slot {
                         index,
                         incarnation: 0,
@@ -435,6 +441,8 @@ impl ResidentAccumulator {
             encoder.copy_buffer_to_buffer(&previous, 0, &self.state.buffer, 0, capacity);
             queue.submit([encoder.finish()]);
         }
+        self.face_index
+            .upload(&mut self.face_index_buffer, device, queue)?;
         self.inputs.upload(device, queue, &self.input_bytes)?;
         self.seeds.upload(device, queue, &self.seed_bytes)?;
         if !self.spatial_bytes.is_empty() {
@@ -475,6 +483,11 @@ impl ResidentAccumulator {
 
     pub(super) fn buffer(&self) -> Buffer {
         self.state.buffer.clone()
+    }
+
+    /// Measurements and face ownership read by path termination.
+    pub(super) fn cache_buffers(&self) -> (&UploadBuffer, &UploadBuffer) {
+        (&self.state, &self.face_index_buffer)
     }
 
     pub(super) fn dispatch_prepare(
