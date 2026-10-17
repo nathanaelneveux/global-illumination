@@ -723,7 +723,9 @@ fn trace_path_record(start: vec3<f32>, first_direction: vec3<f32>, initial_norma
         // A small weight can still reach a bright source. Only exact zero is
         // safely discarded; roulette compensates surviving nonzero paths.
         if maximum == 0.0 { break; }
-        if bounce >= 1u {
+        // Finish the validated three-hit path. Early roulette amplified rare
+        // final-hit returns and made raw faces retain large color errors.
+        if bounce >= 2u {
             let survival = clamp(maximum, 0.1, 0.95);
             if sample_1d(stream, sequence, 8u + bounce) > survival { break; }
             throughput.value /= survival;

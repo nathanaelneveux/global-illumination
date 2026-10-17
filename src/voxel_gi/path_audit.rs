@@ -270,7 +270,7 @@ fn hallway_outlier_paths() {
             break;
         }
         throughput = throughput * material.diffuse;
-        if bounce >= 1 {
+        if bounce >= ROULETTE_MIN_BOUNCE {
             let survival = throughput.max_component().clamp(0.1, 0.95);
             let coin = sample_1d(stream, sequence, 8 + bounce);
             println!("  roulette={coin} survival={survival}");
@@ -422,7 +422,7 @@ fn hallway_known_path_weight_ledger() {
                 "emission":channels(emission)});
         } else {
             throughput = throughput * material.diffuse;
-            if bounce >= 1 {
+            if bounce >= ROULETTE_MIN_BOUNCE {
                 let survival = throughput.max_component().clamp(0.1, 0.95);
                 let coin = sample_1d(stream, sequence, 8 + bounce);
                 assert!(coin <= survival);
@@ -462,6 +462,10 @@ fn hallway_known_path_weight_ledger() {
     }
     let ledger = json!({"site":208,"sequence":sequence,"primary":channels(primary),
         "total":channels(sum),"bounces":rows});
+    // Two 0.55 reflections retain 0.3025 of the terminal return. The old
+    // roulette survivor dominated the prefix at red 0.810881;
+    // this is the unamplified, still physically valid contribution.
+    assert!((sum.visible.x - 0.245292).abs() < 0.00001);
     eprintln!("WEIGHT LEDGER {ledger}");
     std::fs::write(
         "target/hallway-path-2243-ledger.json",

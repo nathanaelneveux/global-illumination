@@ -1,6 +1,8 @@
 # Repeating hallway outliers: diagnosis and guiding experiment
 
-**Current decision:** guiding is experimental and defaults **off**. The
+**Current decision:** complete the validated short path before roulette; see
+[qualification and limitations](#completing-short-paths-without-roulette-amplification).
+Guiding is experimental and defaults **off**. The
 [full-image qualification](#whole-cave-image-gate-revokes-default-guiding) fails
 the unchanged cave visual target at 2048 paths, despite its real hallway benefit.
 The independent audits also found and fixed deterministic path-truncation
@@ -556,3 +558,63 @@ The isolated study passes. Evidence: ignored
 `target/short-path-roulette-study.{json,log}`. Runtime remains unchanged at this
 checkpoint. Full-image cave qualification and end-to-end behavior remain
 required before promoting this tradeoff.
+
+## Completing short paths without roulette amplification
+
+The estimator now delays roulette until after the third diffuse hit. Since
+validated transport is limited to three hits, it evaluates the complete short
+path at its actual throughput. Exact-zero termination remains. This changes
+variance and cost, not expected energy, bounce count, reach, history retention,
+source PDFs, guiding, spatial filtering, or the preferred display defaults.
+The CPU and GPU policies agree. The historical early-roulette shader remains
+an offline comparison control, with no gameplay switch.
+
+The known hallway path 2243 now contributes red **0.2452915** instead of
+**0.810881**, retaining the actual .3025 RGB throughput after two .55
+reflections. It still transports real energy from the remote lamp. There is
+no clipping or maximum-sample cutoff. A two-wall known-answer regression checks
+both formerly rejected and formerly amplified final segments in all five bands;
+CPU/native exact-path checks, furnace depths 1–3, guided/unguided CPU/GPU parity,
+and resident means/moments versus individually measured raw paths pass.
+
+Full-image evidence uses `504051c`'s diagnostic shader, which is path-equivalent
+to the new runtime for all validated depths. Run
+`cave-1792196293885248000-90209`: M4 / Metal / macOS 26.6.2, development build,
+2560×1440 headless, background residency, shared-corner sun/indirect, textures
+on, AO off. Four matched raw prefix windows, RGB importance
+`[1,1,1,.125,.125]`, 512-face batches, no guiding/reuse/temporal or adaptive
+spatial filtering. The 15,163-face reference uses two disjoint 131072-path
+ordinary equal-band windows and all eight independent cosine checks. Geometry
+has no unknown/mismatched cells; reference replica discrepancy p99/max is
+.81503% / 1.50477%. All 93 reference-stage captures and three prelude captures
+pass their guards, with verified assets and clean render logs. Reference and
+candidate 2048/window-zero images were inspected. No build or second GPU job
+overlapped capture/bake. These are static offscreen accuracy results, not FPS.
+
+Worst across the four windows at 2048 paths:
+
+| Metric | Early roulette control | Complete short paths |
+| --- | ---: | ---: |
+| Raw face RGB relative error p99 | .04975 | .04142 |
+| Raw face maximum | .11509 | .09522 |
+| Reconstructed corner p99 | .02921 | .02394 |
+| Mean FLIP | .024270 | .021483 |
+| Worst 32px-tile mean FLIP | .067887 | .070811 |
+
+Both first pass the unchanged `cave-user-2048` profile at **2048 paths**, sustained
+through all larger tested prefixes. The candidate at 1536 still fails the worst
+patch limit (.074846 > .072964). Some rendered worst patches are slightly worse
+at 2048 and 8192, despite lower mean and raw maxima; this is not a universal
+per-patch improvement or a lower accepted sample threshold. Reference-replica
+mean FLIP is .007536. The earlier 11% cave / 18% hallway per-path GPU cost
+increase remains a material tradeoff. No equal-cost quality or gameplay-speed
+win is claimed. The result removes one demonstrated amplification mechanism;
+rare, legitimate long light paths and substantial hallway noise remain.
+
+Reports: `target/short-path-cave-{candidate,control}-{analysis,quality}.json`,
+`target/short-path-cave-image.log`, and the run's JSON/PNGs. Focused verification
+logs use the `target/short-path-` prefix: `tracer-tests`, `native-cutoff`,
+`native-furnace`, `native-guided-parity`, `native-parity`, `resident-recovery`,
+`weight-ledger`, and `shader-variants`. Strict Clippy and the development build
+are separate integration checks. Streamed behavior is recorded separately below;
+the static gate alone does not establish recovery latency or frame pacing.

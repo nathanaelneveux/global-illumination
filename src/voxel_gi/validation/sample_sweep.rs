@@ -82,8 +82,8 @@ pub(super) fn guiding_requested() -> bool {
     std::env::var("VOXEL_GI_VALIDATE_GUIDING_SWEEP").is_ok_and(|v| v == "1")
 }
 
-/// Matched estimator comparison, with early roulette disabled only in the
-/// diagnostic candidate. This does not change the gameplay sampler.
+/// Matched estimator comparison against the historical early-roulette shader.
+/// The candidate is the ordinary sampler; the control is diagnostic only.
 pub(super) fn roulette_requested() -> bool {
     std::env::var("VOXEL_GI_VALIDATE_ROULETTE_SWEEP").is_ok_and(|v| v == "1")
 }

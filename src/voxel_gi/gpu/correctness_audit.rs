@@ -100,9 +100,15 @@ fn shader(iid: bool, roulette: bool, legacy_cutoff: bool) -> String {
             return production_sample_1d(stream, sequence, dimension);
         }\n"
     });
-    if !roulette {
-        shader = replace_once(&shader, "if bounce >= 1u {", "if false {");
-    }
+    shader = replace_once(
+        &shader,
+        "if bounce >= 2u {",
+        if roulette {
+            "if bounce >= 1u {"
+        } else {
+            "if false {"
+        },
+    );
     if legacy_cutoff {
         shader = replace_once(
             &shader,
@@ -208,7 +214,7 @@ fn native_low_throughput_path_keeps_bright_suffix() {
         "fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, anchor: GuideAnchor) -> Energy {",
         "fn production_trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, anchor: GuideAnchor) -> Energy {",
     );
-    // Replay the analytically checked CPU witness, including its roulette coin.
+    // Replay the analytically checked CPU witness without early roulette.
     // Only its initial direction is forced; all suffix sampling is production.
     source.push_str("\nfn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, anchor: GuideAnchor) -> Energy {
         let direction = normalize(vec3(-1.0, 1.0, 0.0));
@@ -239,7 +245,7 @@ fn native_low_throughput_path_keeps_bright_suffix() {
             false,
         )
         .unwrap();
-        let expected = if cutoff { 0.0 } else { 9.490358 };
+        let expected = if cutoff { 0.0 } else { 0.9490358 };
         for value in channels(work.faces[0].radiance) {
             assert!(
                 (value - expected).abs() < 0.001,

@@ -95,9 +95,9 @@ fn hallway_raw_prefix_recovery_audit() {
     let native = tests::native_tracer();
     let mut rows = Vec::new();
     for (name, iid, roulette) in [
-        ("production", false, true),
+        ("legacy_qmc_roulette", false, true),
         ("iid", true, true),
-        ("production_no_roulette", false, false),
+        ("production", false, false),
         ("iid_no_roulette", true, false),
     ] {
         let mut gpu =

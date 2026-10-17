@@ -41,6 +41,9 @@ pub const BOOTSTRAP_SAMPLES: u32 = 8;
 /// policies cap retained weight; global model replacements reset it to zero.
 /// Change response depends on that cap, not how long the world was static.
 pub const HISTORY_LIMIT: u32 = 65_536;
+// Zero-based hit index, mirrored in voxel_trace.wgsl. The validated path has
+// at most three hits: finish it instead of amplifying a rare last-hit return.
+const ROULETTE_MIN_BOUNCE: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RayHit {
@@ -552,7 +555,7 @@ fn trace_path(
         if throughput.max_component() == 0.0 {
             break;
         }
-        if bounce >= 1 {
+        if bounce >= ROULETTE_MIN_BOUNCE {
             let survival = throughput.max_component().clamp(0.1, 0.95);
             if sample_1d(stream, sequence, 8 + bounce) > survival {
                 break;
@@ -943,59 +946,63 @@ mod tests {
         };
         assert_eq!(first.normal, Vec3::X);
         let stream = 123;
-        let (sequence, last_direction) = (0..4096)
-            .find_map(|sequence| {
-                if sample_1d(stream, sequence, 9) > 0.1 {
-                    return None;
-                }
-                let d = hemisphere(
-                    first.normal,
-                    sample_1d(stream, sequence, 2),
-                    sample_1d(stream, sequence, 3),
-                );
-                let TraceResult::Hit(second) = scene.trace_ray_result(
-                    first.position + first.normal * 0.002,
-                    d,
-                    MAX_PATH_DISTANCE,
-                ) else {
-                    return None;
-                };
-                if second.normal != Vec3::Y {
-                    return None;
-                }
-                let d = hemisphere(
-                    second.normal,
-                    sample_1d(stream, sequence, 4),
-                    sample_1d(stream, sequence, 5),
-                );
-                (scene.trace_ray_result(
-                    second.position + second.normal * 0.002,
-                    d,
-                    MAX_PATH_DISTANCE,
-                ) == TraceResult::Escaped)
-                    .then_some((sequence, d))
-            })
-            .expect("a surviving two-wall path that escapes");
-        let actual = trace_path(
-            scene,
-            sources,
-            materials,
-            origin,
-            direction,
-            stream,
-            sequence,
-            Vec3::Y,
-            &emitters,
-            default(),
-            GuideAnchor::default(),
-            direction.y / std::f32::consts::PI,
-        );
-        let expected = sources.environment * (0.01 * 0.01 / 0.1 * (0.65 + 0.35 * last_direction.y));
-        for (a, e) in super::super::research::channels(actual)
-            .into_iter()
-            .zip(super::super::research::channels(expected))
-        {
-            assert!((a - e).abs() < 1e-4, "sequence={sequence}: {a} != {e}");
+        // Exercise coins that formerly killed and amplified this final
+        // segment. Both now carry the actual two-wall throughput, 0.0001.
+        for legacy_survivor in [false, true] {
+            let (sequence, last_direction) = (0..4096)
+                .find_map(|sequence| {
+                    if (sample_1d(stream, sequence, 9) <= 0.1) != legacy_survivor {
+                        return None;
+                    }
+                    let d = hemisphere(
+                        first.normal,
+                        sample_1d(stream, sequence, 2),
+                        sample_1d(stream, sequence, 3),
+                    );
+                    let TraceResult::Hit(second) = scene.trace_ray_result(
+                        first.position + first.normal * 0.002,
+                        d,
+                        MAX_PATH_DISTANCE,
+                    ) else {
+                        return None;
+                    };
+                    if second.normal != Vec3::Y {
+                        return None;
+                    }
+                    let d = hemisphere(
+                        second.normal,
+                        sample_1d(stream, sequence, 4),
+                        sample_1d(stream, sequence, 5),
+                    );
+                    (scene.trace_ray_result(
+                        second.position + second.normal * 0.002,
+                        d,
+                        MAX_PATH_DISTANCE,
+                    ) == TraceResult::Escaped)
+                        .then_some((sequence, d))
+                })
+                .expect("a two-wall path that escapes");
+            let actual = trace_path(
+                scene,
+                sources,
+                materials,
+                origin,
+                direction,
+                stream,
+                sequence,
+                Vec3::Y,
+                &emitters,
+                default(),
+                GuideAnchor::default(),
+                direction.y / std::f32::consts::PI,
+            );
+            let expected = sources.environment * (0.01 * 0.01 * (0.65 + 0.35 * last_direction.y));
+            for (a, e) in super::super::research::channels(actual)
+                .into_iter()
+                .zip(super::super::research::channels(expected))
+            {
+                assert!((a - e).abs() < 1e-4, "sequence={sequence}: {a} != {e}");
+            }
         }
     }
 
