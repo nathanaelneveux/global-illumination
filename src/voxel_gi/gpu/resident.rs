@@ -33,6 +33,9 @@ pub(super) struct ResidentAccumulator {
     task_epoch: u64,
     pub reuse: bool,
     pub adaptive_reuse: bool,
+    /// Retained statistical weight ceiling. Tests may shorten it to reach the
+    /// cache's feedback fixed point quickly; gameplay keeps the long ceiling.
+    pub history_limit: u32,
     scene: Option<Arc<TransportScene>>,
     origin: Instant,
     #[cfg(test)]
@@ -102,6 +105,7 @@ impl ResidentAccumulator {
             task_epoch: 0,
             reuse: false,
             adaptive_reuse: false,
+            history_limit: HISTORY_LIMIT,
             scene: None,
             origin: Instant::now(),
             #[cfg(test)]
@@ -460,7 +464,7 @@ impl ResidentAccumulator {
             work.faces.len() as u32,
             samples,
             milliseconds,
-            HISTORY_LIMIT,
+            self.history_limit,
             work.response_seconds.max(0.001).to_bits(),
             (self.input_bytes.len() / 16) as u32,
             spatial_strength.to_bits(),

@@ -41,6 +41,8 @@ mod light_tree_experiment;
 mod path_guiding_experiment;
 
 #[cfg(test)]
+mod cache_tests;
+#[cfg(test)]
 mod correctness_audit;
 #[cfg(test)]
 mod task_tests;

@@ -7,8 +7,8 @@ For each run (fixed receiver sites, event-compressed states):
   same face) at time t, for raw measured and displayed RGB. Smooth lighting
   has small neighbour differences; noisy sampling has large ones.
 - settle: per site, first time after which the displayed luminance stays
-  within 15% of its own 150-180 s mean. Reported as p50/p90 over sites.
-- flicker: per site, relative std of displayed luminance over 120-180 s.
+  within 15% of its own mean over the last sixth of the run. p50/p90 over sites.
+- flicker: per site, relative std of displayed luminance over the last third.
 These are self-consistency metrics, not accuracy against a reference.
 """
 import json, os, statistics, sys
@@ -26,7 +26,7 @@ def timelines(run):
             series[e["site"]].append((e["at_s"], None, None))
         else:
             series[e["site"]].append((e["at_s"], st["measured"], st["display"]))
-    return sites, t["site_faces"], series
+    return sites, t["site_faces"], series, t["end_s"]
 
 def value_at(points, time, index):
     current = None
@@ -41,11 +41,11 @@ def quantile(values, q):
     return values[min(len(values) - 1, int(q * len(values)))] if values else float("nan")
 
 def analyse(run):
-    sites, faces, series = timelines(run)
+    sites, faces, series, end = timelines(run)
     pairs = [(i, j) for i in range(len(sites)) for j in range(i + 1, len(sites))
              if faces[i] == faces[j] and sum(abs(a - b) for a, b in zip(sites[i], sites[j])) == 1]
-    out = {"run": os.path.basename(run), "sites": len(sites), "pairs": len(pairs)}
-    for time in (5, 15, 30, 60, 120, 180):
+    out = {"run": os.path.basename(run), "sites": len(sites), "pairs": len(pairs), "end_s": round(end)}
+    for time in [t for t in (5, 15, 30, 60, 120, 180) if t <= end]:
         for index, name in ((0, "raw"), (1, "display")):
             diffs = []
             for i, j in pairs:
@@ -59,7 +59,7 @@ def analyse(run):
     settle, flicker, final = [], [], []
     for points in series:
         samples = [(at, lum(d)) for at, m, d in points if d is not None]
-        tail = [v for at, v in samples if at >= 150]
+        tail = [v for at, v in samples if at >= end * 5 / 6]
         if not tail or statistics.mean(tail) <= 0:
             continue
         target = statistics.mean(tail)
@@ -69,7 +69,7 @@ def analyse(run):
             if abs(v - target) > 0.15 * target:
                 settled_at = at
         settle.append(settled_at)
-        window = [v for at, v in samples if at >= 120]
+        window = [v for at, v in samples if at >= end * 2 / 3]
         if len(window) > 2:
             flicker.append(statistics.pstdev(window) / target)
     out["settle_p50_s"] = round(quantile(settle, 0.5), 1)
