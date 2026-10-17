@@ -166,6 +166,26 @@ retention stays. A loaded chunk is not a free pass either: rays that left the
 loaded area counted as sky, and the new terrain contradicts them. The existing
 curve already leaves faces more than ~190 blocks from a change untouched.
 
+## Half trace budget
+
+`trace_budget_ms` 2.0 versus the 4.0 default, on `8aeca1c`, one run each:
+
+| Run | Settle p50 / p90 | Flicker p50 / p95 | Paths | Frame p50 / p95 / p99 |
+| --- | --- | --- | ---: | --- |
+| Hallway baseline 4 ms | 57.5 / 126.1 s | .025 / .091 | 464M | 22.2 / 24.2 / 28.1 |
+| Hallway cache 4 ms | 9.0 / 91.2 s | .0068 / .0457 | 673M | 22.0 / 24.2 / 29.5 |
+| Hallway cache 2 ms | 16.8 / 84.3 s | .0062 / .0622 | 135M | 22.6 / 24.7 / 29.0 |
+| Cave baseline 4 ms | 7.0 / 10.8 s | .0052 / .0128 | 174M | 19.4 / 21.6 / 28.4 |
+| Cave cache 4 ms | 6.5 / 11.8 s | .0031 / .0073 | 223M | 21.8 / 24.5 / 32.0 |
+| Cave cache 2 ms | 9.9 / 16.6 s | .0042 / .0083 | 56M | 22.3 / 24.8 / 31.4 |
+
+At 2 ms the cache still beats the 4 ms baseline in the hallway. The adaptive
+budget then traces about a fifth of the paths, not half, so per-batch overhead
+dominates small budgets. Offscreen frame time does not follow the trace budget
+in this harness. Two cave cache runs of near-identical code differed by 2.4 ms
+at p50, so these frame differences are run noise, not a GI cost. The default
+stays 4 ms; a frame-time claim needs windowed, repeated runs.
+
 ## Known limits
 
 - With the long ceiling, early under-bounced cache values stay in the running
