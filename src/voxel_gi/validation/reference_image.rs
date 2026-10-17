@@ -411,7 +411,7 @@ impl ReferenceImage {
                     work.probes.last_mut().unwrap().sky_requested = false;
                 }
                 for (limit, batches) in super::sample_sweep::CACHE_CONVERGE_BATCHES {
-                    resident.set_history_limit(limit)?;
+                    work.history_limit = limit;
                     for _ in 0..batches {
                         resident.trace_compact(scene.clone(), &sources, &materials, &mut work, 16, &prioritized, false)?;
                         worker_progress.fetch_add(sites.len() as u64 * 16, Ordering::Relaxed);

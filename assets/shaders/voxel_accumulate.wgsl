@@ -51,7 +51,9 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
     // averaged; only the known count advances history.
     let fresh_count = u32(bitcast<f32>(output[result + 1u].y));
     let count = min(state[base + 1u].y + fresh_count, control.w);
-    let alpha = select(0.0, min(f32(fresh_count) / f32(max(count, 1u)), 1.0), fresh_count > 0u);
+    // Recency k >= 1 weights sample i of n by (i/n)^(k-1); k = 1 is the mean.
+    let recency = bitcast<f32>(settings.display.z);
+    let alpha = select(0.0, min(recency * f32(fresh_count) / f32(max(count, 1u)), 1.0), fresh_count > 0u);
     let mean = bitcast<vec4<f32>>(output[result]);
     let second = bitcast<vec4<f32>>(output[result + 2u]);
     let previous_mean = bitcast<vec4<f32>>(state[base]);

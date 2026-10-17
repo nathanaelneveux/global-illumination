@@ -338,14 +338,6 @@ impl GpuTracer {
         Ok(())
     }
 
-    pub(crate) fn set_history_limit(&mut self, limit: u32) -> Result<(), String> {
-        self.resident
-            .as_mut()
-            .ok_or("history limit applies to resident measurements")?
-            .history_limit = limit;
-        Ok(())
-    }
-
     pub fn new(context: GpuTransportDevice) -> Result<Self, String> {
         Self::with_kernel(context, true)
     }

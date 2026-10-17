@@ -50,11 +50,11 @@ fn cached_furnace_converges_to_infinite_bounce_series() {
     ));
     let mut gpu = tests::native_tracer();
     gpu.enable_resident().unwrap();
-    gpu.resident.as_mut().unwrap().history_limit = 256;
     let probes = all_interior_faces(&fixture);
     let faces: u32 = probes.iter().map(|p| p.face_mask.count_ones()).sum();
     assert_eq!(faces, 6 * 14 * 14);
     let mut work = TraceWork::from_probes(&probes, false);
+    work.history_limit = 256;
     let expected: Vec<f32> = channels(material.emission)
         .into_iter()
         .zip(channels(material.diffuse))
