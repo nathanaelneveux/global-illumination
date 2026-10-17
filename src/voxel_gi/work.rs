@@ -16,7 +16,6 @@ pub(crate) struct TraceWork {
     /// Resident history ceiling and recency weighting; zero selects defaults.
     pub history_limit: u32,
     pub history_recency: f32,
-    pub history_change_threshold: f32,
     /// Same wrapping frame counter as Bevy's render Globals uniform.
     pub display_frame: u32,
     pub display_transition_frames: u32,

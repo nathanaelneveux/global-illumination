@@ -50,23 +50,7 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
     // Samples that reached unloaded space carry no information and were not
     // averaged; only the known count advances history.
     let fresh_count = u32(bitcast<f32>(output[result + 1u].y));
-    // Optional change detector: a fresh batch that disagrees with the retained
-    // mean by more than `threshold` standard errors (RGB or IR) keeps at most
-    // four batches of prior weight. Noise comes from the retained second
-    // moment, which includes heavy tails a single batch may have missed.
-    var previous_count = state[base + 1u].y;
-    let threshold = bitcast<f32>(settings.display.w);
-    if threshold > 0.0 && fresh_count > 0u && previous_count >= 64u {
-        let retained = bitcast<vec4<f32>>(state[base]);
-        let variance = max(bitcast<vec4<f32>>(state[base + 2u]) - retained * retained, vec4(0.0));
-        let floor = 0.02 * abs(retained) + vec4(1e-6);
-        let spread = sqrt(variance * (1.0 / f32(fresh_count) + 1.0 / f32(previous_count)) + floor * floor);
-        let z = abs(bitcast<vec4<f32>>(output[result]) - retained) / spread;
-        if max(max(z.x, z.y), max(z.z, z.w)) > threshold {
-            previous_count = min(previous_count, 4u * fresh_count);
-        }
-    }
-    let count = min(previous_count + fresh_count, control.w);
+    let count = min(state[base + 1u].y + fresh_count, control.w);
     // Recency k >= 1 weights sample i of n by (i/n)^(k-1); k = 1 is the mean.
     let recency = bitcast<f32>(settings.display.z);
     let alpha = select(0.0, min(recency * f32(fresh_count) / f32(max(count, 1u)), 1.0), fresh_count > 0u);
