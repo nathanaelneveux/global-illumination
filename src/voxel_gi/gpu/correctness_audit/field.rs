@@ -16,7 +16,7 @@ struct Case {
     analytic: Option<[f64; 5]>,
 }
 
-fn cave_with_material_receivers() -> ResearchFixture {
+pub(super) fn cave_with_material_receivers() -> ResearchFixture {
     use crate::voxel_gi::{
         sampling::stream_id,
         world::{AIR, FACE_OFFSETS, SurfaceProbe},

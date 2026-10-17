@@ -525,3 +525,34 @@ Evidence under ignored `target/`: `hallway-prefix-recovery.{json,log}`,
 `hallway-resident-recovery.{json,log}`, `hallway-path-2243-ledger.json`,
 `hallway-path-ledger.log`, `hallway-sampling-diagnosis-clippy.log`,
 `hallway-sampling-diagnosis-live.log`, and the run's `temporal.json`/`report.json`.
+
+## Short-path roulette experiment
+
+Test-only harness on `06a246a`: `short_path_roulette_study`, Apple M4 / Metal,
+optimized development test profile, no viewport, no app/compiler overlap during
+measurement. Four matched raw windows cover all 237 loaded-hallway floor sites
+and 165 material/normal-stratified cave sites, through 8192 paths. No guiding,
+reuse, temporal smoothing, adaptive spatial reconstruction or scheduling.
+Both arms share two disjoint 262144-path block-averaged references. Cave replica
+maximum relative RGB discrepancy is .00503; hallway maximum is .44307 with a
+1e-6 norm floor, so its reference remains a noisy diagnostic, not a quality gate.
+
+At 2048 paths, pooled relative RGB error p95/p99/max:
+
+| Fixture | Roulette | No roulette |
+| --- | --- | --- |
+| Hallway | 1.01295 / 2.84873 / 25.55657 | .81521 / 2.54719 / 10.47721 |
+| Cave | .03094 / .04086 / .05643 | .02463 / .03111 / .04536 |
+
+Mean squared relative RGB error falls 1.38881 → .40235 in the hallway and
+.000316 → .000200 in the cave. These are equal-path sparse-field metrics,
+not FLIP or independent confidence intervals. Native paired 2048-face x16-path
+cost (two warmups, 24 alternating pairs) is 1.941 → 2.285 ms in the hallway,
+3.569 → 3.956 ms in the cave. Completing the last hit costs 17.7%/10.9% more per
+path in these fixtures. No equal-cost quality or gameplay-FPS claim follows
+from the equal-path measurements. The candidate still has large hallway tails.
+
+The isolated study passes. Evidence: ignored
+`target/short-path-roulette-study.{json,log}`. Runtime remains unchanged at this
+checkpoint. Full-image cave qualification and end-to-end behavior remain
+required before promoting this tradeoff.
