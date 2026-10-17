@@ -91,15 +91,6 @@ pub(super) fn start_trace_task(
         "Voxel GI requires a GPU transport device. Select TransportBackend::Cpu explicitly for CPU reference transport."
     );
     let selection_started = Instant::now();
-    let reuse = startup.as_ref().is_some_and(|s| {
-        matches!(
-            s.backend,
-            super::TransportBackend::Reuse | super::TransportBackend::ReuseWide
-        )
-    });
-    let wide_reuse = startup
-        .as_ref()
-        .is_some_and(|s| s.backend == super::TransportBackend::ReuseWide);
     let resident = startup.is_none_or(|s| s.backend.resident_accumulation());
     let requested = std::mem::take(&mut field.requested);
     enqueue_urgent(
@@ -130,7 +121,6 @@ pub(super) fn start_trace_task(
         TraceWork::default()
     };
     selected.transport = runtime.transport;
-    selected.emitter_guiding = settings.emitter_guiding;
     selected.response_seconds = settings.display_response_seconds();
     selected.display_frame = frame.as_ref().map_or(0, |frame| frame.0);
     selected.display_transition_frames = settings.display_transition_frames.min(32);
@@ -201,11 +191,7 @@ pub(super) fn start_trace_task(
         {
             match gpu::GpuTracer::new(device) {
                 Ok(mut tracer) => {
-                    let enabled = if wide_reuse {
-                        tracer.enable_wide_reuse()
-                    } else if reuse {
-                        tracer.enable_reuse()
-                    } else if resident {
+                    let enabled = if resident {
                         tracer.enable_resident()
                     } else {
                         Ok(())

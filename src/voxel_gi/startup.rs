@@ -13,20 +13,13 @@ pub enum TransportBackend {
     Resident,
     /// Historical CPU-owned accumulation and blocking worker readback control.
     Synchronous,
-    /// Experimental fresh-path sharing on top of resident measurements.
-    Reuse,
-    /// Experimental four-to-two-to-independent fresh sharing as history grows.
-    ReuseWide,
     /// Keep GPU display, but run transport through the independent CPU reference.
     Cpu,
 }
 
 impl TransportBackend {
     pub(super) fn resident_accumulation(self) -> bool {
-        matches!(
-            self,
-            Self::Auto | Self::Resident | Self::Reuse | Self::ReuseWide
-        )
+        matches!(self, Self::Auto | Self::Resident)
     }
 }
 
@@ -73,7 +66,6 @@ mod tests {
     #[test]
     fn resident_is_default_with_explicit_independent_controls() {
         assert!(TransportBackend::default().resident_accumulation());
-        assert!(TransportBackend::Reuse.resident_accumulation());
         assert!(TransportBackend::Resident.resident_accumulation());
         assert!(!TransportBackend::Synchronous.resident_accumulation());
         assert!(!TransportBackend::Cpu.resident_accumulation());

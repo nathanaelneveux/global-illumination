@@ -661,7 +661,7 @@ mod tests {
         control.enable_resident().unwrap();
         let mut gpu = GpuTracer::new(control.context.clone()).unwrap();
         gpu.enable_resident().unwrap();
-        let fixture = super::super::refinement::research_fixture(2);
+        let fixture = crate::voxel_gi::research::skylight_room();
         let emitters = Arc::new(EmissionDistribution::build(&fixture.scene, &fixture.materials));
         let probe = SurfaceProbe::new(IVec3::new(8, 4, 8), 4);
         let mut a = TraceWork::from_probes(std::slice::from_ref(&probe), false);
@@ -769,7 +769,7 @@ mod tests {
         control.enable_resident().unwrap();
         let mut gpu = GpuTracer::new(control.context.clone()).unwrap();
         gpu.enable_resident().unwrap();
-        let fixture = super::super::refinement::research_fixture(2);
+        let fixture = crate::voxel_gi::research::skylight_room();
         let emitters = Arc::new(EmissionDistribution::build(
             &fixture.scene,
             &fixture.materials,

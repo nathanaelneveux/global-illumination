@@ -391,7 +391,6 @@ impl ReferenceImage {
         let materials = runtime.materials.clone();
         let transport = settings.transport;
         let importance = settings.sampling_importance();
-        let emitter_guiding = settings.emitter_guiding;
         let generation = runtime.generation;
         let worker_progress = progress.clone();
         let worker_output = output.clone();
@@ -421,54 +420,21 @@ impl ReferenceImage {
                 gpu.share_cache_from(&resident)?;
                 Some(resident)
             } else { None };
-            let mut short_paths = if super::sample_sweep::roulette_requested() {
-                Some(GpuTracer::short_path_candidate(device.clone())?)
-            } else {None};
-            let mut control_gpu = if super::sample_sweep::paired_requested() {
-                let mut tracer=GpuTracer::new(device.clone())?;
-                if super::sample_sweep::reuse_requested() { tracer.enable_resident()?; }
-                Some(tracer)
-            } else {None};
-            let mut reuse = if super::sample_sweep::reuse_requested() {
-                let mut tracer=GpuTracer::new(device)?;
-                tracer.enable_reuse()?;
-                Some(tracer)
-            } else {None};
             let sweep = if sweep_requested {
-                super::sample_sweep::run(short_paths.as_mut().or(reuse.as_mut()).unwrap_or(&mut gpu), &scene, &sources, &materials,
-                    transport, &prioritized, &sites, &worker_progress, false, emitter_guiding)?
+                super::sample_sweep::run(&mut gpu, &scene, &sources, &materials,
+                    transport, &prioritized, &sites, &worker_progress)?
             } else { Vec::new() };
-            let matched_proposal = super::sample_sweep::guiding_requested() || super::sample_sweep::roulette_requested();
-            let control_importance = if matched_proposal {importance} else {EnergySpectrum::ONE};
-            let control_emitters = if matched_proposal {&prioritized} else {&emitters};
-            let control = if sweep_requested && let Some(control_gpu) = control_gpu.as_mut() {
-                super::sample_sweep::run(control_gpu, &scene, &sources, &materials,
-                    transport, control_emitters, &sites, &worker_progress, true, false)?
-            } else {Vec::new()};
             if sweep_requested {
                 std::fs::write(worker_output.join("cave-sample-sweep.json"),
                     serde_json::to_vec(&json!({"schema_version":1,
                         "scene_generation":generation,"origin":origin.to_array(),
                         "transport":transport,"face_count":sites.len(),
-                        "sampler":if super::sample_sweep::reuse_requested() {"fresh-paired-reuse"} else {"independent-paths"},
-                        "emitter_guiding":emitter_guiding,
-                        "early_roulette":!super::sample_sweep::roulette_requested(),
-                        "batch_faces":if super::sample_sweep::reuse_requested() || super::sample_sweep::spatial_requested(){2048}else{512},
+                        "sampler":if cache_mode {"frozen-surface-cache"} else {"independent-paths"},
+                        "batch_faces":if super::sample_sweep::spatial_requested(){2048}else{512},
                         "sampling_importance":[importance.visible.x,importance.visible.y,importance.visible.z,importance.infrared,importance.ionizing],
                         "windows":sweep,
                         "note":"Same exact frozen scene and sites as cave-reference.json. Unfiltered production estimator prefixes, disjoint unaligned sequence windows, no resets or scheduling. Equal-confidence connected corners; images use normal textures and tonemapping. Not an interactive timing or temporal-filter study."})).unwrap())
                     .map_err(|e| e.to_string())?;
-                if !control.is_empty() {
-                    std::fs::write(worker_output.join("cave-control-sweep.json"),
-                        serde_json::to_vec(&json!({"schema_version":1,"scene_generation":generation,
-                        "origin":origin.to_array(),"transport":transport,"face_count":sites.len(),
-                        "sampler":if super::sample_sweep::reuse_requested(){"resident-independent-paths"}else{"independent-paths"},
-                        "emitter_guiding":false,"batch_faces":if super::sample_sweep::reuse_requested(){2048}else{512},
-                        "early_roulette":true,
-                        "sampling_importance":[control_importance.visible.x,control_importance.visible.y,control_importance.visible.z,control_importance.infrared,control_importance.ionizing],
-                        "windows":control})).unwrap())
-                        .map_err(|e|e.to_string())?;
-                }
             }
             let mut replicas = Vec::new();
             for replica in 0..2 {
@@ -571,7 +537,7 @@ impl ReferenceImage {
                 ReferenceFrame { name:name.into(), values:values.clone(), pending:default(), confidence:None, sky:None }
             }).collect();
             let mut evidence_reports = Vec::new();
-            for (label, windows) in [("samples",sweep),("control",control)] {
+            for (label, windows) in [("samples",sweep)] {
               for (window, data) in windows.into_iter().enumerate() {
                 for prefix in data.prefixes {
                     if super::sample_sweep::evidence_requested() {

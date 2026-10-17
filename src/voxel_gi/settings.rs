@@ -19,12 +19,6 @@ pub struct VoxelGiSettings {
     /// Defaults to 0.125 on every backend, independently of path reuse; use one
     /// for equal-band sampling. This is not a fixed ratio of sample counts.
     pub simulation_sampling_importance: f32,
-    /// Source-informed directional sampling. Changes the proposal,
-    /// not the lighting equation or history validity. Both backends retain a
-    /// cosine component and use the same mixture PDF for emission MIS.
-    /// Experimental: helps the sparse hallway, but regresses the cave's raw
-    /// worst-patch visual threshold. Keep off until cross-scene qualification.
-    pub emitter_guiding: bool,
     /// Resident-only, nonrecursive spatial RGB reconstruction.
     /// Zero is the unchanged corner display; one enables uncertainty-weighted
     /// connected-surface filtering. Never changes transport or simulation data.
@@ -71,7 +65,6 @@ impl Default for VoxelGiSettings {
             transport: TransportSettings::default(),
             samples_per_dispatch: 16,
             simulation_sampling_importance: DEFAULT_SIMULATION_SAMPLING_IMPORTANCE,
-            emitter_guiding: false,
             spatial_reconstruction: 1.0,
             spatial_evidence_target: 2048,
             spatial_max_donors: 0,
@@ -211,15 +204,6 @@ mod tests {
     #[test]
     fn preferred_spatial_default_has_explicit_unfiltered_and_fixed_controls() {
         let settings = VoxelGiSettings::default();
-        assert!(!settings.emitter_guiding);
-        let guided: VoxelGiSettings =
-            serde_json::from_str(include_str!("../../config/gi-guiding.json")).unwrap();
-        assert!(guided.emitter_guiding);
-        assert_eq!(guided.transport, settings.transport);
-        let cosine: VoxelGiSettings =
-            serde_json::from_str(include_str!("../../config/gi-guiding-control.json")).unwrap();
-        assert!(!cosine.emitter_guiding);
-        assert_eq!(cosine.transport, settings.transport);
         let preset: VoxelGiSettings =
             serde_json::from_str(include_str!("../../config/gi-display-evidence-2048.json"))
                 .unwrap();

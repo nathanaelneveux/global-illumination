@@ -196,21 +196,16 @@ fn transport_field_correctness_gate() {
         .build()
         .unwrap();
     let native = tests::native_tracer();
-    let mut variants: Vec<_> = [
-        ("iid", true, false),
-        ("guided-iid", true, true),
-        ("guided-qmc", false, true),
-    ]
-    .into_iter()
-    .map(|(name, iid, guided)| {
-        (
-            name,
-            guided,
-            GpuTracer::with_shader(native.context.clone(), true, &shader(iid, true, false))
-                .unwrap(),
-        )
-    })
-    .collect();
+    let mut variants: Vec<_> = [("iid", true), ("qmc", false)]
+        .into_iter()
+        .map(|(name, iid)| {
+            (
+                name,
+                GpuTracer::with_shader(native.context.clone(), true, &shader(iid, true, false))
+                    .unwrap(),
+            )
+        })
+        .collect();
     let run = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -257,7 +252,7 @@ fn transport_field_correctness_gate() {
             "sites":case.sites,"receivers":case.sites.iter().map(|&s| {
                 let p=&case.fixture.receivers[s]; serde_json::json!({"voxel":p.voxel.to_array(),"face":p.face_mask.trailing_zeros()})
             }).collect::<Vec<_>>(), "replicas":oracle,"analytic":case.analytic}));
-        for (name, guided, gpu) in &mut variants {
+        for (name, gpu) in &mut variants {
             let replicas: Vec<_> = (0..2)
                 .map(|r| {
                     estimates(
@@ -265,7 +260,6 @@ fn transport_field_correctness_gate() {
                         &case.fixture,
                         &emitters,
                         case.transport,
-                        *guided,
                         &case.sites,
                         paths,
                         4194304 + r * paths,
@@ -295,7 +289,7 @@ fn transport_field_correctness_gate() {
                     }
                     // Sample SE is not an IID confidence interval for QMC.
                     // Analytic tests also require a fixed 1.5% error gate there.
-                    let rejected = if *name == "guided-qmc" {
+                    let rejected = if *name == "qmc" {
                         case.analytic.is_some() && delta > 0.015 * expected.abs() + 1e-10
                     } else {
                         z > 6.0
@@ -344,13 +338,13 @@ fn transport_field_correctness_gate() {
 
 /// Independent cosine integration on the GPU isolates estimator logic from
 /// CPU/GPU traversal differences. It deliberately uses no light distribution,
-/// MIS, guide, roulette, cache, or history policy.
+/// MIS, roulette, cache, or history policy.
 fn cosine_shader() -> String {
     let source = shader(true, false, false);
     let start = source.find("fn trace_receiver(").unwrap();
-    let end = source[start..].find("fn evaluate_record(").unwrap() + start;
+    let end = source[start..].find("fn write_result(").unwrap() + start;
     let replacement = r#"
-fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, anchor: GuideAnchor) -> Energy {
+fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32) -> ReceiverSample {
     var result: Energy;
     var weight = Energy(vec4(1.0), 1.0, vec3(0.0));
     var position = surface;
@@ -384,7 +378,11 @@ fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: 
             }
         }
     }
-    return result;
+    // Keep the production bind-group layout: these bindings are unused here.
+    if sequence == 0xffffffffu {
+        result.value.x += f32(cache_index[0].x + cache_state[0].x + emitter_words[0].x);
+    }
+    return ReceiverSample(result, true);
 }
 "#;
     format!("{}{}{}", &source[..start], replacement, &source[end..])
@@ -437,7 +435,7 @@ fn cave_witness_estimator_isolation() {
         }
         for (name, gpu) in &mut variants {
             let actual = estimates(
-                gpu, &fixture, &emitters, transport, false, &sites, 1048576, 4194304,
+                gpu, &fixture, &emitters, transport, &sites, 1048576, 4194304,
             );
             eprintln!("WITNESS depth={bounces} {name}: {actual:?}");
             for (reference, actual) in references.iter().zip(&actual) {
@@ -477,7 +475,6 @@ fn grazing_emitter_plane_matches_view_factor() {
             &fixture,
             &emitters,
             default(),
-            false,
             &[0],
             1048576,
             4194304,

@@ -12,7 +12,6 @@ use super::{EnergySpectrum, world::SurfaceProbe};
 pub(crate) struct TraceWork {
     /// Immutable model snapshot for this batch, shared by both backends.
     pub transport: super::TransportSettings,
-    pub emitter_guiding: bool,
     pub response_seconds: f32,
     /// Same wrapping frame counter as Bevy's render Globals uniform.
     pub display_frame: u32,

@@ -105,59 +105,6 @@ fn left_probability(nodes: &[LightNode], node: &LightNode, position: Vec3, norma
     p.clamp(1e-6, 1.0 - 1e-6)
 }
 
-/// Greedy source-only guide anchor. This is not a draw from the light PMF;
-/// the returned local mass is only a concentration heuristic for a proposal.
-pub(super) fn dominant(
-    nodes: &[LightNode],
-    faces: &[EmissiveFace],
-    position: Vec3,
-    normal: Vec3,
-    mut visible: impl FnMut(IVec3) -> bool,
-) -> Option<(usize, f32)> {
-    let mut index = 0;
-    let mut probability = 1.0;
-    let mut stack = [(0usize, 0.0); 32];
-    let mut pending = 0;
-    let mut tested = 0;
-    let mut previous_rejected = IVec3::splat(i32::MAX);
-    loop {
-        let node = &nodes[index];
-        if node.left == u32::MAX {
-            let voxel = faces[node.right as usize].voxel;
-            if voxel != previous_rejected {
-                if visible(voxel) {
-                    return Some((node.right as usize, probability));
-                }
-                previous_rejected = voxel;
-                tested += 1;
-            }
-            if pending == 0 || tested >= 8 {
-                return None;
-            }
-            pending -= 1;
-            (index, probability) = stack[pending];
-            continue;
-        }
-        let p = left_probability(nodes, node, position, normal);
-        let local = (node.maximum - node.minimum).length() <= 16.0;
-        let left_mass = if local { p } else { 1.0 };
-        let right_mass = if local { 1.0 - p } else { 1.0 };
-        if pending >= 32 {
-            return None;
-        }
-        if p >= 0.5 {
-            stack[pending] = (node.right as usize, probability * right_mass);
-            probability *= left_mass;
-            index = node.left as usize;
-        } else {
-            stack[pending] = (node.left as usize, probability * left_mass);
-            probability *= right_mass;
-            index = node.right as usize;
-        }
-        pending += 1;
-    }
-}
-
 pub(super) fn select(
     nodes: &[LightNode],
     position: Vec3,
