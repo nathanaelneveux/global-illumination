@@ -1,8 +1,6 @@
 # Repeating hallway outliers: diagnosis and guiding experiment
 
-**Current decision:** complete the validated short path before roulette; see
-[qualification and limitations](#completing-short-paths-without-roulette-amplification).
-Guiding is experimental and defaults **off**. The
+**Current decision:** guiding is experimental and defaults **off**. The
 [full-image qualification](#whole-cave-image-gate-revokes-default-guiding) fails
 the unchanged cave visual target at 2048 paths, despite its real hallway benefit.
 The independent audits also found and fixed deterministic path-truncation
@@ -559,17 +557,19 @@ The isolated study passes. Evidence: ignored
 checkpoint. Full-image cave qualification and end-to-end behavior remain
 required before promoting this tradeoff.
 
-## Completing short paths without roulette amplification
+## Deferred roulette change after gameplay clarification
 
-The estimator now delays roulette until after the third diffuse hit. Since
-validated transport is limited to three hits, it evaluates the complete short
-path at its actual throughput. Exact-zero termination remains. This changes
-variance and cost, not expected energy, bounce count, reach, history retention,
-source PDFs, guiding, spatial filtering, or the preferred display defaults.
-The CPU and GPU policies agree. The historical early-roulette shader remains
-an offline comparison control, with no gameplay switch.
+`1e3b092` temporarily delayed roulette until after the third diffuse hit on
+CPU and GPU, completing every validated short path. The following measurements
+remain valid evidence for that variance/cost experiment. **The default promotion
+is withdrawn:** the user clarified that the persistent cave failure appears in
+ordinary gameplay and has not appeared in reference images. Static estimator
+improvement and one known hallway witness do not identify that failure's cause.
+The original sampler is restored while the new read-only F8/F9 gameplay face
+watch isolates the actual affected receiver. The offline roulette comparison
+remains available at `504051c`'s protocol; no history or filter policy changes.
 
-The known hallway path 2243 now contributes red **0.2452915** instead of
+In the experiment, known hallway path 2243 contributes red **0.2452915** instead of
 **0.810881**, retaining the actual .3025 RGB throughput after two .55
 reflections. It still transports real energy from the remote lamp. There is
 no clipping or maximum-sample cutoff. A two-wall known-answer regression checks
@@ -578,7 +578,7 @@ CPU/native exact-path checks, furnace depths 1–3, guided/unguided CPU/GPU pari
 and resident means/moments versus individually measured raw paths pass.
 
 Full-image evidence uses `504051c`'s diagnostic shader, which is path-equivalent
-to the new runtime for all validated depths. Run
+to the experimental runtime at `1e3b092` for all validated depths. Run
 `cave-1792196293885248000-90209`: M4 / Metal / macOS 26.6.2, development build,
 2560×1440 headless, background residency, shared-corner sun/indirect, textures
 on, AO off. Four matched raw prefix windows, RGB importance
@@ -618,3 +618,25 @@ logs use the `target/short-path-` prefix: `tracer-tests`, `native-cutoff`,
 `weight-ledger`, and `shader-variants`. Strict Clippy and the development build
 are separate integration checks. Streamed behavior is recorded separately below;
 the static gate alone does not establish recovery latency or frame pacing.
+
+
+The separate unfiltered streamed hallway run at clean `1e3b092`,
+`live-hallway-1792197037853328000-90900`, uses the same M4/Metal development
+build, 2560×1440 headless, background loading, 16 paths, 4-ms trace budget,
+preferred corners/textures, and the explicit unfiltered/no-transition preset.
+All five captures pass; assets/targets are valid and render logs clean. Receiver
+208 reaches sequence 2256 at 106.33 s: raw red .00007407 → .00021551. At
+181.56 s it reaches sequence 3904, history 3856 and red .00015388. Every accepted
+sequence advance is +16. The earlier ordinary-sampler run ended near .00033384,
+but used adaptive spatial presentation; these are not matched FPS/performance
+runs. The result demonstrates a smaller known hallway excursion and continued
+recovery. It does **not** reproduce or resolve the gameplay-only green cave face.
+
+The follow-up watch smoke at `0e00466`'s diagnostic code (built with its preceding
+test-only diff), `cave-1792197777411911000-91476`, records the real streamed field
+at floor receiver `(63,-36,-43)`, face 2. It has no reference residency camera,
+freeze or extra rays: 2934 frames, 228 events, 50 revision contexts, and live
+sequence progression to 1664. The exit save succeeds, three capture guards pass,
+and logs are clean. It verifies the recorder, not the reported failure or its
+interactive F8/F9 screenshot path. Evidence: `target/face-watch-native-smoke.log`
+and `target/gi-face-watch/1792197777412817000-91476/`.

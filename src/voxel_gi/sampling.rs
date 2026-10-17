@@ -11,7 +11,7 @@ pub(crate) fn stream_id(voxel: IVec3, face: u32) -> u32 {
     pcg(pcg(pcg(voxel.x as u32) ^ voxel.y as u32) ^ voxel.z as u32) ^ pcg(face.wrapping_add(1))
 }
 
-/// Preserve rotated Halton path and branch dimensions; use independently
+/// Preserve rotated Halton path directions and roulette; use independently
 /// padded, hash-Owen-scrambled Sobol pairs for emitter selection and surface
 /// coordinates. All streams continue independently of measurement resets.
 pub(crate) fn sample_1d(stream: u32, sequence: u32, dimension: u32) -> f32 {

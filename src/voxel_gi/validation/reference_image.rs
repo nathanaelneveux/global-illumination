@@ -389,10 +389,11 @@ impl ReferenceImage {
             let mut gpu = GpuTracer::new(device.clone())?;
             let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
             let prioritized = Arc::new(EmissionDistribution::with_importance(&scene, &materials, importance));
+            let mut short_paths = if super::sample_sweep::roulette_requested() {
+                Some(GpuTracer::short_path_candidate(device.clone())?)
+            } else {None};
             let mut control_gpu = if super::sample_sweep::paired_requested() {
-                let mut tracer=if super::sample_sweep::roulette_requested() {
-                    GpuTracer::legacy_roulette_control(device.clone())?
-                } else { GpuTracer::new(device.clone())? };
+                let mut tracer=GpuTracer::new(device.clone())?;
                 if super::sample_sweep::reuse_requested() { tracer.enable_resident()?; }
                 Some(tracer)
             } else {None};
@@ -402,7 +403,7 @@ impl ReferenceImage {
                 Some(tracer)
             } else {None};
             let sweep = if sweep_requested {
-                super::sample_sweep::run(reuse.as_mut().unwrap_or(&mut gpu), &scene, &sources, &materials,
+                super::sample_sweep::run(short_paths.as_mut().or(reuse.as_mut()).unwrap_or(&mut gpu), &scene, &sources, &materials,
                     transport, &prioritized, &sites, &worker_progress, false, emitter_guiding)?
             } else { Vec::new() };
             let matched_proposal = super::sample_sweep::guiding_requested() || super::sample_sweep::roulette_requested();
@@ -419,7 +420,7 @@ impl ReferenceImage {
                         "transport":transport,"face_count":sites.len(),
                         "sampler":if super::sample_sweep::reuse_requested() {"fresh-paired-reuse"} else {"independent-paths"},
                         "emitter_guiding":emitter_guiding,
-                        "early_roulette":false,
+                        "early_roulette":!super::sample_sweep::roulette_requested(),
                         "batch_faces":if super::sample_sweep::reuse_requested() || super::sample_sweep::spatial_requested(){2048}else{512},
                         "sampling_importance":[importance.visible.x,importance.visible.y,importance.visible.z,importance.infrared,importance.ionizing],
                         "windows":sweep,
@@ -431,7 +432,7 @@ impl ReferenceImage {
                         "origin":origin.to_array(),"transport":transport,"face_count":sites.len(),
                         "sampler":if super::sample_sweep::reuse_requested(){"resident-independent-paths"}else{"independent-paths"},
                         "emitter_guiding":false,"batch_faces":if super::sample_sweep::reuse_requested(){2048}else{512},
-                        "early_roulette":super::sample_sweep::roulette_requested(),
+                        "early_roulette":true,
                         "sampling_importance":[control_importance.visible.x,control_importance.visible.y,control_importance.visible.z,control_importance.infrared,control_importance.ionizing],
                         "windows":control})).unwrap())
                         .map_err(|e|e.to_string())?;

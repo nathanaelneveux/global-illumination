@@ -340,15 +340,15 @@ impl GpuTracer {
         Self::with_kernel(context, true)
     }
 
-    /// Offline historical control only. Gameplay completes the short path;
-    /// this reproduces the old final-hit roulette amplification.
+    /// Offline comparison only: finish the finite three-hit path without
+    /// amplifying the final hit through early roulette. Never used by gameplay.
     #[cfg(debug_assertions)]
-    pub(super) fn legacy_roulette_control(context: GpuTransportDevice) -> Result<Self, String> {
-        let marker = "if bounce >= 2u {";
+    pub(super) fn short_path_candidate(context: GpuTransportDevice) -> Result<Self, String> {
+        let marker = "if bounce >= 1u {";
         if SHADER.matches(marker).count() != 1 {
             return Err("Short-path comparison shader marker changed".into());
         }
-        Self::with_shader(context, true, &SHADER.replacen(marker, "if bounce >= 1u {", 1))
+        Self::with_shader(context, true, &SHADER.replacen(marker, "if false {", 1))
     }
 
     fn with_kernel(context: GpuTransportDevice, cooperative: bool) -> Result<Self, String> {

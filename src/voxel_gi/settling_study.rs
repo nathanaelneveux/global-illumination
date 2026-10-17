@@ -191,11 +191,9 @@ fn lane_layout_study(lanes: &[u32]) {
 #[test]
 #[ignore = "native roulette variance/cost study, no history changes"]
 fn settling_roulette_study() {
-    assert_eq!(SHADER.matches("if bounce >= 2u {").count(), 1);
-    let shader = SHADER.replace("if bounce >= 2u {", "if bounce >= 1u {");
-    // Direction is now reversed: current baseline completes short paths;
-    // mode 1 reconstructs the historical early-roulette policy.
-    estimator_study("LEGACY_ROULETTE", &shader);
+    assert_eq!(SHADER.matches("if bounce >= 1u {").count(), 1);
+    let shader = SHADER.replace("if bounce >= 1u {", "if bounce >= 3u {");
+    estimator_study("ROULETTE", &shader);
 }
 
 #[test]
