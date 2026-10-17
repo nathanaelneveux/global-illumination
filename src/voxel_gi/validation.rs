@@ -13,7 +13,7 @@ mod response;
 pub(super) mod retention_audit;
 mod sample_sweep;
 mod structures;
-mod temporal;
+pub(super) mod temporal;
 
 /// Debug-only ablation of statistical history truncation. Revision checks,
 /// geometry identity, genuinely new faces and explicit model replacement keep

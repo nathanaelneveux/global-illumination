@@ -527,3 +527,30 @@ Metal bindless warning remains; no dependency, shader or lighting setting change
 Keep focused, buildable local commits. Record verification and limitations in
 their messages; do not combine unrelated estimator, storage and presentation
 changes merely because they share one session.
+
+## Pin an actual gameplay face
+
+In a development build, aim the center of the view at a bad face and press
+**F8**. This pins its voxel/normal, records its subsequent live state, and
+captures `pinned.png` in a focused normal game window. Continue playing, moving,
+or editing normally. **F9** saves `temporal.json`, `watch.json` and `saved.png`
+under ignored `target/gi-face-watch/<timestamp>-<pid>/`; normal exit and selecting
+another face also save the trace. These controls work without validation mode,
+reference baking or a special scene. The existing unfiltered preset remains
+`VOXEL_GI_SETTINGS=config/gi-display-unfiltered.json`.
+
+The watch does not request rays, refresh a receiver, move a camera, add residency,
+change lighting settings, or stop streaming. With no watch, the recorder does
+not run; BVW ray picking runs only on F8. It records raw RGB/moments, history and
+sequence, display RGB, all nine corner inputs, material/face mask, resident
+allocation, retention/source/geometry/transport revisions, camera route and
+settings changes. Missing/replaced faces and address-only changes are explicit.
+The mirror is the latest queued/completed CPU snapshot, which may differ from
+the currently rendered GPU frame; the pinned image is needed to correlate an
+actual visual failure. Pinning cannot recover events before the pin.
+
+This is a gameplay diagnostic, not a frozen reference or a quality/FPS pass.
+An automated smoke test can pin known coordinates using
+`VOXEL_GI_WATCH_FACE=x,y,z,face` (face order +X,-X,+Y,-Y,+Z,-Z); this does not
+exercise the interactive key/ray-picking path. Headless runs omit the watch's
+window screenshots and retain their ordinary validation capture guards.

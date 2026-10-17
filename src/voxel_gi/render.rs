@@ -281,6 +281,18 @@ pub(crate) struct GpuProbePatchQueue {
     state: Arc<Mutex<ProbePatchState>>,
 }
 
+#[cfg(test)]
+impl GpuProbePatchQueue {
+    pub(crate) fn unpublished_test_queue() -> Self {
+        Self {
+            probe_buffer: Handle::default(),
+            hash_buffer: Handle::default(),
+            prepared: None,
+            state: Arc::default(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct ProbePatchState {
     // Mirrors own the bytes; each pending slot stores only its changed byte

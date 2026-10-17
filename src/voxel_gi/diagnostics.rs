@@ -1,6 +1,8 @@
 //! Optional demo instrumentation, separate from transport scheduling. The HUD
 //! reuses O(1) counters; expensive field summaries and scripted edits are opt-in.
 mod tuning;
+#[cfg(debug_assertions)]
+mod face_watch;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::window::{CursorOptions, PrimaryWindow};
@@ -99,6 +101,8 @@ mod launch_tests {
 impl Plugin for VoxelGiDiagnosticsPlugin {
     fn build(&self, app: &mut App) {
         tuning::load_launch_settings(app);
+        #[cfg(debug_assertions)]
+        face_watch::install(app);
         app.init_resource::<super::VoxelGiVisualWeights>()
             .add_systems(Update, tuning::update_visual_weights.before(VoxelGiSystems));
         if terminal_stats_enabled() {

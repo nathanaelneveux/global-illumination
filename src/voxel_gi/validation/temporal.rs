@@ -10,6 +10,8 @@ const LIMIT: usize = 200_000;
 
 #[derive(Clone, PartialEq, Serialize)]
 struct State {
+    material: u8,
+    face_mask: u8,
     samples: u32,
     sequence: u32,
     measured: [f32; 3],
@@ -18,6 +20,8 @@ struct State {
     confidence: f32,
     sky: [u32; 4],
     revisions: [u64; 3],
+    retention_revision: u64,
+    resident: [u32; 2],
     fresh_mask: u8,
     stable_batches: u8,
     /// CPU queued publication or latest completed resident presentation snapshot.
@@ -26,6 +30,7 @@ struct State {
     /// Shader-equivalent connected, confidence-weighted corner reconstruction
     /// from that mirror. None while the center is unpublished (shader prior).
     corners: Option<[[f32; 3]; 4]>,
+    corner_inputs: [[f32; 4]; 9],
 }
 
 #[derive(Serialize)]
@@ -38,7 +43,7 @@ struct Event {
 }
 
 #[derive(Default)]
-pub(super) struct TemporalRun {
+pub(crate) struct TemporalRun {
     enabled: Option<bool>,
     previous: Vec<Option<State>>,
     events: Vec<Event>,
@@ -114,7 +119,29 @@ fn corners(patch: &[[f32; 4]]) -> Option<[[f32; 3]; 4]> {
 }
 
 impl TemporalRun {
-    pub fn record(
+    /// Pin a normal-gameplay receiver without changing sampling, camera,
+    /// scene residency or validation mode. The same recorder follows it even
+    /// when it unloads or is replaced; missing state remains explicit.
+    pub(crate) fn pinned(voxel: IVec3, face: usize) -> Self {
+        Self {
+            enabled: Some(true),
+            sites: vec![(voxel, face)],
+            ..default()
+        }
+    }
+
+    pub(crate) fn record_pinned(
+        &mut self,
+        at_s: f32,
+        field: &VoxelEnergyField,
+        runtime: &super::super::VoxelGiRuntime,
+        cache: &GpuTransportCache,
+        queue: &GpuProbePatchQueue,
+    ) {
+        self.record(at_s, Profile::Gameplay, field, runtime, cache, queue);
+    }
+
+    pub(super) fn record(
         &mut self,
         at_s: f32,
         profile: Profile,
@@ -161,6 +188,8 @@ impl TemporalRun {
                 .get(voxel)
                 .filter(|p| p.face_mask & (1 << face) != 0)
                 .map(|p| State {
+                    material: p.material,
+                    face_mask: p.face_mask,
                     samples: p.samples[face],
                     sequence: p.sequence[face],
                     measured: p.radiance[face].visible.to_array(),
@@ -169,10 +198,13 @@ impl TemporalRun {
                     confidence: p.display[face].confidence,
                     sky: p.display[face].sky,
                     revisions: [p.revision, p.source_revision, p.transport_revision],
+                    retention_revision: p.retention_revision,
+                    resident: p.resident[face].to_array(),
                     fresh_mask: p.fresh_mask,
                     stable_batches: p.stable_batches[face],
                     mirror: (patch[4][3] != 0.0).then_some(patch[4]),
                     corners: corners(patch),
+                    corner_inputs: patch.try_into().expect("nine-candidate corner patch"),
                 });
             if first || state != self.previous[site] {
                 if self.events.len() < LIMIT {
@@ -219,14 +251,56 @@ impl TemporalRun {
 mod tests {
     use super::*;
     #[test]
+    fn pinned_watch_keeps_missing_replaced_and_address_only_transitions() {
+        use super::super::super::world::SurfaceProbe;
+        let voxel = IVec3::new(-54, -12, -20);
+        let mut run = TemporalRun::pinned(voxel, 2);
+        let mut field = VoxelEnergyField::default();
+        let runtime = super::super::super::VoxelGiRuntime::default();
+        let cache = GpuTransportCache::default();
+        let queue = GpuProbePatchQueue::unpublished_test_queue();
+        run.record_pinned(0.0, &field, &runtime, &cache, &queue);
+        let mut probe = SurfaceProbe::new(voxel, 4);
+        probe.samples[2] = 2048;
+        probe.sequence[2] = 8192;
+        probe.resident[2] = UVec2::new(12, 1);
+        field.probes.insert(voxel, probe);
+        run.record_pinned(1.0, &field, &runtime, &cache, &queue);
+        run.record_pinned(1.1, &field, &runtime, &cache, &queue);
+        assert_eq!(run.events.len(), 2, "unchanged observations are compressed");
+        field.probes.get_mut(&voxel).unwrap().resident[2].y = 2;
+        run.record_pinned(2.0, &field, &runtime, &cache, &queue);
+        let probe = field.probes.get_mut(&voxel).unwrap();
+        probe.revision += 1;
+        probe.samples[2] = 0;
+        probe.sequence[2] = 0;
+        run.record_pinned(3.0, &field, &runtime, &cache, &queue);
+        field.probes.remove(&voxel);
+        run.record_pinned(4.0, &field, &runtime, &cache, &queue);
+        assert_eq!(run.events.len(), 5);
+        assert!(run.events[0].state.is_none());
+        assert_eq!(run.events[1].state.as_ref().unwrap().sequence, 8192);
+        assert_eq!(run.events[2].state.as_ref().unwrap().resident, [12, 2]);
+        assert_eq!(run.events[3].state.as_ref().unwrap().sequence, 0);
+        assert!(run.events[4].state.is_none());
+    }
+
+    #[test]
     fn live_hallway_sites_cover_contiguous_exposed_floor_across_pages() {
-        let layer = crate::structures::StructureLayer::new(crate::structures::hallway::instances(), 32);
+        let layer =
+            crate::structures::StructureLayer::new(crate::structures::hallway::instances(), 32);
         let sites = sites(Profile::LiveHallway);
         assert_eq!(sites.len(), 237);
         for (voxel, face) in sites {
             assert_eq!(face, 2);
-            assert!(matches!(layer.sample(voxel), crate::structures::VoxelOp::Solid(_)));
-            assert_eq!(layer.sample(voxel + IVec3::Y), crate::structures::VoxelOp::Air);
+            assert!(matches!(
+                layer.sample(voxel),
+                crate::structures::VoxelOp::Solid(_)
+            ));
+            assert_eq!(
+                layer.sample(voxel + IVec3::Y),
+                crate::structures::VoxelOp::Air
+            );
         }
     }
 
