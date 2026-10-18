@@ -225,6 +225,45 @@ full explicit paths for one batch. Edit probes track only 1–7 faces, so those
 timings are directional. The first integration panicked on an air-only loaded
 region (no top voxel); that is fixed and unit-tested.
 
+### Frame-time spikes in the `sources` profile (open)
+
+`8cab848` claimed to remove a 2-3 ms frame p95 cost in the `sources` profile's
+light-change and streaming phases. That claim compared runs from different
+sessions and does not reproduce. On 2026-10-18, same build, interleaved
+(headless, Apple M4), measured retention vs `config/gi-retention-curve.json`,
+frame p95 over four pairs:
+
+| Phase | Curve | Measured |
+| --- | ---: | ---: |
+| Light changes | 25.1-27.2 ms | 26.9-29.3 ms (about +1.7) |
+| Streaming | 25.2-27.9 ms | 27.3-28.7 ms (about +1.7) |
+| Frame p50 | 22.0-22.3 ms | 22.0-22.3 ms |
+| Paths/s, light changes | 3.7M | 4.6M |
+
+The cost is extra spikes, not a steady per-frame cost (about 125 frames above
+26.5 ms per run vs 86). What was ruled out:
+
+- **Tracing worker:** instrumented, the retention query is 0.85 ms p95 vs
+  0.46 ms for the curve, and GPU submission time is equal.
+- **Main-thread GI stages:** they differ by at most 0.3 ms at p95. Measured's
+  extra slow frames show no extra main-thread work; the curve's slow frames do.
+- **Transport GPU execution:** equal (p50 3.7-4.0 ms).
+
+What remains is that measured retention traces about 25% more paths per second
+in the same GPU time, because fewer histories are reset and more paths end in
+cached faces. The working hypothesis is GPU queue or memory contention with
+rendering. It needs a GPU-side capture, not more CPU changes.
+
+The three changes in `8cab848` were checked one at a time against that day's
+runs:
+
+- **Aggregated events:** kept. They avoid one distance per streaming box for
+  receivers outside the union box.
+- **Selective read-gating:** reverted in `e21a9aa`. No tail effect; quality a
+  wash.
+- **Strided flux sampling:** replaced in `265562c` by an exact scan with a
+  curve fallback. The stride could underestimate edit flux.
+
 ## Offshoot: A-SVGF and DDGI on the cache (branch `gi-cache-asvgf`)
 
 Same harness, rules ported from the earlier studies (`codex/history-ddgi`,
