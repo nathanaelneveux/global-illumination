@@ -451,6 +451,45 @@ pub(super) fn invalidate_near_voxel(
 mod donor_tests {
     use super::*;
 
+    #[test]
+    fn flux_scan_sees_every_face_and_falls_back_past_its_budget() {
+        use super::super::geometry::Bounds;
+        let materials = super::super::VoxelMaterialTransportTable::default();
+        let albedo = luminance(materials.get(0).diffuse.visible);
+        assert!(albedo > 0.0);
+        let mut field = VoxelEnergyField::default();
+        let bright = IVec3::new(13, 0, 17);
+        let mut voxels = Vec::new();
+        for z in 0..32 {
+            for x in 0..32 {
+                let voxel = IVec3::new(x, 0, z);
+                let mut probe = SurfaceProbe::new(voxel, 4);
+                probe.material = 0;
+                let level = if voxel == bright { 100.0 } else { 0.01 };
+                probe.radiance[2] = super::super::EnergySpectrum::new(Vec3::splat(level), 0.0, 0.0);
+                field.probes.insert(voxel, probe);
+                voxels.push(voxel);
+            }
+        }
+        field.pages.insert(IVec3::ZERO, voxels);
+        let expected = albedo * 100.0;
+        // Large box: the page list (1,024) is shorter than its volume.
+        let mut budget = FLUX_SCAN_BUDGET;
+        let wide = Bounds { min: IVec3::ZERO, max: IVec3::new(30, 0, 30) };
+        let found = brightest_outgoing(&field, &materials, wide, &mut budget).unwrap();
+        assert!((found - expected).abs() < 1e-3 * expected);
+        assert_eq!(budget, FLUX_SCAN_BUDGET - 1024);
+        // Small box: positions are scanned directly.
+        let near = Bounds::point(bright + IVec3::X);
+        let found = brightest_outgoing(&field, &materials, near, &mut budget).unwrap();
+        assert!((found - expected).abs() < 1e-3 * expected);
+        assert_eq!(budget, FLUX_SCAN_BUDGET - 1024 - 27);
+        // Past the budget the flux is unknown, never an underestimate.
+        let mut budget = 26;
+        assert_eq!(brightest_outgoing(&field, &materials, near, &mut budget), None);
+        assert_eq!(budget, 26);
+    }
+
     fn unchanged_page_fixture() -> (
         VoxelGiRuntime,
         VoxelEnergyField,
@@ -734,6 +773,10 @@ fn luminance(value: Vec3) -> f32 {
     0.2126 * value.x + 0.7152 * value.y + 0.0722 * value.z
 }
 
+/// Lookups (probe positions or page-list entries) per scene update. Edits past
+/// it get unknown flux, so their receivers use the distance curve instead.
+const FLUX_SCAN_BUDGET: usize = 16_384;
+
 /// Complete measured-retention flux bounds from the field before recording.
 /// Edits add the brightest outgoing light among receivers at and around the
 /// changed bounds (reflectance times incident light, plus emission) times about
@@ -754,62 +797,91 @@ fn finalize_change_flux(
             .map(|light| 0.5 * luminance(light.radiance.visible))
             .fold(0.0, f32::max),
     );
-    // Bounded main-thread cost: at most 64 sampled positions per change and
-    // 2048 per scene update. Changes past the budget reuse the brightest light
-    // found so far (or sky if nothing was sampled): conservative, not exact.
-    let mut budget = 2048usize;
-    let mut brightest_seen = 0.0f32;
-    let mut sampled_any = false;
+    let mut budget = FLUX_SCAN_BUDGET;
     for (bounds, weight) in change.weights.iter_mut() {
         match weight.kind {
             ChangeKind::Load { .. } => weight.flux = sky * super::world::REGION_EDGE as f32,
             ChangeKind::Edit { voxels } => {
-                let mut brightest = 0.0f32;
-                if budget > 0 {
-                    let min = bounds.min - IVec3::ONE;
-                    let max = bounds.max + IVec3::ONE;
-                    let size = (max - min + IVec3::ONE).max(IVec3::ONE);
-                    let positions = 64usize.min(budget);
-                    let step = ((size.element_product() as f32 / positions as f32)
-                        .cbrt()
-                        .ceil() as i32)
-                        .max(1);
-                    let mut z = min.z;
-                    'scan: while z <= max.z {
-                        let mut y = min.y;
-                        while y <= max.y {
-                            let mut x = min.x;
-                            while x <= max.x {
-                                if budget == 0 {
-                                    break 'scan;
-                                }
-                                budget -= 1;
-                                if let Some(probe) = field.probes.get(&IVec3::new(x, y, z)) {
-                                    let material = materials.get(probe.material);
-                                    let albedo = luminance(material.diffuse.visible);
-                                    let emission = luminance(material.emission.visible);
-                                    for face in 0..6 {
-                                        if probe.face_mask & (1 << face) != 0 {
-                                            let incident = luminance(probe.radiance[face].visible)
-                                                + luminance(probe.direct[face].visible);
-                                            brightest = brightest.max(albedo * incident + emission);
-                                        }
-                                    }
-                                }
-                                x += step;
-                            }
-                            y += step;
-                        }
-                        z += step;
-                    }
-                    sampled_any = true;
-                    brightest_seen = brightest_seen.max(brightest);
-                } else {
-                    brightest = if sampled_any { brightest_seen } else { sky };
+                match brightest_outgoing(field, materials, *bounds, &mut budget) {
+                    Some(brightest) => weight.flux += brightest * 2.0 * voxels as f32,
+                    None => *weight = super::geometry::ChangeWeight::UNKNOWN,
                 }
-                weight.flux += brightest * 2.0 * voxels as f32;
             }
             ChangeKind::Unknown | ChangeKind::Unload | ChangeKind::Light => {}
         }
     }
+}
+
+/// Brightest outgoing luminance (reflected incident plus emission) of any
+/// surface face within one voxel of `bounds`: every probe there, not a sample.
+/// Scans positions or the overlapping pages' probe lists, whichever is
+/// shorter. None when that exceeds the remaining budget.
+fn brightest_outgoing(
+    field: &VoxelEnergyField,
+    materials: &super::VoxelMaterialTransportTable,
+    bounds: super::geometry::Bounds,
+    budget: &mut usize,
+) -> Option<f32> {
+    let min = bounds.min - IVec3::ONE;
+    let max = bounds.max + IVec3::ONE;
+    let size = (max - min + IVec3::ONE).max(IVec3::ONE).as_i64vec3();
+    let volume = (size.x * size.y * size.z) as u64;
+    let (page_min, page_max) = (page_of(min), page_of(max));
+    let page_span = (page_max - page_min + IVec3::ONE).as_i64vec3();
+    if (page_span.x * page_span.y * page_span.z) as u64 > *budget as u64 {
+        return None;
+    }
+    let mut listed = 0u64;
+    for z in page_min.z..=page_max.z {
+        for y in page_min.y..=page_max.y {
+            for x in page_min.x..=page_max.x {
+                listed += field.pages.get(&IVec3::new(x, y, z)).map_or(0, |p| p.len() as u64);
+            }
+        }
+    }
+    let cost = volume.min(listed);
+    if cost > *budget as u64 {
+        return None;
+    }
+    *budget -= cost as usize;
+    let mut brightest = 0.0f32;
+    let mut visit = |probe: &super::world::SurfaceProbe| {
+        let material = materials.get(probe.material);
+        let albedo = luminance(material.diffuse.visible);
+        let emission = luminance(material.emission.visible);
+        for face in 0..6 {
+            if probe.face_mask & (1 << face) != 0 {
+                let incident = luminance(probe.radiance[face].visible)
+                    + luminance(probe.direct[face].visible);
+                brightest = brightest.max(albedo * incident + emission);
+            }
+        }
+    };
+    if volume <= listed {
+        for z in min.z..=max.z {
+            for y in min.y..=max.y {
+                for x in min.x..=max.x {
+                    if let Some(probe) = field.probes.get(&IVec3::new(x, y, z)) {
+                        visit(probe);
+                    }
+                }
+            }
+        }
+    } else {
+        for z in page_min.z..=page_max.z {
+            for y in page_min.y..=page_max.y {
+                for x in page_min.x..=page_max.x {
+                    for voxel in field.pages.get(&IVec3::new(x, y, z)).into_iter().flatten() {
+                        if voxel.cmpge(min).all()
+                            && voxel.cmple(max).all()
+                            && let Some(probe) = field.probes.get(voxel)
+                        {
+                            visit(probe);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Some(brightest)
 }
