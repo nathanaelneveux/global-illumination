@@ -184,6 +184,7 @@ pub(super) fn start_scene_task(
         .then(|| voxel_world.get_voxel_fn());
     let chunk_lookup = voxel_world.get_chunk_data_fn();
     let generator = generator.clone();
+    let materials = Arc::clone(&runtime.materials);
     let focus_page = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
         page_of(camera.translation().floor().as_ivec3())
     });
@@ -232,8 +233,12 @@ pub(super) fn start_scene_task(
             changed_pages,
             &removed_pages,
         ));
-        let changes =
-            super::geometry::SceneChanges::with_radius(&previous_scene, &scene, retention_radius);
+        let changes = super::geometry::SceneChanges::with_materials(
+            &previous_scene,
+            &scene,
+            retention_radius,
+            Some(&materials),
+        );
         let descriptors = if changes.changed {
             scan_surface_probe_pages(&scene, &affected_pages, focus_page)
         } else {

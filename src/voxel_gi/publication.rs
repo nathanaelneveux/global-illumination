@@ -87,6 +87,9 @@ pub(super) fn apply_scene_task(
         if let Some(mut change) = result.geometry_change.take() {
             let from = field.transport_revision;
             advance_transport_revision(&mut runtime, &mut field);
+            if runtime.spatial_history.is_some() {
+                finalize_change_flux(&mut change, &field, &runtime.materials, &runtime.sources);
+            }
             if let Some(history) = &mut runtime.spatial_history {
                 change.nearby.retain(|page, _| field.pages.contains_key(page));
                 history.record(change, super::retention::Origin::Geometry);
@@ -733,5 +736,70 @@ mod donor_tests {
             counts, times[0][16], times[1][16]
         );
         assert!(counts[1] * 4 < counts[0]);
+    }
+}
+
+fn luminance(value: Vec3) -> f32 {
+    0.2126 * value.x + 0.7152 * value.y + 0.0722 * value.z
+}
+
+/// Complete measured-retention flux bounds from the field before recording.
+/// Edits add the brightest outgoing light among receivers at and around the
+/// changed bounds (reflectance times incident light, plus emission) times about
+/// two faces per changed voxel. Loads get the brighter of sky radiance and
+/// reflected sunlight per unit of height above a receiver, times the region's
+/// width. Approximate bounds, not a certified dependency analysis.
+fn finalize_change_flux(
+    change: &mut super::geometry::GeometryChange,
+    field: &VoxelEnergyField,
+    materials: &super::VoxelMaterialTransportTable,
+    sources: &super::sources::TransportSources,
+) {
+    use super::geometry::ChangeKind;
+    let sky = luminance(sources.environment.visible).max(
+        sources
+            .directional
+            .iter()
+            .map(|light| 0.5 * luminance(light.radiance.visible))
+            .fold(0.0, f32::max),
+    );
+    for (bounds, weight) in change.weights.iter_mut() {
+        match weight.kind {
+            ChangeKind::Load { .. } => weight.flux = sky * super::world::REGION_EDGE as f32,
+            ChangeKind::Edit { voxels } => {
+                let min = bounds.min - IVec3::ONE;
+                let max = bounds.max + IVec3::ONE;
+                let size = (max - min + IVec3::ONE).max(IVec3::ONE);
+                // Sample at most ~4096 positions of large bounds.
+                let step = ((size.element_product() as f32 / 4096.0).cbrt().ceil() as i32).max(1);
+                let mut brightest = 0.0f32;
+                let mut z = min.z;
+                while z <= max.z {
+                    let mut y = min.y;
+                    while y <= max.y {
+                        let mut x = min.x;
+                        while x <= max.x {
+                            if let Some(probe) = field.probes.get(&IVec3::new(x, y, z)) {
+                                let material = materials.get(probe.material);
+                                let albedo = luminance(material.diffuse.visible);
+                                let emission = luminance(material.emission.visible);
+                                for face in 0..6 {
+                                    if probe.face_mask & (1 << face) != 0 {
+                                        let incident = luminance(probe.radiance[face].visible)
+                                            + luminance(probe.direct[face].visible);
+                                        brightest = brightest.max(albedo * incident + emission);
+                                    }
+                                }
+                            }
+                            x += step;
+                        }
+                        y += step;
+                    }
+                    z += step;
+                }
+                weight.flux += brightest * 2.0 * voxels as f32;
+            }
+            ChangeKind::Unknown | ChangeKind::Unload | ChangeKind::Light => {}
+        }
     }
 }

@@ -185,9 +185,35 @@ impl TraceWork {
                 ));
             }
             probe.retention = Some((pending.snapshot.revision, cap));
+            let change = (self.physical_retention > 0.0)
+                .then(|| pending.snapshot.change(probe.voxel, pending.since))
+                .flatten();
+            let c = self.physical_retention;
             for face in &mut self.faces[probe.faces()] {
-                face.samples = face.samples.min(cap);
+                // Unselected faces of this probe still take the curve cap.
                 face.history_cap = face.history_cap.min(cap);
+                match change {
+                    // Measured: flag only faces whose predicted history binds,
+                    // or that were dark relative to the change. The GPU decides.
+                    Some(change) if change > 0.0 => {
+                        let m = face.radiance.visible;
+                        let second = face.second_moment.visible;
+                        let w = Vec3::new(0.2126, 0.7152, 0.0722);
+                        let variance = w.dot((second - m * m).max(Vec3::ZERO));
+                        let lit = w.dot(m) >= 0.05 * change;
+                        let predicted = c * variance / (change * change).max(1e-30);
+                        if !lit || predicted < face.samples as f32 {
+                            face.change_prior = change;
+                        }
+                    }
+                    Some(_) => {}
+                    // Unknown flux: the curve cap, passed to the GPU as negative.
+                    None if self.physical_retention > 0.0 && cap != u32::MAX => {
+                        face.change_prior = -(cap as f32);
+                        face.samples = face.samples.min(cap);
+                    }
+                    None => face.samples = face.samples.min(cap),
+                }
             }
         }
     }

@@ -27,6 +27,12 @@ pub struct VoxelGiSettings {
     /// i of n weighs (i/n)^(k-1): early cache values fade as n^-k instead of
     /// n^-1, at a variance cost of k^2/(2k-1). The fixed point is unchanged.
     pub history_recency: f32,
+    /// Measured retention constant c; zero keeps the whole-range distance curve.
+    /// Resident only. Each edit, load or sunlight change predicts a luminance
+    /// change D at nearby faces from its flux; a face whose MSE-optimal history
+    /// c * sigma^2 / D^2 would bind keeps that much, is not used as a cache
+    /// source for one batch, and uses the fresh batch's noise if it was dark.
+    pub measured_retention: f32,
     /// Resident-only, nonrecursive spatial RGB reconstruction.
     /// Zero is the unchanged corner display; one enables uncertainty-weighted
     /// connected-surface filtering. Never changes transport or simulation data.
@@ -75,6 +81,7 @@ impl Default for VoxelGiSettings {
             simulation_sampling_importance: DEFAULT_SIMULATION_SAMPLING_IMPORTANCE,
             history_limit: super::tracer::HISTORY_LIMIT,
             history_recency: 1.0,
+            measured_retention: 0.0,
             spatial_reconstruction: 1.0,
             spatial_evidence_target: 1024,
             spatial_max_donors: 0,
@@ -128,6 +135,13 @@ impl VoxelGiSettings {
             self.history_recency.clamp(1.0, 4.0)
         } else {
             1.0
+        }
+    }
+    pub(super) fn measured_retention(&self) -> f32 {
+        if self.measured_retention.is_finite() {
+            self.measured_retention.clamp(0.0, 64.0)
+        } else {
+            0.0
         }
     }
     pub(super) fn batch_samples(&self) -> u32 {

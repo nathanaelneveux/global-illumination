@@ -202,7 +202,7 @@ impl ResidentAccumulator {
             // Probe-level evidence is consumed atomically by CPU publication.
             // Apply it to resident faces that were not selected too, otherwise
             // their next job would incorrectly resurrect pre-change weight.
-            if cap != u32::MAX && work.physical_retention <= 0.0 {
+            if cap != u32::MAX {
                 for face in 0..6 {
                     if job.trace_mask & (1 << face) == 0
                         && let Some(slot) = self.slots.get(&(job.voxel, face))
@@ -269,7 +269,7 @@ impl ResidentAccumulator {
                 slot.task_epoch = self.task_epoch;
                 slot.task_index = task_index as u32;
                 let retention = if work.physical_retention > 0.0 {
-                    face.change_prior.max(0.0).to_bits()
+                    face.change_prior.to_bits()
                 } else {
                     face.history_cap
                 };

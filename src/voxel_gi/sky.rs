@@ -19,7 +19,7 @@ pub(crate) fn pack(value: Vec3) -> u32 {
     mantissa.x | (mantissa.y << 8) | (mantissa.z << 16) | (exponent << 24)
 }
 
-#[cfg(test)]
+/// Decode a packed corner value (zero and measured-black decode to zero).
 pub(crate) fn unpack(value: u32) -> Vec3 {
     if value >> 24 == 0 {
         return Vec3::ZERO;

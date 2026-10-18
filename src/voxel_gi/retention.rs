@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use bevy::{platform::collections::HashMap, prelude::*};
 
-use super::geometry::{Bounds, GeometryChange};
+use super::geometry::{Bounds, ChangeWeight, GeometryChange};
 use super::tracer::HISTORY_LIMIT;
 
 /// Selected by native-material comparisons, not anchored to a near/far floor.
@@ -82,7 +82,15 @@ enum Summary {
     Floors([u64; 2]),
     /// Pages with no evictions need no band allocation. None has the same
     /// meaning as all-zero revisions, including in immutable worker snapshots.
-    DistanceBands(Option<Box<[[u64; BAND_COUNT]; 2]>>),
+    DistanceBands(Option<Box<Bands>>),
+}
+
+/// Newest revision per distance band and origin, plus the largest flux folded
+/// into it (an upper bound for measured retention; never reset, conservative).
+#[derive(Clone)]
+struct Bands {
+    revisions: [[u64; BAND_COUNT]; 2],
+    flux: [[f32; BAND_COUNT]; 2],
 }
 
 impl Summary {
@@ -97,10 +105,27 @@ impl Summary {
         let distance = event.page_distance_squared;
         let stamp = match self {
             Self::Floors(stamps) => &mut stamps[event.origin as usize],
-            Self::DistanceBands(stamps) => {
+            Self::DistanceBands(bands) => {
                 let band = BAND_STARTS.partition_point(|start| *start <= distance) - 1;
-                let stamps = stamps.get_or_insert_with(|| Box::new([[0; BAND_COUNT]; 2]));
-                &mut stamps[event.origin as usize][band]
+                let bands = bands.get_or_insert_with(|| {
+                    Box::new(Bands {
+                        revisions: [[0; BAND_COUNT]; 2],
+                        flux: [[0.0; BAND_COUNT]; 2],
+                    })
+                });
+                // Loads scale with height above a receiver: fold their maximum.
+                let flux = event
+                    .weights
+                    .iter()
+                    .map(|w| match w.kind {
+                        super::geometry::ChangeKind::Unknown => f32::INFINITY,
+                        super::geometry::ChangeKind::Load { .. } => w.flux * super::world::REGION_EDGE as f32,
+                        _ => w.flux,
+                    })
+                    .fold(0.0, f32::max);
+                let slot = &mut bands.flux[event.origin as usize][band];
+                *slot = slot.max(flux);
+                &mut bands.revisions[event.origin as usize][band]
             }
         };
         *stamp = event.revision;
@@ -120,9 +145,9 @@ impl Summary {
                     }
                 }
             }
-            Self::DistanceBands(Some(stamps)) => {
+            Self::DistanceBands(Some(bands)) => {
                 for i in 0..caps.len() {
-                    if let Some(band) = stamps[i].iter().position(|revision| *revision > since) {
+                    if let Some(band) = bands.revisions[i].iter().position(|revision| *revision > since) {
                         caps[i] = limit(BAND_STARTS[band]);
                     }
                 }
@@ -130,6 +155,30 @@ impl Summary {
             Self::DistanceBands(None) => {}
         }
         caps
+    }
+
+    /// Predicted change from evicted events not yet consumed: each band's
+    /// largest flux at that band's (rounded-down) distance. None for floors.
+    fn change(&self, since: u64) -> Option<f32> {
+        match self {
+            Self::Floors(stamps) => stamps.iter().all(|r| *r <= since).then_some(0.0),
+            Self::DistanceBands(None) => Some(0.0),
+            Self::DistanceBands(Some(bands)) => {
+                let mut total = 0.0f32;
+                for i in 0..2 {
+                    for band in 0..BAND_COUNT {
+                        if bands.revisions[i][band] > since {
+                            let flux = bands.flux[i][band];
+                            if !flux.is_finite() {
+                                return None;
+                            }
+                            total += flux / (std::f32::consts::PI * BAND_STARTS[band].max(1) as f32);
+                        }
+                    }
+                }
+                Some(total)
+            }
+        }
     }
 }
 
@@ -171,6 +220,8 @@ struct Event {
     revision: u64,
     origin: Origin,
     bounds: Arc<Vec<Bounds>>,
+    /// Measured-retention weight per bounds entry (parallel to `bounds`).
+    weights: Arc<Vec<ChangeWeight>>,
     page_distance_squared: i64,
     #[cfg(debug_assertions)]
     audit_sun: Option<Arc<Vec<super::validation::retention_audit::SunEvidence>>>,
@@ -254,9 +305,15 @@ impl SpatialHistory {
                 let evicted = history.events.pop_front().unwrap();
                 history.summary.fold(&evicted);
             }
+            let weights = changes
+                .bounds
+                .iter()
+                .map(|b| change.weights.get(b).copied().unwrap_or(ChangeWeight::UNKNOWN))
+                .collect();
             history.events.push_back(Event {
                 revision: self.revision,
                 origin,
+                weights: Arc::new(weights),
                 bounds: Arc::new(changes.bounds),
                 page_distance_squared: changes.minimum_distance_squared,
                 #[cfg(debug_assertions)]
@@ -338,6 +395,25 @@ impl Snapshot {
         self.page
             .as_ref()
             .is_some_and(|page| page.latest_revision > since)
+    }
+
+    /// Measured retention: predicted luminance change at this receiver from
+    /// every unconsumed event, or None if any has unknown flux (use `limit`).
+    pub fn change(&self, voxel: IVec3, since: u64) -> Option<f32> {
+        let Some(page) = &self.page else {
+            return Some(0.0);
+        };
+        if page.events.back().is_none_or(|event| event.revision <= since) {
+            return Some(0.0);
+        }
+        let mut total = page.summary.change(since)?;
+        for event in page.events.iter().rev().take_while(|e| e.revision > since) {
+            for (bounds, weight) in event.bounds.iter().zip(event.weights.iter()) {
+                let distance = bounds.distance_squared(Bounds::point(voxel));
+                total += weight.change_at(distance, voxel.y)?;
+            }
+        }
+        Some(total)
     }
 
     pub fn limit(&self, voxel: IVec3, since: u64) -> u32 {
@@ -448,6 +524,43 @@ mod tests {
     }
 
     #[test]
+    fn measured_change_follows_flux_height_and_falls_back_when_unknown() {
+        use super::super::geometry::{ChangeKind, ChangeWeight};
+        let weighted = |point: IVec3, weight: ChangeWeight| {
+            let mut change = event(IVec3::ZERO, point);
+            change.weights.insert(Bounds::point(point), weight);
+            change
+        };
+        let mut history = SpatialHistory::new(SummaryMode::DistanceBands);
+        history.record(
+            weighted(IVec3::ZERO, ChangeWeight { kind: ChangeKind::Edit { voxels: 1 }, flux: 10.0 }),
+            Origin::Geometry,
+        );
+        let change = history.snapshot(IVec3::new(10, 0, 0)).change(IVec3::new(10, 0, 0), 0).unwrap();
+        assert!((change - 10.0 / (std::f32::consts::PI * 100.0)).abs() < 1e-6);
+        // A load whose top solid voxel is below the receiver replaces no sky it saw.
+        let mut loads = SpatialHistory::new(SummaryMode::DistanceBands);
+        loads.record(
+            weighted(IVec3::new(0, 5, 0), ChangeWeight { kind: ChangeKind::Load { top: 5 }, flux: 2.0 }),
+            Origin::Geometry,
+        );
+        let above = IVec3::new(4, 12, 0);
+        assert_eq!(loads.snapshot(above).change(above, 0), Some(0.0));
+        let below = IVec3::new(4, 0, 0);
+        let expected = 2.0 * 6.0 / (std::f32::consts::PI * (16 + 25) as f32);
+        assert!((loads.snapshot(below).change(below, 0).unwrap() - expected).abs() < 1e-6);
+        // Unloads predict nothing; unknown flux falls back to the curve.
+        let mut unload = SpatialHistory::new(SummaryMode::DistanceBands);
+        unload.record(weighted(IVec3::ZERO, ChangeWeight { kind: ChangeKind::Unload, flux: 0.0 }), Origin::Geometry);
+        assert_eq!(unload.snapshot(IVec3::ONE).change(IVec3::ONE, 0), Some(0.0));
+        let mut unknown = SpatialHistory::new(SummaryMode::DistanceBands);
+        unknown.record(event(IVec3::ZERO, IVec3::ZERO), Origin::Geometry);
+        assert_eq!(unknown.snapshot(IVec3::ONE).change(IVec3::ONE, 0), None);
+        // Consumed evidence predicts no change.
+        assert_eq!(history.snapshot(IVec3::ONE).change(IVec3::ONE, 1), Some(0.0));
+    }
+
+    #[test]
     fn worker_snapshots_preserve_the_selected_epoch_across_publication_and_retirement() {
         let mut history = SpatialHistory::default();
         history.record(event(IVec3::ZERO, IVec3::new(64, 0, 0)), Origin::Geometry);
@@ -548,6 +661,7 @@ mod tests {
             revision: 1,
             origin: Origin::Geometry,
             bounds: Arc::new(vec![Bounds::point(IVec3::new(128, 0, 0))]),
+weights: Arc::new(Vec::new()),
             page_distance_squared: 97 * 97,
             audit_sun: None,
         };
@@ -555,6 +669,7 @@ mod tests {
             revision: 2,
             origin: Origin::Geometry,
             bounds: Arc::new(vec![Bounds::point(IVec3::new(200, 0, 0))]),
+weights: Arc::new(Vec::new()),
             page_distance_squared: 169 * 169,
             audit_sun: None,
         };
@@ -670,6 +785,7 @@ mod tests {
             revision: 1,
             origin: Origin::Geometry,
             bounds: Arc::new(Vec::new()),
+weights: Arc::new(Vec::new()),
             page_distance_squared: 0,
             audit_sun: None,
         };

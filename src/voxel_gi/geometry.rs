@@ -14,12 +14,66 @@ pub(super) const NEAR_HISTORY: u32 = 16;
 const FAR_HISTORY: u32 = 256;
 pub(super) const UNTRACKED_HISTORY: u32 = 64;
 
+/// What a change can do to existing receivers' light, for measured retention.
+/// `flux` is a luminance flux bound in normalized transport units: a receiver
+/// at distance d sees a change of at most flux / (pi d^2). Unknown falls back
+/// to the distance curve.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum ChangeKind {
+    Unknown,
+    /// Voxel content changed. The scene worker adds emission; publication adds
+    /// the light falling on the edited surfaces, from the field.
+    Edit { voxels: u32 },
+    /// A region loaded. Only terrain above a receiver can replace sky it saw
+    /// (rays into unloaded space are excluded, not black), so the flux is per
+    /// unit of height above the receiver, up to the region's top solid voxel.
+    Load { top: i32 },
+    /// A region unloaded: its samples now become unknown, not contradicted.
+    Unload,
+    /// Shared-corner sunlight changed by this luminance flux.
+    Light,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct ChangeWeight {
+    pub kind: ChangeKind,
+    pub flux: f32,
+}
+
+impl ChangeWeight {
+    pub const UNKNOWN: Self = Self {
+        kind: ChangeKind::Unknown,
+        flux: 0.0,
+    };
+
+    /// Predicted luminance change at a receiver, or None to fall back.
+    pub fn change_at(self, distance_squared: i64, receiver_y: i32) -> Option<f32> {
+        let area = match self.kind {
+            ChangeKind::Unknown => return None,
+            ChangeKind::Unload => return Some(0.0),
+            ChangeKind::Load { top } => (top + 1 - receiver_y).clamp(0, REGION_EDGE as i32) as f32,
+            ChangeKind::Edit { .. } | ChangeKind::Light => 1.0,
+        };
+        Some(self.flux * area / (std::f32::consts::PI * (distance_squared.max(1) as f32)))
+    }
+}
+
 /// One worker-side comparison supplies scene publication and spatial history
 /// retention. A voxel's optical identity is scene data, regardless of whether
 /// that material reflects, emits, or occludes energy.
 pub(super) struct SceneChanges {
     pub changed: bool,
     pub transport: Option<GeometryChange>,
+}
+
+fn emission_luminance(materials: Option<&super::world::VoxelMaterialTransportTable>, material: u16) -> f32 {
+    if material == AIR {
+        return 0.0;
+    }
+    materials.map_or(0.0, |table| {
+        let e = table.get(material as u8).emission.visible;
+        0.2126 * e.x + 0.7152 * e.y + 0.0722 * e.z
+    })
 }
 
 impl SceneChanges {
@@ -29,6 +83,17 @@ impl SceneChanges {
     }
 
     pub fn with_radius(previous: &TransportScene, next: &TransportScene, radius: i32) -> Self {
+        Self::with_materials(previous, next, radius, None)
+    }
+
+    /// As `with_radius`, also weighting each change for measured retention:
+    /// emission deltas need the material table.
+    pub fn with_materials(
+        previous: &TransportScene,
+        next: &TransportScene,
+        radius: i32,
+        materials: Option<&super::world::VoxelMaterialTransportTable>,
+    ) -> Self {
         let changed = next.changed_regions(previous);
         if changed.is_empty() {
             return Self {
@@ -49,6 +114,7 @@ impl SceneChanges {
             transport: None,
         };
         let mut bounds = Vec::new();
+        let mut weights = HashMap::new();
         for coordinate in &changed {
             let before = previous.regions.get(coordinate);
             let after = next.regions.get(coordinate);
@@ -62,12 +128,20 @@ impl SceneChanges {
                 min: IVec3::MAX,
                 max: IVec3::MIN,
             };
+            let mut changed_voxels = 0u32;
+            let mut emission_flux = 0.0f32;
             let mut record = |a: u16, b: u16, extent: Bounds| {
                 if a == b {
                     return;
                 }
                 tight.min = tight.min.min(extent.min);
                 tight.max = tight.max.max(extent.max);
+                let volume = (extent.max - extent.min + IVec3::ONE).element_product().max(1) as u32;
+                changed_voxels = changed_voxels.saturating_add(volume);
+                // Six faces bound the emitting area a voxel can expose.
+                emission_flux += (emission_luminance(materials, a) - emission_luminance(materials, b)).abs()
+                    * 6.0
+                    * volume as f32;
             };
             let uniform_before = before.map_or(Some(AIR), |r| r.uniform_material());
             let uniform_after = after.map_or(Some(AIR), |r| r.uniform_material());
@@ -95,17 +169,44 @@ impl SceneChanges {
                 || after.is_some_and(|r| r.any_solid)
                 || (coordinate.cmpge(occupied_min).all() && coordinate.cmple(occupied_max).all());
             if transport && (residency || tight.min.cmple(tight.max).all()) {
-                bounds.push(if residency { entire } else { tight });
+                let change = if residency { entire } else { tight };
+                let kind = if before.is_none() {
+                    // Top solid voxel of the loaded region (air-only loads
+                    // outside occupied bounds were filtered above).
+                    let top = after.map_or(i32::MIN, |region| {
+                        (0..REGION_EDGE)
+                            .rev()
+                            .find(|&y| {
+                                (0..REGION_EDGE).any(|z| {
+                                    (0..REGION_EDGE)
+                                        .any(|x| region.material(UVec3::new(x, y, z)) != AIR)
+                                })
+                            })
+                            .map_or(i32::MIN, |y| origin.y + y as i32)
+                    });
+                    ChangeKind::Load { top }
+                } else if after.is_none() {
+                    ChangeKind::Unload
+                } else {
+                    ChangeKind::Edit {
+                        voxels: changed_voxels,
+                    }
+                };
+                let flux = if matches!(kind, ChangeKind::Edit { .. }) { emission_flux } else { 0.0 };
+                weights.insert(change, ChangeWeight { kind, flux });
+                bounds.push(change);
             }
         }
         if !bounds.is_empty() {
-            result.transport = Some(GeometryChange::from_bounds(previous, &bounds, radius));
+            let mut change = GeometryChange::from_bounds(previous, &bounds, radius);
+            change.weights = weights;
+            result.transport = Some(change);
         }
         result
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Bounds {
     pub min: IVec3,
     pub max: IVec3,
@@ -166,6 +267,9 @@ pub(super) struct GeometryChange {
     /// Existing receiver pages only. New receivers have no history to retain.
     /// Each bin contains just changes within the configured influence radius.
     pub nearby: HashMap<IVec3, PageChanges>,
+    /// Measured-retention weight of each change bounds. Missing entries are
+    /// unknown and fall back to the distance curve.
+    pub weights: HashMap<Bounds, ChangeWeight>,
     /// Optional raw sunlight evidence for diagnostics; never selects a cap.
     #[cfg(debug_assertions)]
     pub audit_sun: Option<Arc<Vec<super::validation::retention_audit::SunEvidence>>>,

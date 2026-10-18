@@ -27,9 +27,14 @@ fn prepare(@builtin(global_invocation_id) id: vec3<u32>) {
     // accumulate applies it once the fresh batch's noise is known. Until then
     // a changed face must not serve other faces' paths its stale cached light:
     // the high count bit makes this batch's rays continue explicitly instead.
-    if bitcast<f32>(settings.display.w) <= 0.0 {
+    // Cap-only records (unselected faces, input.w = MAX) always carry a cap.
+    // A negative value is a fallback cap for a change of unknown flux.
+    let measured_input = bitcast<f32>(input.z);
+    if bitcast<f32>(settings.display.w) <= 0.0 || input.w == 0xffffffffu {
         state[base + 1u].y = min(state[base + 1u].y, input.z);
-    } else if bitcast<f32>(input.z) > 0.0 {
+    } else if measured_input < 0.0 {
+        state[base + 1u].y = min(state[base + 1u].y, u32(-measured_input));
+    } else if measured_input > 0.0 {
         state[base + 1u].y |= 0x80000000u;
     }
     if input.w != 0xffffffffu {
