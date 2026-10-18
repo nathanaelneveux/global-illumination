@@ -295,12 +295,7 @@ fn run_study(cases: Vec<Case>, output: &str) {
                             let var: f64 = (0..3).map(|i| w[i] * f64::from((second[i] - m[i] * m[i]).max(0.0))).sum();
                             let lit = luminance(face.radiance) >= 0.05 * change;
                             let predicted = f64::from(c) * var / (change * change).max(1e-30);
-                            let gate = !lit || predicted < 16.0 || std::env::var("RETENTION_GATE_ALL").is_ok();
-                            face.change_prior = if !lit || predicted < f64::from(face.samples) {
-                                crate::voxel_gi::work::with_gate(change as f32, gate)
-                            } else {
-                                0.0
-                            };
+                            face.change_prior = if !lit || predicted < f64::from(face.samples) { change as f32 } else { 0.0 };
                             u32::MAX
                         }
                         Arm::PhysicalSigned(c) => {

@@ -34,8 +34,7 @@ fn prepare(@builtin(global_invocation_id) id: vec3<u32>) {
         state[base + 1u].y = min(state[base + 1u].y, input.z);
     } else if measured_input < 0.0 {
         state[base + 1u].y = min(state[base + 1u].y, u32(-measured_input));
-    } else if measured_input > 0.0 && (input.z & 1u) != 0u {
-        // The low bit marks a face predicted to keep under one batch of history.
+    } else if measured_input > 0.0 {
         state[base + 1u].y |= 0x80000000u;
     }
     if input.w != 0xffffffffu {
