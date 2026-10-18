@@ -102,6 +102,10 @@ enum Arm {
     /// Predict the new state's per-sample noise from the face's own relative
     /// noise times its predicted new mean max(M + signed D, 0).
     PhysicalSigned(f64),
+    /// Production path: the CPU supplies D, and the accumulate pass applies
+    /// H = c * sigma^2 / D^2 with retained variance, or the merged batch's
+    /// variance for faces that were dark relative to D.
+    Measured(f32),
 }
 
 impl Arm {
@@ -113,6 +117,7 @@ impl Arm {
             Arm::Physical(c) => format!("phys{c}"),
             Arm::PhysicalFloor(c, k) => format!("phys{c}+{k}"),
             Arm::PhysicalSigned(c) => format!("signed{c}"),
+            Arm::Measured(c) => format!("measured{c}"),
         }
     }
 }
@@ -226,6 +231,7 @@ fn run_study(cases: Vec<Case>, output: &str) {
     assert_ne!(explicit, super::SHADER, "cache termination marker");
     let arms: Vec<Arm> = match std::env::var("RETENTION_STUDY_ARMS").as_deref() {
         Ok("physical") => vec![Arm::Physical(0.25), Arm::Physical(1.0), Arm::Physical(4.0), Arm::Physical(16.0)],
+        Ok("measured") => vec![Arm::Measured(0.25), Arm::Measured(1.0), Arm::Measured(4.0), Arm::Measured(16.0)],
         Ok("signed") => vec![Arm::PhysicalSigned(0.25), Arm::PhysicalSigned(1.0), Arm::PhysicalSigned(4.0), Arm::PhysicalSigned(16.0)],
         Ok("floor") => vec![Arm::PhysicalFloor(1.0, 4.0), Arm::PhysicalFloor(1.0, 16.0), Arm::PhysicalFloor(1.0, 64.0),
             Arm::PhysicalFloor(4.0, 4.0), Arm::PhysicalFloor(4.0, 16.0), Arm::PhysicalFloor(4.0, 64.0)],
@@ -277,6 +283,21 @@ fn run_study(cases: Vec<Case>, output: &str) {
                 };
                 for (face, &d) in work.faces.iter_mut().zip(&distances) {
                     face.history_cap = match arm {
+                        Arm::Measured(c) => {
+                            // Flag only faces whose predicted history would bind:
+                            // H = c sigma^2 / D^2 below their current samples. Dark
+                            // faces (no retained noise) always qualify. Far, small
+                            // changes predict huge H and cost nothing.
+                            let change = case.flux / (std::f64::consts::PI * f64::from(d.max(1.0)).powi(2));
+                            let m = channels(face.radiance);
+                            let second = channels(face.second_moment);
+                            let w = [0.2126, 0.7152, 0.0722];
+                            let var: f64 = (0..3).map(|i| w[i] * f64::from((second[i] - m[i] * m[i]).max(0.0))).sum();
+                            let lit = luminance(face.radiance) >= 0.05 * change;
+                            let predicted = f64::from(c) * var / (change * change).max(1e-30);
+                            face.change_prior = if !lit || predicted < f64::from(face.samples) { change as f32 } else { 0.0 };
+                            u32::MAX
+                        }
                         Arm::PhysicalSigned(c) => {
                             let m = channels(face.radiance);
                             let second = channels(face.second_moment);
@@ -306,6 +327,9 @@ fn run_study(cases: Vec<Case>, output: &str) {
                         }
                     };
                 }
+                if let Arm::Measured(c) = arm {
+                    work.physical_retention = c;
+                }
                 let mut errors = Vec::new();
                 let mut completed = 0;
                 for checkpoint in CHECKPOINTS {
@@ -313,6 +337,7 @@ fn run_study(cases: Vec<Case>, output: &str) {
                         trace(&mut gpu, &case, &case.after, &after_emitters, &mut work);
                         for face in &mut work.faces {
                             face.history_cap = u32::MAX;
+                            face.change_prior = 0.0;
                         }
                         completed += 1;
                     }

@@ -92,7 +92,8 @@ fn cached_energy(voxel: vec3<i32>, face: u32) -> CachedEnergy {
         if all(bitcast<vec3<i32>>(entry.xyz) == voxel) && (entry.w >> 29u) == face {
             let base = (entry.w & 0x1fffffffu) * 9u;
             let words = cache_state[base + 1u];
-            if words.y < CACHE_MIN_SAMPLES { return cached; }
+            // The high bit marks a face changed by an edit in this batch.
+            if words.y < CACHE_MIN_SAMPLES || (words.y & 0x80000000u) != 0u { return cached; }
             cached.found = true;
             cached.value = bitcast<vec4<f32>>(cache_state[base]);
             cached.radiation = bitcast<f32>(words.x);

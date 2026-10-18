@@ -23,7 +23,15 @@ fn prepare(@builtin(global_invocation_id) id: vec3<u32>) {
             state[base + word] = seeds[input.y * 9u + word];
         }
     }
-    state[base + 1u].y = min(state[base + 1u].y, input.z);
+    // Physical retention passes a predicted change here instead of a cap;
+    // accumulate applies it once the fresh batch's noise is known. Until then
+    // a changed face must not serve other faces' paths its stale cached light:
+    // the high count bit makes this batch's rays continue explicitly instead.
+    if bitcast<f32>(settings.display.w) <= 0.0 {
+        state[base + 1u].y = min(state[base + 1u].y, input.z);
+    } else if bitcast<f32>(input.z) > 0.0 {
+        state[base + 1u].y |= 0x80000000u;
+    }
     if input.w != 0xffffffffu {
         tasks[input.w * 2u + 1u].x = state[base + 1u].z;
         // Continue from what the renderer would show now, including an
@@ -50,7 +58,26 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
     // Samples that reached unloaded space carry no information and were not
     // averaged; only the known count advances history.
     let fresh_count = u32(bitcast<f32>(output[result + 1u].y));
-    let count = min(state[base + 1u].y + fresh_count, control.w);
+    // Physical retention: keep H = c * sigma^2 / D^2 samples, the MSE optimum
+    // for a change of size D (predicted by the CPU from the edit). sigma^2 is
+    // the retained per-sample variance. A face that was dark relative to the
+    // change has no retained noise to go on, so it uses the fresh batch's.
+    // Lit faces never trust the fresh batch: right after an edit it still reads
+    // neighbours' stale cached light. Measuring costs no extra rays.
+    var previous_count = state[base + 1u].y & 0x7fffffffu;
+    let physical = bitcast<f32>(settings.display.w);
+    let change = bitcast<f32>(inputs[i].z);
+    if physical > 0.0 && fresh_count > 0u && change > 0.0 {
+        let w = vec3(0.2126, 0.7152, 0.0722);
+        let old_mean = bitcast<vec4<f32>>(state[base]).rgb;
+        let old_variance = max(bitcast<vec4<f32>>(state[base + 2u]).rgb - old_mean * old_mean, vec3(0.0));
+        let fresh_mean = bitcast<vec4<f32>>(output[result]).rgb;
+        let fresh_variance = max(bitcast<vec4<f32>>(output[result + 2u]).rgb - fresh_mean * fresh_mean, vec3(0.0));
+        let variance = select(dot(w, old_variance), dot(w, fresh_variance), dot(w, old_mean) < 0.05 * change);
+        let keep = physical * variance / (change * change);
+        previous_count = min(previous_count, u32(min(keep, 65536.0)));
+    }
+    let count = min(previous_count + fresh_count, control.w);
     // Recency k >= 1 weights sample i of n by (i/n)^(k-1); k = 1 is the mean.
     let recency = bitcast<f32>(settings.display.z);
     let alpha = select(0.0, min(recency * f32(fresh_count) / f32(max(count, 1u)), 1.0), fresh_count > 0u);

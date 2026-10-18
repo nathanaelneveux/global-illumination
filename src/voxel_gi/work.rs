@@ -16,6 +16,8 @@ pub(crate) struct TraceWork {
     /// Resident history ceiling and recency weighting; zero selects defaults.
     pub history_limit: u32,
     pub history_recency: f32,
+    /// Physical retention constant c (zero = distance-curve caps).
+    pub physical_retention: f32,
     /// Same wrapping frame counter as Bevy's render Globals uniform.
     pub display_frame: u32,
     pub display_transition_frames: u32,
@@ -144,6 +146,9 @@ pub(crate) struct FaceWork {
     /// A change constraint, not a copy of the CPU snapshot's possibly old count.
     /// Resident accumulation applies this to its own latest statistical weight.
     pub history_cap: u32,
+    /// Physical retention only: predicted luminance change at this face from
+    /// recent edits (zero = none). Replaces `history_cap` when enabled.
+    pub change_prior: f32,
     pub sequence: u32,
     pub updated_at: Option<Instant>,
     pub presentation: Vec4,
@@ -241,6 +246,7 @@ impl TraceWork {
                 } else {
                     (if stale { stale_history_limit } else { u32::MAX }).min(source_history_limit)
                 },
+                change_prior: 0.0,
                 updated_at: if restart {
                     None
                 } else {

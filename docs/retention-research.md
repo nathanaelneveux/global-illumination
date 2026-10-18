@@ -141,14 +141,46 @@ paths), and nothing measured before the edit predicts it. Flat history floors
 and a dark-noise fallback were tested and do not fix it; they only trade cases.
 The distance curve encodes "far is noisier" for this case by accident.
 
+## Measured noise with cache read-gating
+
+Implemented in the resident passes, off by default (`TraceWork.physical_retention`
+= c; per-face `change_prior` = predicted D):
+
+1. **CPU.** For each face near an edit, predict `D = flux / (pi d^2)`. Flag the
+   face only if its predicted history `c * sigma^2 / D^2` is below its current
+   sample count, or if it was dark relative to D. Distant or small changes
+   predict huge H, so they cost nothing and change nothing.
+2. **Prepare pass.** A flagged face sets the high bit of its sample count. For
+   that batch the trace treats it as uncached, so rays that hit it continue
+   explicitly through the *new* scene instead of reading its stale cached light.
+3. **Accumulate pass.** Keep `H = c * sigma^2 / D^2` samples. sigma^2 is the
+   retained variance, or the merged batch's own variance if the face was dark
+   relative to D (no retained noise to go on). Then clear the flag.
+
+No extra rays or passes. Gating reads turned out to be essential with a cache.
+Without it, the first batch after an edit reads neighbours' stale light and
+keeps it: hallway lamp-off scored .30 instead of .013. Bounding by the
+predicted D is what the global change detector lacked. Far, small changes can
+never trigger a reset, which removes the false alarms on rare bright paths.
+
+| Case (cache) | (d/12)^4 now | Best distance | Physical (sigma before) | **Measured + gating, c = 1** |
+| --- | ---: | ---: | ---: | ---: |
+| Hallway lamp off | .209 | .036 | .016 | **.013** |
+| Hallway lamp on (into dark) | .270 | .254 | .339 | **.198** |
+| Cave torch off | .025 | .013 | .009 | .010 |
+| Cave torch on | .026 | .016 | .012 | .013 |
+| Mean of four | .133 | .107 | .094 | **.059** |
+
+c = 4 gives .065 (better cave, worse lamp-off). It is the first rule here
+that beats every distance curve on the dark-room case as well.
+
 ## Recommendation
 
 - Do **not** just retune `s`. The data reject a single scale.
-- Next experiment: physical retention with one post-edit measurement. Apply the
-  physical cap at edit time. After the first fresh batch near the edit, set
-  `H = sigma_new^2 / D^2` from that batch's measured moments. This targets the
-  dark-room case only, within the edit's predicted influence region, which
-  avoids the false alarms that sank the global change detector.
+- Measured noise with cache read-gating (above) is the candidate rule. Before
+  promoting it, give ordinary block edits and terrain loads a flux bound. For
+  loads, only terrain rising above a receiver can replace sky it used to see.
+  Then qualify it in gameplay against the current curve, with streaming.
 - For gameplay integration, journal events need a flux bound for ordinary
   blocks too. The cache already holds the outgoing light of the edited voxel's
   surfaces and their neighbours, and changed-sunlight origins already exist.
