@@ -38,11 +38,13 @@ The [whole-range integration](history/whole-range-history.md#runtime-integration
 the current policy. The [earlier runtime qualification](history/runtime-retention.md)
 records the preceding calibration, independent references and windowed controls.
 The legacy 16/256 control, the floor summary and the retention audit were
-removed on the surface-cache branch (last present at `8cab848`). Check
+removed on the surface-cache branch (last present at `8cab848`), as were the
+study harnesses the [historical records](history/README.md) use: near-history
+calibration, model comparison, footprint replay, the retain-all ablation and
+their Python analyses. Check out that commit to reproduce them. Check
 `spatial_retention` and `measured_retention` in the report;
 `config/gi-retention-curve.json` selects the whole-range curve without measured
-flux. The separate `history_experiment` field describes the older retain-all
-ablation. Coverage and retained weight are still not convergence.
+flux. Coverage and retained weight are still not convergence.
 The blocked windowed capture is not a frame-pacing qualification.
 
 For adaptive-history research, the [DDGI/A-SVGF qualification study](history/adaptive-history-qualification.md)
@@ -133,16 +135,14 @@ localized regression. The provisional smooth-wall noise envelope complements,
 not replaces, the existing user-calibrated FLIP guard. Change a quality threshold
 only with new matched evidence and visual agreement, not to pass a candidate.
 
-For a matched 1536/2048 display-target study, add
-`VOXEL_GI_VALIDATE_EVIDENCE_TARGETS=1536,2048` to the headless reference command in
+For a display-target study on the surface cache, add
+`VOXEL_GI_VALIDATE_CACHE_SWEEP=1` and `VOXEL_GI_VALIDATE_EVIDENCE_TARGETS=256,512,1024`
+(any distinct targets) to the headless reference command in
 [the cave protocol](cave-reference.md), with `VOXEL_GI_REFERENCE_PATHS=131072`.
-`EVIDENCE_TARGETS=1` retains the historical 512/1024/2048/4096 sweep. The raw
-`samples-*` controls are always captured alongside presentation variants.
-Analyze a fresh qualified sweep with `tools/spatial_replay_quality.py RUN RUN
---fresh-reference --labels samples evidence1536 evidence2048 --counts 4 16 64
-128 256 512 1024 1280 1536 2048`. Fresh-reference mode does not assert equality
-to a deleted historical image: it records the new reference hash, and only
-normalizes against the old noise envelope if that hash matches exactly.
+The raw `samples-*` controls are always captured alongside presentation
+variants. `tools/cache_flip_gate.py RUN` applies the user-calibrated FLIP gate
+and `tools/cache_wall_noise.py RUN` the smooth-wall noise envelope, both against
+the run's own frozen reference ([surface cache](surface-cache.md)).
 
 | Change | First useful check |
 | --- | --- |

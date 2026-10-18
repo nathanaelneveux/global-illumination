@@ -505,8 +505,6 @@ pub(super) fn select_transport(
                 runtime.source_revision,
             );
         }
-        #[cfg(debug_assertions)]
-        let history_limit = super::validation::retained_history_limit(history_limit);
         selected.push(
             probe,
             mask,

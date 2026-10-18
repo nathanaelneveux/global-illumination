@@ -22,27 +22,6 @@ const BLOCK_PATHS: u32 = 32_768;
 const DISPATCH_PATHS: u32 = 1024;
 const CHUNK_FACES: usize = 512;
 
-#[path = "model_comparison.rs"]
-mod model_comparison;
-#[path = "near_fixture.rs"]
-mod near_fixture;
-#[path = "near_history.rs"]
-mod near_history;
-
-pub(super) fn calibration_house_view() -> Option<(Vec3, Vec3, f32)> {
-    let fixture = near_fixture::Fixture::selected().ok()?;
-    (near_history::requested() && fixture.is_house()).then(|| fixture.view())
-}
-
-pub(super) fn hallway_view() -> (Vec3, Vec3, f32) {
-    if near_history::requested() {
-        near_fixture::Fixture::selected()
-            .expect("valid hallway fixture")
-            .view()
-    } else {
-        crate::structures::hallway::overview()
-    }
-}
 
 type ProbeMap = HashMap<IVec3, SurfaceProbe>;
 type Means = Vec<[f64; 5]>;
@@ -94,8 +73,6 @@ struct Bake {
 
 pub(super) fn requested() -> bool {
     std::env::var("VOXEL_GI_VALIDATE_REFERENCE_IMAGE").is_ok_and(|v| v == "1")
-        || model_comparison::requested()
-        || near_history::requested()
 }
 
 pub(super) fn install(app: &mut App) {
@@ -118,21 +95,6 @@ pub(super) fn install(app: &mut App) {
 /// workload, placed near the floor; the geometry audit still verifies every
 /// chamber voxel. This changes only the opt-in offline fixture's residency.
 fn setup_residency(mut commands: Commands, evidence: Res<CaptureEvidence>) {
-    if calibration_house_view().is_some() {
-        return;
-    }
-    if near_fixture::Fixture::selected().is_ok_and(|f| f.is_hallway()) {
-        for offset in [16, 64, 88] {
-            let eye = crate::structures::hallway::floor_receiver(offset).as_vec3() + Vec3::Y * 4.;
-            super::background::spawn_loader(
-                &mut commands,
-                &evidence,
-                "Offline hallway residency (not rendered)",
-                Transform::from_translation(eye).looking_at(eye + Vec3::X, Vec3::Y),
-            );
-        }
-        return;
-    }
     let origin = if crate::cave_scene::enabled() {
         Vec3::ZERO
     } else {
@@ -224,20 +186,7 @@ impl ReferenceImage {
         profile: Profile,
         output: PathBuf,
     ) -> Result<Self, String> {
-        let fixture = if near_history::requested() {
-            near_fixture::Fixture::selected()?
-        } else {
-            near_fixture::Fixture::CaveTorch
-        };
-        let house = near_history::requested() && fixture.is_house();
-        let expected_profile = if house {
-            Profile::House
-        } else if fixture.is_hallway() {
-            Profile::Hallway
-        } else {
-            Profile::Cave
-        };
-        if profile != expected_profile
+        if profile != Profile::Cave
             || !crate::headless_validation()
             || std::env::var_os("VOXEL_GI_VALIDATE_EXIT").is_none()
         {
@@ -267,7 +216,7 @@ impl ReferenceImage {
         let mut mismatched = 0;
         let mut samples = Vec::new();
         let mut pages: HashMap<IVec3, (usize, usize)> = default();
-        let (min, max) = fixture.bounds(origin);
+        let (min, max) = (origin + IVec3::splat(4), origin + IVec3::new(59, 43, 59));
         for z in min.z..=max.z {
             for y in min.y..=max.y {
                 for x in min.x..=max.x {
@@ -301,7 +250,7 @@ impl ReferenceImage {
             json!({"page":page.to_array(),"unknown":unknown,"mismatched":mismatched,
                 "bvw_chunk_present":chunk.is_some(),"bvw_chunk_empty":chunk.as_ref().map(|c| c.is_empty())})
         }).collect();
-        let audit = json!({"fixture":fixture.name(),"unknown_voxels":unknown,"mismatched_voxels":mismatched,
+        let audit = json!({"fixture":"cave-torch","unknown_voxels":unknown,"mismatched_voxels":mismatched,
             "pages":pages,"samples":samples,"note":"Unedited fixture: compare every bounded voxel against the host generator and sample BVW values at mismatches. Unknown and wrong-material cells invalidate the reference."});
         std::fs::write(
             output.join("cave-geometry-audit.json"),
@@ -313,29 +262,7 @@ impl ReferenceImage {
                 "Cave GI snapshot differs from generated geometry: {unknown} unknown and {mismatched} wrong-material voxels; see cave-geometry-audit.json"
             ));
         }
-        let sites = if fixture.is_hallway() {
-            // Only measured floor patches and their coplanar corner donors.
-            // The native paths still traverse the entire audited world.
-            let mut sites = HashSet::new();
-            for offset in fixture.hallway_offsets() {
-                let receiver = crate::structures::hallway::floor_receiver(offset);
-                for x in -1..=1 {
-                    for z in -1..=1 {
-                        let p = receiver + IVec3::new(x, 0, z);
-                        if exposed(&runtime.scene, p, 2) {
-                            sites.insert((p, 2));
-                        }
-                    }
-                }
-            }
-            let mut sites: Vec<_> = sites.into_iter().collect();
-            sites.sort_unstable_by_key(|(p, f)| (p.x, p.y, p.z, *f));
-            sites
-        } else if house {
-            interior_sites(&runtime.scene, min, max)
-        } else {
-            chamber_sites(&runtime.scene, origin)
-        };
+        let sites = chamber_sites(&runtime.scene, origin);
         if sites.is_empty() || !cache.ready {
             return Err("Reference image has no chamber receivers or live display cache".into());
         }
@@ -350,17 +277,6 @@ impl ReferenceImage {
                     format!("Reference face missing from field/display: {voxel:?}/{face}")
                 })?;
             base.entry(voxel).or_insert_with(|| probe.clone());
-        }
-        if model_comparison::requested() {
-            return model_comparison::start(runtime, device, output, origin, sites, base);
-        }
-        if near_history::requested() {
-            if settings.transport != super::super::TransportSettings::default() {
-                return Err(
-                    "Near-history calibration requires the baseline transport model".into(),
-                );
-            }
-            return near_history::start(runtime, device, output, origin, sites, base);
         }
         let progress = Arc::new(AtomicU64::new(0));
         let sweep_requested = super::sample_sweep::requested();

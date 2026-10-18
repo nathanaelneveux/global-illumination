@@ -14,21 +14,6 @@ mod sample_sweep;
 mod structures;
 pub(super) mod temporal;
 
-/// Debug-only ablation of statistical history truncation. Revision checks,
-/// geometry identity, genuinely new faces and explicit model replacement keep
-/// their production semantics. Combine with VOXEL_GI_CONTINUOUS=1 to measure
-/// sampling continuously instead of the normal adaptive wake/audit policy.
-pub(super) fn retained_history_limit(normal: u32) -> u32 {
-    static RETAIN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *RETAIN
-        .get_or_init(|| std::env::var("VOXEL_GI_EXPERIMENT_RETAIN_HISTORY").is_ok_and(|v| v == "1"))
-    {
-        u32::MAX
-    } else {
-        normal
-    }
-}
-
 use super::render::VoxelTransportMaterial;
 use super::world::FACE_OFFSETS;
 use super::{
@@ -307,7 +292,7 @@ pub(super) fn run_validation(
         } else if profile == Profile::LiveCave {
             (Vec3::new(47., -11.4, -18.), Vec3::new(76., -17., -34.), 65.)
         } else if profile == Profile::Hallway {
-            reference_image::hallway_view()
+            crate::structures::hallway::overview()
         } else if profile == Profile::Canyon {
             (crate::canyon_scene::EYE, crate::canyon_scene::TARGET, 65.)
         } else {
@@ -638,7 +623,6 @@ pub(super) fn run_validation(
             "moves": run.background.moves, "speed_voxels_per_second": 4.32,
             "note": "Inactive BVW loader walks from (-96,40,0) toward -Z. Does not render or alter GI view priority. Loaded terrain participates in transport."},
         "presentation": "shared-corner sun + corner-reconstructed indirect; preferred modes except compare/stress",
-        "history_experiment": if retained_history_limit(0) == u32::MAX { "retain-compatible-history" } else { "production" },
         "spatial_retention": super::retention::POLICY_NAME,
         "settings": {"transport": settings.transport, "samples_per_dispatch": settings.batch_samples(),
             "simulation_sampling_importance": settings.sampling_importance().infrared,

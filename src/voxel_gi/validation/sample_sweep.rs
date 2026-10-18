@@ -279,9 +279,6 @@ pub(super) fn evidence_values(
 }
 
 #[cfg(test)]
-mod footprint_replay;
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
