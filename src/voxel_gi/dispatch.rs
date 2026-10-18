@@ -114,11 +114,9 @@ pub(super) fn start_trace_task(
     };
     selected.transport = runtime.transport;
     selected.response_seconds = settings.display_response_seconds();
-    selected.history_limit = settings.history_limit();
-    selected.history_recency = settings.history_recency();
     // Measured retention needs resident accumulation (the GPU decides history
     // with the fresh batch); other backends keep the distance curve.
-    selected.physical_retention = if resident {
+    selected.measured_retention = if resident {
         settings.measured_retention()
     } else {
         0.0

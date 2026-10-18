@@ -142,8 +142,9 @@ A cap only matters once faces reach it. At 2,048 it binds within a few minutes
 and roughly doubles flicker. At 8,192 it rarely binds in a session, so it matches
 the control and changes nothing. Recency removes the furnace lag, but in gameplay
 retention caps keep counts low, and there k=2 discards most of a face's history.
-Flicker doubles. **Decision: keep 65,536 and recency 1.** The knobs stay for
-scene-specific tuning; the validation report now records them.
+Flicker doubles. **Decision: keep 65,536 and recency 1.** The settings were
+later removed; `TraceWork.history_limit`/`history_recency` remain for the native
+furnace tests.
 
 ## Edit response and the rejected change detector
 

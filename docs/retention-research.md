@@ -143,8 +143,8 @@ The distance curve encodes "far is noisier" for this case by accident.
 
 ## Measured noise with cache read-gating
 
-Implemented in the resident passes, off by default (`TraceWork.physical_retention`
-= c; per-face `change_prior` = predicted D):
+Implemented in the resident passes and now the default (`measured_retention` =
+c = 1; per-face `change_prior` = predicted D):
 
 1. **CPU.** For each face near an edit, predict `D = flux / (pi d^2)`. Flag the
    face only if its predicted history `c * sigma^2 / D^2` is below its current

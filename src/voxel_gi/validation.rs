@@ -650,7 +650,6 @@ pub(super) fn run_validation(
             "scene_publish_budget_ms": settings.scene_publish_budget.as_secs_f32() * 1000.0,
             "adaptive_updates": settings.adaptive_updates, "display_response_ms": settings.display_response.as_secs_f32() * 1000.0,
             "display_transition_frames": settings.display_transition_frames,
-            "history_limit": settings.history_limit, "history_recency": settings.history_recency,
             "measured_retention": settings.measured_retention,
             "spatial_evidence_target": settings.spatial_evidence_target,
             "display_upload_interval_ms": settings.display_upload_interval.as_secs_f32() * 1000.0,

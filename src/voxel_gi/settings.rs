@@ -19,14 +19,6 @@ pub struct VoxelGiSettings {
     /// Defaults to 0.125 on every backend, independently of path reuse; use one
     /// for equal-band sampling. This is not a fixed ratio of sample counts.
     pub simulation_sampling_importance: f32,
-    /// Resident cache history ceiling in samples. Long histories keep dark,
-    /// heavy-tailed faces quiet; shorter ones forget under-converged cache
-    /// inputs sooner. Edits and source changes still cap history separately.
-    pub history_limit: u32,
-    /// Recent-sample weighting. One is a plain running mean. With k > 1, sample
-    /// i of n weighs (i/n)^(k-1): early cache values fade as n^-k instead of
-    /// n^-1, at a variance cost of k^2/(2k-1). The fixed point is unchanged.
-    pub history_recency: f32,
     /// Measured retention constant c (default 1); zero restores the whole-range
     /// distance curve.
     /// Resident only. Each edit, load or sunlight change predicts a luminance
@@ -77,8 +69,6 @@ impl Default for VoxelGiSettings {
             transport: TransportSettings::default(),
             samples_per_dispatch: 16,
             simulation_sampling_importance: DEFAULT_SIMULATION_SAMPLING_IMPORTANCE,
-            history_limit: super::tracer::HISTORY_LIMIT,
-            history_recency: 1.0,
             measured_retention: 1.0,
             spatial_reconstruction: 1.0,
             spatial_evidence_target: 1024,
@@ -105,16 +95,6 @@ impl VoxelGiSettings {
             DEFAULT_SIMULATION_SAMPLING_IMPORTANCE
         };
         super::EnergySpectrum::new(Vec3::ONE, weight, weight)
-    }
-    pub(super) fn history_limit(&self) -> u32 {
-        self.history_limit.clamp(64, super::tracer::HISTORY_LIMIT)
-    }
-    pub(super) fn history_recency(&self) -> f32 {
-        if self.history_recency.is_finite() {
-            self.history_recency.clamp(1.0, 4.0)
-        } else {
-            1.0
-        }
     }
     pub(super) fn measured_retention(&self) -> f32 {
         if self.measured_retention.is_finite() {

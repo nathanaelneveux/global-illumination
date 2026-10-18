@@ -333,7 +333,7 @@ fn run_study(cases: Vec<Case>, output: &str) {
                     };
                 }
                 if let Arm::Measured(c) = arm {
-                    work.physical_retention = c;
+                    work.measured_retention = c;
                 }
                 let mut errors = Vec::new();
                 let mut completed = 0;

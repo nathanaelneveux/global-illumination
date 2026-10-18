@@ -262,7 +262,7 @@ impl ResidentAccumulator {
                 let task_index = self.input_bytes.len() / 16;
                 slot.task_epoch = self.task_epoch;
                 slot.task_index = task_index as u32;
-                let retention = if work.physical_retention > 0.0 {
+                let retention = if work.measured_retention > 0.0 {
                     face.change_prior.to_bits()
                 } else {
                     face.history_cap
@@ -456,7 +456,7 @@ impl ResidentAccumulator {
             } else {
                 1.0f32.to_bits()
             },
-            work.physical_retention.max(0.0).to_bits(),
+            work.measured_retention.max(0.0).to_bits(),
         ];
         self.control.upload(
             device,

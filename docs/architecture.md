@@ -304,9 +304,9 @@ The default geometry/changed-sunlight policy is the selected
 as `min(existing_weight, H(d))`. Distance is receiver-to-change distance. The
 65,536 statistical ceiling implies a 192-block history-binning horizon: past
 that distance the equation cannot reduce a supported weight. This is **not** a
-light or ray cutoff. Shorter ceilings, recency weighting and an optional change
-detector (`history_limit`, `history_recency`, `history_change_threshold`) were
-measured against cache feedback; see [surface cache](surface-cache.md). Changed sunlight contributes its own spatial origins.
+light or ray cutoff. Shorter ceilings, recency weighting and a change detector
+were measured against cache feedback and rejected; see
+[surface cache](surface-cache.md). Changed sunlight contributes its own spatial origins.
 
 Legacy geometry control and the unchanged non-geometry policies:
 

@@ -13,11 +13,12 @@ pub(crate) struct TraceWork {
     /// Immutable model snapshot for this batch, shared by both backends.
     pub transport: super::TransportSettings,
     pub response_seconds: f32,
-    /// Resident history ceiling and recency weighting; zero selects defaults.
+    /// Resident history ceiling and recency weighting for tests and harnesses;
+    /// zero selects the gameplay defaults (65,536 and a plain running mean).
     pub history_limit: u32,
     pub history_recency: f32,
-    /// Physical retention constant c (zero = distance-curve caps).
-    pub physical_retention: f32,
+    /// Measured retention constant c (zero = distance-curve caps).
+    pub measured_retention: f32,
     /// Same wrapping frame counter as Bevy's render Globals uniform.
     pub display_frame: u32,
     pub display_transition_frames: u32,
@@ -177,10 +178,10 @@ impl TraceWork {
             let probe = &mut self.probes[pending.probe_index];
             let cap = pending.snapshot.limit(probe.voxel, pending.since);
             probe.retention = Some((pending.snapshot.revision, cap));
-            let change = (self.physical_retention > 0.0)
+            let change = (self.measured_retention > 0.0)
                 .then(|| pending.snapshot.change(probe.voxel, pending.since))
                 .flatten();
-            let c = self.physical_retention;
+            let c = self.measured_retention;
             for face in &mut self.faces[probe.faces()] {
                 // Unselected faces of this probe still take the curve cap.
                 face.history_cap = face.history_cap.min(cap);
@@ -203,7 +204,7 @@ impl TraceWork {
                     }
                     Some(_) => {}
                     // Unknown flux: the curve cap, passed to the GPU as negative.
-                    None if self.physical_retention > 0.0 && cap != u32::MAX => {
+                    None if self.measured_retention > 0.0 && cap != u32::MAX => {
                         face.change_prior = -(cap as f32);
                         face.samples = face.samples.min(cap);
                     }
@@ -351,6 +352,12 @@ impl FaceWork {
         probe.resident[face] = self.resident;
         probe.updated_at = self.updated_at;
     }
+}
+
+/// Measured retention: the predicted change's lowest mantissa bit tells the
+/// GPU to stop reading this face as a cache source for one batch.
+pub(super) fn with_gate(change: f32, gate: bool) -> f32 {
+    f32::from_bits((change.to_bits() & !1) | u32::from(gate))
 }
 
 #[cfg(test)]
@@ -639,10 +646,4 @@ mod tests {
             size_of::<SurfaceProbe>()
         );
     }
-}
-
-/// Measured retention: the predicted change's lowest mantissa bit tells the
-/// GPU to stop reading this face as a cache source for one batch.
-pub(super) fn with_gate(change: f32, gate: bool) -> f32 {
-    f32::from_bits((change.to_bits() & !1) | u32::from(gate))
 }

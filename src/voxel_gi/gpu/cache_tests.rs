@@ -60,7 +60,7 @@ fn cached_furnace_converges_to_infinite_bounce_series() {
         .zip(channels(material.diffuse))
         .map(|(e, r)| e / (1.0 - r))
         .collect();
-    let mut averages = vec![0.0f64; 5];
+    let mut averages = [0.0f64; 5];
     for batch in 0..400 {
         gpu.trace_compact(
             fixture.scene.clone(),
