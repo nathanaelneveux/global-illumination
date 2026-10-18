@@ -763,39 +763,55 @@ fn finalize_change_flux(
             .map(|light| 0.5 * luminance(light.radiance.visible))
             .fold(0.0, f32::max),
     );
+    // Bounded main-thread cost: at most 64 sampled positions per change and
+    // 2048 per scene update. Changes past the budget reuse the brightest light
+    // found so far (or sky if nothing was sampled): conservative, not exact.
+    let mut budget = 2048usize;
+    let mut brightest_seen = 0.0f32;
+    let mut sampled_any = false;
     for (bounds, weight) in change.weights.iter_mut() {
         match weight.kind {
             ChangeKind::Load { .. } => weight.flux = sky * super::world::REGION_EDGE as f32,
             ChangeKind::Edit { voxels } => {
-                let min = bounds.min - IVec3::ONE;
-                let max = bounds.max + IVec3::ONE;
-                let size = (max - min + IVec3::ONE).max(IVec3::ONE);
-                // Sample at most ~4096 positions of large bounds.
-                let step = ((size.element_product() as f32 / 4096.0).cbrt().ceil() as i32).max(1);
                 let mut brightest = 0.0f32;
-                let mut z = min.z;
-                while z <= max.z {
-                    let mut y = min.y;
-                    while y <= max.y {
-                        let mut x = min.x;
-                        while x <= max.x {
-                            if let Some(probe) = field.probes.get(&IVec3::new(x, y, z)) {
-                                let material = materials.get(probe.material);
-                                let albedo = luminance(material.diffuse.visible);
-                                let emission = luminance(material.emission.visible);
-                                for face in 0..6 {
-                                    if probe.face_mask & (1 << face) != 0 {
-                                        let incident = luminance(probe.radiance[face].visible)
-                                            + luminance(probe.direct[face].visible);
-                                        brightest = brightest.max(albedo * incident + emission);
+                if budget > 0 {
+                    let min = bounds.min - IVec3::ONE;
+                    let max = bounds.max + IVec3::ONE;
+                    let size = (max - min + IVec3::ONE).max(IVec3::ONE);
+                    let positions = 64usize.min(budget);
+                    let step = ((size.element_product() as f32 / positions as f32).cbrt().ceil() as i32).max(1);
+                    let mut z = min.z;
+                    'scan: while z <= max.z {
+                        let mut y = min.y;
+                        while y <= max.y {
+                            let mut x = min.x;
+                            while x <= max.x {
+                                if budget == 0 {
+                                    break 'scan;
+                                }
+                                budget -= 1;
+                                if let Some(probe) = field.probes.get(&IVec3::new(x, y, z)) {
+                                    let material = materials.get(probe.material);
+                                    let albedo = luminance(material.diffuse.visible);
+                                    let emission = luminance(material.emission.visible);
+                                    for face in 0..6 {
+                                        if probe.face_mask & (1 << face) != 0 {
+                                            let incident = luminance(probe.radiance[face].visible)
+                                                + luminance(probe.direct[face].visible);
+                                            brightest = brightest.max(albedo * incident + emission);
+                                        }
                                     }
                                 }
+                                x += step;
                             }
-                            x += step;
+                            y += step;
                         }
-                        y += step;
+                        z += step;
                     }
-                    z += step;
+                    sampled_any = true;
+                    brightest_seen = brightest_seen.max(brightest);
+                } else {
+                    brightest = if sampled_any { brightest_seen } else { sky };
                 }
                 weight.flux += brightest * 2.0 * voxels as f32;
             }

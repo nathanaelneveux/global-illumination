@@ -222,9 +222,56 @@ struct Event {
     bounds: Arc<Vec<Bounds>>,
     /// Measured-retention weight per bounds entry (parallel to `bounds`).
     weights: Arc<Vec<ChangeWeight>>,
+    /// Union of `bounds` with summed flux, for receivers outside it: one
+    /// distance instead of hundreds (streaming). Conservative, because the box
+    /// is never farther than any member. None if any weight is unknown.
+    aggregate: Option<Aggregate>,
     page_distance_squared: i64,
     #[cfg(debug_assertions)]
     audit_sun: Option<Arc<Vec<super::validation::retention_audit::SunEvidence>>>,
+}
+
+#[derive(Clone, Copy)]
+struct Aggregate {
+    bounds: Bounds,
+    /// Summed flux of edits and light changes.
+    flux: f32,
+    /// Summed load flux per unit of height, and the highest load top.
+    load_flux: f32,
+    load_top: i32,
+}
+
+impl Aggregate {
+    fn new(bounds: &[Bounds], weights: &[ChangeWeight]) -> Option<Self> {
+        use super::geometry::ChangeKind;
+        let mut aggregate = Self {
+            bounds: Bounds { min: IVec3::MAX, max: IVec3::MIN },
+            flux: 0.0,
+            load_flux: 0.0,
+            load_top: i32::MIN,
+        };
+        for (b, w) in bounds.iter().zip(weights) {
+            aggregate.bounds.min = aggregate.bounds.min.min(b.min);
+            aggregate.bounds.max = aggregate.bounds.max.max(b.max);
+            match w.kind {
+                ChangeKind::Unknown => return None,
+                ChangeKind::Unload => {}
+                ChangeKind::Load { top } => {
+                    aggregate.load_flux += w.flux;
+                    aggregate.load_top = aggregate.load_top.max(top);
+                }
+                ChangeKind::Edit { .. } | ChangeKind::Light => aggregate.flux += w.flux,
+            }
+        }
+        Some(aggregate)
+    }
+
+    fn change_at(&self, distance_squared: i64, receiver_y: i32) -> f32 {
+        let height = (i64::from(self.load_top) + 1 - i64::from(receiver_y))
+            .clamp(0, i64::from(super::world::REGION_EDGE)) as f32;
+        (self.flux + self.load_flux * height)
+            / (std::f32::consts::PI * distance_squared.max(1) as f32)
+    }
 }
 
 #[derive(Clone)]
@@ -305,7 +352,7 @@ impl SpatialHistory {
                 let evicted = history.events.pop_front().unwrap();
                 history.summary.fold(&evicted);
             }
-            let weights = changes
+            let weights: Vec<_> = changes
                 .bounds
                 .iter()
                 .map(|b| change.weights.get(b).copied().unwrap_or(ChangeWeight::UNKNOWN))
@@ -313,6 +360,9 @@ impl SpatialHistory {
             history.events.push_back(Event {
                 revision: self.revision,
                 origin,
+                aggregate: (changes.bounds.len() > 4)
+                    .then(|| Aggregate::new(&changes.bounds, &weights))
+                    .flatten(),
                 weights: Arc::new(weights),
                 bounds: Arc::new(changes.bounds),
                 page_distance_squared: changes.minimum_distance_squared,
@@ -407,9 +457,17 @@ impl Snapshot {
             return Some(0.0);
         }
         let mut total = page.summary.change(since)?;
+        let receiver = Bounds::point(voxel);
         for event in page.events.iter().rev().take_while(|e| e.revision > since) {
+            if let Some(aggregate) = &event.aggregate {
+                let distance = aggregate.bounds.distance_squared(receiver);
+                if distance > 0 {
+                    total += aggregate.change_at(distance, voxel.y);
+                    continue;
+                }
+            }
             for (bounds, weight) in event.bounds.iter().zip(event.weights.iter()) {
-                let distance = bounds.distance_squared(Bounds::point(voxel));
+                let distance = bounds.distance_squared(receiver);
                 total += weight.change_at(distance, voxel.y)?;
             }
         }
@@ -668,6 +726,7 @@ mod tests {
             origin: Origin::Geometry,
             bounds: Arc::new(vec![Bounds::point(IVec3::new(128, 0, 0))]),
 weights: Arc::new(Vec::new()),
+            aggregate: None,
             page_distance_squared: 97 * 97,
             audit_sun: None,
         };
@@ -676,6 +735,7 @@ weights: Arc::new(Vec::new()),
             origin: Origin::Geometry,
             bounds: Arc::new(vec![Bounds::point(IVec3::new(200, 0, 0))]),
 weights: Arc::new(Vec::new()),
+            aggregate: None,
             page_distance_squared: 169 * 169,
             audit_sun: None,
         };
@@ -792,6 +852,7 @@ weights: Arc::new(Vec::new()),
             origin: Origin::Geometry,
             bounds: Arc::new(Vec::new()),
 weights: Arc::new(Vec::new()),
+            aggregate: None,
             page_distance_squared: 0,
             audit_sun: None,
         };

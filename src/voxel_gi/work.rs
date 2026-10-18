@@ -203,7 +203,10 @@ impl TraceWork {
                         let lit = w.dot(m) >= 0.05 * change;
                         let predicted = c * variance / (change * change).max(1e-30);
                         if !lit || predicted < face.samples as f32 {
-                            face.change_prior = change;
+                            // Gate cache reads only for faces about to be reset
+                            // (or dark): a moderate history still holds mostly
+                            // good light, and gating costs explicit bounces.
+                            face.change_prior = with_gate(change, !lit || predicted < 16.0);
                         }
                     }
                     Some(_) => {}
@@ -646,4 +649,10 @@ mod tests {
             size_of::<SurfaceProbe>()
         );
     }
+}
+
+/// Measured retention: the predicted change's lowest mantissa bit tells the
+/// GPU to stop reading this face as a cache source for one batch.
+pub(super) fn with_gate(change: f32, gate: bool) -> f32 {
+    f32::from_bits((change.to_bits() & !1) | u32::from(gate))
 }
