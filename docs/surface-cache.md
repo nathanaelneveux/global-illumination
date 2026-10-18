@@ -195,7 +195,7 @@ stays 4 ms; a frame-time claim needs windowed, repeated runs.
   nearby histories anyway.
 - The hit uses its face-centre cached energy, not a value interpolated across
   the face.
-- Path reuse, guiding, the synchronous backend and the CPU reference do not use
-  the cache. They are candidates for removal on this branch.
+- The synchronous backend and the CPU reference do not use the cache (path
+  reuse and guiding were removed on this branch).
 - The temporal filter and transition are unchanged. The evidence target is now
   1024 (above).
