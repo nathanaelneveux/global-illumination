@@ -190,3 +190,66 @@ cross-estimator validation, and a parameter-free physical rule on a persistent
 world-space cache form a coherent short contribution. It would need a proper
 literature search (Google Scholar citations of Gautron 2007 and Myszkowski
 2001), the dark-region fix, and more scenes before anyone claims it is new.
+
+## Gameplay integration and validation
+
+`measured_retention` (c, default 1 on this branch; `config/gi-retention-curve.json`
+restores the whole-range curve). Journal events carry a flux bound per change:
+
+- **Edits:** emission delta, plus the brightest outgoing light around the edit
+  times about two faces per changed voxel.
+- **Loads:** sky (or reflected sun) per unit of new terrain height *above* a
+  receiver. Flat or lower distant terrain predicts no change.
+- **Unloads:** zero.
+- **Sunlight:** changed shared corners.
+- **Unknown changes, and probe faces not selected in the batch:** the curve cap.
+
+Same build, headless, background loading, Apple M4. Edit timings are the mean
+of three pairs; stability is one pair each.
+
+| Measure | Curve | Measured |
+| --- | ---: | ---: |
+| `response` emitter added, settle p90 | 2.49 s | **1.64 s** |
+| `response` emitter removed, settle p90 | 1.06 s | 1.17 s (run spread 0.82–1.35) |
+| `response` summed p90 | 3.55 s | **2.81 s** |
+| `edits` summed p90 (1–2 faces per event) | 6.6 s | 5.6 s |
+| `cave` settle p50 / flicker p95 | 6.9 s / .0061 | **5.0 s / .0052** |
+| `live-hallway` settle p50 / flicker p95 | 9.6 s / .0486 | 9.6 s / **.0419** |
+| `cave` traced paths | 225M | 196M |
+| Frame p95 cave / hallway (offscreen) | 30.0 / 27.7 ms | 31.2 / 28.3 ms |
+
+Streaming stability holds or improves, added light settles about 35% faster,
+removals are unchanged within noise, and frame time is unchanged within run
+noise. The cost is about 13% fewer paths in the busy cave: a gated face traces
+full explicit paths for one batch. Edit probes track only 1–7 faces, so those
+timings are directional. The first integration panicked on an air-only loaded
+region (no top voxel); that is fixed and unit-tested.
+
+## Offshoot: A-SVGF and DDGI on the cache (branch `gi-cache-asvgf`)
+
+Same harness, rules ported from the earlier studies (`codex/history-ddgi`,
+`codex/history-asvgf`):
+
+- **DDGI:** relative hysteresis, applied on every merge. A batch moving > 80%
+  resets history; > 25% trims 0.15 of the old fraction.
+- **A-SVGF:** re-trace the last 16 or 64 paths with identical random numbers on
+  the old and new scene, reading the live cache. Optionally average the
+  gradients over coplanar faces within 14 voxels. Map the result to history by
+  (1 - lambda)^4 or a 25% threshold, or plug the measured change into the MSE
+  optimum.
+
+| Edit (cache) | Measured + gating | Best A-SVGF | DDGI |
+| --- | ---: | ---: | ---: |
+| Hallway lamp off | **.013** | .30 | .26 |
+| Hallway lamp on | **.198** | .34 | .44 |
+| Cave torch off | **.010** | .014 | .056 |
+| Cave torch on | .013 | **.012** | .058 |
+| Extra paths per face per edit | **0** | 32–128 | 0 |
+
+Without the cache, A-SVGF is excellent: hallway lamp-off .0001. With the cache,
+its replays read neighbours' stale cached light, so it underestimates the change
+and keeps stale history. Fixing that needs read-gating, which needs the edit
+prediction to know what to gate. That is the measured rule plus 32–128 rays per
+face, for one small gain. DDGI's per-batch disagreement under sampling noise
+keeps trimming good history, even far from the edit. **Decision: measured noise
+with read-gating; neither offshoot is integrated.**

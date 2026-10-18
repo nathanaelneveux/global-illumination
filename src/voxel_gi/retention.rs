@@ -549,6 +549,12 @@ mod tests {
         let below = IVec3::new(4, 0, 0);
         let expected = 2.0 * 6.0 / (std::f32::consts::PI * (16 + 25) as f32);
         assert!((loads.snapshot(below).change(below, 0).unwrap() - expected).abs() < 1e-6);
+        let mut air = SpatialHistory::new(SummaryMode::DistanceBands);
+        air.record(
+            weighted(IVec3::ZERO, ChangeWeight { kind: ChangeKind::Load { top: i32::MIN }, flux: 2.0 }),
+            Origin::Geometry,
+        );
+        assert_eq!(air.snapshot(IVec3::ONE).change(IVec3::ONE, 0), Some(0.0));
         // Unloads predict nothing; unknown flux falls back to the curve.
         let mut unload = SpatialHistory::new(SummaryMode::DistanceBands);
         unload.record(weighted(IVec3::ZERO, ChangeWeight { kind: ChangeKind::Unload, flux: 0.0 }), Origin::Geometry);

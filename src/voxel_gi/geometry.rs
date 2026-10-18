@@ -51,7 +51,9 @@ impl ChangeWeight {
         let area = match self.kind {
             ChangeKind::Unknown => return None,
             ChangeKind::Unload => return Some(0.0),
-            ChangeKind::Load { top } => (top + 1 - receiver_y).clamp(0, REGION_EDGE as i32) as f32,
+            // An air-only load (no top voxel) replaces no sky.
+            ChangeKind::Load { top } => (i64::from(top) + 1 - i64::from(receiver_y))
+                .clamp(0, i64::from(REGION_EDGE)) as f32,
             ChangeKind::Edit { .. } | ChangeKind::Light => 1.0,
         };
         Some(self.flux * area / (std::f32::consts::PI * (distance_squared.max(1) as f32)))

@@ -286,6 +286,15 @@ have the same convergence or invalidation requirements.
 
 ## Revisions and history
 
+On the surface-cache branch the default is **measured retention**
+(`measured_retention` = 1; see [retention research](retention-research.md)).
+Each journal event carries a flux bound. A face whose MSE-optimal history
+`c sigma^2 / D^2` (with `D = flux / (pi d^2)`) would bind keeps that much. The
+face is not read as a cache source for one batch, and uses the fresh batch's
+noise if it was dark. Unknown changes and unselected probe faces keep the
+distance curve below. `config/gi-retention-curve.json` restores the curve
+everywhere.
+
 Freshness, retained statistical weight, scheduling urgency and displayed values
 are independent. A revision can make an estimate stale without clearing its
 display, rewinding its sequence, or resetting the world sweep.
