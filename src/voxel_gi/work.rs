@@ -174,11 +174,12 @@ impl TraceWork {
     pub fn apply_retention(&mut self) {
         for pending in self.pending_retention.drain(..) {
             let probe = &mut self.probes[pending.probe_index];
-            let cap = pending.snapshot.limit(probe.voxel, pending.since);
+            let (cap, change) = pending.snapshot.resolve(
+                probe.voxel,
+                pending.since,
+                self.measured_retention > 0.0,
+            );
             probe.retention = Some((pending.snapshot.revision, cap));
-            let change = (self.measured_retention > 0.0)
-                .then(|| pending.snapshot.change(probe.voxel, pending.since))
-                .flatten();
             let c = self.measured_retention;
             for face in &mut self.faces[probe.faces()] {
                 // Unselected faces of this probe still take the curve cap.

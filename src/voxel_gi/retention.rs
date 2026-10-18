@@ -301,62 +301,78 @@ impl Snapshot {
             .is_some_and(|page| page.latest_revision > since)
     }
 
-    /// Measured retention: predicted luminance change at this receiver from
-    /// every unconsumed event, or None if any has unknown flux (use `limit`).
-    pub fn change(&self, voxel: IVec3, since: u64) -> Option<f32> {
+    /// The whole-range curve cap and, when `measured`, the predicted luminance
+    /// change at this receiver (None if any unconsumed event has unknown flux:
+    /// use the cap). One pass over each event's bounds serves both. Streaming
+    /// events carry hundreds of bounds, and receivers inside their union box
+    /// (a ring of loads around the player) cannot use the aggregate.
+    pub fn resolve(&self, voxel: IVec3, since: u64, measured: bool) -> (u32, Option<f32>) {
         let Some(page) = &self.page else {
-            return Some(0.0);
+            return (u32::MAX, measured.then_some(0.0));
         };
+        // Most selected receivers already consumed this page's evidence. Its
+        // folded stamps necessarily precede its newest explicit event. Newer
+        // wake-only evidence cannot contribute any history cap.
         if page
             .events
             .back()
             .is_none_or(|event| event.revision <= since)
         {
-            return Some(0.0);
+            return (u32::MAX, measured.then_some(0.0));
         }
-        let mut total = page.summary.change(since)?;
+        let mut cap = page.summary.caps(since).into_iter().min().unwrap();
+        let mut change = if measured {
+            page.summary.change(since)
+        } else {
+            None
+        };
         let receiver = Bounds::point(voxel);
         for event in page.events.iter().rev().take_while(|e| e.revision > since) {
-            if let Some(aggregate) = &event.aggregate {
+            if cap == 0 && change.is_none() {
+                break;
+            }
+            let mut exact = change.is_some();
+            if let (Some(total), Some(aggregate)) = (&mut change, &event.aggregate) {
                 let distance = aggregate.bounds.distance_squared(receiver);
                 if distance > 0 {
-                    total += aggregate.change_at(distance, voxel.y);
-                    continue;
+                    *total += aggregate.change_at(distance, voxel.y);
+                    exact = false;
                 }
             }
-            for (bounds, weight) in event.bounds.iter().zip(event.weights.iter()) {
+            let mut nearest = i64::MAX;
+            for (i, bounds) in event.bounds.iter().enumerate() {
                 let distance = bounds.distance_squared(receiver);
-                total += weight.change_at(distance, voxel.y)?;
+                nearest = nearest.min(distance);
+                if exact {
+                    let weight = event.weights.get(i).copied().unwrap_or(ChangeWeight::UNKNOWN);
+                    match weight.change_at(distance, voxel.y) {
+                        Some(delta) => *change.as_mut().unwrap() += delta,
+                        None => {
+                            change = None;
+                            exact = false;
+                        }
+                    }
+                }
             }
+            cap = cap.min(limit(nearest));
         }
-        Some(total)
+        (cap, change)
     }
 
+    /// Measured retention: predicted luminance change from every unconsumed
+    /// event, or None if any has unknown flux.
+    #[cfg(test)]
+    pub fn change(&self, voxel: IVec3, since: u64) -> Option<f32> {
+        self.resolve(voxel, since, true).1
+    }
+
+    #[cfg(test)]
     pub fn limit(&self, voxel: IVec3, since: u64) -> u32 {
-        let mut cap = u32::MAX;
-        if let Some(page) = &self.page {
-            // Most selected receivers already consumed this page's evidence.
-            // Its folded stamps necessarily precede its newest explicit event.
-            // Newer wake-only evidence cannot contribute any history cap.
-            if page
-                .events
-                .back()
-                .is_none_or(|event| event.revision <= since)
-            {
-                return cap;
-            }
-            cap = page.summary.caps(since).into_iter().min().unwrap();
-            for event in page.events.iter().rev().take_while(|e| e.revision > since) {
-                cap = cap.min(bounds_limit(voxel, &event.bounds));
-                if cap == 0 {
-                    break;
-                }
-            }
-        }
-        cap
+        self.resolve(voxel, since, false).0
     }
 }
 
+#[cfg(test)]
 fn bounds_limit(voxel: IVec3, bounds: &[Bounds]) -> u32 {
     let mut nearest = i64::MAX;
     for bound in bounds {
@@ -738,6 +754,9 @@ mod tests {
                                     .unwrap_or(u32::MAX);
                                 let cap = candidate.query(voxel, since).1;
                                 assert!(cap <= full);
+                                // Fusing the change query never alters the cap.
+                                let snapshot = candidate.snapshot(voxel);
+                                assert_eq!(snapshot.resolve(voxel, since, true).0, cap);
                             }
                         }
                     }
