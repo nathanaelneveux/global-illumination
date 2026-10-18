@@ -51,7 +51,7 @@ use bevy::tasks::Task;
 use rayon::ThreadPool;
 
 pub use field::{EnergyEstimate, VoxelEnergyField};
-pub use settings::{TransportSettings, VoxelGiSettings, VoxelGiVisualWeights};
+pub use settings::{TransportSettings, VoxelGiSettings};
 pub use sources::VoxelGiEnvironment;
 pub use spectrum::{EnergyEmitter, EnergySpectrum};
 pub use startup::{TransportBackend, VoxelGiStartup};

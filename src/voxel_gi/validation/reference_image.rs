@@ -552,13 +552,6 @@ impl ReferenceImage {
                         });
                       }
                     }
-                    if super::sample_sweep::spatial_requested() {
-                        frames.push_back(ReferenceFrame {
-                            name:format!("spatial-{}-window-{window}",prefix.paths),
-                            values:super::sample_sweep::spatial_values(&sites, &prefix), pending:default(),
-                            confidence:None, sky:None,
-                        });
-                    }
                     frames.push_back(ReferenceFrame {
                         name:format!("{label}-{}-window-{window}",prefix.paths),
                         values:prefix.means, pending:default(),

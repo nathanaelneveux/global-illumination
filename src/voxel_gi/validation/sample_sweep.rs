@@ -41,8 +41,9 @@ pub(super) fn cache_requested() -> bool {
 /// batches then average down the cached values' own noise.
 pub(super) const CACHE_CONVERGE_BATCHES: [(u32, u32); 2] = [(256, 640), (65_536, 512)];
 
+/// Evidence sweeps need second moments and wider batches.
 pub(super) fn spatial_requested() -> bool {
-    std::env::var("VOXEL_GI_VALIDATE_SPATIAL_SWEEP").is_ok_and(|v| v == "1") || evidence_requested()
+    evidence_requested()
 }
 
 pub(super) fn evidence_requested() -> bool {
@@ -84,8 +85,6 @@ fn counts() -> &'static [u32] {
         &[4, 16, 64, 128, 256, 512, 1024, 1280, 1536, 2048]
     } else if evidence_requested() {
         &[1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
-    } else if spatial_requested() {
-        &[16, 64, 256, 512, 1024, 2048, 4096]
     } else {
         COUNTS
     }
@@ -207,53 +206,6 @@ pub(super) fn run(
         });
     }
     Ok(windows)
-}
-
-/// Identical nonrecursive filter to the native resident pass, applied to frozen
-/// raw prefixes so temporal response and scheduling do not confound the image
-/// comparison. This oracle is checked against native GPU presentation in tests.
-pub(super) fn spatial_values(sites: &[(IVec3, usize)], prefix: &Prefix) -> Means {
-    use super::super::spatial::{Sample, neighbors, reconstruct};
-    let indices: bevy::platform::collections::HashMap<_, _> = sites
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(i, k)| (k, i))
-        .collect();
-    let moments = prefix
-        .second_moments
-        .as_ref()
-        .expect("spatial sweep moments");
-    let samples: Vec<_> = prefix
-        .means
-        .iter()
-        .zip(moments)
-        .map(|(m, s)| {
-            let mean = Vec3::new(m[0] as f32, m[1] as f32, m[2] as f32);
-            Sample {
-                mean,
-                second: Vec3::from_array(*s),
-                count: prefix.paths,
-                display: mean,
-            }
-        })
-        .collect();
-    sites
-        .iter()
-        .enumerate()
-        .map(|(i, &(voxel, face))| {
-            let rgb = reconstruct(
-                samples[i],
-                neighbors(voxel, face, |p, f| {
-                    indices.get(&(p, f)).map(|&i| samples[i])
-                }),
-                1.0,
-            );
-            let mut result = prefix.means[i];
-            result[..3].copy_from_slice(&rgb.to_array().map(f64::from));
-            result
-        })
-        .collect()
 }
 
 /// Presentation-only target-evidence sweep. Same sites, paths and ordinary

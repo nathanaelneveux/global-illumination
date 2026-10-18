@@ -38,17 +38,14 @@ pub struct VoxelGiSettings {
     /// Zero is the unchanged corner display; one enables uncertainty-weighted
     /// connected-surface filtering. Never changes transport or simulation data.
     pub spatial_reconstruction: f32,
-    /// Display-evidence target. Zero selects the fixed stencil;
-    /// positive values choose a bounded adaptive footprint instead. This is not
+    /// Display-evidence target: a bounded adaptive footprint gathers neighbours
+    /// until this much support. Zero disables reconstruction. This is not
     /// physical history or an accuracy guarantee. Requires spatial strength > 0.
     pub spatial_evidence_target: u32,
     /// Maximum unique candidate neighbors in adaptive reconstruction, excluding
     /// the receiver. Zero retains the legacy radius/work bound. This limits
     /// footprint and cost, not target support, physical history or blend strength.
     pub spatial_max_donors: u32,
-    /// Experimental refinement ranking by projected RGB error in total light.
-    /// Does not change stability, coverage, edit urgency, or the fair world sweep.
-    pub visible_refinement: bool,
     /// Disable for a same-kernel continuous-sampling A/B baseline.
     pub adaptive_updates: bool,
     pub trace_budget_ms: f32,
@@ -86,7 +83,6 @@ impl Default for VoxelGiSettings {
             spatial_reconstruction: 1.0,
             spatial_evidence_target: 1024,
             spatial_max_donors: 0,
-            visible_refinement: false,
             adaptive_updates: true,
             trace_budget_ms: 4.0,
             max_probes_per_dispatch: 8192,
@@ -97,24 +93,6 @@ impl Default for VoxelGiSettings {
             stable_audit_interval: Duration::from_secs(2),
             stable_min_samples: 64,
             stable_relative_error: 0.12,
-        }
-    }
-}
-
-/// Host-supplied conversion from normalized transport to visible shading units.
-/// Used only by optional visual ranking, never by physical transport. A renderer
-/// with camera exposure or an artistic GI gain should update these together.
-#[derive(Resource, Clone, Copy, Debug)]
-pub struct VoxelGiVisualWeights {
-    pub direct: f32,
-    pub indirect: f32,
-}
-
-impl Default for VoxelGiVisualWeights {
-    fn default() -> Self {
-        Self {
-            direct: 1.0,
-            indirect: 1.0,
         }
     }
 }
@@ -237,7 +215,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preferred_spatial_default_has_explicit_unfiltered_and_fixed_controls() {
+    fn preferred_spatial_default_has_explicit_unfiltered_control() {
         let settings = VoxelGiSettings::default();
         let preset: VoxelGiSettings =
             serde_json::from_str(include_str!("../../config/gi-display-evidence-1024.json"))
@@ -256,14 +234,6 @@ mod tests {
             control.sampling_importance(),
             settings.sampling_importance()
         );
-        let fixed: VoxelGiSettings =
-            serde_json::from_str(include_str!("../../config/gi-adaptive-spatial.json")).unwrap();
-        assert_eq!(fixed.spatial_reconstruction, 1.0);
-        assert_eq!(fixed.spatial_evidence_target, 0);
-        let ranking: VoxelGiSettings =
-            serde_json::from_str(include_str!("../../config/gi-visible-refinement.json")).unwrap();
-        assert!(ranking.visible_refinement);
-        assert_eq!(ranking.spatial_reconstruction, 0.0);
     }
 
     #[test]

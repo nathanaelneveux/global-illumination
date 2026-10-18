@@ -135,64 +135,12 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
 
 fn max3(value: vec3<f32>) -> f32 { return max(value.x, max(value.y, value.z)); }
 
-// One bounded surface stencil per selected face, built on the worker from
-// stable ownership. Four connected axial walks of length four, then the four
-// immediate diagonals with an edge connection. No search through missing faces.
-// Read only raw statistics and the ordinary temporal resolve; never another
-// spatial result. The final presentation occupies existing snapshot words.
+// Standard error of a face's raw mean, from its moments and retained count.
 fn standard_error(base: u32) -> vec3<f32> {
     let mean = bitcast<vec4<f32>>(state[base]).rgb;
     let second = bitcast<vec4<f32>>(state[base + 2u]).rgb;
     let count = state[base + 1u].y;
     return sqrt(max(second - mean * mean, vec3(0.0)) / max(f32(count), 1.0));
-}
-
-@compute @workgroup_size(64)
-fn reconstruct_spatial(@builtin(global_invocation_id) id: vec3<u32>) {
-    let i = id.x;
-    if i >= settings.counts.x { return; }
-    let job = spatial_jobs[i * 11u];
-    let base = job.x * 9u;
-    if state[base + 7u].x != job.y { return; }
-    let center = bitcast<vec4<f32>>(state[base + 6u]);
-    let mean = bitcast<vec4<f32>>(state[base]).rgb;
-    let error = standard_error(base);
-    let noise = max3(error / (vec3(0.002) + abs(mean)));
-    let blend = bitcast<f32>(settings.options.z) * noise * noise / (noise * noise + 0.15 * 0.15);
-    var result = center.rgb;
-    if blend > 0.001 {
-        var sum = center.rgb;
-        var weight = 1.0;
-        for (var n = 0u; n < 20u; n += 1u) {
-            let packed = spatial_jobs[i * 11u + 1u + n / 2u];
-            let address = select(packed.xy, packed.zw, n % 2u != 0u);
-            let donor = address.x * 9u;
-            if address.y == 0u || donor + 7u >= arrayLength(&state) { continue; }
-            if state[donor + 7u].x != address.y { continue; }
-            let count = state[donor + 1u].y;
-            if count == 0u { continue; }
-            let donor_mean = bitcast<vec4<f32>>(state[donor]).rgb;
-            let tolerance = vec3(0.002) + 0.1 * max(abs(mean), abs(donor_mean))
-                + 2.0 * (error + standard_error(donor));
-            let difference = max3(abs(mean - donor_mean) / tolerance);
-            let distance = f32(n % 4u + 1u);
-            let distance_squared = select(distance * distance, 2.0, n >= 16u);
-            let w = exp(-0.125 * distance_squared - 0.5 * difference * difference)
-                * f32(count) / (f32(count) + 8.0);
-            sum += bitcast<vec4<f32>>(state[donor + 6u]).rgb * w;
-            weight += w;
-        }
-        result = mix(center.rgb, sum / weight, blend);
-    }
-    // Keep the receiver's original confidence. Borrowing does not manufacture
-    // independent samples or modify physical energy, moments, or temporal state.
-    state[base + 1u].w = bitcast<u32>(result.r);
-    state[base + 3u].y = bitcast<u32>(result.g);
-    state[base + 3u].z = bitcast<u32>(result.b);
-    state[base + 3u].w = bitcast<u32>(center.a);
-    // CPU snapshots intentionally retain the temporal resolve written by
-    // accumulate. Scheduling and simulation never consume spatially borrowed
-    // values. End-to-end spatial quality is measured from rendered captures.
 }
 
 // Adaptive display support. Each header owns a disjoint range of unique,

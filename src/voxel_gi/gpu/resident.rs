@@ -56,11 +56,9 @@ pub(super) struct ResidentAccumulator {
     seed_bytes: Vec<u8>,
     prepare: ComputePipeline,
     accumulate: ComputePipeline,
-    spatial: ComputePipeline,
     evidence: ComputePipeline,
     prepare_bindings: Option<CachedBindings<5>>,
     accumulate_bindings: Option<CachedBindings<4>>,
-    spatial_bindings: Option<CachedBindings<3>>,
     evidence_bindings: Option<CachedBindings<4>>,
 }
 
@@ -86,7 +84,6 @@ impl ResidentAccumulator {
         };
         let prepare = pipeline("prepare");
         let accumulate = pipeline("accumulate");
-        let spatial = pipeline("reconstruct_spatial");
         let evidence = pipeline("reconstruct_evidence");
         if let Some(error) = bevy::tasks::block_on(scope.pop()) {
             return Err(error.to_string());
@@ -133,11 +130,9 @@ impl ResidentAccumulator {
             seed_bytes: Vec::new(),
             prepare,
             accumulate,
-            spatial,
             evidence,
             prepare_bindings: None,
             accumulate_bindings: None,
-            spatial_bindings: None,
             evidence_bindings: None,
         })
     }
@@ -153,8 +148,7 @@ impl ResidentAccumulator {
             && work.spatial_reconstruction.is_finite()
             && work.spatial_reconstruction > 0.0;
         if !indexed_spatial {
-            // No persistent adjacency overhead for the default/unfiltered or
-            // fixed-stencil modes. Re-enabling rebuilds from current ownership.
+            // No persistent adjacency overhead when unfiltered. Re-enabling rebuilds from current ownership.
             self.evidence_topology = None;
         }
         self.topology_new.clear();
@@ -381,54 +375,35 @@ impl ResidentAccumulator {
         } else {
             0.0
         };
-        if spatial_strength > 0.0 {
-            for (index, face) in work.faces.iter().enumerate() {
-                if self.evidence_target > 0 {
-                    let start = self.donor_bytes.len() / DONOR_BYTES;
-                    // CPU feedback only bounds candidate work; current GPU
-                    // histories decide support. Caps are applied before rays.
-                    let predicted = face.samples.min(face.history_cap).saturating_add(samples);
-                    if predicted < self.evidence_target {
-                        let graph = self.evidence_topology.as_ref().expect("adaptive topology");
-                        self.evidence_gather.collect(
-                            face.resident,
-                            super::super::spatial::evidence::candidate_limit(
-                                self.evidence_target,
-                                predicted,
-                                work.spatial_max_donors,
-                            ),
-                            |address, edge| graph.neighbor(address.x, edge),
-                        );
-                        for address in self.evidence_gather.values().skip(1) {
-                            let bytes = address.to_array().map(u32::to_le_bytes);
-                            self.donor_bytes.extend_from_slice(bytes.as_flattened());
-                        }
-                    }
-                    for word in [
-                        face.resident.x,
-                        face.resident.y,
-                        start as u32,
-                        (self.donor_bytes.len() / DONOR_BYTES - start) as u32,
-                    ] {
-                        self.spatial_bytes.extend_from_slice(&word.to_le_bytes());
-                    }
-                    continue;
-                }
-                for word in [face.resident.x, face.resident.y, index as u32, 0] {
-                    self.spatial_bytes.extend_from_slice(&word.to_le_bytes());
-                }
-                for address in super::super::spatial::neighbors(face.voxel, face.face, |p, f| {
-                    self.slots
-                        .get(&(p, f))
-                        .map(|slot| UVec2::new(slot.index, slot.incarnation))
-                }) {
-                    self.spatial_bytes.extend(
-                        address
-                            .unwrap_or(UVec2::ZERO)
-                            .to_array()
-                            .into_iter()
-                            .flat_map(u32::to_le_bytes),
+        if spatial_strength > 0.0 && self.evidence_target > 0 {
+            for face in &work.faces {
+                let start = self.donor_bytes.len() / DONOR_BYTES;
+                // CPU feedback only bounds candidate work; current GPU
+                // histories decide support. Caps are applied before rays.
+                let predicted = face.samples.min(face.history_cap).saturating_add(samples);
+                if predicted < self.evidence_target {
+                    let graph = self.evidence_topology.as_ref().expect("adaptive topology");
+                    self.evidence_gather.collect(
+                        face.resident,
+                        super::super::spatial::evidence::candidate_limit(
+                            self.evidence_target,
+                            predicted,
+                            work.spatial_max_donors,
+                        ),
+                        |address, edge| graph.neighbor(address.x, edge),
                     );
+                    for address in self.evidence_gather.values().skip(1) {
+                        let bytes = address.to_array().map(u32::to_le_bytes);
+                        self.donor_bytes.extend_from_slice(bytes.as_flattened());
+                    }
+                }
+                for word in [
+                    face.resident.x,
+                    face.resident.y,
+                    start as u32,
+                    (self.donor_bytes.len() / DONOR_BYTES - start) as u32,
+                ] {
+                    self.spatial_bytes.extend_from_slice(&word.to_le_bytes());
                 }
             }
         }
@@ -556,20 +531,6 @@ impl ResidentAccumulator {
                 (4, &self.inputs),
             ],
         );
-        let spatial_bindings = if self.spatial_bytes.is_empty() || self.evidence_target > 0 {
-            None
-        } else {
-            Some(cached_bindings(
-                &mut self.spatial_bindings,
-                device,
-                || self.spatial.get_bind_group_layout(0).into(),
-                [
-                    (0, &self.control),
-                    (3, &self.state),
-                    (6, &self.spatial_jobs),
-                ],
-            ))
-        };
         let evidence_bindings = if self.spatial_bytes.is_empty() || self.evidence_target == 0 {
             None
         } else {
@@ -596,11 +557,6 @@ impl ResidentAccumulator {
         pass.set_pipeline(&self.accumulate);
         pass.set_bind_group(0, &**bindings, &[]);
         pass.dispatch_workgroups((count as u32).div_ceil(64), 1, 1);
-        if let Some(bindings) = spatial_bindings {
-            pass.set_pipeline(&self.spatial);
-            pass.set_bind_group(0, &**bindings, &[]);
-            pass.dispatch_workgroups((count as u32).div_ceil(64), 1, 1);
-        }
         if let Some(bindings) = evidence_bindings {
             pass.set_pipeline(&self.evidence);
             pass.set_bind_group(0, &**bindings, &[]);
@@ -746,12 +702,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "native spatial CPU/GPU oracle, unchanged transport/temporal snapshots, partial jobs and disable"]
-    fn spatial_reconstruction_matches_oracle_without_feedback() {
-        check_spatial_oracle(0, IVec3::ZERO, 0);
-    }
-
-    #[test]
     #[ignore = "native adaptive support oracle with heterogeneous edit histories and unchanged physical statistics"]
     fn evidence_reconstruction_matches_oracle_without_feedback() {
         for target in [512, 1024, 1536, 2048, 4096] {
@@ -773,7 +723,6 @@ mod tests {
 
     fn check_spatial_oracle(target: u32, shift: IVec3, cap: u32) {
         use super::super::super::spatial::{self, Sample};
-        let evidence = target > 0;
         let mut control = super::super::tests::native_tracer();
         control.enable_resident().unwrap();
         let mut gpu = GpuTracer::new(control.context.clone()).unwrap();
@@ -783,11 +732,8 @@ mod tests {
             &fixture.scene,
             &fixture.materials,
         ));
-        let probes: Vec<_> = (6..if evidence { 26 } else { 13 })
-            .flat_map(|z| {
-                (6..if evidence { 26 } else { 15 })
-                    .map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z) + shift, 4))
-            })
+        let probes: Vec<_> = (6..26)
+            .flat_map(|z| (6..26).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z) + shift, 4)))
             .collect();
         let mut a = TraceWork::from_probes(&probes, false);
         let mut b = TraceWork::from_probes(&probes, false);
@@ -795,12 +741,8 @@ mod tests {
         b.spatial_max_donors = cap;
         let mut changed = false;
         for step in 0..5 {
-            let spp = if evidence {
-                [1, 3, 16, 16, 16][step as usize]
-            } else {
-                16
-            };
-            if evidence && step == 2 {
+            let spp = [1, 3, 16, 16, 16][step as usize];
+            if step == 2 {
                 // Retained histories vary with distance from an edit. Seed
                 // uneven weights once, then apply different caps without
                 // discarding the means on the following step.
@@ -813,7 +755,7 @@ mod tests {
                     }
                 }
             }
-            if evidence && step == 3 {
+            if step == 3 {
                 for work in [&mut a, &mut b] {
                     for (i, face) in work.faces.iter_mut().enumerate() {
                         face.history_cap = [1, 16, 128, 256, u32::MAX][i % 5];
@@ -868,7 +810,7 @@ mod tests {
             let mut position_gather = spatial::evidence::Gather::default();
             for (key, slot) in slots {
                 let center = sample(slot);
-                let expected = if evidence && b.spatial_reconstruction > 0.0 {
+                let expected = if b.spatial_reconstruction > 0.0 {
                     // Replay the exact uploaded candidates; feedback may lag
                     // the current GPU count, so CPU work bounds need not match
                     // the resulting count. The weighting oracle still reads
@@ -916,11 +858,7 @@ mod tests {
                     }
                     spatial::evidence::resolve(&gather.sites, target, b.spatial_reconstruction).rgb
                 } else {
-                    spatial::reconstruct(
-                        center,
-                        spatial::neighbors(key.0, key.1, |p, f| slots.get(&(p, f)).map(sample)),
-                        b.spatial_reconstruction,
-                    )
+                    center.display
                 };
                 let base = slot.index as usize * (RECORD_BYTES / 4);
                 let actual = Vec3::new(

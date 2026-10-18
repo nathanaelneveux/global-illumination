@@ -645,7 +645,6 @@ pub(super) fn run_validation(
             "spatial_reconstruction": settings.spatial_reconstruction,
             "spatial_evidence_target": settings.spatial_evidence_target,
             "spatial_max_donors": settings.spatial_max_donors,
-            "visible_refinement": settings.visible_refinement,
             "temporal_trace_scope": "pre-spatial temporal face estimates; use captures for spatial presentation",
             "trace_budget_ms": settings.trace_budget_ms, "max_probes_per_dispatch": settings.max_probes_per_dispatch,
             "scene_publish_budget_ms": settings.scene_publish_budget.as_secs_f32() * 1000.0,

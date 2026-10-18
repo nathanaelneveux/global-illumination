@@ -89,8 +89,6 @@ impl Plugin for VoxelGiDiagnosticsPlugin {
         tuning::load_launch_settings(app);
         #[cfg(debug_assertions)]
         face_watch::install(app);
-        app.init_resource::<super::VoxelGiVisualWeights>()
-            .add_systems(Update, tuning::update_visual_weights.before(VoxelGiSystems));
         if terminal_stats_enabled() {
             app.add_plugins(LogDiagnosticsPlugin::default())
                 .add_systems(Update, log_voxel_gi_stats.after(VoxelGiSystems));
