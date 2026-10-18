@@ -1,4 +1,5 @@
-"""Edit response from a `response` or `edits` validation run's response.json.
+"""Edit response from a `response`/`edits` run's response.json, or the
+`house-edits` run's house.json (same capture and sample layout).
 
 Usage: python3 -I tools/response_timing.py RUN [RUN ...]
 
@@ -15,7 +16,8 @@ def lum(rgb):
     return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
 
 def load(run):
-    data = json.load(open(os.path.join(run, "response.json")))
+    name = "response.json" if os.path.exists(os.path.join(run, "response.json")) else "house.json"
+    data = json.load(open(os.path.join(run, name)))
     starts = {}
     for c in data["captures"]:
         m = re.fullmatch(r"(.+)-(\d+)ms", c["name"])
@@ -27,7 +29,7 @@ def load(run):
     for sample in data["samples"]:
         for f in sample.get("faces", []):
             if f["display"] is not None:
-                faces.setdefault((tuple(f["voxel"]), f["face"]), []).append((sample["at_s"], lum(f["display"])))
+                faces.setdefault((tuple(f["voxel"]), f.get("face")), []).append((sample["at_s"], lum(f["display"])))
     return sorted(starts.items(), key=lambda kv: kv[1]), end, faces
 
 def settle(points, start, stop):
