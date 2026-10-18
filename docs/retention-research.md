@@ -1,0 +1,160 @@
+# Edit retention: theory, prior work and cache re-derivation
+
+October 17, branch `gi-surface-cache`. Question: the whole-range curve
+`H(d) = (d/12)^4` was fitted to the old estimator's settling speed. Can it be
+updated for the faster-settling cache, and is the idea already known?
+
+## What the curve is
+
+[distance-history](history/distance-history.md) derives it. After an edit,
+a face keeps `H` samples of old mean `m0` and adds `N` fresh ones. Stale bias
+is `H/(H+N) * D`, where `D` is the true change at the face. With per-sample
+variance `sigma^2`, mean squared error is minimized at
+
+```text
+H* = sigma^2 / (D^2 + V0)
+```
+
+A changed patch of area `A` and radiance change `L` at distance `d` changes the
+face's light by at most `D <= L*A / (pi d^2)`. Substituting gives `H ~ d^4`, which
+is the curve's shape. The scale is then
+
+```text
+s ~ (L*A / sigma)^(1/2)
+```
+
+so it carries both the estimator's noise and the strength of a typical change.
+[whole-range-history](history/whole-range-history.md) fitted `s = 12` over
+hallway, house and cave edits with the old estimator.
+
+## Prior work
+
+The ingredients are established. Closest relatives:
+
+- **Temporal radiance caching** (Gautron, Bouatouch, Pattanaik, IEEE TVCG 2007;
+  [SIGGRAPH 2008 course notes](https://cgg.mff.cuni.cz/~jaroslav/papers/2008-irradiance_caching_class/09-pascal-temporal-notes.pdf)).
+  A record's temporal weight is the inverse of its estimated change rate. The
+  rate is estimated by reprojecting future lighting, and validity is capped at
+  5–10 frames. This is the same "reuse ∝ 1/change" principle, with the change
+  *measured*, not predicted from geometry.
+- **Perception-guided GI for animation** (Myszkowski, Tawara, Akamine, Seidel,
+  SIGGRAPH 2001; [ACM](https://dx.doi.org/10.1145/383259.383284)). A local
+  energy-based metric stops photons from being reused over time where lighting
+  changes quickly. This is per-region temporal reuse driven by the change.
+- **Selective photon tracing** (Dmitriev, Brabec, Myszkowski, Seidel, EGWR 2002;
+  [project](https://resources.mpi-inf.mpg.de/anim/spt/)). Pilot photons find the
+  regions an edit affects; the Halton sequence's periodicity re-traces only those
+  paths. This localizes updates; it does not weight retained history.
+- **Change localization:** Drettakis & Sillion's line-space hierarchy
+  (SIGGRAPH 1997; [abstract](https://history.siggraph.org/?p=117251)) finds
+  radiosity links crossed by a moving object. Tawara et al. localize final
+  gathering (VMV 2002, CGI 2004; [dissertation](https://publikationen.sulb.uni-saarland.de/handle/20.500.11880/25935)).
+  Instant caching (Debattista et al., CGF 2009; [EG](https://diglib.eg.org/items/13214630-c8d3-4481-a622-77335fb7816b))
+  recomputes invalidated paths.
+- **Corrections instead of resets:** radiosity redistribution with negative
+  energy (George, Sillion, Greenberg 1990; [Cornell](https://en-cg-web.coecis.cornell.edu/pubs/1990/GSG90.html)).
+- **Measured temporal change:** A-SVGF matched-seed gradients
+  ([HPG 2018](https://momentsingraphics.de/HPG2018.html)) and DDGI hysteresis
+  ([JCGT 2021](https://jcgt.org/published/0010/02/01/paper-lowres.pdf)).
+  Both were tested here and rejected as defaults
+  ([adaptive history](history/adaptive-history-qualification.md)).
+- **Optimal forgetting:** adaptive filtering's forgetting factor balances lag
+  against noise, with `1 - lambda*` scaling as drift/noise. `H* = sigma^2/D^2` is
+  the same trade-off for one step change.
+
+Not found: an *a priori* solid-angle change bound, taken from the edit itself
+with no extra rays, that sets an MSE-optimal per-surface history weight in a
+persistent world-space cache. Several full texts (MPI, ACM) were not readable
+here, so this is a gap in a limited search, not a novelty claim.
+
+## Experiment
+
+`retention_curve_study` / `retention_curve_study_cave` (`gpu/retention_study.rs`)
+replay real edits on every exposed face of a sealed scene: 3,175 hallway faces
+and 15,047 cave faces. Each arm:
+
+1. Converge the pre-edit scene.
+2. Apply the edit.
+3. Cap each face's history by its distance to the change.
+4. Track RMS error relative to that estimator's own converged post-edit answer,
+   at 1, 2, 4 … 256 batches of 16 paths.
+
+Score is the mean over those log-spaced checkpoints (early response and settled
+noise weigh equally). The cache and a cache-disabled explicit shader run the
+same arms. Analysis: `tools/retention_curve_analysis.py`. Apple M4, native, no app.
+
+Edits:
+- **Hallway lamp off/on:** the corridor's only light.
+- **Cave torch off/on:** one wall torch among lava, crystals, spire, the other
+  torches and a skylight.
+
+Measured noise: on the cave's 15,163 faces at 2,048 paths, the cache's
+per-sample relative variance is 0.42x the old estimator's (median; p10–p90
+0.27–0.65). Predicted scale shift: `0.42^(-1/4)` = 1.24x.
+
+Best distance scale per case (lower score is better):
+
+| Case | Explicit | Cache |
+| --- | --- | --- |
+| Hallway lamp on | s = 9 (.295), 12 (.349) | s = 18 (.254), 15 (.256) |
+| Hallway lamp off | grows without bound (scene goes exactly dark; reset is free) | same |
+| Cave torch off | retain everything (.020); s = 6 .025 | s = 6 (.013); 12 .025 |
+| Cave torch on | retain everything (.020); s = 6 .027 | s = 6 (.016); 12 .026 |
+
+Findings:
+
+1. **The method reproduces the old fit.** The explicit estimator prefers
+   9–12 on the hallway lamp; the curve was independently fitted at 12.
+2. **The cache shifts the best scale up about 1.5x in both scenes**, in line with
+   the variance prediction (1.24x) and the perceptual one (1.41x). It settles
+   faster, so it should forget more aggressively near an edit.
+3. **One distance scale cannot fit both scenes.** The best scale differs about 3x
+   between "the only light switched" and "one light among many". A distance-only
+   curve is a compromise because `D` depends on how strong the change is relative
+   to each face's existing light.
+
+### Physically based retention
+
+Compute both terms of `H* = c * sigma^2 / D^2` per face instead of fitting `s`:
+
+- `D = flux / (pi d^2)`, with flux the edited emitter's luminance times its
+  exposed faces (unit area).
+- `sigma^2` from the face's own stored second moment.
+
+A signed variant predicts the new state's noise as the face's relative noise
+times its predicted new mean `max(M + signed D, 0)`.
+
+| Case (cache) | (d/12)^4 now | Best distance | Physical, c = 1 | Signed, c = 1 |
+| --- | ---: | ---: | ---: | ---: |
+| Hallway lamp off | .209 | .036 (s = 32, still falling) | .016 | .016 |
+| Hallway lamp on | .270 | **.254** (s = 18) | .339 | .331 |
+| Cave torch off | .025 | .013 (s = 6) | **.009** | **.009** |
+| Cave torch on | .026 | .016 (s = 6) | .012 | **.011** |
+| Mean of four | .133 | .107 (s = 24) | .094 | **.092** |
+
+The physical rule has no distance-scale parameter. It cuts error 2.3–2.7x
+relative to today's curve wherever lit regions change, and wins the four-case
+mean. It loses one case: lighting a previously **dark** region. There, the optimum is
+`H ≈ r_new^2`, the squared relative noise of the newly arriving light. That is
+low near the lamp (direct light) and high far down the corridor (rare bounce
+paths), and nothing measured before the edit predicts it. Flat history floors
+and a dark-noise fallback were tested and do not fix it; they only trade cases.
+The distance curve encodes "far is noisier" for this case by accident.
+
+## Recommendation
+
+- Do **not** just retune `s`. The data reject a single scale.
+- Next experiment: physical retention with one post-edit measurement. Apply the
+  physical cap at edit time. After the first fresh batch near the edit, set
+  `H = sigma_new^2 / D^2` from that batch's measured moments. This targets the
+  dark-room case only, within the edit's predicted influence region, which
+  avoids the false alarms that sank the global change detector.
+- For gameplay integration, journal events need a flux bound for ordinary
+  blocks too. The cache already holds the outgoing light of the edited voxel's
+  surfaces and their neighbours, and changed-sunlight origins already exist.
+
+Paper potential: the derivation (`H ∝ d^4`, `s ∝ (flux/sigma)^(1/2)`), the
+cross-estimator validation, and a parameter-free physical rule on a persistent
+world-space cache form a coherent short contribution. It would need a proper
+literature search (Google Scholar citations of Gautron 2007 and Myszkowski
+2001), the dark-region fix, and more scenes before anyone claims it is new.

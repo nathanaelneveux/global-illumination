@@ -1,55 +1,61 @@
-"""Edit response from a `response` validation run's response.json.
+"""Edit response from a `response` or `edits` validation run's response.json.
 
 Usage: python3 -I tools/response_timing.py RUN [RUN ...]
 
-For each tracked face, the displayed luminance is followed across the scripted
-emitter add (~20 s) and removal (~25 s). Reports how long after each event the
-face first stays within 10% (of its settled value) of where it ends up, using
-the value just before the next event as the target. Faces whose total change is
-under 5% of the larger level are skipped (the event did not reach them).
+Events come from capture names `<event>-<ms>ms` (event start = capture time minus
+its offset). For each tracked face, displayed luminance is followed from one
+event to the next. Settle = the last time after the event that the face was more
+than 10% of its change away from its value just before the next event. Faces
+whose change is under 5% of the larger level are skipped (not reached). Also
+reports the summed settle p90 across events as one response score.
 """
-import json, os, statistics, sys
+import json, os, re, sys
 
 def lum(rgb):
     return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
 
-def series(run):
+def load(run):
     data = json.load(open(os.path.join(run, "response.json")))
-    caps = {c["name"]: c["requested_s"] for c in data["captures"]}
+    starts = {}
+    for c in data["captures"]:
+        m = re.fullmatch(r"(.+)-(\d+)ms", c["name"])
+        if m:
+            start = c["requested_s"] - int(m.group(2)) / 1000
+            starts[m.group(1)] = min(starts.get(m.group(1), start), start)
+    end = max(c["requested_s"] for c in data["captures"])
     faces = {}
     for sample in data["samples"]:
         for f in sample.get("faces", []):
-            if f["display"] is None:
-                continue
-            key = (tuple(f["voxel"]), f["face"])
-            faces.setdefault(key, []).append((sample["at_s"], lum(f["display"])))
-    return caps, faces
+            if f["display"] is not None:
+                faces.setdefault((tuple(f["voxel"]), f["face"]), []).append((sample["at_s"], lum(f["display"])))
+    return sorted(starts.items(), key=lambda kv: kv[1]), end, faces
 
-def settle_after(points, start, end):
+def settle(points, start, stop):
     before = [v for t, v in points if t < start]
-    window = [(t, v) for t, v in points if start <= t <= end]
+    window = [(t, v) for t, v in points if start <= t <= stop]
     if not before or len(window) < 3:
         return None
     initial, target = before[-1], window[-1][1]
     if abs(target - initial) < 0.05 * max(abs(target), abs(initial), 1e-9):
         return None
-    settled = start
+    last = start
     for t, v in window:
         if abs(v - target) > 0.1 * abs(target - initial):
-            settled = t
-    return settled - start
+            last = t
+    return last - start
+
+def quantile(xs, q):
+    xs = sorted(xs)
+    return xs[min(len(xs) - 1, int(q * len(xs)))]
 
 for run in sys.argv[1:]:
-    caps, faces = series(run)
-    add = caps["emitter-add-0200ms"] - 0.2
-    remove = caps["emitter-remove-0100ms"] - 0.1
-    end = caps["room-recovered"]
-    out = []
-    for name, (start, stop) in {"emitter add": (add, remove), "emitter remove": (remove, end)}.items():
-        times = [s for p in faces.values() if (s := settle_after(p, start, stop)) is not None]
-        if times:
-            times.sort()
-            out.append(f"{name}: faces {len(times)}, settle p50 {times[len(times)//2]:.2f}s p90 {times[int(len(times)*.9)]:.2f}s max {times[-1]:.2f}s")
+    events, end, faces = load(run)
     print(os.path.basename(run))
-    for line in out:
-        print("  " + line)
+    score = 0.0
+    for i, (name, start) in enumerate(events):
+        stop = events[i + 1][1] if i + 1 < len(events) else end
+        times = [s for p in faces.values() if (s := settle(p, start, stop)) is not None]
+        if times:
+            score += quantile(times, 0.9)
+            print(f"  {name:14s} faces {len(times):2d}  settle p50 {quantile(times, .5):5.2f}s  p90 {quantile(times, .9):5.2f}s")
+    print(f"  summed p90 {score:.2f}s")
