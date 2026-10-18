@@ -577,9 +577,16 @@ impl SurfaceProbe {
     /// enters these statistics. Material replacement uses the same rule;
     /// only newly exposed faces start without compatible measurements.
     pub(crate) fn request_relight(&mut self) {
-        self.revision = self.revision.wrapping_add(1);
+        self.request_refresh();
         let limit = super::geometry::NEAR_HISTORY;
         self.samples = self.samples.map(|count| count.min(limit));
+    }
+
+    /// A nearby edit: reject in-flight pre-edit results and stop treating the
+    /// faces as settled, but keep their sample counts. How much history to
+    /// keep is measured retention's decision, and it reads these counts.
+    pub(crate) fn request_refresh(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
         self.fresh_mask = 0;
         self.stable_batches = [0; 6];
     }

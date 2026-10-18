@@ -177,7 +177,8 @@ fn settled_counter_tracks_local_edits_global_revisions_and_page_removal() {
     assert_eq!(stats.settled_coverage, 0.5);
     assert_eq!(stats.interactive_coverage, 1.0);
     assert_eq!(stats.bootstrap_coverage, 1.0);
-    assert_eq!(field.probes[&IVec3::ZERO].samples[0], 16);
+    // Counts stay: measured retention decides how much history to keep.
+    assert_eq!(field.probes[&IVec3::ZERO].samples[0], 128);
 
     // O(1) invalidation must not scan/clear histories. Old contributions no
     // longer count, including late worker results from that old revision.

@@ -433,7 +433,7 @@ pub(super) fn invalidate_near_voxel(
         }
         if let Some(probe) = field.probes.get_mut(&voxel) {
             let (_, samples, covered, settled) = probe_metrics(probe, field.transport_revision);
-            probe.request_relight();
+            probe.request_refresh();
             let (_, next_samples, next_covered, next_settled) =
                 probe_metrics(probe, field.transport_revision);
             runtime.completed_samples =
@@ -564,10 +564,8 @@ mod donor_tests {
         );
         assert_eq!(field.probes[&voxel].display[2].indirect, Vec3::splat(2.0));
         assert!(runtime.urgent_queued.contains(&voxel));
-        assert_eq!(
-            field.probes[&voxel].samples[2],
-            super::super::geometry::NEAR_HISTORY
-        );
+        // Urgent, but the count stays for measured retention to cap.
+        assert_eq!(field.probes[&voxel].samples[2], 64);
         assert!(!field.publishing_pages.contains(&IVec3::ZERO));
         assert_eq!(runtime.active_faces, 1024);
         assert_eq!(field.order.len(), 1024);
