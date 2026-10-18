@@ -187,6 +187,15 @@ in this harness. Two cave cache runs of near-identical code differed by 2.4 ms
 at p50, so these frame differences are run noise, not a GI cost. The default
 stays 4 ms; a frame-time claim needs windowed, repeated runs.
 
+## Post-cleanup check
+
+After removing the legacy retention arms, fixed-stencil filter and study
+harnesses (`b46da0a`..`7beab21`), one `live-hallway` run on `7beab21` (same setup
+as above, measured retention, 1024 evidence): neighbour difference .148 @15 s
+and .116 @180 s, settle p50/p90 10.1/88.6 s, late flicker p50/p95 .0075/.038,
+607M paths, offscreen frame p50/p95/p99 22.1/24.3/29.9 ms. This is within run
+noise of the pre-cleanup cache runs; the default path was not meant to change.
+
 ## Known limits
 
 - With the long ceiling, early under-bounced cache values stay in the running
