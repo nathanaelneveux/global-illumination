@@ -167,7 +167,6 @@ pub(super) fn start_trace_task(
         sky_revision: runtime.sky_revision,
         ..default()
     };
-    let track_changes = runtime.spatial_history.is_some();
     let sources = runtime.sources.clone();
     let materials = Arc::clone(&runtime.materials);
     let pool = Arc::clone(&runtime.trace_pool);
@@ -215,10 +214,10 @@ pub(super) fn start_trace_task(
             }
         }
         batch.work.apply_retention();
-        cpu_sky_cache.track_changes = track_changes;
+        cpu_sky_cache.track_changes = true;
         let mut completed = None;
         if let Some(tracer) = &mut gpu_tracer {
-            tracer.sky_cache.track_changes = track_changes;
+            tracer.sky_cache.track_changes = true;
             tracer.sky_cache.deferred_results = resident;
             let result = (|| -> Result<(), String> {
                 if resident {
@@ -497,16 +496,11 @@ pub(super) fn select_transport(
         let Some(probe) = field.probes.get(&voxel) else {
             continue;
         };
-        let retention = runtime
-            .spatial_history
-            .as_ref()
-            .map(|history| history.snapshot(voxel));
+        let retention = runtime.spatial_history.snapshot(voxel);
         // Conservative page wakeup is O(1). Exact per-receiver distances are
         // evaluated by the worker; page-edge false positives may get an audit,
         // but never an unjustified cap or a lost late sunlight notification.
-        force |= retention
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.pending(probe.retention_revision));
+        force |= retention.pending(probe.retention_revision);
         let mask = scheduling::due_faces(probe, field.transport_revision, now, settings, force);
         if mask == 0 {
             continue;
@@ -521,33 +515,18 @@ pub(super) fn select_transport(
                 runtime.source_revision,
             );
         }
-        let geometry_limit = retention.as_ref().map_or_else(
-            || {
-                runtime.geometry_history.history_limit(
-                    voxel,
-                    probe.transport_revision,
-                    field.transport_revision,
-                )
-            },
-            |_| u32::MAX,
-        );
         #[cfg(debug_assertions)]
-        let (geometry_limit, history_limit) = (
-            super::validation::retained_history_limit(geometry_limit),
-            super::validation::retained_history_limit(history_limit),
-        );
+        let history_limit = super::validation::retained_history_limit(history_limit);
         selected.push(
             probe,
             mask,
             field.transport_revision,
             runtime.source_revision,
             restart,
-            geometry_limit,
+            u32::MAX,
             history_limit,
         );
-        if let Some(snapshot) = retention {
-            selected.defer_retention(probe.retention_revision, snapshot);
-        }
+        selected.defer_retention(probe.retention_revision, retention);
     }
     runtime.selection_seen = seen;
     runtime.ranked_candidates = adaptive;
@@ -582,9 +561,7 @@ pub(super) fn apply_trace_task(
     if let Some(error) = result.gpu_error {
         panic!("Voxel GI GPU transport failed: {error}");
     }
-    if let Some(mut change) = result.sunlight_change.take()
-        && let Some(history) = &mut runtime.spatial_history
-    {
+    if let Some(mut change) = result.sunlight_change.take() {
         // Even superseded results describe a possible change, so retain their
         // conservative evidence. They cannot publish stale sky display values.
         // Jobs carry their *selection* stamp, leaving late evidence pending.
@@ -592,7 +569,9 @@ pub(super) fn apply_trace_task(
         change
             .nearby
             .retain(|page, _| field.pages.contains_key(page));
-        history.record(change, super::retention::Origin::Sunlight);
+        runtime
+            .spatial_history
+            .record(change, super::retention::Origin::Sunlight);
     }
     timing.record_gpu_batch(result.batch.as_ref().and_then(|batch| batch.gpu_ms));
     stats.backend = result
@@ -696,10 +675,6 @@ pub(super) fn apply_trace_task(
             continue;
         }
         let (_, old_samples, old_covered, old_settled) = probe_metrics(old, transport_revision);
-        #[cfg(debug_assertions)]
-        runtime
-            .retention_audit
-            .record(job, old, merge_started, sky_current);
         // A material-table revision can change emission without rebuilding
         // geometry. Older source results were rejected above.
         old.emission = runtime.materials.get(old.material).emission;

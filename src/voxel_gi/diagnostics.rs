@@ -1,8 +1,8 @@
 //! Optional demo instrumentation, separate from transport scheduling. The HUD
 //! reuses O(1) counters; expensive field summaries and scripted edits are opt-in.
-mod tuning;
 #[cfg(debug_assertions)]
 mod face_watch;
+mod tuning;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::window::{CursorOptions, PrimaryWindow};
@@ -36,7 +36,7 @@ pub(crate) fn configure_demo_launch(app: &mut App) -> Result<(), String> {
 fn parse_startup(
     mut value: impl FnMut(&str) -> Option<String>,
 ) -> Result<super::VoxelGiStartup, String> {
-    use super::{RetentionPolicy, RetentionSummary, TransportBackend, VoxelGiStartup};
+    use super::{TransportBackend, VoxelGiStartup};
     let backend = match value("VOXEL_GI_BACKEND").as_deref() {
         None | Some("auto" | "gpu") => TransportBackend::Auto,
         Some("cpu") => TransportBackend::Cpu,
@@ -48,13 +48,7 @@ fn parse_startup(
             ));
         }
     };
-    let summary = RetentionSummary::launch(value("VOXEL_GI_RETENTION_SUMMARY").as_deref())?;
-    let retention = if super::retention::launch_enabled(value("VOXEL_GI_RETENTION").as_deref())? {
-        RetentionPolicy::WholeRange(summary)
-    } else {
-        RetentionPolicy::Legacy
-    };
-    Ok(VoxelGiStartup { backend, retention })
+    Ok(VoxelGiStartup { backend })
 }
 
 #[cfg(test)]
@@ -86,13 +80,7 @@ mod launch_tests {
                 .backend,
             super::super::TransportBackend::Synchronous
         );
-        for key in [
-            "VOXEL_GI_BACKEND",
-            "VOXEL_GI_RETENTION",
-            "VOXEL_GI_RETENTION_SUMMARY",
-        ] {
-            assert!(parse_startup(|k| (k == key).then(|| "typo".into())).is_err());
-        }
+        assert!(parse_startup(|k| (k == "VOXEL_GI_BACKEND").then(|| "typo".into())).is_err());
     }
 }
 

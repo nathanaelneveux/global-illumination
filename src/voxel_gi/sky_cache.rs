@@ -110,10 +110,6 @@ pub(crate) struct SkyCache {
     /// already have a still-valid pending measurement.
     pub deferred_results: bool,
     changes: HashMap<IVec3, (super::geometry::Bounds, f32)>,
-    #[cfg(debug_assertions)]
-    audit_sun: Vec<super::validation::retention_audit::SunEvidence>,
-    #[cfg(debug_assertions)]
-    audit_seen: bevy::platform::collections::HashSet<IVec3>,
 }
 
 impl SkyCache {
@@ -162,12 +158,6 @@ impl SkyCache {
                 )
             })
             .collect();
-        #[cfg(debug_assertions)]
-        let change = super::geometry::GeometryChange {
-            audit_sun: (!self.audit_sun.is_empty())
-                .then(|| Arc::new(std::mem::take(&mut self.audit_sun))),
-            ..change
-        };
         Some(change)
     }
 
@@ -224,14 +214,6 @@ impl SkyCache {
     pub fn store(&mut self, position: IVec3, value: [u32; 6]) {
         let corner = self.corners.get_mut(&position).expect("planned sky corner");
         if self.track_changes && (corner.value != value || value.contains(&0)) {
-            #[cfg(debug_assertions)]
-            if super::validation::retention_audit::enabled() {
-                use super::validation::retention_audit::{SunEvidence, SunKind};
-                self.audit_sun.push(SunEvidence {
-                    position,
-                    kind: SunKind::classify(!self.audit_seen.insert(position), corner.value, value),
-                });
-            }
             // Unknown is not black or unchanged. New/unknown corners contribute
             // conservative evidence; known equal values contribute none. Bounds
             // coalesce existing ray results, with no extra transport sampling.
@@ -244,7 +226,8 @@ impl SkyCache {
             } else {
                 (0..6)
                     .map(|face| {
-                        let d = super::sky::unpack(value[face]) - super::sky::unpack(corner.value[face]);
+                        let d = super::sky::unpack(value[face])
+                            - super::sky::unpack(corner.value[face]);
                         (0.2126_f32 * d.x + 0.7152 * d.y + 0.0722 * d.z).abs()
                     })
                     .fold(0.0, f32::max)
@@ -353,8 +336,6 @@ impl SkyCache {
                         let keep = has_receiver(scene, *position);
                         if !keep {
                             self.corners.remove(position);
-                            #[cfg(debug_assertions)]
-                            self.audit_seen.remove(position);
                         }
                         keep
                     });

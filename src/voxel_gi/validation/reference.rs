@@ -97,19 +97,6 @@ pub(super) struct ReferenceRun {
 }
 
 impl ReferenceRun {
-    pub fn start_retention(
-        &mut self,
-        snapshots: super::retention_audit::SceneSnapshots,
-        device: Option<&GpuTransportDevice>,
-        settings: &VoxelGiSettings,
-        output: PathBuf,
-    ) -> Result<(), String> {
-        self.task = Some(super::retention_audit::start_reference(
-            snapshots, device, settings, output,
-        )?);
-        Ok(())
-    }
-
     pub fn requested() -> bool {
         std::env::var_os("VOXEL_GI_VALIDATE_REFERENCE").is_some()
     }
@@ -150,7 +137,8 @@ impl ReferenceRun {
             Ok(value) => value
                 .split(',')
                 .map(|value| {
-                    value.parse::<usize>()
+                    value
+                        .parse::<usize>()
                         .ok()
                         .filter(|&index| index < sites.len())
                         .ok_or("REFERENCE_CPU_SITES must list valid receiver indices")

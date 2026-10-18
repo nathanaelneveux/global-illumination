@@ -48,42 +48,10 @@ const BAND_STARTS: [i64; BAND_COUNT] = {
     starts
 };
 
-#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
-pub enum SummaryMode {
-    /// Conservative comparison: evicted events retain the nearest possible cap.
-    Floors,
-    /// Default: preserve conservative distance information for evicted events.
-    #[default]
-    DistanceBands,
-}
-
-impl SummaryMode {
-    pub(super) fn launch(value: Option<&str>) -> Result<Self, String> {
-        match value {
-            Some("floors") => Ok(Self::Floors),
-            None | Some("distance-bands") => Ok(Self::DistanceBands),
-            Some(value) => Err(format!(
-                "unknown VOXEL_GI_RETENTION_SUMMARY={value:?}; choose floors or distance-bands"
-            )),
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Floors => "floors",
-            Self::DistanceBands => "distance-bands",
-        }
-    }
-}
-
-#[derive(Clone)]
-enum Summary {
-    Floors([u64; 2]),
-    /// Pages with no evictions need no band allocation. None has the same
-    /// meaning as all-zero revisions, including in immutable worker snapshots.
-    DistanceBands(Option<Box<Bands>>),
-}
+/// Distance bands of evicted events. Pages with no evictions need no band
+/// allocation: None means all-zero revisions, including in worker snapshots.
+#[derive(Clone, Default)]
+struct Summary(Option<Box<Bands>>);
 
 /// Newest revision per distance band and origin, plus the largest flux folded
 /// into it (an upper bound for measured retention; never reset, conservative).
@@ -94,41 +62,29 @@ struct Bands {
 }
 
 impl Summary {
-    fn new(mode: SummaryMode) -> Self {
-        match mode {
-            SummaryMode::Floors => Self::Floors([0; 2]),
-            SummaryMode::DistanceBands => Self::DistanceBands(None),
-        }
-    }
-
     fn fold(&mut self, event: &Event) {
-        let distance = event.page_distance_squared;
-        let stamp = match self {
-            Self::Floors(stamps) => &mut stamps[event.origin as usize],
-            Self::DistanceBands(bands) => {
-                let band = BAND_STARTS.partition_point(|start| *start <= distance) - 1;
-                let bands = bands.get_or_insert_with(|| {
-                    Box::new(Bands {
-                        revisions: [[0; BAND_COUNT]; 2],
-                        flux: [[0.0; BAND_COUNT]; 2],
-                    })
-                });
-                // Loads scale with height above a receiver: fold their maximum.
-                let flux = event
-                    .weights
-                    .iter()
-                    .map(|w| match w.kind {
-                        super::geometry::ChangeKind::Unknown => f32::INFINITY,
-                        super::geometry::ChangeKind::Load { .. } => w.flux * super::world::REGION_EDGE as f32,
-                        _ => w.flux,
-                    })
-                    .fold(0.0, f32::max);
-                let slot = &mut bands.flux[event.origin as usize][band];
-                *slot = slot.max(flux);
-                &mut bands.revisions[event.origin as usize][band]
-            }
-        };
-        *stamp = event.revision;
+        let band = BAND_STARTS.partition_point(|start| *start <= event.page_distance_squared) - 1;
+        let bands = self.0.get_or_insert_with(|| {
+            Box::new(Bands {
+                revisions: [[0; BAND_COUNT]; 2],
+                flux: [[0.0; BAND_COUNT]; 2],
+            })
+        });
+        // Loads scale with height above a receiver: fold their maximum.
+        let flux = event
+            .weights
+            .iter()
+            .map(|w| match w.kind {
+                super::geometry::ChangeKind::Unknown => f32::INFINITY,
+                super::geometry::ChangeKind::Load { .. } => {
+                    w.flux * super::world::REGION_EDGE as f32
+                }
+                _ => w.flux,
+            })
+            .fold(0.0, f32::max);
+        let slot = &mut bands.flux[event.origin as usize][band];
+        *slot = slot.max(flux);
+        bands.revisions[event.origin as usize][band] = event.revision;
     }
 
     /// The newest revision in each band suffices: if it was consumed, all
@@ -137,61 +93,34 @@ impl Summary {
     /// unconsumed event's cap relative to its exact receiver distance.
     fn caps(&self, since: u64) -> [u32; 2] {
         let mut caps = [u32::MAX; 2];
-        match self {
-            Self::Floors(stamps) => {
-                for (cap, revision) in caps.iter_mut().zip(stamps) {
-                    if *revision > since {
-                        *cap = limit(0);
-                    }
+        if let Some(bands) = &self.0 {
+            for (cap, revisions) in caps.iter_mut().zip(&bands.revisions) {
+                if let Some(band) = revisions.iter().position(|revision| *revision > since) {
+                    *cap = limit(BAND_STARTS[band]);
                 }
             }
-            Self::DistanceBands(Some(bands)) => {
-                for i in 0..caps.len() {
-                    if let Some(band) = bands.revisions[i].iter().position(|revision| *revision > since) {
-                        caps[i] = limit(BAND_STARTS[band]);
-                    }
-                }
-            }
-            Self::DistanceBands(None) => {}
         }
         caps
     }
 
     /// Predicted change from evicted events not yet consumed: each band's
-    /// largest flux at that band's (rounded-down) distance. None for floors.
+    /// largest flux at that band's (rounded-down) distance.
     fn change(&self, since: u64) -> Option<f32> {
-        match self {
-            Self::Floors(stamps) => stamps.iter().all(|r| *r <= since).then_some(0.0),
-            Self::DistanceBands(None) => Some(0.0),
-            Self::DistanceBands(Some(bands)) => {
-                let mut total = 0.0f32;
-                for i in 0..2 {
-                    for band in 0..BAND_COUNT {
-                        if bands.revisions[i][band] > since {
-                            let flux = bands.flux[i][band];
-                            if !flux.is_finite() {
-                                return None;
-                            }
-                            total += flux / (std::f32::consts::PI * BAND_STARTS[band].max(1) as f32);
-                        }
+        let Some(bands) = &self.0 else {
+            return Some(0.0);
+        };
+        let mut total = 0.0f32;
+        for (revisions, flux) in bands.revisions.iter().zip(&bands.flux) {
+            for ((revision, flux), start) in revisions.iter().zip(flux).zip(BAND_STARTS) {
+                if *revision > since {
+                    if !flux.is_finite() {
+                        return None;
                     }
+                    total += flux / (std::f32::consts::PI * start.max(1) as f32);
                 }
-                Some(total)
             }
         }
-    }
-}
-
-/// Demo launch comparison. The library's ledger itself does not read process
-/// environment, and an invalid choice must not silently benchmark another arm.
-pub(super) fn launch_enabled(value: Option<&str>) -> Result<bool, String> {
-    match value {
-        // Preserve the previous spelling as an alias, not the old equation.
-        None | Some("whole-range" | "calibrated") => Ok(true),
-        Some("baseline") => Ok(false),
-        Some(value) => Err(format!(
-            "unknown VOXEL_GI_RETENTION={value:?}; choose whole-range or baseline (calibrated is an alias)"
-        )),
+        Some(total)
     }
 }
 
@@ -227,8 +156,6 @@ struct Event {
     /// is never farther than any member. None if any weight is unknown.
     aggregate: Option<Aggregate>,
     page_distance_squared: i64,
-    #[cfg(debug_assertions)]
-    audit_sun: Option<Arc<Vec<super::validation::retention_audit::SunEvidence>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -245,7 +172,10 @@ impl Aggregate {
     fn new(bounds: &[Bounds], weights: &[ChangeWeight]) -> Option<Self> {
         use super::geometry::ChangeKind;
         let mut aggregate = Self {
-            bounds: Bounds { min: IVec3::MAX, max: IVec3::MIN },
+            bounds: Bounds {
+                min: IVec3::MAX,
+                max: IVec3::MIN,
+            },
             flux: 0.0,
             load_flux: 0.0,
             load_top: i32::MIN,
@@ -274,55 +204,22 @@ impl Aggregate {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct PageHistory {
     /// Refresh evidence has its own stamp: a page-wide no-cut event needs no
     /// bounds record, but may still wake receivers that have not observed it.
     latest_revision: u64,
     events: VecDeque<Event>,
     summary: Summary,
-    /// Only opt-in watched pages retain this diagnostic shadow journal. It
-    /// cannot change the eight-event production journal or its fallback.
-    #[cfg(debug_assertions)]
-    audit_events: VecDeque<Event>,
-    #[cfg(debug_assertions)]
-    audit_dropped: u64,
-}
-
-impl PageHistory {
-    fn new(mode: SummaryMode) -> Self {
-        Self {
-            latest_revision: 0,
-            events: VecDeque::new(),
-            summary: Summary::new(mode),
-            #[cfg(debug_assertions)]
-            audit_events: VecDeque::new(),
-            #[cfg(debug_assertions)]
-            audit_dropped: 0,
-        }
-    }
 }
 
 #[derive(Default)]
 pub(super) struct SpatialHistory {
     revision: u64,
-    mode: SummaryMode,
     pages: HashMap<IVec3, Arc<PageHistory>>,
 }
 
 impl SpatialHistory {
-    pub fn new(mode: SummaryMode) -> Self {
-        Self {
-            mode,
-            ..Default::default()
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    pub fn summary_mode(&self) -> SummaryMode {
-        self.mode
-    }
-
     pub fn record(&mut self, change: GeometryChange, origin: Origin) {
         if change.nearby.is_empty() {
             return;
@@ -333,14 +230,9 @@ impl SpatialHistory {
             .expect("retention revision exhausted");
         for (page, changes) in change.nearby {
             // A worker holds immutable page snapshots, never this world map.
-            // Copy-on-write clones at most eight production event headers and
-            // an allocated summary, not bounds. Opt-in attribution has a larger
-            // diagnostic-only sidecar.
-            let history = Arc::make_mut(
-                self.pages
-                    .entry(page)
-                    .or_insert_with(|| Arc::new(PageHistory::new(self.mode))),
-            );
+            // Copy-on-write clones at most eight event headers and an
+            // allocated summary, not bounds.
+            let history = Arc::make_mut(self.pages.entry(page).or_default());
             history.latest_revision = self.revision;
             // The page separation lower-bounds every receiver's distance. If
             // even that distance permits unlimited history, this event cannot
@@ -355,7 +247,13 @@ impl SpatialHistory {
             let weights: Vec<_> = changes
                 .bounds
                 .iter()
-                .map(|b| change.weights.get(b).copied().unwrap_or(ChangeWeight::UNKNOWN))
+                .map(|b| {
+                    change
+                        .weights
+                        .get(b)
+                        .copied()
+                        .unwrap_or(ChangeWeight::UNKNOWN)
+                })
                 .collect();
             history.events.push_back(Event {
                 revision: self.revision,
@@ -366,18 +264,7 @@ impl SpatialHistory {
                 weights: Arc::new(weights),
                 bounds: Arc::new(changes.bounds),
                 page_distance_squared: changes.minimum_distance_squared,
-                #[cfg(debug_assertions)]
-                audit_sun: change.audit_sun.clone(),
             });
-            #[cfg(debug_assertions)]
-            if super::validation::retention_audit::watches_page(page) {
-                if history.audit_events.len() == 1024 {
-                    history.audit_dropped = history.audit_events.pop_front().unwrap().revision;
-                }
-                history
-                    .audit_events
-                    .push_back(history.events.back().unwrap().clone());
-            }
         }
     }
 
@@ -408,39 +295,6 @@ pub(super) struct Snapshot {
 }
 
 impl Snapshot {
-    /// Full-scan diagnostic decomposition. The production cap still comes from
-    /// `limit`; raw-corner categories do not alter coalescing or journal order.
-    #[cfg(debug_assertions)]
-    pub fn explain(
-        &self,
-        voxel: IVec3,
-        since: u64,
-    ) -> super::validation::retention_audit::Decision {
-        use super::validation::retention_audit::Decision;
-        let mut result = Decision::new(since, self.revision);
-        if let Some(page) = &self.page {
-            result.caps[2..4].copy_from_slice(&page.summary.caps(since));
-            for event in page.events.iter().filter(|event| event.revision > since) {
-                event.explain(voxel, &mut result);
-            }
-            if !page.audit_events.is_empty() && since >= page.audit_dropped {
-                let mut unfolded = Decision::new(since, self.revision);
-                for event in page
-                    .audit_events
-                    .iter()
-                    .rev()
-                    .take_while(|e| e.revision > since)
-                {
-                    event.explain(voxel, &mut unfolded);
-                }
-                unfolded.cap = unfolded.caps[0].min(unfolded.caps[1]);
-                result.unfolded = Some(Box::new(unfolded));
-            }
-        }
-        result.cap = self.limit(voxel, since);
-        result
-    }
-
     pub fn pending(&self, since: u64) -> bool {
         self.page
             .as_ref()
@@ -453,7 +307,11 @@ impl Snapshot {
         let Some(page) = &self.page else {
             return Some(0.0);
         };
-        if page.events.back().is_none_or(|event| event.revision <= since) {
+        if page
+            .events
+            .back()
+            .is_none_or(|event| event.revision <= since)
+        {
             return Some(0.0);
         }
         let mut total = page.summary.change(since)?;
@@ -499,27 +357,6 @@ impl Snapshot {
     }
 }
 
-#[cfg(debug_assertions)]
-impl Event {
-    fn explain(&self, voxel: IVec3, result: &mut super::validation::retention_audit::Decision) {
-        let index = usize::from(matches!(self.origin, Origin::Sunlight));
-        result.caps[index] = result.caps[index].min(bounds_limit(voxel, &self.bounds));
-        for bounds in self.bounds.iter() {
-            result.distance_squared[index] =
-                result.distance_squared[index].min(bounds.distance_squared(Bounds::point(voxel)));
-        }
-        if let Some(evidence) = &self.audit_sun {
-            for point in evidence.iter() {
-                let distance = Bounds::point(point.position).distance_squared(Bounds::point(voxel));
-                let index = 4 + point.kind as usize;
-                result.caps[index] = result.caps[index].min(limit(distance));
-                result.distance_squared[index - 2] =
-                    result.distance_squared[index - 2].min(distance);
-            }
-        }
-    }
-}
-
 fn bounds_limit(voxel: IVec3, bounds: &[Bounds]) -> u32 {
     let mut nearest = i64::MAX;
     for bound in bounds {
@@ -536,15 +373,6 @@ fn bounds_limit(voxel: IVec3, bounds: &[Bounds]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn qualified_policy_is_default_and_control_is_explicit() {
-        assert_eq!(launch_enabled(None), Ok(true));
-        assert_eq!(launch_enabled(Some("whole-range")), Ok(true));
-        assert_eq!(launch_enabled(Some("calibrated")), Ok(true));
-        assert_eq!(launch_enabled(Some("baseline")), Ok(false));
-        assert!(launch_enabled(Some("typo")).is_err());
-    }
 
     #[test]
     fn short_circuit_queries_match_full_bound_scans() {
@@ -589,17 +417,32 @@ mod tests {
             change.weights.insert(Bounds::point(point), weight);
             change
         };
-        let mut history = SpatialHistory::new(SummaryMode::DistanceBands);
+        let mut history = SpatialHistory::default();
         history.record(
-            weighted(IVec3::ZERO, ChangeWeight { kind: ChangeKind::Edit { voxels: 1 }, flux: 10.0 }),
+            weighted(
+                IVec3::ZERO,
+                ChangeWeight {
+                    kind: ChangeKind::Edit { voxels: 1 },
+                    flux: 10.0,
+                },
+            ),
             Origin::Geometry,
         );
-        let change = history.snapshot(IVec3::new(10, 0, 0)).change(IVec3::new(10, 0, 0), 0).unwrap();
+        let change = history
+            .snapshot(IVec3::new(10, 0, 0))
+            .change(IVec3::new(10, 0, 0), 0)
+            .unwrap();
         assert!((change - 10.0 / (std::f32::consts::PI * 100.0)).abs() < 1e-6);
         // A load whose top solid voxel is below the receiver replaces no sky it saw.
-        let mut loads = SpatialHistory::new(SummaryMode::DistanceBands);
+        let mut loads = SpatialHistory::default();
         loads.record(
-            weighted(IVec3::new(0, 5, 0), ChangeWeight { kind: ChangeKind::Load { top: 5 }, flux: 2.0 }),
+            weighted(
+                IVec3::new(0, 5, 0),
+                ChangeWeight {
+                    kind: ChangeKind::Load { top: 5 },
+                    flux: 2.0,
+                },
+            ),
             Origin::Geometry,
         );
         let above = IVec3::new(4, 12, 0);
@@ -607,21 +450,39 @@ mod tests {
         let below = IVec3::new(4, 0, 0);
         let expected = 2.0 * 6.0 / (std::f32::consts::PI * (16 + 25) as f32);
         assert!((loads.snapshot(below).change(below, 0).unwrap() - expected).abs() < 1e-6);
-        let mut air = SpatialHistory::new(SummaryMode::DistanceBands);
+        let mut air = SpatialHistory::default();
         air.record(
-            weighted(IVec3::ZERO, ChangeWeight { kind: ChangeKind::Load { top: i32::MIN }, flux: 2.0 }),
+            weighted(
+                IVec3::ZERO,
+                ChangeWeight {
+                    kind: ChangeKind::Load { top: i32::MIN },
+                    flux: 2.0,
+                },
+            ),
             Origin::Geometry,
         );
         assert_eq!(air.snapshot(IVec3::ONE).change(IVec3::ONE, 0), Some(0.0));
         // Unloads predict nothing; unknown flux falls back to the curve.
-        let mut unload = SpatialHistory::new(SummaryMode::DistanceBands);
-        unload.record(weighted(IVec3::ZERO, ChangeWeight { kind: ChangeKind::Unload, flux: 0.0 }), Origin::Geometry);
+        let mut unload = SpatialHistory::default();
+        unload.record(
+            weighted(
+                IVec3::ZERO,
+                ChangeWeight {
+                    kind: ChangeKind::Unload,
+                    flux: 0.0,
+                },
+            ),
+            Origin::Geometry,
+        );
         assert_eq!(unload.snapshot(IVec3::ONE).change(IVec3::ONE, 0), Some(0.0));
-        let mut unknown = SpatialHistory::new(SummaryMode::DistanceBands);
+        let mut unknown = SpatialHistory::default();
         unknown.record(event(IVec3::ZERO, IVec3::ZERO), Origin::Geometry);
         assert_eq!(unknown.snapshot(IVec3::ONE).change(IVec3::ONE, 0), None);
         // Consumed evidence predicts no change.
-        assert_eq!(history.snapshot(IVec3::ONE).change(IVec3::ONE, 1), Some(0.0));
+        assert_eq!(
+            history.snapshot(IVec3::ONE).change(IVec3::ONE, 1),
+            Some(0.0)
+        );
     }
 
     #[test]
@@ -672,97 +533,6 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_decomposition_matches_production_across_overflow_and_epochs() {
-        let mut history = SpatialHistory::default();
-        for i in 0..24 {
-            history.record(
-                event(IVec3::ZERO, IVec3::new(i * 17, 0, 0)),
-                if i % 3 == 0 {
-                    Origin::Geometry
-                } else {
-                    Origin::Sunlight
-                },
-            );
-            for since in 0..=history.revision {
-                for x in [-300, -48, 0, 48, 128, 192, 256, 384] {
-                    let voxel = IVec3::new(x, 0, 0);
-                    let snapshot = history.snapshot(voxel);
-                    let decision = snapshot.explain(voxel, since);
-                    assert_eq!(decision.cap, snapshot.limit(voxel, since));
-                    assert_eq!(decision.cap, *decision.caps[..4].iter().min().unwrap());
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn raw_sun_evidence_is_diagnostic_and_does_not_split_production_events() {
-        use super::super::validation::retention_audit::{SunEvidence, SunKind};
-        let mut history = SpatialHistory::default();
-        let mut change = event(IVec3::ZERO, IVec3::ZERO);
-        change.audit_sun = Some(Arc::new(vec![
-            SunEvidence {
-                position: IVec3::ZERO,
-                kind: SunKind::FirstMeasurement,
-            },
-            SunEvidence {
-                position: IVec3::splat(1000),
-                kind: SunKind::KnownChange,
-            },
-        ]));
-        history.record(change, Origin::Sunlight);
-        let result = history.snapshot(IVec3::ZERO).explain(IVec3::ZERO, 0);
-        assert_eq!(result.revision, 1);
-        assert_eq!(result.cap, 0);
-        assert_eq!(result.caps[4], u32::MAX);
-        assert_eq!(result.caps[5], 0);
-        assert_eq!(result.caps[0], u32::MAX);
-    }
-
-    #[test]
-    fn shadow_journal_measures_lost_distance_without_changing_the_cap() {
-        let old = Event {
-            revision: 1,
-            origin: Origin::Geometry,
-            bounds: Arc::new(vec![Bounds::point(IVec3::new(128, 0, 0))]),
-weights: Arc::new(Vec::new()),
-            aggregate: None,
-            page_distance_squared: 97 * 97,
-            audit_sun: None,
-        };
-        let latest = Event {
-            revision: 2,
-            origin: Origin::Geometry,
-            bounds: Arc::new(vec![Bounds::point(IVec3::new(200, 0, 0))]),
-weights: Arc::new(Vec::new()),
-            aggregate: None,
-            page_distance_squared: 169 * 169,
-            audit_sun: None,
-        };
-        let mut page = PageHistory {
-            latest_revision: 2,
-            events: VecDeque::from([latest.clone()]),
-            summary: Summary::Floors([1, 0]),
-            audit_events: VecDeque::from([old, latest]),
-            audit_dropped: 0,
-        };
-        let snapshot = Snapshot {
-            revision: 2,
-            page: Some(Arc::new(page.clone())),
-        };
-        let decision = snapshot.explain(IVec3::ZERO, 0);
-        assert_eq!(decision.cap, 0);
-        assert_eq!(decision.unfolded.unwrap().cap, 12945);
-        assert_eq!(snapshot.limit(IVec3::ZERO, 0), 0);
-        page.audit_dropped = 1;
-        let snapshot = Snapshot {
-            revision: 2,
-            page: Some(Arc::new(page)),
-        };
-        assert!(snapshot.explain(IVec3::ZERO, 0).unfolded.is_none());
-    }
-
-    #[test]
     fn unrelated_streaming_never_evicts_local_evidence_but_local_overflow_is_conservative() {
         let mut history = SpatialHistory::default();
         history.record(event(IVec3::ZERO, IVec3::new(64, 0, 0)), Origin::Geometry);
@@ -785,40 +555,17 @@ weights: Arc::new(Vec::new()),
     }
 
     #[test]
-    fn summary_launch_control_is_explicit() {
-        assert_eq!(SummaryMode::launch(None), Ok(SummaryMode::DistanceBands));
-        assert_eq!(SummaryMode::default(), SummaryMode::DistanceBands);
-        assert_eq!(SummaryMode::launch(Some("floors")), Ok(SummaryMode::Floors));
-        assert_eq!(
-            SummaryMode::launch(Some("distance-bands")),
-            Ok(SummaryMode::DistanceBands)
-        );
-        assert!(SummaryMode::launch(Some("typo")).is_err());
-    }
-
-    #[test]
-    fn bands_allocate_only_on_overflow_and_match_the_control_before_it() {
+    fn bands_allocate_only_on_overflow() {
         let voxel = IVec3::ZERO;
-        let mut control = SpatialHistory::new(SummaryMode::Floors);
-        let mut candidate = SpatialHistory::new(SummaryMode::DistanceBands);
+        let mut candidate = SpatialHistory::default();
         for i in 0..PAGE_EVENTS {
             let point = IVec3::new(199 + i as i32, 0, 0);
-            control.record(event(voxel, point), Origin::Geometry);
             candidate.record(event(voxel, point), Origin::Geometry);
-            assert!(matches!(
-                candidate.pages[&voxel].summary,
-                Summary::DistanceBands(None)
-            ));
-            for since in 0..=candidate.revision {
-                assert_eq!(candidate.query(voxel, since), control.query(voxel, since));
-            }
+            assert!(candidate.pages[&voxel].summary.0.is_none());
         }
         let snapshot = candidate.snapshot(voxel);
         candidate.record(event(voxel, IVec3::new(212, 0, 0)), Origin::Geometry);
-        assert!(matches!(
-            candidate.pages[&voxel].summary,
-            Summary::DistanceBands(Some(_))
-        ));
+        assert!(candidate.pages[&voxel].summary.0.is_some());
         assert_eq!(snapshot.limit(voxel, 0), u32::MAX);
         assert_eq!(candidate.query(voxel, 0).1, 38416);
         assert_eq!(candidate.query(voxel, 1).1, u32::MAX);
@@ -829,7 +576,7 @@ weights: Arc::new(Vec::new()),
         // Page [0,31] is 48 voxels from the change, but this receiver is 79
         // away. Folding one event earlier reduces its distance lower bound.
         let voxel = IVec3::ZERO;
-        let mut history = SpatialHistory::new(SummaryMode::DistanceBands);
+        let mut history = SpatialHistory::default();
         history.record(event(voxel, IVec3::new(79, 0, 0)), Origin::Geometry);
         for _ in 1..PAGE_EVENTS {
             history.record(event(voxel, IVec3::new(200, 0, 0)), Origin::Geometry);
@@ -851,10 +598,9 @@ weights: Arc::new(Vec::new()),
             revision: 1,
             origin: Origin::Geometry,
             bounds: Arc::new(Vec::new()),
-weights: Arc::new(Vec::new()),
+            weights: Arc::new(Vec::new()),
             aggregate: None,
             page_distance_squared: 0,
-            audit_sun: None,
         };
         for _ in 0..PAGE_EVENTS {
             events.push_back(empty.clone());
@@ -895,10 +641,7 @@ weights: Arc::new(Vec::new()),
             }
             let snapshot = history.snapshot(voxel);
             assert_eq!(history.pages[&voxel].events.len(), 1);
-            assert!(matches!(
-                history.pages[&voxel].summary,
-                Summary::DistanceBands(None)
-            ));
+            assert!(history.pages[&voxel].summary.0.is_none());
             assert_eq!(snapshot.limit(voxel, 0), 809);
             assert_eq!(snapshot.limit(voxel, 1), u32::MAX);
             assert!(snapshot.pending(32));
@@ -907,8 +650,6 @@ weights: Arc::new(Vec::new()),
                 !before.pending(1),
                 "in-flight snapshots must not consume newer wakeups"
             );
-            let decision = snapshot.explain(voxel, 0);
-            assert_eq!(decision.cap, *decision.caps[..4].iter().min().unwrap());
             history.retire(voxel);
             assert!(snapshot.pending(1));
             assert!(!history.snapshot(voxel).pending(1));
@@ -926,10 +667,7 @@ weights: Arc::new(Vec::new()),
             );
             assert!(history.pages[&page].events.is_empty());
             assert_eq!(history.pages[&page].events.capacity(), 0);
-            assert!(matches!(
-                history.pages[&page].summary,
-                Summary::DistanceBands(None)
-            ));
+            assert!(history.pages[&page].summary.0.is_none());
             let snapshot = history.snapshot(voxel);
             assert!(snapshot.pending(0));
             assert_eq!(snapshot.limit(voxel, 0), u32::MAX);
@@ -969,10 +707,9 @@ weights: Arc::new(Vec::new()),
     }
 
     #[test]
-    fn banded_journal_is_between_floor_control_and_exact_history_at_every_epoch() {
+    fn banded_journal_never_exceeds_exact_history_at_every_epoch() {
         for page in [IVec3::splat(-3), IVec3::ZERO, IVec3::new(5, -2, 1)] {
-            let mut control = SpatialHistory::new(SummaryMode::Floors);
-            let mut candidate = SpatialHistory::new(SummaryMode::DistanceBands);
+            let mut candidate = SpatialHistory::default();
             let mut exact = Vec::new();
             for i in 0..40 {
                 let point = page * 32 + IVec3::new((i * 59) % 330 - 16, (i * 11) % 80, -12);
@@ -982,7 +719,6 @@ weights: Arc::new(Vec::new()),
                     Origin::Sunlight
                 };
                 exact.push((origin, point));
-                control.record(event(page, point), origin);
                 candidate.record(event(page, point), origin);
                 for since in 0..=candidate.revision {
                     for x in [0, 15, 31] {
@@ -1001,9 +737,7 @@ weights: Arc::new(Vec::new()),
                                     .min()
                                     .unwrap_or(u32::MAX);
                                 let cap = candidate.query(voxel, since).1;
-                                assert!(control.query(voxel, since).1 <= cap && cap <= full);
-                                let explanation = candidate.snapshot(voxel).explain(voxel, since);
-                                assert_eq!(cap, *explanation.caps[..4].iter().min().unwrap());
+                                assert!(cap <= full);
                             }
                         }
                     }
@@ -1015,7 +749,7 @@ weights: Arc::new(Vec::new()),
     #[test]
     fn consumed_near_bands_do_not_poison_new_far_events_or_worker_snapshots() {
         let voxel = IVec3::ZERO;
-        let mut history = SpatialHistory::new(SummaryMode::DistanceBands);
+        let mut history = SpatialHistory::default();
         history.record(event(voxel, voxel), Origin::Geometry);
         let before = history.snapshot(voxel);
         for _ in 0..20 {

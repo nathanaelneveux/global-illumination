@@ -85,19 +85,14 @@ pub(super) fn apply_scene_task(
         runtime.scene = result.scene.clone();
         runtime.generation = runtime.generation.wrapping_add(1);
         if let Some(mut change) = result.geometry_change.take() {
-            let from = field.transport_revision;
             advance_transport_revision(&mut runtime, &mut field);
-            if runtime.spatial_history.is_some() {
-                finalize_change_flux(&mut change, &field, &runtime.materials, &runtime.sources);
-            }
-            if let Some(history) = &mut runtime.spatial_history {
-                change.nearby.retain(|page, _| field.pages.contains_key(page));
-                history.record(change, super::retention::Origin::Geometry);
-            } else {
-                runtime
-                    .geometry_history
-                    .record(from, field.transport_revision, change);
-            }
+            finalize_change_flux(&mut change, &field, &runtime.materials, &runtime.sources);
+            change
+                .nearby
+                .retain(|page, _| field.pages.contains_key(page));
+            runtime
+                .spatial_history
+                .record(change, super::retention::Origin::Geometry);
         }
         field
             .publishing_pages
@@ -160,10 +155,8 @@ pub(super) fn publish_scene_page(
     descriptors: Vec<SurfaceProbeDescriptor>,
 ) {
     let started = Instant::now();
-    if descriptors.is_empty()
-        && let Some(history) = &mut runtime.spatial_history
-    {
-        history.retire(page);
+    if descriptors.is_empty() {
+        runtime.spatial_history.retire(page);
     }
     // Worker scans include touching pages, even when their exposed topology
     // did not change. Preserve their allocations, indices and measurements
@@ -779,7 +772,10 @@ fn finalize_change_flux(
                     let max = bounds.max + IVec3::ONE;
                     let size = (max - min + IVec3::ONE).max(IVec3::ONE);
                     let positions = 64usize.min(budget);
-                    let step = ((size.element_product() as f32 / positions as f32).cbrt().ceil() as i32).max(1);
+                    let step = ((size.element_product() as f32 / positions as f32)
+                        .cbrt()
+                        .ceil() as i32)
+                        .max(1);
                     let mut z = min.z;
                     'scan: while z <= max.z {
                         let mut y = min.y;

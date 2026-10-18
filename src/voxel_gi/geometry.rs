@@ -1,17 +1,17 @@
-//! Shared edit/streaming history policy. Distance controls retained statistical
-//! weight, never visibility or whether a receiver must refresh. Plans are built
-//! on the scene worker; selection checks only nearby changes in its page bin.
+//! Edit/streaming change plans for retention. Each change is binned to nearby
+//! receiver pages with a flux bound; distance and flux control retained
+//! statistical weight, never visibility or whether a receiver must refresh.
 use bevy::math::I64Vec3;
 use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 
 use super::world::{AIR, PAGE_EDGE, REGION_EDGE, TransportScene};
-#[cfg(debug_assertions)]
-use std::sync::Arc;
 
+/// Exact edits requeue receivers within this radius urgently, and probes whose
+/// own faces change cap their CPU-side sample estimate to `NEAR_HISTORY`. A
+/// scheduling hint only: retained GPU weight comes from measured retention.
 pub(super) const RELIGHT_RADIUS: i32 = 48;
 pub(super) const NEAR_HISTORY: u32 = 16;
-const FAR_HISTORY: u32 = 256;
 pub(super) const UNTRACKED_HISTORY: u32 = 64;
 
 /// What a change can do to existing receivers' light, for measured retention.
@@ -23,11 +23,15 @@ pub(super) enum ChangeKind {
     Unknown,
     /// Voxel content changed. The scene worker adds emission; publication adds
     /// the light falling on the edited surfaces, from the field.
-    Edit { voxels: u32 },
+    Edit {
+        voxels: u32,
+    },
     /// A region loaded. Only terrain above a receiver can replace sky it saw
     /// (rays into unloaded space are excluded, not black), so the flux is per
     /// unit of height above the receiver, up to the region's top solid voxel.
-    Load { top: i32 },
+    Load {
+        top: i32,
+    },
     /// A region unloaded: its samples now become unknown, not contradicted.
     Unload,
     /// Shared-corner sunlight changed by this luminance flux.
@@ -52,8 +56,9 @@ impl ChangeWeight {
             ChangeKind::Unknown => return None,
             ChangeKind::Unload => return Some(0.0),
             // An air-only load (no top voxel) replaces no sky.
-            ChangeKind::Load { top } => (i64::from(top) + 1 - i64::from(receiver_y))
-                .clamp(0, i64::from(REGION_EDGE)) as f32,
+            ChangeKind::Load { top } => {
+                (i64::from(top) + 1 - i64::from(receiver_y)).clamp(0, i64::from(REGION_EDGE)) as f32
+            }
             ChangeKind::Edit { .. } | ChangeKind::Light => 1.0,
         };
         Some(self.flux * area / (std::f32::consts::PI * (distance_squared.max(1) as f32)))
@@ -68,7 +73,10 @@ pub(super) struct SceneChanges {
     pub transport: Option<GeometryChange>,
 }
 
-fn emission_luminance(materials: Option<&super::world::VoxelMaterialTransportTable>, material: u16) -> f32 {
+fn emission_luminance(
+    materials: Option<&super::world::VoxelMaterialTransportTable>,
+    material: u16,
+) -> f32 {
     if material == AIR {
         return 0.0;
     }
@@ -81,15 +89,11 @@ fn emission_luminance(materials: Option<&super::world::VoxelMaterialTransportTab
 impl SceneChanges {
     #[cfg(test)]
     pub fn between(previous: &TransportScene, next: &TransportScene) -> Self {
-        Self::with_radius(previous, next, RELIGHT_RADIUS)
+        Self::with_materials(previous, next, RELIGHT_RADIUS, None)
     }
 
-    pub fn with_radius(previous: &TransportScene, next: &TransportScene, radius: i32) -> Self {
-        Self::with_materials(previous, next, radius, None)
-    }
-
-    /// As `with_radius`, also weighting each change for measured retention:
-    /// emission deltas need the material table.
+    /// Bin changes within `radius` of each receiver page and weight each for
+    /// measured retention: emission deltas need the material table.
     pub fn with_materials(
         previous: &TransportScene,
         next: &TransportScene,
@@ -138,12 +142,15 @@ impl SceneChanges {
                 }
                 tight.min = tight.min.min(extent.min);
                 tight.max = tight.max.max(extent.max);
-                let volume = (extent.max - extent.min + IVec3::ONE).element_product().max(1) as u32;
+                let volume = (extent.max - extent.min + IVec3::ONE)
+                    .element_product()
+                    .max(1) as u32;
                 changed_voxels = changed_voxels.saturating_add(volume);
                 // Six faces bound the emitting area a voxel can expose.
-                emission_flux += (emission_luminance(materials, a) - emission_luminance(materials, b)).abs()
-                    * 6.0
-                    * volume as f32;
+                emission_flux +=
+                    (emission_luminance(materials, a) - emission_luminance(materials, b)).abs()
+                        * 6.0
+                        * volume as f32;
             };
             let uniform_before = before.map_or(Some(AIR), |r| r.uniform_material());
             let uniform_after = after.map_or(Some(AIR), |r| r.uniform_material());
@@ -194,7 +201,11 @@ impl SceneChanges {
                         voxels: changed_voxels,
                     }
                 };
-                let flux = if matches!(kind, ChangeKind::Edit { .. }) { emission_flux } else { 0.0 };
+                let flux = if matches!(kind, ChangeKind::Edit { .. }) {
+                    emission_flux
+                } else {
+                    0.0
+                };
                 weights.insert(change, ChangeWeight { kind, flux });
                 bounds.push(change);
             }
@@ -272,17 +283,9 @@ pub(super) struct GeometryChange {
     /// Measured-retention weight of each change bounds. Missing entries are
     /// unknown and fall back to the distance curve.
     pub weights: HashMap<Bounds, ChangeWeight>,
-    /// Optional raw sunlight evidence for diagnostics; never selects a cap.
-    #[cfg(debug_assertions)]
-    pub audit_sun: Option<Arc<Vec<super::validation::retention_audit::SunEvidence>>>,
 }
 
 impl GeometryChange {
-    #[cfg(test)]
-    pub fn between(previous: &TransportScene, next: &TransportScene) -> Option<Self> {
-        SceneChanges::between(previous, next).transport
-    }
-
     pub fn from_bounds(previous: &TransportScene, changes: &[Bounds], radius: i32) -> Self {
         if changes.is_empty() || previous.regions.is_empty() {
             return Self::default();
@@ -389,23 +392,6 @@ impl GeometryChange {
         }
         plan
     }
-
-    fn history_limit(&self, voxel: IVec3) -> u32 {
-        if self
-            .nearby
-            .get(&super::page_of(voxel))
-            .is_some_and(|changes| {
-                changes.bounds.iter().any(|bounds| {
-                    bounds.distance_squared(Bounds::point(voxel))
-                        <= i64::from(RELIGHT_RADIUS).pow(2)
-                })
-            })
-        {
-            NEAR_HISTORY
-        } else {
-            FAR_HISTORY
-        }
-    }
 }
 
 /// Inclusive page span in the supported i32 voxel domain. Widen before padding
@@ -424,39 +410,10 @@ fn expanded_page_range(change: Bounds, radius: i32) -> (IVec3, IVec3) {
     (min.as_ivec3(), max.as_ivec3())
 }
 
-#[derive(Default)]
-pub(super) struct GeometryHistory(super::revision::ChangeHistory<GeometryChange>);
-
-impl GeometryHistory {
-    pub fn record(&mut self, from: u64, to: u64, change: GeometryChange) {
-        self.0.record(from, to, change);
-    }
-
-    /// Distance determines retained weight, not freshness. Combine every
-    /// intervening delta; source-revision gaps or evictions use a conservative cap.
-    pub fn history_limit(&self, voxel: IVec3, from: u64, to: u64) -> u32 {
-        if from == to {
-            return UNTRACKED_HISTORY;
-        }
-        let mut limit = FAR_HISTORY;
-        let complete = self.0.visit_since(from, to, |change| {
-            limit = limit.min(change.history_limit(voxel));
-        });
-        if complete {
-            limit
-        } else {
-            limit.min(UNTRACKED_HISTORY)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voxel_gi::{
-        naadf::{linear_index, volume_len},
-        world::PAGE_SIZE,
-    };
+    use crate::voxel_gi::{naadf::volume_len, world::PAGE_SIZE};
 
     fn assert_same_bins(a: &GeometryChange, b: &GeometryChange) {
         assert_eq!(a.nearby.len(), b.nearby.len());
@@ -588,88 +545,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn edits_loading_and_removal_use_the_same_bounded_distance_policy() {
-        let base = TransportScene::with_page_delta(
-            &TransportScene::default(),
-            (-3..=3)
-                .map(|x| (IVec3::new(x, 0, 0), vec![1; volume_len(PAGE_SIZE)]))
-                .collect(),
-            &[],
-        );
-        let mut edited = vec![1; volume_len(PAGE_SIZE)];
-        edited[linear_index(UVec3::new(0, 8, 8), PAGE_SIZE)] = 2;
-        let next = TransportScene::with_page_delta(&base, vec![(IVec3::ZERO, edited)], &[]);
-        let change = GeometryChange::between(&base, &next).unwrap();
-        for x in [-48, 0, 48] {
-            assert_eq!(change.history_limit(IVec3::new(x, 8, 8)), NEAR_HISTORY);
-        }
-        for x in [-49, 49] {
-            assert_eq!(
-                change.history_limit(IVec3::new(x, 8, 8)),
-                FAR_HISTORY,
-                "measure from the changed voxel, not its containing page or region"
-            );
-        }
-        let loaded = TransportScene::with_page_delta(
-            &base,
-            vec![(IVec3::new(4, 0, 0), vec![1; volume_len(PAGE_SIZE)])],
-            &[],
-        );
-        for change in [
-            GeometryChange::between(&base, &loaded).unwrap(),
-            GeometryChange::between(&loaded, &base).unwrap(),
-        ] {
-            assert_eq!(change.history_limit(IVec3::new(80, 8, 8)), NEAR_HISTORY);
-            assert_eq!(change.history_limit(IVec3::new(79, 8, 8)), FAR_HISTORY);
-        }
-        let mut revision = GeometryHistory::default();
-        revision.record(4, 5, change);
-        assert_eq!(
-            revision.history_limit(IVec3::new(49, 8, 8), 4, 5),
-            FAR_HISTORY
-        );
-        assert_eq!(
-            revision.history_limit(IVec3::new(49, 8, 8), 3, 5),
-            UNTRACKED_HISTORY
-        );
-        assert_eq!(
-            revision.history_limit(IVec3::new(49, 8, 8), 4, 6),
-            UNTRACKED_HISTORY
-        );
-        assert!(GeometryChange::between(&base, &base).is_none());
-    }
-
-    #[test]
-    fn overlapping_changes_combine_and_old_or_source_gaps_fall_back() {
-        let voxel = IVec3::ZERO;
-        let mut near = GeometryChange::default();
-        near.nearby.insert(
-            IVec3::ZERO,
-            PageChanges::new(IVec3::ZERO, vec![Bounds::point(voxel)]),
-        );
-        let mut history = GeometryHistory::default();
-        history.record(10, 11, near);
-        history.record(11, 12, GeometryChange::default());
-        assert_eq!(
-            history.history_limit(voxel, 10, 12),
-            NEAR_HISTORY,
-            "a later distant update cannot erase the earlier near edit"
-        );
-        assert_eq!(history.history_limit(voxel, 11, 12), FAR_HISTORY);
-        assert_eq!(
-            history.history_limit(IVec3::splat(1000), 10, 12),
-            FAR_HISTORY,
-            "multiple streaming deltas must not discard known distant history"
-        );
-        assert_eq!(history.history_limit(voxel, 11, 13), UNTRACKED_HISTORY);
-        for from in 12..21 {
-            history.record(from, from + 1, GeometryChange::default());
-        }
-        assert_eq!(history.history_limit(voxel, 10, 21), UNTRACKED_HISTORY);
-        history.record(30, 31, GeometryChange::default());
-        assert_eq!(history.history_limit(voxel, 21, 31), UNTRACKED_HISTORY);
     }
 }

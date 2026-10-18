@@ -54,7 +54,7 @@ pub use field::{EnergyEstimate, VoxelEnergyField};
 pub use settings::{TransportSettings, VoxelGiSettings, VoxelGiVisualWeights};
 pub use sources::VoxelGiEnvironment;
 pub use spectrum::{EnergyEmitter, EnergySpectrum};
-pub use startup::{RetentionPolicy, RetentionSummary, TransportBackend, VoxelGiStartup};
+pub use startup::{TransportBackend, VoxelGiStartup};
 pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 
 use bvw::{collect_chunk_changes, start_scene_task};
@@ -252,10 +252,7 @@ struct VoxelGiRuntime {
     dirty_since: Option<Instant>,
     urgent_edit: bool,
     generation: u64,
-    geometry_history: geometry::GeometryHistory,
-    spatial_history: Option<retention::SpatialHistory>,
-    #[cfg(debug_assertions)]
-    retention_audit: validation::retention_audit::Recorder,
+    spatial_history: retention::SpatialHistory,
     source_revision: u64,
     batch_size: usize,
     /// Last global material/model replacement. Scene edits use spatial history
@@ -332,10 +329,7 @@ impl Default for VoxelGiRuntime {
             dirty_since: None,
             urgent_edit: false,
             generation: 0,
-            geometry_history: default(),
-            spatial_history: None,
-            #[cfg(debug_assertions)]
-            retention_audit: default(),
+            spatial_history: default(),
             source_revision: 0,
             batch_size: 256,
             model_reset_source_revision: 0,

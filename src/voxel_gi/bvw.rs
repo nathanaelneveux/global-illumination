@@ -175,11 +175,7 @@ pub(super) fn start_scene_task(
 
     let affected_pages = affected_probe_pages(&dirty_pages, &removed_pages);
     let previous_scene = Arc::clone(&runtime.scene);
-    let retention_radius = if runtime.spatial_history.is_some() {
-        super::retention::INFLUENCE_RADIUS
-    } else {
-        super::geometry::RELIGHT_RADIUS
-    };
+    let retention_radius = super::retention::INFLUENCE_RADIUS;
     let voxel_lookup = (!full_resample.is_empty() || !input.complete_edit_tracking)
         .then(|| voxel_world.get_voxel_fn());
     let chunk_lookup = voxel_world.get_chunk_data_fn();
@@ -341,7 +337,11 @@ mod tests {
             )
             .unwrap();
         app.update();
-        app.world_mut().write_message(ChunkWillUpdate::<PrototypeWorld>::new(page, Entity::PLACEHOLDER));
+        app.world_mut()
+            .write_message(ChunkWillUpdate::<PrototypeWorld>::new(
+                page,
+                Entity::PLACEHOLDER,
+            ));
         app.update();
         let snapshot = app.world().resource::<VoxelGiRuntime>().page_edits.0[&page].clone();
         assert_eq!(snapshot[&position], 2);

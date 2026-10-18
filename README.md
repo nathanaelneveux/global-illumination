@@ -149,14 +149,13 @@ without changing the measured baseline shadow/edit responses, and calibrates
 history curves against measured sampler quality. The
 [runtime follow-up](docs/history/runtime-retention.md) introduced page-local history,
 incremental sun-change evidence and worker-side retention queries. These remain
-the default architecture; use `VOXEL_GI_RETENTION=baseline cargo run --locked`
-for the original global-journal control. Repeated composed-cave tests show substantially less
+the default architecture; the original global-journal control was removed on
+the surface-cache branch (last present at `8cab848`). Repeated composed-cave tests show substantially less
 corner oscillation with comparable frame pacing, not a complete convergence or
 locked-60-FPS solution.
 
 The [distance-band follow-up](docs/history/distance-band-retention.md) preserves distance
-information when those page journals overflow and is now the default. Use
-`VOXEL_GI_RETENTION_SUMMARY=floors cargo run --locked` for the previous summary.
+information when those page journals overflow and is now the only summary.
 Eight exact events remain; band storage is allocated only on first overflow.
 Lighting thresholds, sampling and BVW are unchanged. The summary's measured
 late-stability gain does not establish faster startup or qualified windowed FPS.
@@ -191,9 +190,9 @@ speedup. Keep the current 65,536 ceiling: the earlier
 [static/cap decision](docs/history/history-decision.md) did not qualify a permanent
 2,048 cap. **A normal `cargo run --locked` uses the whole-range curve** for
 geometry and changed sunlight, with per-receiver queries still on the tracing worker.
-`VOXEL_GI_RETENTION=whole-range` selects it explicitly; `calibrated` is a
-compatibility alias for the new curve, not the old formula. The previous
-calibrated runtime is preserved at `5381c17`. See the
+On the surface-cache branch it is the fallback for changes of unknown flux;
+measured retention ([research](docs/retention-research.md)) is the default. The
+previous calibrated runtime is preserved at `5381c17`. See the
 [integration record](docs/history/whole-range-history.md#runtime-integration).
 
 **Copy applied JSON** exports transport/work settings (not display toggles/gain).

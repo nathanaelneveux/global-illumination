@@ -368,10 +368,9 @@ caps apply once before either backend merges new samples. Both known transitions
 and conservative unknown sky evidence count. This is not a complete dependency
 oracle or universal distance bound; the measured remaining limits are explicit.
 That infrastructure now applies the whole-range equation above rather than the
-older calibration curve. `VOXEL_GI_RETENTION=baseline` restores the legacy control;
-`whole-range` selects today's default explicitly (`calibrated` is a compatibility
-alias, not a way to restore the previous curve). Analytic-source/model policies
-in the table remain unchanged.
+older calibration curve; the legacy control and floor summary were removed on
+the surface-cache branch. Analytic-source/model policies in the table remain
+unchanged.
 
 The default [distance-band overflow summary](history/distance-band-retention.md) replaces
 the two fallback floors with revision stamps per distance band and origin. It
@@ -700,10 +699,9 @@ display evidence.
 
 Insert `VoxelGiStartup` before adding `VoxelGiPlugin`. It selects
 `TransportBackend::Auto` (required resident compute), `Cpu`,
-explicit `Resident`, or the `Synchronous` comparison, and
-`RetentionPolicy::WholeRange(RetentionSummary)` or the legacy comparison.
-Defaults preserve whole-range retention with distance-band overflow summaries.
-These are per-App construction choices, not live switches. Runtime controls
+explicit `Resident`, or the `Synchronous` comparison. Retention is not a
+construction choice: distance-band summaries and measured retention
+(`VoxelGiSettings::measured_retention`) are always used. These are per-App construction choices, not live switches. Runtime controls
 remain in `VoxelGiSettings`; CPU transport still uses the normal GPU display.
 GPU initialization, dispatch and readback failures are fatal at publication,
 before partial results are applied. They never switch the running game to CPU

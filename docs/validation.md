@@ -37,22 +37,12 @@ target, and keep IR/ionizing tolerances independent.
 The [whole-range integration](history/whole-range-history.md#runtime-integration) records
 the current policy. The [earlier runtime qualification](history/runtime-retention.md)
 records the preceding calibration, independent references and windowed controls.
-Specify `VOXEL_GI_RETENTION=baseline` or `whole-range` in current A/B commands;
-`calibrated` is now an alias for whole-range, not the previous curve. Check the
-versioned `spatial_retention` value in the report: absence of the variable
-selected the legacy control in older commits. The separate `history_experiment`
-field describes the older retain-all ablation. Coverage and retained weight are
-still not convergence. Core integrations select the same policies with
-`VoxelGiStartup`; launch parsing belongs to the demo.
-
-For the [overflow compression experiment](history/distance-band-retention.md), keep
-`VOXEL_GI_RETENTION=calibrated` and select
-`VOXEL_GI_RETENTION_SUMMARY=floors|distance-bands`; verify `retention_summary` in
-the report. Distance bands are now the default; floors is the explicit control.
-Both arms use the same distance curve. The opt-in retention audit
-additionally rejects a compressed cap weaker than its complete shadow journal.
-`runtime_retention_analysis.py` can use the final frozen audit checkpoint for
-live error; `retention_attribution.py` checks target motion across all six.
+The legacy 16/256 control, the floor summary and the retention audit were
+removed on the surface-cache branch (last present at `8cab848`). Check
+`spatial_retention` and `measured_retention` in the report;
+`config/gi-retention-curve.json` selects the whole-range curve without measured
+flux. The separate `history_experiment` field describes the older retain-all
+ablation. Coverage and retained weight are still not convergence.
 The blocked windowed capture is not a frame-pacing qualification.
 
 For adaptive-history research, the [DDGI/A-SVGF qualification study](history/adaptive-history-qualification.md)

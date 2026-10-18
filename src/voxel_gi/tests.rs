@@ -16,7 +16,10 @@ fn transport_failure_missing_device_does_not_select_cpu_implicitly() {
     use bevy::ecs::system::RunSystemOnce;
     let mut world = World::new();
     world.init_resource::<VoxelEnergyField>();
-    world.resource_mut::<VoxelEnergyField>().order.push(IVec3::ZERO);
+    world
+        .resource_mut::<VoxelEnergyField>()
+        .order
+        .push(IVec3::ZERO);
     world.init_resource::<VoxelGiRuntime>();
     world.init_resource::<VoxelGiSettings>();
     world.init_resource::<VoxelGiStats>();
@@ -591,8 +594,10 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
             }
             let selected = select_probes(&mut runtime, field);
             assert_eq!(selected.len(), 2);
+            // Whole-range curve: 4 voxels from the edit keeps nothing; 128
+            // voxels away the cap (12,971) exceeds the 4,096 retained samples.
             for probe in selected {
-                let retained = if probe.voxel == near { 16 } else { 256 };
+                let retained = if probe.voxel == near { 0 } else { 4096 };
                 assert_eq!(probe.samples[2], retained, "material {material}");
                 assert_eq!(probe.radiance[2], EnergySpectrum::ONE);
                 assert_eq!(probe.sequence[2], 4096);
@@ -708,7 +713,6 @@ fn late_sun_evidence_wakes_a_current_receiver_without_resetting_distant_history(
         field.probes.insert(voxel, probe);
         field.order.push(voxel);
         let mut runtime = VoxelGiRuntime {
-            spatial_history: Some(default()),
             batch_size: 1,
             ..default()
         };
@@ -722,8 +726,6 @@ fn late_sun_evidence_wakes_a_current_receiver_without_resetting_distant_history(
         };
         runtime
             .spatial_history
-            .as_mut()
-            .unwrap()
             .record(change, retention::Origin::Sunlight);
         let selected = select_probes(&mut runtime, &field);
         assert_eq!(selected.len(), 1);
@@ -1231,7 +1233,7 @@ fn settled_scheduler_can_be_idle_and_far_geometry_invalidation_wakes_it() {
     assert!(
         selected
             .iter()
-            .all(|probe| probe.trace_mask == 5 && probe.fresh_mask == 0 && probe.samples[2] == 64)
+            .all(|probe| probe.trace_mask == 5 && probe.fresh_mask == 0 && probe.samples[2] == 256)
     );
     assert!(
         field.probes.values().all(|probe| probe.samples[2] == 256),
