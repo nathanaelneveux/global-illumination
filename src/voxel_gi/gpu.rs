@@ -106,16 +106,16 @@ fn encode_tasks(bytes: &mut Vec<u8>, work: &TraceWork, sky: &[IVec3]) {
     let tasks = work
         .faces
         .iter()
-        .map(|face| (face.voxel, face.face as u32, face.sequence, face.neighbor))
-        .chain(sky.iter().map(|&position| (position, 0, 0, 0)));
-    for (voxel, face, sequence, neighbor) in tasks {
+        .map(|face| (face.voxel, face.face as u32, face.sequence))
+        .chain(sky.iter().map(|&position| (position, 0, 0)));
+    for (voxel, face, sequence) in tasks {
         let record = [
             voxel.x as u32,
             voxel.y as u32,
             voxel.z as u32,
             face,
             sequence,
-            neighbor,
+            0,
             0,
             0,
         ]

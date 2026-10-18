@@ -31,8 +31,6 @@ pub(super) struct ResidentAccumulator {
     high_water: u32,
     incarnation: u32,
     task_epoch: u64,
-    pub reuse: bool,
-    pub adaptive_reuse: bool,
     scene: Option<Arc<TransportScene>>,
     origin: Instant,
     #[cfg(test)]
@@ -97,8 +95,6 @@ impl ResidentAccumulator {
             high_water: 0,
             incarnation: 0,
             task_epoch: 0,
-            reuse: false,
-            adaptive_reuse: false,
             scene: None,
             origin: Instant::now(),
             #[cfg(test)]
@@ -285,86 +281,6 @@ impl ResidentAccumulator {
                     self.high_water,
                 ));
             }
-        }
-        if self.reuse {
-            // Use the existing stable ownership index, not a per-frame sort or
-            // another hash table. Selection is geometric, never radiometric.
-            for face in &mut work.faces {
-                face.neighbor = 0;
-            }
-            for index in 0..work.faces.len() {
-                if work.faces[index].neighbor != 0 {
-                    continue;
-                }
-                if self.adaptive_reuse && work.faces[index].samples >= 1024 {
-                    continue;
-                }
-                let voxel = work.faces[index].voxel;
-                let orientation = work.faces[index].face;
-                let normal = FACE_OFFSETS[orientation];
-                // Prefer donors outside the immediate corner reconstruction
-                // footprint, so sharing contributes new paths to that footprint.
-                if self.adaptive_reuse {
-                    let limit = if work.faces[index].samples < 256 {
-                        4
-                    } else {
-                        2
-                    };
-                    let mut members = [index; 4];
-                    let mut member_count = 1;
-                    for distance in [3, 6, 1] {
-                        for offset in FACE_OFFSETS.map(|v| v * distance) {
-                            if offset.dot(normal) != 0 {
-                                continue;
-                            }
-                            if let Some(slot) = self.slots.get(&(voxel + offset, orientation))
-                                && slot.task_epoch == self.task_epoch
-                            {
-                                let other = slot.task_index as usize;
-                                if other != index
-                                    && work.faces[other].neighbor == 0
-                                    && work.faces[other].samples
-                                        < if limit == 4 { 256 } else { 1024 }
-                                    && !members[..member_count].contains(&other)
-                                {
-                                    members[member_count] = other;
-                                    member_count += 1;
-                                }
-                            }
-                            if member_count == limit {
-                                break;
-                            }
-                        }
-                        if member_count == limit {
-                            break;
-                        }
-                    }
-                    if member_count > 1 {
-                        for (i, &member) in members[..member_count].iter().enumerate() {
-                            work.faces[member].neighbor =
-                                members[(i + 1) % member_count] as u32 + 1;
-                        }
-                    }
-                    continue;
-                }
-                for offset in [3, 1]
-                    .into_iter()
-                    .flat_map(|distance| FACE_OFFSETS.map(|v| v * distance))
-                {
-                    if offset.dot(normal) != 0 {
-                        continue;
-                    }
-                    if let Some(slot) = self.slots.get(&(voxel + offset, orientation))
-                        && slot.task_epoch == self.task_epoch
-                        && work.faces[slot.task_index as usize].neighbor == 0
-                    {
-                        work.faces[index].neighbor = slot.task_index + 1;
-                        work.faces[slot.task_index as usize].neighbor = index as u32 + 1;
-                        break;
-                    }
-                }
-            }
-            debug!(target: "voxel_gi_reuse", faces=work.faces.len(), paired=work.faces.iter().filter(|f| f.neighbor != 0).count(), "fresh path neighbors");
         }
         self.input_bytes.extend_from_slice(&self.cap_bytes);
         self.spatial_bytes.clear();
