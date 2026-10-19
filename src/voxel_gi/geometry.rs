@@ -7,10 +7,11 @@ use bevy::prelude::*;
 
 use super::world::{AIR, PAGE_EDGE, REGION_EDGE, TransportScene};
 
-/// Exact edits requeue receivers within this radius urgently (a scheduling
-/// hint; their counts are untouched). Probes whose own faces or material change
-/// cap their CPU-side sample estimate to `NEAR_HISTORY`. Retained GPU weight
-/// comes from measured retention.
+/// Exact edits of unknown flux (or under the curve rule) requeue receivers
+/// within this radius urgently; edits of known flux wake only the faces their
+/// predicted change would cut (publication::retention_binds). A scheduling
+/// hint: counts are untouched. Probes whose own faces or material change cap
+/// their CPU-side sample estimate to `NEAR_HISTORY`.
 pub(super) const RELIGHT_RADIUS: i32 = 48;
 pub(super) const NEAR_HISTORY: u32 = 16;
 pub(super) const UNTRACKED_HISTORY: u32 = 64;

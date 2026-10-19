@@ -225,7 +225,7 @@ full explicit paths for one batch. Edit probes track only 1–7 faces, so those
 timings are directional. The first integration panicked on an air-only loaded
 region (no top voxel); that is fixed and unit-tested.
 
-### Frame-time spikes in the `sources` profile (open)
+### Frame-time spikes in the `sources` profile
 
 `8cab848` claimed to remove a 2-3 ms frame p95 cost in the `sources` profile's
 light-change and streaming phases. That claim compared runs from different
@@ -240,19 +240,31 @@ frame p95 over four pairs:
 | Frame p50 | 22.0-22.3 ms | 22.0-22.3 ms |
 | Paths/s, light changes | 3.7M | 4.6M |
 
-The cost is extra spikes, not a steady per-frame cost (about 125 frames above
-26.5 ms per run vs 86). What was ruled out:
+The cost is extra frames in the 26-30 ms band. Frames over 33 ms are equal.
+What was ruled out:
 
 - **Tracing worker:** instrumented, the retention query is 0.85 ms p95 vs
   0.46 ms for the curve, and GPU submission time is equal.
-- **Main-thread GI stages:** they differ by at most 0.3 ms at p95. Measured's
-  extra slow frames show no extra main-thread work; the curve's slow frames do.
-- **Transport GPU execution:** equal (p50 3.7-4.0 ms).
+- **Main-thread GI and display stages:** at most 0.3 ms apart at p95.
+- **Transport GPU time:** equal or lower per batch (sum of the prepare, trace
+  and accumulate passes).
+- **Read-gating:** switched off as an ablation, it explains about 0.8 ms of the
+  gap in the light-change phase. The rest remains.
 
-What remains is that measured retention traces about 25% more paths per second
-in the same GPU time, because fewer histories are reset and more paths end in
-cached faces. The working hypothesis is GPU queue or memory contention with
-rendering. It needs a GPU-side capture, not more CPU changes.
+**Cause: throughput.** Measured retention resets fewer histories, so more paths
+end in cached faces and each is cheaper. The same 4 ms GPU budget then
+processes 20-25% more paths per second. The tail is the per-face CPU handling
+of that extra work, not a defect. With `trace_budget_ms` = 3, measured traces
+3.2-3.3M paths/s (slightly below the curve) and its p95 matches or beats the
+curve:
+
+| Light changes / streaming (two pairs) | Frame p95 | Near-face age p50 |
+| --- | --- | --- |
+| Curve, 4 ms | 25.4-26.3 / 26.4-27.1 ms | 227-319 ms |
+| Measured, 3 ms | 24.9-25.1 / 25.1-25.6 ms | 270-371 ms |
+
+The default stays 4 ms: the extra throughput buys freshness, and throttling
+trades it back. Judge the choice windowed, not from offscreen cadence.
 
 The three changes in `8cab848` were checked one at a time against that day's
 runs:
