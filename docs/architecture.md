@@ -693,39 +693,28 @@ latest completed resident presentation snapshot; the old CPU upload mirror only
 contains initialization values in this mode. Screenshots remain end-to-end
 display evidence.
 
-### Why the CPU snapshot re-seeds a relit face
+### GPU-owned statistics for relit faces
 
-When a probe's revision changes (an edit nearby, a material or face change, a
-model reset), the worker re-seeds its resident slot from the CPU snapshot instead
-of capping the GPU history in place. This is load-bearing, not redundant. Up to
-three batches are in flight; one selected before the edit still accumulates
-pre-edit light into the slot, and the CPU rejects its results because of the
-revision mismatch. The CPU snapshot therefore contains only validated
-measurements, and re-seeding rolls the slot back to it.
+Resident GPU state is authoritative; an existing slot is never re-seeded from
+the CPU snapshot. When a probe's revision changes (an edit nearby, a material or
+face change, a model reset), the next selection sends a hard history cap
+instead, packed with a rollback flag into the input word that seeds new slots.
 
-Tested on 2026-10-19 (not merged): capping in place (GPU state authoritative,
-fixed addresses) kept those stale samples in the mean and raised `house-edits`
-late flicker p50/p95 to .129-.157 / .198-.249, against .088-.110 / .132-.166 at
-`95e6d61` (four runs each, interleaved). `response` and `sources` were
-unchanged; their tracked faces sit where retention already cuts history to
-near zero. Restoring the old cap semantics alone did not help.
+- **Cap:** `FaceWork::samples`, which already holds exactly this probe's relight
+  (16), source and model-reset (0) caps. Not `history_cap`: in measured mode that
+  carries the whole-range curve cap meant only for unselected faces. Applying it
+  here zeroed relit faces' history and raised `house-edits` edit transients by
+  about 45% in earlier attempts.
+- **Rollback:** a batch selected before the change may already have merged
+  pre-edit light. The CPU rejects such results (`stale_merge`), and the next
+  selection asks the GPU to restore that face's pre-merge checkpoint (48 bytes
+  per slot, written on every merge). A rollback is never requested for a merge
+  the CPU accepted: for a young face, that may be its only data.
 
-Follow-ups on 2026-10-19, also not merged (patch kept in
-`target/experiments/gpu-authoritative-rollback-experiment.patch`). The baseline
-`house-edits` edit-window variation (relative std of raw values, 120-180 s) was
-.134-.172 over three runs:
-
-- **GPU rollback** (a per-slot pre-merge checkpoint plus the revision it was
-  selected under; a newer revision restores the checkpoint before capping):
-  .212-.220. A native test proves it undoes exactly the last merge.
-- **Hybrid** (rollback, plus resetting presentation, timing, sampling sequence
-  and incarnation from the CPU as the re-seed did): .182-.191.
-
-Quiet periods between edits match the baseline. So the CPU snapshot's
-statistics at an edit differ from GPU state by more than one in-flight batch.
-The next step is a native test of pipelined batches with measured retention
-and an edit, comparing the two directly. Writing revision bumps to the GPU
-"at once" would not help: a submitted batch runs before any later write lands.
+Validated on 2026-10-19 against `7bc829d`, interleaved, four `house-edits`
+pairs. Edit-window variation of raw values, 120-180 s, was .146 ± .017 vs
+.136 ± .007 (display .094 vs .099); quiet periods equal. `response` and
+`sources` were equal.
 
 ## Integration contract and limits
 

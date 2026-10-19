@@ -79,6 +79,8 @@ impl ProbeWork {
             probe.samples = probe.samples.map(|samples| samples.min(cap));
             probe.retention_revision = revision;
         }
+        // These faces' merges were accepted: nothing left for the GPU to undo.
+        probe.stale_merge &= !self.trace_mask;
         if !same_revision || self.restart {
             probe.fresh_mask = 0;
             probe.stable_batches = [0; 6];
@@ -148,6 +150,8 @@ pub(crate) struct FaceWork {
     /// Physical retention only: predicted luminance change at this face from
     /// recent edits (zero = none). Replaces `history_cap` when enabled.
     pub change_prior: f32,
+    /// The CPU rejected this face's last merged batch: the GPU must undo it.
+    pub rollback: bool,
     pub sequence: u32,
     pub updated_at: Option<Instant>,
     pub presentation: Vec4,
@@ -264,6 +268,7 @@ impl TraceWork {
                     (if stale { stale_history_limit } else { u32::MAX }).min(source_history_limit)
                 },
                 change_prior: 0.0,
+                rollback: probe.stale_merge & (1 << face) != 0,
                 updated_at: if restart {
                     None
                 } else {

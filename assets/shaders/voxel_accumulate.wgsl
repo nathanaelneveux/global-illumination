@@ -17,6 +17,11 @@ struct Controls { counts: vec4<u32>, options: vec4<u32>, display: vec4<u32>, lim
 // Changed face-index entries from the worker's authoritative table. The table
 // is hashed, so changes are scattered: one record upload per batch replaces
 // one buffer write per changed run. Word 0 is the count, then (index, entry).
+// Per slot: statistics before its last merge (mean, second moment, then
+// [aux x, count, aux x, unused]). When the CPU rejects a merged batch (it was
+// selected before an edit and still in flight then), the next selection asks
+// for a rollback, so stale pre-edit light never stays in the GPU state.
+@group(0) @binding(12) var<storage, read_write> checkpoint: array<vec4<u32>>;
 @group(0) @binding(10) var<storage, read_write> scatter_target: array<u32>;
 @group(0) @binding(11) var<storage, read> word_scatter: array<u32>;
 
@@ -43,10 +48,25 @@ fn prepare(@builtin(global_invocation_id) id: vec3<u32>) {
     if i >= settings.options.y { return; }
     let input = inputs[i];
     let base = input.x * 9u;
-    if input.y != 0xffffffffu {
+    // Word y: a seed index (below 2^31) for a new slot. Otherwise bit 30
+    // asks to undo the last merge (the CPU rejected it) and the low 30 bits
+    // are a hard history cap (0x3fffffff: none). GPU state is authoritative:
+    // an existing slot is never re-seeded from the CPU.
+    let cp = input.x * 3u;
+    if input.y < 0x80000000u {
         for (var word = 0u; word < 9u; word += 1u) {
             state[base + word] = seeds[input.y * 9u + word];
         }
+    } else {
+        if (input.y & 0x40000000u) != 0u {
+            let saved = checkpoint[cp + 2u];
+            state[base] = checkpoint[cp];
+            state[base + 2u] = checkpoint[cp + 1u];
+            state[base + 1u].x = saved.x;
+            state[base + 1u].y = saved.y;
+            state[base + 3u].x = saved.z;
+        }
+        state[base + 1u].y = min(state[base + 1u].y, input.y & 0x3fffffffu);
     }
     // Physical retention passes a predicted change here instead of a cap;
     // accumulate applies it once the fresh batch's noise is known. Until then
@@ -85,6 +105,10 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
     if i >= control.x { return; }
     let base = inputs[i].x * 9u;
     let result = i * 6u;
+    let cp = inputs[i].x * 3u;
+    checkpoint[cp] = state[base];
+    checkpoint[cp + 1u] = state[base + 2u];
+    checkpoint[cp + 2u] = vec4(state[base + 1u].x, state[base + 1u].y & 0x7fffffffu, state[base + 3u].x, 0u);
     // Samples that reached unloaded space carry no information and were not
     // averaged; only the known count advances history.
     let fresh_count = u32(bitcast<f32>(output[result + 1u].y));

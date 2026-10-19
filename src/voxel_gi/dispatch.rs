@@ -579,6 +579,8 @@ pub(super) fn apply_trace_task(
         if old.revision != job.revision
             || (job.trace_mask != 0 && job.source_revision < runtime.model_reset_source_revision)
         {
+            // The GPU already merged this batch; undo it at the next selection.
+            old.stale_merge |= job.trace_mask;
             if probe_has_pending_samples(old) {
                 requeue.push(voxel);
             }

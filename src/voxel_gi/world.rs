@@ -504,6 +504,9 @@ pub struct SurfaceProbe {
     pub(crate) trace_mask: u8,
     /// Faces refreshed in transport_revision; revision changes are lazy O(1).
     pub(crate) fresh_mask: u8,
+    /// Faces whose last GPU merge the CPU rejected (selected before a revision
+    /// or model change). The next selection asks the GPU to undo that merge.
+    pub(crate) stale_merge: u8,
     pub(crate) transport_revision: u64,
     /// Independent spatial evidence consumed by statistical retention.
     /// Sunlight changes can arrive after transport refreshed in the same scene.
@@ -538,6 +541,7 @@ impl SurfaceProbe {
             #[cfg(test)]
             trace_mask: 63,
             fresh_mask: 63,
+            stale_merge: 0,
             transport_revision: 0,
             retention_revision: 0,
             stable_batches: [0; 6],

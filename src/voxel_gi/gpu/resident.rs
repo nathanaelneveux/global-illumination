@@ -6,6 +6,13 @@ use super::*;
 use bevy::platform::collections::{HashMap, HashSet};
 
 const RECORD_BYTES: usize = 144;
+/// Per-slot pre-merge statistics and merge revision (three uint4s).
+const CHECKPOINT_BYTES: usize = 48;
+/// Input word y: a seed index below this bit. Otherwise bit 30 requests a
+/// rollback of the last merge and the low 30 bits are a history cap.
+const NO_SEED: u32 = 0x8000_0000;
+const ROLLBACK: u32 = 0x4000_0000;
+const NO_CAP: u32 = 0x3fff_ffff;
 const SHADER: &str = include_str!("../../../assets/shaders/voxel_accumulate.wgsl");
 type Key = (IVec3, usize);
 
@@ -43,6 +50,7 @@ pub(super) struct ResidentAccumulator {
     index_scatter_bytes: Vec<u8>,
     index_scatter_count: u32,
     inputs: UploadBuffer,
+    checkpoint: UploadBuffer,
     seeds: UploadBuffer,
     control: UploadBuffer,
     /// Per-slot (start, len) into `donor_arena`; see `donor_cache`.
@@ -65,8 +73,8 @@ pub(super) struct ResidentAccumulator {
     evidence: ComputePipeline,
     scatter: ComputePipeline,
     scatter_bindings: Option<CachedBindings<2>>,
-    prepare_bindings: Option<CachedBindings<5>>,
-    accumulate_bindings: Option<CachedBindings<4>>,
+    prepare_bindings: Option<CachedBindings<6>>,
+    accumulate_bindings: Option<CachedBindings<5>>,
     evidence_bindings: Option<CachedBindings<5>>,
     words: ComputePipeline,
     arena_scatter_bindings: Option<CachedBindings<2>>,
@@ -129,6 +137,11 @@ impl ResidentAccumulator {
             index_scatter_bytes: Vec::new(),
             index_scatter_count: 0,
             inputs: UploadBuffer::new(device, "GI resident jobs", storage),
+            checkpoint: UploadBuffer::new(
+                device,
+                "GI resident merge checkpoints",
+                storage | BufferUsages::COPY_SRC,
+            ),
             seeds: UploadBuffer::new(device, "GI new resident measurements", storage),
             control: UploadBuffer::new(
                 device,
@@ -248,7 +261,8 @@ impl ResidentAccumulator {
                     if job.trace_mask & (1 << face) == 0
                         && let Some(slot) = self.slots.get(&(job.voxel, face))
                     {
-                        for word in [slot.index, u32::MAX, cap, u32::MAX] {
+                        // No seed, no rollback; the cap rides in word z.
+                        for word in [slot.index, NO_SEED | NO_CAP, cap, u32::MAX] {
                             self.cap_bytes.extend_from_slice(&word.to_le_bytes());
                         }
                     }
@@ -280,10 +294,13 @@ impl ResidentAccumulator {
                         task_index: 0,
                     }
                 });
-                let mut seed = u32::MAX;
-                if slot.revision != job.revision
-                    || (job.restart && slot.model_epoch != job.source_revision)
-                {
+                // GPU state is authoritative: only a new slot is seeded. A
+                // changed probe revision caps the GPU history (zero on a model
+                // reset). If the CPU rejected this face's last merged batch
+                // (selected before the change, in flight then), the GPU first
+                // undoes that merge, exactly as the CPU snapshot excludes it.
+                let mut seed = NO_SEED | NO_CAP;
+                if slot.incarnation == 0 {
                     self.incarnation = self
                         .incarnation
                         .checked_add(1)
@@ -296,9 +313,23 @@ impl ResidentAccumulator {
                     if let Some(graph) = &mut self.evidence_topology {
                         graph.set_incarnation(slot.index, slot.incarnation);
                     }
+                } else if slot.revision != job.revision
+                    || (job.restart && slot.model_epoch != job.source_revision)
+                {
+                    slot.revision = job.revision;
+                    slot.model_epoch = job.source_revision;
+                    // `samples` holds exactly this probe's relight/source caps
+                    // (zero on restart), applied by the CPU at the revision
+                    // change. Not `history_cap`: in measured mode that carries
+                    // the distance-curve cap meant only for unselected faces,
+                    // and applying it here wiped relit faces' history.
+                    seed = NO_SEED | face.samples.min(NO_CAP);
                 }
                 face.resident = UVec2::new(slot.index, slot.incarnation);
-                if seed != u32::MAX {
+                if seed >= NO_SEED && face.rollback {
+                    seed |= ROLLBACK;
+                }
+                if seed < NO_SEED {
                     self.bindings.push(ResidentBinding {
                         voxel: face.voxel,
                         face: face.face,
@@ -426,6 +457,20 @@ impl ResidentAccumulator {
                 .upload(device, queue, &self.index_scatter_bytes)?;
         }
         self.inputs.upload(device, queue, &self.input_bytes)?;
+        {
+            let previous = self.checkpoint.buffer.clone();
+            let capacity = self.checkpoint.capacity;
+            if self
+                .checkpoint
+                .ensure(device, (self.high_water as usize * CHECKPOINT_BYTES).max(16))?
+            {
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Preserve GI merge checkpoints during growth"),
+                });
+                encoder.copy_buffer_to_buffer(&previous, 0, &self.checkpoint.buffer, 0, capacity);
+                queue.submit([encoder.finish()]);
+            }
+        }
         self.seeds.upload(device, queue, &self.seed_bytes)?;
         if self.evidence_active {
             // Persistent buffers keep their contents across growth.
@@ -523,6 +568,7 @@ impl ResidentAccumulator {
                 (3, &self.state),
                 (4, &self.inputs),
                 (5, &self.seeds),
+                (12, &self.checkpoint),
             ],
         );
         let scatter_bindings = (self.index_scatter_count > 0).then(|| {
@@ -571,6 +617,7 @@ impl ResidentAccumulator {
                 (2, output),
                 (3, &self.state),
                 (4, &self.inputs),
+                (12, &self.checkpoint),
             ],
         );
         let words = &self.words;
@@ -962,6 +1009,56 @@ mod tests {
     #[ignore = "native indexed spatial lifecycle: growth, recycling, disable/re-enable and unchanged statistics"]
     fn indexed_spatial_preserves_measurements_through_lifecycle() {
         check_resident_lifecycle(true);
+    }
+
+    #[test]
+    #[ignore = "native: a rejected in-flight merge is undone on the GPU, an accepted one is kept"]
+    fn rejected_merge_rolls_back_on_the_gpu() {
+        let mut gpu = super::super::tests::native_tracer();
+        gpu.enable_resident().unwrap();
+        let (scene, mut sources, probes) = super::super::tests::open_floor_fixture();
+        sources.environment = EnergySpectrum::new(Vec3::new(0.3, 0.1, 0.8), 0.4, 0.2);
+        let materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        let mut work = TraceWork::from_probes(&probes[..8], false);
+        let trace = |gpu: &mut GpuTracer, work: &mut TraceWork| {
+            gpu.trace_compact(Arc::clone(&scene), &sources, &materials, work, 16, &emitters, false)
+                .unwrap();
+            let words = read_state(gpu);
+            let slots = &gpu.resident.as_ref().unwrap().slots;
+            work.faces
+                .iter()
+                .map(|face| words[slots[&(face.voxel, face.face)].index as usize * (RECORD_BYTES / 4) + 5])
+                .collect::<Vec<_>>()
+        };
+        let after_a = trace(&mut gpu, &mut work);
+        let after_b = trace(&mut gpu, &mut work);
+        assert!(after_b.iter().zip(&after_a).all(|(b, a)| b > a));
+        // An edit relit these probes while batch B was in flight, so the CPU
+        // rejected B. The next selection carries the new revision and asks
+        // for a rollback: B is undone, then C merges.
+        for job in &mut work.probes {
+            job.revision += 1;
+        }
+        for face in &mut work.faces {
+            face.rollback = true;
+        }
+        let after_c = trace(&mut gpu, &mut work);
+        for ((a, b), c) in after_a.iter().zip(&after_b).zip(&after_c) {
+            assert_eq!(c - a, b - a, "C replaced B rather than adding to it");
+        }
+        // A revision change whose last batch the CPU accepted keeps it (a
+        // young face's only merge must survive), and so does a normal batch.
+        for job in &mut work.probes {
+            job.revision += 1;
+        }
+        for face in &mut work.faces {
+            face.rollback = false;
+        }
+        let after_d = trace(&mut gpu, &mut work);
+        assert!(after_d.iter().zip(&after_c).all(|(d, c)| d > c));
+        let after_e = trace(&mut gpu, &mut work);
+        assert!(after_e.iter().zip(&after_d).all(|(e, d)| e > d));
     }
 
     fn check_resident_lifecycle(spatial: bool) {
