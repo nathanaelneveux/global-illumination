@@ -142,12 +142,17 @@ impl FaceIndex {
     }
 
     /// Header entry 0 holds the probing mask; table entries start at 1.
+    /// A new or grown table is written whole. Otherwise changed entries are
+    /// appended to `scatter` as `[count, (buffer index, entry)...]` for the
+    /// GPU scatter pass, and the count is returned (zero: nothing to apply).
     pub(super) fn upload(
         &mut self,
         buffer: &mut UploadBuffer,
         device: &RenderDevice,
         queue: &RenderQueue,
-    ) -> Result<(), String> {
+        scatter: &mut Vec<u8>,
+    ) -> Result<u32, String> {
+        scatter.clear();
         let bytes = (self.entries.len() + 1) * 16;
         if buffer.ensure(device, bytes)? || self.full_upload {
             let mut data = Vec::with_capacity(bytes);
@@ -162,30 +167,30 @@ impl FaceIndex {
             queue.write_buffer(&buffer.buffer, 0, &data);
             self.full_upload = false;
             self.dirty.clear();
-            return Ok(());
+            return Ok(0);
         }
         self.dirty.sort_unstable();
         self.dirty.dedup();
-        let mut run_start = 0;
-        while run_start < self.dirty.len() {
-            let mut run_end = run_start + 1;
-            while run_end < self.dirty.len()
-                && self.dirty[run_end] - self.dirty[run_end - 1] <= 4
-            {
-                run_end += 1;
+        let count = self.dirty.len() as u32;
+        scatter.reserve((1 + self.dirty.len() * 5) * 4);
+        scatter.extend_from_slice(&count.to_le_bytes());
+        for &index in &self.dirty {
+            scatter.extend_from_slice(&(index + 1).to_le_bytes());
+            for word in self.entries[index as usize] {
+                scatter.extend_from_slice(&word.to_le_bytes());
             }
-            let first = self.dirty[run_start] as usize;
-            let last = self.dirty[run_end - 1] as usize;
-            let data: Vec<u8> = self.entries[first..=last]
-                .iter()
-                .flatten()
-                .flat_map(|word| word.to_le_bytes())
-                .collect();
-            queue.write_buffer(&buffer.buffer, ((first + 1) * 16) as u64, &data);
-            run_start = run_end;
         }
         self.dirty.clear();
-        Ok(())
+        Ok(count)
+    }
+
+    /// The words the GPU table should hold: header, then entries.
+    #[cfg(test)]
+    pub(super) fn table_words(&self) -> Vec<u32> {
+        [self.mask() as u32, MAX_PROBE as u32, 0, 0]
+            .into_iter()
+            .chain(self.entries.iter().flatten().copied())
+            .collect()
     }
 
     #[cfg(test)]

@@ -38,6 +38,9 @@ pub(super) struct ResidentAccumulator {
     state: UploadBuffer,
     face_index: super::face_index::FaceIndex,
     face_index_buffer: UploadBuffer,
+    index_scatter: UploadBuffer,
+    index_scatter_bytes: Vec<u8>,
+    index_scatter_count: u32,
     inputs: UploadBuffer,
     seeds: UploadBuffer,
     control: UploadBuffer,
@@ -55,6 +58,8 @@ pub(super) struct ResidentAccumulator {
     prepare: ComputePipeline,
     accumulate: ComputePipeline,
     evidence: ComputePipeline,
+    scatter: ComputePipeline,
+    scatter_bindings: Option<CachedBindings<2>>,
     prepare_bindings: Option<CachedBindings<5>>,
     accumulate_bindings: Option<CachedBindings<4>>,
     evidence_bindings: Option<CachedBindings<4>>,
@@ -83,6 +88,7 @@ impl ResidentAccumulator {
         let prepare = pipeline("prepare");
         let accumulate = pipeline("accumulate");
         let evidence = pipeline("reconstruct_evidence");
+        let scatter = pipeline("scatter_face_index");
         if let Some(error) = bevy::tasks::block_on(scope.pop()) {
             return Err(error.to_string());
         }
@@ -105,7 +111,14 @@ impl ResidentAccumulator {
                 storage | BufferUsages::COPY_SRC,
             ),
             face_index: super::face_index::FaceIndex::new(),
-            face_index_buffer: UploadBuffer::new(device, "GI resident face index", storage),
+            face_index_buffer: UploadBuffer::new(
+                device,
+                "GI resident face index",
+                storage | BufferUsages::COPY_SRC,
+            ),
+            index_scatter: UploadBuffer::new(device, "GI face index changes", storage),
+            index_scatter_bytes: Vec::new(),
+            index_scatter_count: 0,
             inputs: UploadBuffer::new(device, "GI resident jobs", storage),
             seeds: UploadBuffer::new(device, "GI new resident measurements", storage),
             control: UploadBuffer::new(
@@ -127,6 +140,8 @@ impl ResidentAccumulator {
             prepare,
             accumulate,
             evidence,
+            scatter,
+            scatter_bindings: None,
             prepare_bindings: None,
             accumulate_bindings: None,
             evidence_bindings: None,
@@ -340,8 +355,18 @@ impl ResidentAccumulator {
             encoder.copy_buffer_to_buffer(&previous, 0, &self.state.buffer, 0, capacity);
             queue.submit([encoder.finish()]);
         }
-        info_span!("gi_face_index_upload")
-            .in_scope(|| self.face_index.upload(&mut self.face_index_buffer, device, queue))?;
+        self.index_scatter_count = info_span!("gi_face_index_upload").in_scope(|| {
+            self.face_index.upload(
+                &mut self.face_index_buffer,
+                device,
+                queue,
+                &mut self.index_scatter_bytes,
+            )
+        })?;
+        if self.index_scatter_count > 0 {
+            self.index_scatter
+                .upload(device, queue, &self.index_scatter_bytes)?;
+        }
         self.inputs.upload(device, queue, &self.input_bytes)?;
         self.seeds.upload(device, queue, &self.seed_bytes)?;
         if !self.spatial_bytes.is_empty() {
@@ -417,6 +442,15 @@ impl ResidentAccumulator {
                 (5, &self.seeds),
             ],
         );
+        let scatter_bindings = (self.index_scatter_count > 0).then(|| {
+            cached_bindings(
+                &mut self.scatter_bindings,
+                device,
+                || self.scatter.get_bind_group_layout(0).into(),
+                [(8, &self.face_index_buffer), (9, &self.index_scatter)],
+            )
+            .clone()
+        });
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("GI resident task preparation"),
             timestamp_writes: timestamps.map(|query_set| wgpu::ComputePassTimestampWrites {
@@ -425,6 +459,12 @@ impl ResidentAccumulator {
                 end_of_pass_write_index: Some(1),
             }),
         });
+        // Face-index changes land before the trace pass reads the index.
+        if let Some(scatter) = &scatter_bindings {
+            pass.set_pipeline(&self.scatter);
+            pass.set_bind_group(0, &**scatter, &[]);
+            pass.dispatch_workgroups(self.index_scatter_count.div_ceil(64), 1, 1);
+        }
         pass.set_pipeline(&self.prepare);
         pass.set_bind_group(0, &**bindings, &[]);
         debug_assert!(count <= self.input_bytes.len() / 16);
@@ -588,8 +628,11 @@ mod tests {
 
     fn read_state(gpu: &GpuTracer) -> Vec<u32> {
         let resident = gpu.resident.as_ref().unwrap();
+        read_words(gpu, &resident.state.buffer, resident.high_water as u64 * RECORD_BYTES as u64)
+    }
+
+    fn read_words(gpu: &GpuTracer, source: &Buffer, size: u64) -> Vec<u32> {
         let device = &gpu.context.device;
-        let size = resident.high_water as u64 * RECORD_BYTES as u64;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Spatial reconstruction test snapshot"),
             size,
@@ -597,7 +640,7 @@ mod tests {
             mapped_at_creation: false,
         });
         let mut encoder = device.create_command_encoder(&default());
-        encoder.copy_buffer_to_buffer(&resident.state.buffer, 0, &buffer, 0, size);
+        encoder.copy_buffer_to_buffer(source, 0, &buffer, 0, size);
         let submission = gpu.context.queue.submit([encoder.finish()]);
         let (tx, rx) = mpsc::sync_channel(1);
         buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
@@ -921,6 +964,15 @@ mod tests {
                     face.updated_at = Some(measured_at);
                 }
             }
+            // Incremental face-index changes reach the GPU table exactly
+            // (scatter pass), through growth, retirement and recycling.
+            let resident = candidate.resident.as_ref().unwrap();
+            let expected_index = resident.face_index.table_words();
+            assert_eq!(
+                read_words(&candidate, &resident.face_index_buffer.buffer, expected_index.len() as u64 * 4),
+                expected_index,
+                "step={step}"
+            );
             for (left, right) in a.faces.iter().zip(&b.faces) {
                 assert_eq!(
                     (left.voxel, left.face, left.samples, left.sequence),

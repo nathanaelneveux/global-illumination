@@ -10,6 +10,19 @@ struct Controls { counts: vec4<u32>, options: vec4<u32>, display: vec4<u32> }
 @group(0) @binding(5) var<storage, read> seeds: array<vec4<u32>>;
 @group(0) @binding(6) var<storage, read> spatial_jobs: array<vec4<u32>>;
 @group(0) @binding(7) var<storage, read> spatial_donors: array<vec2<u32>>;
+@group(0) @binding(8) var<storage, read_write> face_index: array<vec4<u32>>;
+@group(0) @binding(9) var<storage, read> index_scatter: array<u32>;
+
+// Changed face-index entries from the worker's authoritative table. The table
+// is hashed, so changes are scattered: one record upload per batch replaces
+// one buffer write per changed run. Word 0 is the count, then (index, entry).
+@compute @workgroup_size(64)
+fn scatter_face_index(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= index_scatter[0] { return; }
+    let r = 1u + id.x * 5u;
+    face_index[index_scatter[r]] = vec4(
+        index_scatter[r + 1u], index_scatter[r + 2u], index_scatter[r + 3u], index_scatter[r + 4u]);
+}
 
 @compute @workgroup_size(64)
 fn prepare(@builtin(global_invocation_id) id: vec3<u32>) {
