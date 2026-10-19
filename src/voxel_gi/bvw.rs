@@ -266,6 +266,7 @@ pub(super) fn start_scene_task(
             geometry_change: changes.transport,
             pages: pages.into(),
             exact_edits,
+            edit_urgency: default(),
             build_time: started.elapsed(),
         }
     }));

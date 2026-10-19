@@ -390,7 +390,18 @@ struct SceneBuildResult {
     geometry_change: Option<geometry::GeometryChange>,
     pages: VecDeque<(IVec3, Vec<SurfaceProbeDescriptor>)>,
     exact_edits: Vec<IVec3>,
+    edit_urgency: EditUrgency,
     build_time: Duration,
+}
+
+/// Measured-retention urgency for exact edits: a nearby face is woken only if
+/// this edit's predicted change would cut its history (`invalidate_near_voxel`).
+#[derive(Default)]
+struct EditUrgency {
+    /// Measured retention constant c; zero wakes the whole fixed radius.
+    retention: f32,
+    /// Flux of the edit bounds containing each exact edit; missing = unknown.
+    flux: bevy::platform::collections::HashMap<IVec3, f32>,
 }
 
 struct TraceBatchResult {

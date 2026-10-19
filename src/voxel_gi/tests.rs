@@ -171,6 +171,7 @@ fn settled_counter_tracks_local_edits_global_revisions_and_page_removal() {
         &mut field,
         IVec3::ZERO,
         48,
+        None,
         &mut HashSet::new(),
     );
     update_stats_from_counters(&runtime, &field, &mut stats);
@@ -201,6 +202,7 @@ fn settled_counter_tracks_local_edits_global_revisions_and_page_removal() {
         geometry_change: Some(default()),
         pages: VecDeque::new(),
         exact_edits: vec![],
+        edit_urgency: default(),
         build_time: Duration::ZERO,
     };
     // Removing old-revision terrain must not subtract freshly settled faces
@@ -277,6 +279,7 @@ fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
             ),
         ]),
         exact_edits: vec![],
+        edit_urgency: default(),
         build_time: Duration::ZERO,
     };
     let mut world = World::new();
@@ -343,6 +346,7 @@ fn new_receiver_display_clock_does_not_depend_on_material_id() {
             geometry_change: None,
             pages: default(),
             exact_edits: vec![],
+            edit_urgency: default(),
             build_time: Duration::ZERO,
         };
         publish_scene_page(
@@ -425,6 +429,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
                 geometry_change: None,
                 pages: default(),
                 exact_edits: vec![],
+                edit_urgency: default(),
                 build_time: Duration::ZERO,
             };
             publish_scene_page(
@@ -540,6 +545,7 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
             // not the separate page-merge/seeding tests above.
             pages: default(),
             exact_edits: vec![],
+            edit_urgency: default(),
             build_time: Duration::ZERO,
         };
         let task = pool.spawn(async move { result });
@@ -637,6 +643,7 @@ fn publication_batches_cheap_pages_without_unbounded_display_work() {
             geometry_change: Some(default()),
             pages,
             exact_edits: vec![],
+            edit_urgency: default(),
             build_time: Duration::ZERO,
         }),
         ..default()

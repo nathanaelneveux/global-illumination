@@ -66,6 +66,7 @@ pub(super) fn apply_scene_task(
     mut field: ResMut<VoxelEnergyField>,
     mut stats: ResMut<VoxelGiStats>,
     settings: Res<VoxelGiSettings>,
+    startup: Option<Res<super::VoxelGiStartup>>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
     let _timing = timings.main_scope(super::telemetry::MainStage::ScenePublication);
@@ -87,6 +88,11 @@ pub(super) fn apply_scene_task(
         if let Some(mut change) = result.geometry_change.take() {
             advance_transport_revision(&mut runtime, &mut field);
             finalize_change_flux(&mut change, &field, &runtime.materials, &runtime.sources);
+            // Measured retention is resident-only (see dispatch); comparison
+            // backends keep waking the whole relight radius.
+            if startup.is_none_or(|s| s.backend.resident_accumulation()) {
+                result.edit_urgency = edit_urgency(&change, &result.exact_edits, settings.measured_retention());
+            }
             change
                 .nearby
                 .retain(|page, _| field.pages.contains_key(page));
@@ -108,6 +114,15 @@ pub(super) fn apply_scene_task(
                     .into_iter()
                     .filter(|(page, _)| !replaced.contains(page)),
             );
+            // An overtaken publication may not have reached its edit wakeups.
+            for voxel in older.exact_edits {
+                if !result.exact_edits.contains(&voxel) {
+                    result.exact_edits.push(voxel);
+                    if let Some(flux) = older.edit_urgency.flux.get(&voxel) {
+                        result.edit_urgency.flux.insert(voxel, *flux);
+                    }
+                }
+            }
         }
         runtime.scene_publication = Some(result);
     }
@@ -358,7 +373,15 @@ fn finish_scene_page(
     let mut urgent = HashSet::new();
     for &voxel in &result.exact_edits {
         let mut nearby = HashSet::new();
-        invalidate_near_voxel(runtime, field, voxel, EDIT_RELIGHT_RADIUS, &mut nearby);
+        let urgency = result.edit_urgency.flux.get(&voxel).and_then(|flux| {
+            (result.edit_urgency.retention > 0.0).then_some((result.edit_urgency.retention, *flux))
+        });
+        let radius = if urgency.is_some() {
+            MEASURED_RELIGHT_RADIUS
+        } else {
+            EDIT_RELIGHT_RADIUS
+        };
+        invalidate_near_voxel(runtime, field, voxel, radius, urgency, &mut nearby);
         urgent.extend(nearby.iter().copied());
         invalidated.extend(nearby);
     }
@@ -406,11 +429,67 @@ fn finish_scene_page(
     }
 }
 
+/// Measured retention can reach past the fixed radius for bright edits. 64
+/// still scans the same page neighbourhood as 48 (two pages each way).
+const MEASURED_RELIGHT_RADIUS: i32 = 64;
+
+/// Flux of the edit bounds containing each exact edit, after
+/// `finalize_change_flux`. Unknown flux leaves an edit out (fixed radius).
+fn edit_urgency(
+    change: &super::geometry::GeometryChange,
+    exact_edits: &[IVec3],
+    retention: f32,
+) -> super::EditUrgency {
+    let mut urgency = super::EditUrgency {
+        retention,
+        ..default()
+    };
+    if retention <= 0.0 {
+        return urgency;
+    }
+    for &voxel in exact_edits {
+        let point = super::geometry::Bounds::point(voxel);
+        let mut flux = None;
+        for (bounds, weight) in &change.weights {
+            if bounds.distance_squared(point) != 0 {
+                continue;
+            }
+            if let super::geometry::ChangeKind::Edit { .. } = weight.kind {
+                flux = Some(flux.unwrap_or(0.0f32).max(weight.flux));
+            } else {
+                flux = None;
+                break;
+            }
+        }
+        if let Some(flux) = flux {
+            urgency.flux.insert(voxel, flux);
+        }
+    }
+    urgency
+}
+
+/// The measured-retention test for a whole probe: would a change of this size
+/// cut any face's history (`c sigma^2 / D^2` below its count), or is a face
+/// dark relative to it? Same rule as `TraceWork::apply_retention`.
+fn retention_binds(probe: &SurfaceProbe, retention: f32, change: f32) -> bool {
+    let w = Vec3::new(0.2126, 0.7152, 0.0722);
+    (0..6).any(|face| {
+        if probe.face_mask & (1 << face) == 0 {
+            return false;
+        }
+        let mean = probe.radiance[face].visible;
+        let variance = w.dot((probe.second_moment[face].visible - mean * mean).max(Vec3::ZERO));
+        let lit = w.dot(mean) >= 0.05 * change;
+        !lit || retention * variance / (change * change).max(1e-30) < probe.samples[face] as f32
+    })
+}
+
 pub(super) fn invalidate_near_voxel(
     runtime: &mut VoxelGiRuntime,
     field: &mut VoxelEnergyField,
     center: IVec3,
     radius: i32,
+    urgency: Option<(f32, f32)>,
     invalidated: &mut HashSet<IVec3>,
 ) {
     let page_radius = (radius + PAGE_EDGE as i32 - 1) / PAGE_EDGE as i32;
@@ -432,6 +511,12 @@ pub(super) fn invalidate_near_voxel(
             continue;
         }
         if let Some(probe) = field.probes.get_mut(&voxel) {
+            if let Some((retention, flux)) = urgency {
+                let change = flux / (std::f32::consts::PI * delta.length_squared().max(1) as f32);
+                if !retention_binds(probe, retention, change) {
+                    continue;
+                }
+            }
             let (_, samples, covered, settled) = probe_metrics(probe, field.transport_revision);
             probe.request_refresh();
             let (_, next_samples, next_covered, next_settled) =
@@ -450,6 +535,45 @@ pub(super) fn invalidate_near_voxel(
 #[cfg(test)]
 mod donor_tests {
     use super::*;
+
+    #[test]
+    fn edit_urgency_wakes_only_faces_whose_history_the_edit_would_cut() {
+        use super::super::EnergySpectrum;
+        // 32 floor faces in a row, each with 4,096 samples of mean 0.01 and
+        // standard deviation 0.01: measured retention cuts a face's history
+        // once the predicted change exceeds 0.01 / sqrt(4096) = 1.5625e-4.
+        let fixture = || {
+            let mut field = VoxelEnergyField::default();
+            let voxels: Vec<_> = (0..32).map(|x| IVec3::new(x, 0, 0)).collect();
+            for &voxel in &voxels {
+                let mut probe = SurfaceProbe::new(voxel, 4);
+                probe.samples[2] = 4096;
+                probe.radiance[2] = EnergySpectrum::new(Vec3::splat(0.01), 0.0, 0.0);
+                probe.second_moment[2] = EnergySpectrum::new(Vec3::splat(0.0002), 0.0, 0.0);
+                field.probes.insert(voxel, probe);
+            }
+            field.pages.insert(IVec3::ZERO, voxels);
+            (VoxelGiRuntime::default(), field)
+        };
+        let woken = |radius, urgency| {
+            let (mut runtime, mut field) = fixture();
+            let mut nearby = HashSet::new();
+            invalidate_near_voxel(&mut runtime, &mut field, IVec3::ZERO, radius, urgency, &mut nearby);
+            let untouched = field.probes.values().filter(|p| p.revision == 0).count();
+            assert_eq!(untouched + nearby.len(), 32, "unwoken faces keep in-flight results");
+            nearby.len()
+        };
+        // flux 0.01: D = 0.01 / (pi d^2) > 1.5625e-4 only for d <= 4.
+        assert_eq!(woken(MEASURED_RELIGHT_RADIUS, Some((1.0, 0.01))), 5);
+        // A bright edit reaches every face in range.
+        assert_eq!(woken(MEASURED_RELIGHT_RADIUS, Some((1.0, 100.0))), 32);
+        // Unknown flux or the curve rule: the whole fixed radius.
+        assert_eq!(woken(EDIT_RELIGHT_RADIUS, None), 32);
+        // A dark face (nothing measured) always wakes.
+        let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
+        probe.samples[2] = 0;
+        assert!(retention_binds(&probe, 1.0, 1e-9));
+    }
 
     #[test]
     fn flux_scan_sees_every_face_and_falls_back_past_its_budget() {
@@ -534,6 +658,7 @@ mod donor_tests {
             geometry_change: None,
             pages: default(),
             exact_edits: Vec::new(),
+            edit_urgency: default(),
             build_time: Duration::ZERO,
         }
     }
