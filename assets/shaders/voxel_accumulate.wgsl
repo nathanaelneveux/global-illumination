@@ -1,21 +1,33 @@
 // Persistent measurement storage, independent of the ray estimator. Each face
 // owns nine uint4s: six result records, temporal RGB, metadata, render transition.
 // Readback is a snapshot of this state, never the authority for advancing rays.
-struct Controls { counts: vec4<u32>, options: vec4<u32>, display: vec4<u32> }
+struct Controls { counts: vec4<u32>, options: vec4<u32>, display: vec4<u32>, limits: vec4<u32> }
 @group(0) @binding(0) var<uniform> settings: Controls;
 @group(0) @binding(1) var<storage, read_write> tasks: array<vec4<u32>>;
 @group(0) @binding(2) var<storage, read_write> output: array<vec4<u32>>;
 @group(0) @binding(3) var<storage, read_write> state: array<vec4<u32>>;
 @group(0) @binding(4) var<storage, read> inputs: array<vec4<u32>>;
 @group(0) @binding(5) var<storage, read> seeds: array<vec4<u32>>;
-@group(0) @binding(6) var<storage, read> spatial_jobs: array<vec4<u32>>;
-@group(0) @binding(7) var<storage, read> spatial_donors: array<vec2<u32>>;
+// Persistent evidence donors: per-slot (start, len) into an arena of slots.
+@group(0) @binding(6) var<storage, read> donor_lists: array<vec2<u32>>;
+@group(0) @binding(7) var<storage, read> donor_arena: array<u32>;
 @group(0) @binding(8) var<storage, read_write> face_index: array<vec4<u32>>;
 @group(0) @binding(9) var<storage, read> index_scatter: array<u32>;
 
 // Changed face-index entries from the worker's authoritative table. The table
 // is hashed, so changes are scattered: one record upload per batch replaces
 // one buffer write per changed run. Word 0 is the count, then (index, entry).
+@group(0) @binding(10) var<storage, read_write> scatter_target: array<u32>;
+@group(0) @binding(11) var<storage, read> word_scatter: array<u32>;
+
+// Word updates to a persistent buffer (donor arena or list table): word 0 is
+// the count, then (word index, value) pairs. Indices are unique per batch.
+@compute @workgroup_size(64)
+fn scatter_words(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= word_scatter[0] { return; }
+    scatter_target[word_scatter[1u + id.x * 2u]] = word_scatter[2u + id.x * 2u];
+}
+
 @compute @workgroup_size(64)
 fn scatter_face_index(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= index_scatter[0] { return; }
@@ -165,12 +177,17 @@ fn unpack_position_tag(tag: u32) -> vec3<u32> {
 @compute @workgroup_size(64)
 fn reconstruct_evidence(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= settings.counts.x { return; }
-    let job = spatial_jobs[id.x];
-    let base = job.x * 9u;
-    if state[base + 7u].x != job.y { return; }
+    let slot = inputs[id.x].x;
+    let base = slot * 9u;
     let count = state[base + 1u].y;
     let evidence_goal = f32(settings.options.w);
-    if f32(count) >= evidence_goal || job.w == 0u { return; }
+    if f32(count) >= evidence_goal { return; }
+    // The walk's donors in order; this face needs a prefix sized by its own
+    // current history (2 goal / history sites including itself, bounded).
+    let list = donor_lists[slot];
+    let sites = clamp(2u * ((settings.options.w + max(count, 1u) - 1u) / max(count, 1u)), 1u, settings.limits.x);
+    let donors = min(list.y, sites - 1u);
+    if donors == 0u { return; }
     let center = bitcast<vec4<f32>>(state[base + 6u]);
     // Donors are at most 16 voxels away. Modulo-64 coordinate differences
     // therefore recover exact distances even across negative/world boundaries.
@@ -183,11 +200,9 @@ fn reconstruct_evidence(@builtin(global_invocation_id) id: vec3<u32>) {
     var sum = center.rgb * n;
     var weight = n;
     var squares = n;
-    for (var i = 0u; i < job.w; i += 1u) {
-        let candidate = spatial_donors[job.z + i];
-        let donor = candidate.x * 9u;
-        if candidate.y == 0u || donor + 7u >= arrayLength(&state) { continue; }
-        if state[donor + 7u].x != candidate.y { continue; }
+    for (var i = 0u; i < donors; i += 1u) {
+        let donor = donor_arena[list.x + i] * 9u;
+        if donor + 7u >= arrayLength(&state) { continue; }
         let donor_count = f32(state[donor + 1u].y);
         if donor_count == 0.0 { continue; }
         let donor_mean = bitcast<vec4<f32>>(state[donor]).rgb;

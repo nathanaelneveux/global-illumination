@@ -6,12 +6,13 @@ use super::*;
 use bevy::platform::collections::{HashMap, HashSet};
 
 const RECORD_BYTES: usize = 144;
-const DONOR_BYTES: usize = 8;
 const SHADER: &str = include_str!("../../../assets/shaders/voxel_accumulate.wgsl");
 type Key = (IVec3, usize);
 
 #[path = "resident_topology.rs"]
 mod topology;
+#[path = "donor_cache.rs"]
+mod donor_cache;
 
 #[derive(Clone, Copy)]
 struct Slot {
@@ -44,10 +45,14 @@ pub(super) struct ResidentAccumulator {
     inputs: UploadBuffer,
     seeds: UploadBuffer,
     control: UploadBuffer,
-    spatial_jobs: UploadBuffer,
-    spatial_bytes: Vec<u8>,
-    spatial_donors: UploadBuffer,
-    donor_bytes: Vec<u8>,
+    /// Per-slot (start, len) into `donor_arena`; see `donor_cache`.
+    donor_table: UploadBuffer,
+    donor_arena: UploadBuffer,
+    donor_cache: donor_cache::DonorCache,
+    arena_scatter: UploadBuffer,
+    table_scatter: UploadBuffer,
+    evidence_active: bool,
+    site_limit: u32,
     evidence_gather: super::super::spatial::evidence::IndexedGather<UVec2>,
     evidence_topology: Option<topology::SurfaceTopology>,
     topology_new: Vec<Key>,
@@ -62,7 +67,10 @@ pub(super) struct ResidentAccumulator {
     scatter_bindings: Option<CachedBindings<2>>,
     prepare_bindings: Option<CachedBindings<5>>,
     accumulate_bindings: Option<CachedBindings<4>>,
-    evidence_bindings: Option<CachedBindings<4>>,
+    evidence_bindings: Option<CachedBindings<5>>,
+    words: ComputePipeline,
+    arena_scatter_bindings: Option<CachedBindings<2>>,
+    table_scatter_bindings: Option<CachedBindings<2>>,
 }
 
 impl ResidentAccumulator {
@@ -89,6 +97,7 @@ impl ResidentAccumulator {
         let accumulate = pipeline("accumulate");
         let evidence = pipeline("reconstruct_evidence");
         let scatter = pipeline("scatter_face_index");
+        let words = pipeline("scatter_words");
         if let Some(error) = bevy::tasks::block_on(scope.pop()) {
             return Err(error.to_string());
         }
@@ -126,10 +135,21 @@ impl ResidentAccumulator {
                 "GI resident controls",
                 BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             ),
-            spatial_jobs: UploadBuffer::new(device, "GI connected spatial neighborhoods", storage),
-            spatial_bytes: Vec::new(),
-            spatial_donors: UploadBuffer::new(device, "GI adaptive spatial donors", storage),
-            donor_bytes: Vec::new(),
+            donor_table: UploadBuffer::new(
+                device,
+                "GI evidence donor lists",
+                storage | BufferUsages::COPY_SRC,
+            ),
+            donor_arena: UploadBuffer::new(
+                device,
+                "GI evidence donor arena",
+                storage | BufferUsages::COPY_SRC,
+            ),
+            donor_cache: default(),
+            arena_scatter: UploadBuffer::new(device, "GI donor arena changes", storage),
+            table_scatter: UploadBuffer::new(device, "GI donor list changes", storage),
+            evidence_active: false,
+            site_limit: 1,
             evidence_gather: default(),
             evidence_topology: None,
             topology_new: Vec::new(),
@@ -145,6 +165,9 @@ impl ResidentAccumulator {
             prepare_bindings: None,
             accumulate_bindings: None,
             evidence_bindings: None,
+            words,
+            arena_scatter_bindings: None,
+            table_scatter_bindings: None,
         })
     }
 
@@ -159,10 +182,20 @@ impl ResidentAccumulator {
         let indexed_spatial = work.spatial_evidence_target > 0
             && work.spatial_reconstruction.is_finite()
             && work.spatial_reconstruction > 0.0;
-        if !indexed_spatial {
-            // No persistent adjacency overhead when unfiltered. Re-enabling rebuilds from current ownership.
-            self.evidence_topology = None;
+        if !indexed_spatial && self.evidence_topology.take().is_some() {
+            // No persistent adjacency or donor lists when unfiltered.
+            // Re-enabling rebuilds both from current ownership.
+            self.donor_cache.clear();
         }
+        self.evidence_active = indexed_spatial;
+        self.donor_cache.begin_batch();
+        // Regions where faces left or joined the walk graph. Donor walks within
+        // one region (the walk radius) of them may have changed. Removal frees
+        // slots for reuse, so those lists are dropped. A joining face is only
+        // a newly traced one (slots are lazy): lists stay valid without it,
+        // but may now be able to grow.
+        let mut walk_removed: HashSet<IVec3> = HashSet::new();
+        let mut walk_joined: HashSet<IVec3> = HashSet::new();
         self.topology_new.clear();
         if let Some(previous) = &self.scene {
             let mut affected = HashSet::new();
@@ -181,6 +214,8 @@ impl ResidentAccumulator {
                             .is_none_or(|m| m == AIR);
                     if !present && let Some(slot) = self.slots.remove(key) {
                         self.face_index.remove(key.0, key.1);
+                        self.donor_cache.invalidate(slot.index);
+                        walk_removed.insert(region);
                         if let Some(graph) = &mut self.evidence_topology {
                             graph.remove(slot.index);
                         }
@@ -224,6 +259,7 @@ impl ResidentAccumulator {
                 let slot = self.slots.entry(key).or_insert_with(|| {
                     if indexed_spatial {
                         self.topology_new.push(key);
+                        walk_joined.insert(key.0.div_euclid(IVec3::splat(REGION_EDGE as i32)));
                     }
                     self.regions
                         .entry(face.voxel.div_euclid(IVec3::splat(REGION_EDGE as i32)))
@@ -297,49 +333,71 @@ impl ResidentAccumulator {
                     self.high_water,
                 ));
             }
+            let near = |regions: &HashSet<IVec3>| {
+                let mut out = HashSet::new();
+                for region in regions {
+                    for z in -1..=1 {
+                        for y in -1..=1 {
+                            for x in -1..=1 {
+                                out.insert(*region + IVec3::new(x, y, z));
+                            }
+                        }
+                    }
+                }
+                out
+            };
+            let removed = near(&walk_removed);
+            let joined = near(&walk_joined);
+            for region in removed.iter().chain(joined.difference(&removed)) {
+                let drop = removed.contains(region);
+                for key in self.regions.get(region).into_iter().flatten() {
+                    if let Some(slot) = self.slots.get(key) {
+                        if drop {
+                            self.donor_cache.invalidate(slot.index);
+                        } else {
+                            self.donor_cache.may_grow(slot.index);
+                        }
+                    }
+                }
+            }
         }
         self.input_bytes.extend_from_slice(&self.cap_bytes);
-        self.spatial_bytes.clear();
-        self.donor_bytes.clear();
         self.evidence_target = work.spatial_evidence_target.min(4096);
+        self.site_limit = super::super::spatial::evidence::site_limit(work.spatial_max_donors);
         let spatial_strength = if work.spatial_reconstruction.is_finite() {
             work.spatial_reconstruction.clamp(0.0, 1.0)
         } else {
             0.0
         };
         let _evidence = info_span!("gi_evidence_gather").entered();
-        if spatial_strength > 0.0 && self.evidence_target > 0 {
+        if indexed_spatial {
+            let mut donors = Vec::new();
             for face in &work.faces {
-                let start = self.donor_bytes.len() / DONOR_BYTES;
                 // CPU feedback only bounds candidate work; current GPU
                 // histories decide support. Caps are applied before rays.
                 let predicted = face.samples.min(face.history_cap).saturating_add(samples);
-                if predicted < self.evidence_target {
+                let sites = super::super::spatial::evidence::candidate_limit(
+                    self.evidence_target,
+                    predicted,
+                    work.spatial_max_donors,
+                );
+                if predicted >= self.evidence_target {
+                    // Done borrowing: release the list (rebuilt if needed again).
+                    self.donor_cache.invalidate(face.resident.x);
+                } else if self.donor_cache.needs(face.resident.x, sites as u32 - 1) {
                     let graph = self.evidence_topology.as_ref().expect("adaptive topology");
-                    self.evidence_gather.collect(
-                        face.resident,
-                        super::super::spatial::evidence::candidate_limit(
-                            self.evidence_target,
-                            predicted,
-                            work.spatial_max_donors,
-                        ),
-                        |address, edge| graph.neighbor(address.x, edge),
-                    );
-                    for address in self.evidence_gather.values().skip(1) {
-                        let bytes = address.to_array().map(u32::to_le_bytes);
-                        self.donor_bytes.extend_from_slice(bytes.as_flattened());
-                    }
-                }
-                for word in [
-                    face.resident.x,
-                    face.resident.y,
-                    start as u32,
-                    (self.donor_bytes.len() / DONOR_BYTES - start) as u32,
-                ] {
-                    self.spatial_bytes.extend_from_slice(&word.to_le_bytes());
+                    self.evidence_gather.collect(face.resident, sites, |address, edge| {
+                        graph.neighbor(address.x, edge)
+                    });
+                    donors.clear();
+                    donors.extend(self.evidence_gather.values().skip(1).map(|a| a.x));
+                    // Fewer sites than asked: the walk ran out of surface.
+                    let complete = donors.len() + 1 < sites;
+                    self.donor_cache.store(face.resident.x, &donors, complete);
                 }
             }
         }
+        self.donor_cache.finish_batch();
         drop(_evidence);
         let device = &context.device;
         let queue = &context.queue;
@@ -369,13 +427,34 @@ impl ResidentAccumulator {
         }
         self.inputs.upload(device, queue, &self.input_bytes)?;
         self.seeds.upload(device, queue, &self.seed_bytes)?;
-        if !self.spatial_bytes.is_empty() {
-            self.spatial_jobs
-                .upload(device, queue, &self.spatial_bytes)?;
-        }
-        if !self.donor_bytes.is_empty() {
-            self.spatial_donors
-                .upload(device, queue, &self.donor_bytes)?;
+        if self.evidence_active {
+            // Persistent buffers keep their contents across growth.
+            for (buffer, bytes) in [
+                (&mut self.donor_table, self.high_water as usize * 8),
+                (&mut self.donor_arena, self.donor_cache.arena_len as usize * 4),
+            ] {
+                let previous = buffer.buffer.clone();
+                let capacity = buffer.capacity;
+                if buffer.ensure(device, bytes.max(16))? {
+                    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Preserve GI evidence donors during growth"),
+                    });
+                    encoder.copy_buffer_to_buffer(&previous, 0, &buffer.buffer, 0, capacity);
+                    queue.submit([encoder.finish()]);
+                }
+            }
+            if std::mem::take(&mut self.donor_cache.reset_table) {
+                let zeros = vec![0u8; self.donor_table.capacity as usize];
+                queue.write_buffer(&self.donor_table.buffer, 0, &zeros);
+            }
+            if self.donor_cache.arena.count > 0 {
+                self.arena_scatter
+                    .upload(device, queue, &self.donor_cache.arena.bytes)?;
+            }
+            if self.donor_cache.table.count > 0 {
+                self.table_scatter
+                    .upload(device, queue, &self.donor_cache.table.bytes)?;
+            }
         }
         let milliseconds = self.origin.elapsed().as_millis() as u32;
         #[cfg(test)]
@@ -401,6 +480,10 @@ impl ResidentAccumulator {
                 1.0f32.to_bits()
             },
             work.measured_retention.max(0.0).to_bits(),
+            self.site_limit,
+            0,
+            0,
+            0,
         ];
         self.control.upload(
             device,
@@ -490,21 +573,40 @@ impl ResidentAccumulator {
                 (4, &self.inputs),
             ],
         );
-        let evidence_bindings = if self.spatial_bytes.is_empty() || self.evidence_target == 0 {
-            None
-        } else {
-            Some(cached_bindings(
+        let words = &self.words;
+        let arena_scatter = (self.evidence_active && self.donor_cache.arena.count > 0).then(|| {
+            cached_bindings(
+                &mut self.arena_scatter_bindings,
+                device,
+                || words.get_bind_group_layout(0).into(),
+                [(10, &self.donor_arena), (11, &self.arena_scatter)],
+            )
+            .clone()
+        });
+        let table_scatter = (self.evidence_active && self.donor_cache.table.count > 0).then(|| {
+            cached_bindings(
+                &mut self.table_scatter_bindings,
+                device,
+                || words.get_bind_group_layout(0).into(),
+                [(10, &self.donor_table), (11, &self.table_scatter)],
+            )
+            .clone()
+        });
+        let evidence_bindings = (self.evidence_active && self.evidence_target > 0).then(|| {
+            cached_bindings(
                 &mut self.evidence_bindings,
                 device,
                 || self.evidence.get_bind_group_layout(0).into(),
                 [
                     (0, &self.control),
                     (3, &self.state),
-                    (6, &self.spatial_jobs),
-                    (7, &self.spatial_donors),
+                    (4, &self.inputs),
+                    (6, &self.donor_table),
+                    (7, &self.donor_arena),
                 ],
-            ))
-        };
+            )
+            .clone()
+        });
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("GI resident accumulation"),
             timestamp_writes: timestamps.map(|query_set| wgpu::ComputePassTimestampWrites {
@@ -513,10 +615,21 @@ impl ResidentAccumulator {
                 end_of_pass_write_index: Some(5),
             }),
         });
+        // Donor list changes land before reconstruction reads them.
+        for (scatter, records) in [
+            (&arena_scatter, self.donor_cache.arena.count),
+            (&table_scatter, self.donor_cache.table.count),
+        ] {
+            if let Some(scatter) = scatter {
+                pass.set_pipeline(&self.words);
+                pass.set_bind_group(0, &**scatter, &[]);
+                pass.dispatch_workgroups(records.div_ceil(64), 1, 1);
+            }
+        }
         pass.set_pipeline(&self.accumulate);
         pass.set_bind_group(0, &**bindings, &[]);
         pass.dispatch_workgroups((count as u32).div_ceil(64), 1, 1);
-        if let Some(bindings) = evidence_bindings {
+        if let Some(bindings) = &evidence_bindings {
             pass.set_pipeline(&self.evidence);
             pass.set_bind_group(0, &**bindings, &[]);
             pass.dispatch_workgroups((count as u32).div_ceil(64), 1, 1);
@@ -772,22 +885,20 @@ mod tests {
             let mut position_gather = spatial::evidence::Gather::default();
             for (key, slot) in slots {
                 let center = sample(slot);
-                let expected = if b.spatial_reconstruction > 0.0 {
-                    // Replay the exact uploaded candidates; feedback may lag
-                    // the current GPU count, so CPU work bounds need not match
-                    // the resulting count. The weighting oracle still reads
-                    // current independent moments/counts from native storage.
-                    let resident = gpu.resident.as_ref().unwrap();
-                    let header = &resident.spatial_bytes[slot.task_index as usize * 16..];
-                    let word = |offset| {
-                        u32::from_le_bytes(header[offset..offset + 4].try_into().unwrap()) as usize
-                    };
-                    assert!(cap == 0 || word(12) <= cap as usize);
+                let resident = gpu.resident.as_ref().unwrap();
+                // The GPU sizes each face's prefix of its persistent list from
+                // its own current count (the CPU replays that rule here).
+                let list = resident.donor_cache.donors(slot.index);
+                let sites = spatial::evidence::candidate_limit(target, center.count, cap);
+                let donors = list.len().min(sites - 1);
+                let expected = if b.spatial_reconstruction > 0.0 && donors > 0 {
+                    assert!(cap == 0 || donors <= cap as usize);
+                    // The cached walk must be the coordinate oracle's walk.
                     position_gather.collect(
                         key.0,
                         key.1,
                         UVec2::new(slot.index, slot.incarnation),
-                        word(12) + 1,
+                        donors + 1,
                         |p, f| {
                             slots
                                 .get(&(p, f))
@@ -796,27 +907,19 @@ mod tests {
                     );
                     gather.sites.clear();
                     gather.sites.push((IVec2::ZERO, center));
-                    if b.spatial_reconstruction > 0.0 {
-                        assert_eq!(position_gather.sites.len(), word(12) + 1);
-                        for (expected, record) in position_gather.sites[1..].iter().zip(
-                            resident.donor_bytes
-                                [word(8) * DONOR_BYTES..(word(8) + word(12)) * DONOR_BYTES]
-                                .chunks_exact(DONOR_BYTES),
-                        ) {
-                            let index = u32::from_le_bytes(record[..4].try_into().unwrap());
-                            let incarnation = u32::from_le_bytes(record[4..8].try_into().unwrap());
-                            assert_eq!(expected.1, UVec2::new(index, incarnation));
-                            // Recover the real offset from the stable keys.
-                            let (donor_key, donor_slot) = by_index[&index];
-                            let delta = donor_key.0 - key.0;
-                            let offset = match key.1 / 2 {
-                                0 => IVec2::new(delta.y, delta.z),
-                                1 => IVec2::new(delta.x, delta.z),
-                                _ => IVec2::new(delta.x, delta.y),
-                            };
-                            assert_eq!(expected.0, offset);
-                            gather.sites.push((offset, sample(donor_slot)));
-                        }
+                    assert_eq!(position_gather.sites.len(), donors + 1);
+                    for (expected, &index) in position_gather.sites[1..].iter().zip(&list[..donors]) {
+                        assert_eq!(expected.1.x, index);
+                        // Recover the real offset from the stable keys.
+                        let (donor_key, donor_slot) = by_index[&index];
+                        let delta = donor_key.0 - key.0;
+                        let offset = match key.1 / 2 {
+                            0 => IVec2::new(delta.y, delta.z),
+                            1 => IVec2::new(delta.x, delta.z),
+                            _ => IVec2::new(delta.x, delta.y),
+                        };
+                        assert_eq!(expected.0, offset);
+                        gather.sites.push((offset, sample(donor_slot)));
                     }
                     spatial::evidence::resolve(&gather.sites, target, b.spatial_reconstruction).rgb
                 } else {
@@ -967,6 +1070,30 @@ mod tests {
             // Incremental face-index changes reach the GPU table exactly
             // (scatter pass), through growth, retirement and recycling.
             let resident = candidate.resident.as_ref().unwrap();
+            // Cached donor lists may lack faces that joined later, but every
+            // donor must still be on a fresh walk over the current surface
+            // (never a removed face or a recycled slot).
+            if spatial && let Some(graph) = &resident.evidence_topology {
+                let mut fresh = super::super::super::spatial::evidence::IndexedGather::default();
+                let mut checked = 0;
+                for slot in resident.slots.values() {
+                    let list = resident.donor_cache.donors(slot.index);
+                    if list.is_empty() {
+                        continue;
+                    }
+                    fresh.collect(UVec2::new(slot.index, slot.incarnation), 1024, |a, edge| {
+                        graph.neighbor(a.x, edge)
+                    });
+                    let walk: HashSet<u32> = fresh.values().skip(1).map(|a| a.x).collect();
+                    assert!(
+                        list.iter().all(|donor| walk.contains(donor)),
+                        "step={step} slot={}",
+                        slot.index
+                    );
+                    checked += 1;
+                }
+                assert!(step < 3 || checked > 0, "exercise cached lists");
+            }
             let expected_index = resident.face_index.table_words();
             assert_eq!(
                 read_words(&candidate, &resident.face_index_buffer.buffer, expected_index.len() as u64 * 4),
