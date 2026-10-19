@@ -66,7 +66,6 @@ pub(super) fn apply_scene_task(
     mut field: ResMut<VoxelEnergyField>,
     mut stats: ResMut<VoxelGiStats>,
     settings: Res<VoxelGiSettings>,
-    startup: Option<Res<super::VoxelGiStartup>>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
     let _timing = timings.main_scope(super::telemetry::MainStage::ScenePublication);
@@ -88,11 +87,7 @@ pub(super) fn apply_scene_task(
         if let Some(mut change) = result.geometry_change.take() {
             advance_transport_revision(&mut runtime, &mut field);
             finalize_change_flux(&mut change, &field, &runtime.materials, &runtime.sources);
-            // Measured retention is resident-only (see dispatch); comparison
-            // backends keep waking the whole relight radius.
-            if startup.is_none_or(|s| s.backend.resident_accumulation()) {
-                result.edit_urgency = edit_urgency(&change, &result.exact_edits, settings.measured_retention());
-            }
+            result.edit_urgency = edit_urgency(&change, &result.exact_edits, settings.measured_retention());
             change
                 .nearby
                 .retain(|page, _| field.pages.contains_key(page));

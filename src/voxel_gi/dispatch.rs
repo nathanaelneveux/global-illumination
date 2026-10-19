@@ -4,7 +4,7 @@ use super::{
     TraceBatchResult, VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats, emission,
     enqueue_many, enqueue_urgent, geometry, gpu, page_of, probe_metrics, scheduling,
     telemetry::GiWorkTimings,
-    tracer::{BOOTSTRAP_SAMPLES, trace_work_batch},
+    tracer::BOOTSTRAP_SAMPLES,
     update_stats_from_counters,
     work::TraceWork,
     world::SurfaceProbe,
@@ -13,7 +13,6 @@ use bevy::{
     prelude::*,
     tasks::{AsyncComputeTaskPool, block_on, poll_once},
 };
-use rayon::ThreadPoolBuilder;
 use std::{sync::Arc, time::Instant};
 
 pub(super) fn append_sky_work(
@@ -74,7 +73,6 @@ pub(super) fn start_trace_task(
     cameras: Query<&GlobalTransform, With<Camera3d>>,
     gpu_device: Option<Res<gpu::GpuTransportDevice>>,
     settings: Res<VoxelGiSettings>,
-    startup: Option<Res<super::VoxelGiStartup>>,
     frame: Option<Res<bevy::diagnostic::FrameCount>>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
@@ -82,15 +80,8 @@ pub(super) fn start_trace_task(
     if runtime.trace_task.is_some() || (field.order.is_empty() && runtime.gpu_pending.is_empty()) {
         return;
     }
-    let cpu = startup
-        .as_ref()
-        .is_some_and(|s| s.backend == super::TransportBackend::Cpu);
-    assert!(
-        cpu || gpu_device.is_some(),
-        "Voxel GI requires a GPU transport device. Select TransportBackend::Cpu explicitly for CPU reference transport."
-    );
+    let gpu_device = gpu_device.expect("Voxel GI requires a GPU transport device");
     let selection_started = Instant::now();
-    let resident = startup.is_none_or(|s| s.backend.resident_accumulation());
     let requested = std::mem::take(&mut field.requested);
     enqueue_urgent(
         &mut runtime,
@@ -101,26 +92,20 @@ pub(super) fn start_trace_task(
     let focus = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
         page_of(camera.translation().floor().as_ivec3())
     });
-    update_focus(&mut runtime, &field, focus);
+    info_span!("gi_update_focus").in_scope(|| update_focus(&mut runtime, &field, focus));
     runtime.batch_size = runtime.batch_size.min(settings.batch_limit());
     runtime.sky_batch_size = runtime.sky_batch_size.min(settings.batch_limit());
     // Three owned staging allocations bound queue latency and memory. When full,
     // poll without selecting more work: never turn backpressure into a CPU wait.
     let can_submit = !field.order.is_empty() && runtime.gpu_pending.len() < 3;
     let mut selected = if can_submit {
-        select_transport(&mut runtime, &field, &settings)
+        info_span!("gi_select").in_scope(|| select_transport(&mut runtime, &field, &settings))
     } else {
         TraceWork::default()
     };
     selected.transport = runtime.transport;
     selected.response_seconds = settings.display_response_seconds();
-    // Measured retention needs resident accumulation (the GPU decides history
-    // with the fresh batch); other backends keep the distance curve.
-    selected.measured_retention = if resident {
-        settings.measured_retention()
-    } else {
-        0.0
-    };
+    selected.measured_retention = settings.measured_retention();
     selected.display_frame = frame.as_ref().map_or(0, |frame| frame.0);
     selected.display_transition_frames = settings.display_transition_frames.min(32);
     selected.spatial_reconstruction = settings.spatial_reconstruction;
@@ -129,7 +114,7 @@ pub(super) fn start_trace_task(
     let samples = settings.batch_samples();
     let transport_count = selected.probes.len();
     let sky_count = if can_submit {
-        append_sky_work(&mut runtime, &field, &mut selected)
+        info_span!("gi_sky_plan").in_scope(|| append_sky_work(&mut runtime, &field, &mut selected))
     } else {
         0
     };
@@ -159,13 +144,11 @@ pub(super) fn start_trace_task(
     };
     let sources = runtime.sources.clone();
     let materials = Arc::clone(&runtime.materials);
-    let pool = Arc::clone(&runtime.trace_pool);
     let mut gpu_tracer = runtime.gpu_tracer.take();
     let mut pending = std::mem::take(&mut runtime.gpu_pending);
     let emission_cache = runtime.emission_cache.take();
     let sampling_importance = settings.sampling_importance();
-    let mut cpu_sky_cache = runtime.cpu_sky_cache.take().unwrap_or_default();
-    let gpu_device = gpu_device.filter(|_| !cpu).map(|device| device.clone());
+    let gpu_device = gpu_device.clone();
     runtime.trace_task = Some(AsyncComputeTaskPool::get().spawn(async move {
         let _span = info_span!("gi_trace_worker").entered();
         let started = Instant::now();
@@ -185,17 +168,10 @@ pub(super) fn start_trace_task(
             |cache| Arc::clone(&cache.distribution),
         );
         let mut gpu_error = None;
-        if gpu_tracer.is_none()
-            && let Some(device) = gpu_device
-        {
-            match gpu::GpuTracer::new(device) {
+        if gpu_tracer.is_none() {
+            match gpu::GpuTracer::new(gpu_device) {
                 Ok(mut tracer) => {
-                    let enabled = if resident {
-                        tracer.enable_resident()
-                    } else {
-                        Ok(())
-                    };
-                    if let Err(error) = enabled {
+                    if let Err(error) = tracer.enable_resident() {
                         gpu_error = Some(error);
                     } else {
                         gpu_tracer = Some(tracer);
@@ -205,13 +181,12 @@ pub(super) fn start_trace_task(
             }
         }
         info_span!("gi_apply_retention").in_scope(|| batch.work.apply_retention());
-        cpu_sky_cache.track_changes = true;
         let mut completed = None;
         if let Some(tracer) = &mut gpu_tracer {
             tracer.sky_cache.track_changes = true;
-            tracer.sky_cache.deferred_results = resident;
+            tracer.sky_cache.deferred_results = true;
             let result = (|| -> Result<(), String> {
-                if resident {
+                {
                     let ready = match pending.front_mut() {
                         Some(super::PendingTransport {
                             snapshot: Some(snapshot),
@@ -249,19 +224,6 @@ pub(super) fn start_trace_task(
                             batch: std::mem::take(&mut batch),
                         });
                     }
-                } else {
-                    tracer.trace_compact(
-                        Arc::clone(&scene),
-                        &sources,
-                        &materials,
-                        &mut batch.work,
-                        samples,
-                        &emitters,
-                        sky_only,
-                    )?;
-                    batch.gpu_ms = tracer.last_gpu_ms;
-                    batch.execution_ms = Some(tracer.last_dispatch_ms);
-                    completed = Some(std::mem::take(&mut batch));
                 }
                 Ok(())
             })();
@@ -271,43 +233,15 @@ pub(super) fn start_trace_task(
                 pending.clear();
             }
         }
-        if cpu && !batch.work.probes.is_empty() {
-            let pool = pool.get_or_init(|| {
-                let available = std::thread::available_parallelism().map_or(2, usize::from);
-                ThreadPoolBuilder::new()
-                    .num_threads(available.saturating_sub(2).clamp(1, 2))
-                    .thread_name(|index| format!("voxel-gi-{index}"))
-                    .build()
-                    .expect("voxel GI worker pool")
-            });
-            for face in &mut batch.work.faces {
-                face.resident = UVec2::ZERO;
-            }
-            pool.install(|| {
-                trace_work_batch(
-                    &scene,
-                    &sources,
-                    &materials,
-                    &mut batch.work,
-                    if sky_only { 0 } else { samples },
-                    &emitters,
-                    &mut cpu_sky_cache,
-                )
-            });
-            completed = Some(batch);
-        }
-        let sunlight_change = gpu_tracer.as_mut().map_or_else(
-            || cpu_sky_cache.take_changes(&scene),
-            |tracer| tracer.sky_cache.take_changes(&scene),
-        );
+        let sunlight_change = gpu_tracer
+            .as_mut()
+            .and_then(|tracer| tracer.sky_cache.take_changes(&scene));
         let bindings = gpu_tracer
             .as_mut()
             .map_or_else(Vec::new, gpu::GpuTracer::take_resident_bindings);
-        let sky_stats = dispatched.then(|| {
-            gpu_tracer
-                .as_ref()
-                .map_or(cpu_sky_cache.stats, |tracer| tracer.sky_cache.stats)
-        });
+        let sky_stats = dispatched
+            .then(|| gpu_tracer.as_ref().map(|tracer| tracer.sky_cache.stats))
+            .flatten();
         TraceBatchResult {
             batch: completed,
             pending,
@@ -316,7 +250,6 @@ pub(super) fn start_trace_task(
             trace_time: started.elapsed(),
             gpu_tracer,
             emission_cache,
-            cpu_sky_cache,
             gpu_error,
             sunlight_change,
         }
@@ -413,6 +346,7 @@ pub(super) fn select_transport(
     let mut adaptive = std::mem::take(&mut runtime.ranked_candidates);
     let mut deferred_urgent = Vec::new();
     adaptive.clear();
+    let _refresh = info_span!("gi_select_rank").entered();
     if runtime.urgent_pending.len() < runtime.batch_size {
         adaptive.refresh(
             field,
@@ -423,6 +357,8 @@ pub(super) fn select_transport(
             runtime.batch_size,
         );
     }
+    drop(_refresh);
+    let _choose = info_span!("gi_select_choose").entered();
     // Search capacity is bounded independently of emitted work. In particular,
     // resting neighbors are holes to skip, not GPU work that used the budget.
     for index in 0..settings.batch_limit().min(field.order.len()) {
@@ -594,7 +530,6 @@ pub(super) fn apply_trace_task(
     }
     runtime.gpu_tracer = result.gpu_tracer;
     runtime.emission_cache = result.emission_cache;
-    runtime.cpu_sky_cache = Some(result.cpu_sky_cache);
     stats.last_worker_ms = result.trace_time.as_secs_f32() * 1000.0;
     runtime.gpu_pending = result.pending;
     // Address publication is independent of statistical snapshots. Once the
@@ -634,6 +569,7 @@ pub(super) fn apply_trace_task(
         batch.scene_generation == runtime.generation && batch.sky_revision == runtime.sky_revision;
     let mut requeue = Vec::new();
     let transport_revision = field.transport_revision;
+    let _merge = info_span!("gi_merge_jobs").entered();
     for job in &batch.work.probes {
         let voxel = job.voxel;
         runtime.trace_pending.remove(&voxel);
@@ -672,12 +608,7 @@ pub(super) fn apply_trace_task(
         let publish_display = batch.work.faces[job.faces()]
             .iter()
             .any(|face| face.resident.y == 0 || old.resident[face.face] != face.resident);
-        job.publish(
-            &batch.work.faces[job.faces()],
-            old,
-            merge_started,
-            &settings,
-        );
+        job.publish(&batch.work.faces[job.faces()], old, merge_started, &settings);
         let (_, new_samples, new_covered, new_settled) = probe_metrics(old, transport_revision);
         runtime.completed_samples =
             runtime.completed_samples.saturating_sub(old_samples) + new_samples;
@@ -691,6 +622,7 @@ pub(super) fn apply_trace_task(
             requeue.push(voxel);
         }
     }
+    drop(_merge);
     batch.work.clear();
     runtime.trace_scratch = batch.work;
     enqueue_many(&mut runtime, requeue);

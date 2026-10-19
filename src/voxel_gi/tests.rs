@@ -41,7 +41,6 @@ fn transport_failure_worker_error_is_fatal_at_publication() {
             trace_time: Duration::ZERO,
             gpu_tracer: None,
             emission_cache: None,
-            cpu_sky_cache: default(),
             gpu_error: Some("injected readback failure".into()),
             sunlight_change: None,
         }
@@ -119,7 +118,6 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
                 trace_time: Duration::from_millis(1),
                 gpu_tracer: None,
                 emission_cache: None,
-                cpu_sky_cache: default(),
                 gpu_error: None,
                 sunlight_change: None,
             }
@@ -483,7 +481,6 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
                     trace_time: Duration::from_millis(1),
                     gpu_tracer: None,
                     emission_cache: None,
-                    cpu_sky_cache: default(),
                     gpu_error: None,
                     sunlight_change: None,
                 }

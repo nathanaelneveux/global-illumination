@@ -22,9 +22,7 @@ pub(crate) struct VoxelGiDiagnosticsPlugin;
 /// Demo boundary only. Invalid input is reported by main rather than panicking
 /// inside construction of the reusable GI plugin. No process-global mutation.
 pub(crate) fn configure_demo_launch(app: &mut App) -> Result<(), String> {
-    let startup = parse_startup(|name| std::env::var(name).ok())?;
-    app.insert_resource(startup)
-        .init_resource::<super::VoxelGiSettings>();
+    app.init_resource::<super::VoxelGiSettings>();
     if std::env::var("VOXEL_GI_CONTINUOUS").is_ok_and(|v| v == "1") {
         app.world_mut()
             .resource_mut::<super::VoxelGiSettings>()
@@ -33,56 +31,6 @@ pub(crate) fn configure_demo_launch(app: &mut App) -> Result<(), String> {
     Ok(())
 }
 
-fn parse_startup(
-    mut value: impl FnMut(&str) -> Option<String>,
-) -> Result<super::VoxelGiStartup, String> {
-    use super::{TransportBackend, VoxelGiStartup};
-    let backend = match value("VOXEL_GI_BACKEND").as_deref() {
-        None | Some("auto" | "gpu") => TransportBackend::Auto,
-        Some("cpu") => TransportBackend::Cpu,
-        Some("resident") => TransportBackend::Resident,
-        Some("sync") => TransportBackend::Synchronous,
-        Some(other) => {
-            return Err(format!(
-                "unknown VOXEL_GI_BACKEND={other:?}; choose auto, gpu, resident, sync or cpu"
-            ));
-        }
-    };
-    Ok(VoxelGiStartup { backend })
-}
-
-#[cfg(test)]
-mod launch_tests {
-    use super::*;
-    #[test]
-    fn typed_launch_preserves_defaults_aliases_and_rejects_typos() {
-        assert_eq!(
-            parse_startup(|_| None).unwrap(),
-            super::super::VoxelGiStartup::default()
-        );
-        assert_eq!(
-            parse_startup(|key| (key == "VOXEL_GI_BACKEND").then(|| "cpu".into()))
-                .unwrap()
-                .backend,
-            super::super::TransportBackend::Cpu
-        );
-        for alias in ["auto", "gpu"] {
-            assert_eq!(
-                parse_startup(|key| (key == "VOXEL_GI_BACKEND").then(|| alias.into()))
-                    .unwrap()
-                    .backend,
-                super::super::TransportBackend::Auto
-            );
-        }
-        assert_eq!(
-            parse_startup(|key| (key == "VOXEL_GI_BACKEND").then(|| "sync".into()))
-                .unwrap()
-                .backend,
-            super::super::TransportBackend::Synchronous
-        );
-        assert!(parse_startup(|k| (k == "VOXEL_GI_BACKEND").then(|| "typo".into())).is_err());
-    }
-}
 
 impl Plugin for VoxelGiDiagnosticsPlugin {
     fn build(&self, app: &mut App) {

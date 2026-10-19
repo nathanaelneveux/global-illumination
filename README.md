@@ -55,8 +55,9 @@ with that face's cached energy, which gives infinite bounces. See
 removed on this branch: neither was qualified with the cache. Their history
 lives in [path reuse](docs/history/resident-path-reuse.md) and
 [hallway outliers](docs/history/hallway-path-outliers.md).
-`VOXEL_GI_BACKEND=sync` keeps the synchronous backend; it binds no cache, so
-its paths continue explicitly for up to three hits.
+The game always uses resident GPU accumulation; the synchronous and CPU
+runtime backends were removed on this branch (last present at `c68a924`). The
+CPU tracer remains as a test oracle.
 
 Early spatial RGB reconstruction defaults to a **1024 evidence target** on this
 branch, with its full adaptive footprint and no extra donor cap. The cache

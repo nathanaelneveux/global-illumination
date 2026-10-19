@@ -204,7 +204,7 @@ noise of the pre-cleanup cache runs; the default path was not meant to change.
   nearby histories anyway.
 - The hit uses its face-centre cached energy, not a value interpolated across
   the face.
-- The synchronous backend and the CPU reference do not use the cache (path
-  reuse and guiding were removed on this branch).
+- The CPU reference tracer (now a test oracle only) does not use the cache.
+  Path reuse, guiding and the synchronous/CPU runtime backends were removed.
 - The temporal filter and transition are unchanged. The evidence target is now
   1024 (above).

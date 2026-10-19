@@ -31,7 +31,6 @@ mod sky_cache;
 mod sources;
 mod spatial;
 mod spectrum;
-mod startup;
 mod statistics;
 mod telemetry;
 mod tracer;
@@ -43,18 +42,16 @@ mod world;
 use std::collections::VecDeque;
 // Bounded, engine-owned integer coordinates; no untrusted string keys.
 use bevy::platform::collections::HashSet;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 use bevy::tasks::Task;
-use rayon::ThreadPool;
 
 pub use field::{EnergyEstimate, VoxelEnergyField};
 pub use settings::{TransportSettings, VoxelGiSettings};
 pub use sources::VoxelGiEnvironment;
 pub use spectrum::{EnergyEmitter, EnergySpectrum};
-pub use startup::{TransportBackend, VoxelGiStartup};
 pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 
 use bvw::{collect_chunk_changes, start_scene_task};
@@ -113,7 +110,6 @@ impl Plugin for VoxelGiPlugin {
                     .chain()
                     .in_set(VoxelGiSystems),
             );
-        startup::initialize(app);
     }
 
     fn finish(&self, app: &mut App) {
@@ -129,9 +125,6 @@ impl Plugin for VoxelGiPlugin {
             })
         {
             app.insert_resource(limits);
-        }
-        if app.world().resource::<VoxelGiStartup>().backend == TransportBackend::Cpu {
-            return;
         }
         let context = app
             .get_sub_app(bevy::render::RenderApp)
@@ -241,7 +234,6 @@ struct VoxelGiRuntime {
     sources: TransportSources,
     materials: Arc<VoxelMaterialTransportTable>,
     transport: TransportSettings,
-    trace_pool: Arc<OnceLock<ThreadPool>>,
     loaded_pages: HashSet<IVec3>,
     dirty_pages: HashSet<IVec3>,
     full_resample_pages: HashSet<IVec3>,
@@ -287,7 +279,6 @@ struct VoxelGiRuntime {
     ranked_candidates: scheduling::RankedCandidates,
     gpu_tracer: Option<gpu::GpuTracer>,
     emission_cache: Option<emission::EmissionCache>,
-    cpu_sky_cache: Option<sky_cache::SkyCache>,
     sky_pending: VecDeque<IVec3>,
     sky_queued: HashSet<IVec3>,
     sky_cursor: usize,
@@ -318,7 +309,6 @@ impl Default for VoxelGiRuntime {
             sources: TransportSources::default(),
             materials: Arc::new(VoxelMaterialTransportTable::default()),
             transport: TransportSettings::default(),
-            trace_pool: Arc::new(OnceLock::new()),
             loaded_pages: HashSet::new(),
             dirty_pages: HashSet::new(),
             full_resample_pages: HashSet::new(),
@@ -361,7 +351,6 @@ impl Default for VoxelGiRuntime {
             ranked_candidates: default(),
             gpu_tracer: None,
             emission_cache: None,
-            cpu_sky_cache: None,
             sky_pending: default(),
             sky_queued: default(),
             sky_cursor: 0,
@@ -412,7 +401,6 @@ struct TraceBatchResult {
     trace_time: Duration,
     gpu_tracer: Option<gpu::GpuTracer>,
     emission_cache: Option<emission::EmissionCache>,
-    cpu_sky_cache: sky_cache::SkyCache,
     gpu_error: Option<String>,
     sunlight_change: Option<geometry::GeometryChange>,
 }

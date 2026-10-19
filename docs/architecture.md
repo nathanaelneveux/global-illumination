@@ -657,8 +657,8 @@ resident runtime has no blocking GPU wait. A pending receiver is not selected
 again until its scheduling feedback is delivered. Each snapshot carries its
 job identities and submission timestamp, and publication validates geometry and
 source revisions. Sky jobs have generation/batch tickets, so overlapping work
-cannot publish superseded corners. The original synchronous backend and CPU
-reference remain available as explicit comparison backends.
+cannot publish superseded corners. The synchronous and CPU runtime backends
+were removed on the surface-cache branch; the CPU tracer remains a test oracle.
 
 Snapshots retain all five bands, sample/variance metadata and measurement ages,
 and distinguish unknown or stale results from valid zero energy. They currently
@@ -697,17 +697,14 @@ display evidence.
 
 ### Construction configuration
 
-Insert `VoxelGiStartup` before adding `VoxelGiPlugin`. It selects
-`TransportBackend::Auto` (required resident compute), `Cpu`,
-explicit `Resident`, or the `Synchronous` comparison. Retention is not a
-construction choice: distance-band summaries and measured retention
-(`VoxelGiSettings::measured_retention`) are always used. These are per-App construction choices, not live switches. Runtime controls
-remain in `VoxelGiSettings`; CPU transport still uses the normal GPU display.
-GPU initialization, dispatch and readback failures are fatal at publication,
-before partial results are applied. They never switch the running game to CPU
-transport. Select `Cpu` explicitly when the independent reference is wanted.
+`VoxelGiPlugin` requires a GPU transport device and always accumulates on the
+GPU (resident). There is no construction-time backend choice; distance-band
+summaries and measured retention (`VoxelGiSettings::measured_retention`) are
+always used. Runtime controls remain in `VoxelGiSettings`. GPU initialization,
+dispatch and readback failures are fatal at publication, before partial
+results are applied.
 
-The demo parses backend/retention/continuous launch variables before installing
+The demo parses continuous launch variables before installing
 the plugin and reports invalid choices at that boundary. Detailed timing is
 enabled by the optional validation adapter. Debug-only history-ablation/audit
 switches still use process-global state: embedding multiple independently
