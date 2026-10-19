@@ -66,6 +66,9 @@ pub(super) fn append_sky_work(
     count
 }
 
+/// Probes per batch whose untraced faces get a resident slot and seed.
+const ENSURE_PROBES_PER_BATCH: usize = 1024;
+
 pub(super) fn start_trace_task(
     mut runtime: ResMut<VoxelGiRuntime>,
     mut field: ResMut<VoxelEnergyField>,
@@ -112,6 +115,20 @@ pub(super) fn start_trace_task(
     selected.spatial_evidence_target = settings.spatial_evidence_target.min(4096);
     selected.spatial_max_donors = settings.spatial_max_donors;
     let samples = settings.batch_samples();
+    // Eager slots ride with a batch that has faces (only those prepare
+    // resident inputs). Bounded per batch so streaming cannot burst.
+    if !selected.faces.is_empty() {
+        let mut drained = 0;
+        while drained < ENSURE_PROBES_PER_BATCH
+            && let Some(voxel) = runtime.slot_requests.pop_front()
+        {
+            runtime.slot_requested.remove(&voxel);
+            if let Some(probe) = field.probes.get(&voxel) {
+                selected.ensure_slots(probe);
+                drained += 1;
+            }
+        }
+    }
     let transport_count = selected.probes.len();
     let sky_count = if can_submit {
         info_span!("gi_sky_plan").in_scope(|| append_sky_work(&mut runtime, &field, &mut selected))

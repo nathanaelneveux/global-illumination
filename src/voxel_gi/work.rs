@@ -27,6 +27,9 @@ pub(crate) struct TraceWork {
     pub spatial_max_donors: u32,
     pub probes: Vec<ProbeWork>,
     pub faces: Vec<FaceWork>,
+    /// Faces that need a resident slot before they are traced, so every
+    /// published face has GPU state (and a seeded presentation) early.
+    pub ensure: Vec<EnsureFace>,
     pub(super) pending_retention: Vec<RetentionWork>,
 }
 
@@ -135,6 +138,14 @@ impl ProbeWork {
     }
 }
 
+/// A face to give a resident slot (and seed) without tracing it yet.
+#[derive(Clone)]
+pub(crate) struct EnsureFace {
+    pub face: FaceWork,
+    pub revision: u64,
+    pub source_revision: u64,
+}
+
 #[derive(Clone)]
 pub(crate) struct FaceWork {
     pub voxel: IVec3,
@@ -162,6 +173,7 @@ impl TraceWork {
     pub fn clear(&mut self) {
         self.probes.clear();
         self.faces.clear();
+        self.ensure.clear();
         self.pending_retention.clear();
     }
 
@@ -214,6 +226,70 @@ impl TraceWork {
         }
     }
 
+    /// Queue slot allocation for this probe's faces that have none yet.
+    pub fn ensure_slots(&mut self, probe: &SurfaceProbe) {
+        for face in 0..6 {
+            if probe.face_mask & (1 << face) != 0 && probe.resident[face].y == 0 {
+                let start = self.faces.len();
+                self.push_face(probe, face, false, u32::MAX, u32::MAX);
+                let face = self.faces.remove(start);
+                self.ensure.push(EnsureFace {
+                    face,
+                    revision: probe.revision,
+                    source_revision: probe.source_revision,
+                });
+            }
+        }
+    }
+
+    fn push_face(
+        &mut self,
+        probe: &SurfaceProbe,
+        face: usize,
+        restart: bool,
+        stale_limit: u32,
+        source_history_limit: u32,
+    ) {
+        self.faces.push(FaceWork {
+            voxel: probe.voxel,
+            face,
+            radiance: if restart {
+                EnergySpectrum::ZERO
+            } else {
+                probe.radiance[face]
+            },
+            second_moment: if restart {
+                EnergySpectrum::ZERO
+            } else {
+                probe.second_moment[face]
+            },
+            direct: probe.direct[face],
+            custom_direct: probe.custom_direct[face],
+            samples: if restart {
+                0
+            } else {
+                probe.samples[face].min(stale_limit).min(source_history_limit)
+            },
+            sequence: probe.sequence[face],
+            presentation: probe.display[face]
+                .indirect
+                .extend(probe.display[face].confidence),
+            resident: UVec2::ZERO,
+            history_cap: if restart {
+                0
+            } else {
+                stale_limit.min(source_history_limit)
+            },
+            change_prior: 0.0,
+            rollback: probe.stale_merge & (1 << face) != 0,
+            updated_at: if restart {
+                None
+            } else {
+                probe.face_updated_at[face]
+            },
+        });
+    }
+
     /// Preserve the scheduler's history policy without cloning six-face state.
     /// A source reset is also recorded on the header so publication can clear
     /// unselected measurements without touching their presentation history.
@@ -235,46 +311,8 @@ impl TraceWork {
             }
             let stale = probe.transport_revision != transport_revision
                 || probe.fresh_mask & (1 << face) == 0;
-            self.faces.push(FaceWork {
-                voxel: probe.voxel,
-                face,
-                radiance: if restart {
-                    EnergySpectrum::ZERO
-                } else {
-                    probe.radiance[face]
-                },
-                second_moment: if restart {
-                    EnergySpectrum::ZERO
-                } else {
-                    probe.second_moment[face]
-                },
-                direct: probe.direct[face],
-                custom_direct: probe.custom_direct[face],
-                samples: if restart {
-                    0
-                } else {
-                    probe.samples[face]
-                        .min(if stale { stale_history_limit } else { u32::MAX })
-                        .min(source_history_limit)
-                },
-                sequence: probe.sequence[face],
-                presentation: probe.display[face]
-                    .indirect
-                    .extend(probe.display[face].confidence),
-                resident: UVec2::ZERO,
-                history_cap: if restart {
-                    0
-                } else {
-                    (if stale { stale_history_limit } else { u32::MAX }).min(source_history_limit)
-                },
-                change_prior: 0.0,
-                rollback: probe.stale_merge & (1 << face) != 0,
-                updated_at: if restart {
-                    None
-                } else {
-                    probe.face_updated_at[face]
-                },
-            });
+            let stale_limit = if stale { stale_history_limit } else { u32::MAX };
+            self.push_face(probe, face, restart, stale_limit, source_history_limit);
         }
         self.probes.push(ProbeWork {
             voxel: probe.voxel,

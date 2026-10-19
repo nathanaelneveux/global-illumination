@@ -67,6 +67,7 @@ pub(super) struct ResidentAccumulator {
     evidence_target: u32,
     input_bytes: Vec<u8>,
     cap_bytes: Vec<u8>,
+    ensure_bytes: Vec<u8>,
     seed_bytes: Vec<u8>,
     prepare: ComputePipeline,
     accumulate: ComputePipeline,
@@ -169,6 +170,7 @@ impl ResidentAccumulator {
             evidence_target: 0,
             input_bytes: Vec::new(),
             cap_bytes: Vec::new(),
+            ensure_bytes: Vec::new(),
             seed_bytes: Vec::new(),
             prepare,
             accumulate,
@@ -270,30 +272,11 @@ impl ResidentAccumulator {
             }
             for face in &mut work.faces[job.faces()] {
                 let key = (face.voxel, face.face);
-                let slot = self.slots.entry(key).or_insert_with(|| {
-                    if indexed_spatial {
-                        self.topology_new.push(key);
-                        walk_joined.insert(key.0.div_euclid(IVec3::splat(REGION_EDGE as i32)));
-                    }
-                    self.regions
-                        .entry(face.voxel.div_euclid(IVec3::splat(REGION_EDGE as i32)))
-                        .or_default()
-                        .insert(key);
-                    let index = self.free.pop().unwrap_or_else(|| {
-                        let index = self.high_water;
-                        self.high_water += 1;
-                        index
-                    });
-                    self.face_index.insert(key.0, key.1, index);
-                    Slot {
-                        index,
-                        incarnation: 0,
-                        revision: u64::MAX,
-                        model_epoch: u64::MAX,
-                        task_epoch: 0,
-                        task_index: 0,
-                    }
-                });
+                if !self.slots.contains_key(&key) {
+                    let slot = self.allocate_slot(key, indexed_spatial, &mut walk_joined);
+                    self.slots.insert(key, slot);
+                }
+                let slot = self.slots.get_mut(&key).unwrap();
                 // GPU state is authoritative: only a new slot is seeded. A
                 // changed probe revision caps the GPU history (zero on a model
                 // reset). If the CPU rejected this face's last merged batch
@@ -351,6 +334,47 @@ impl ResidentAccumulator {
                 }
             }
         }
+        // Faces published but not traced yet get their slot and seed now, so
+        // every face has GPU state early. After the traced faces, so a face in
+        // both lists is seeded once, by its trace input.
+        self.ensure_bytes.clear();
+        for ensure in &work.ensure {
+            let key = (ensure.face.voxel, ensure.face.face);
+            // The scene may have dropped the face since publication; only the
+            // current surface gets a slot, or retirement would never see it.
+            let present = scene.material_at(key.0).is_some_and(|m| m != AIR)
+                && scene
+                    .material_at(key.0 + FACE_OFFSETS[key.1])
+                    .is_none_or(|m| m == AIR);
+            if !present || self.slots.contains_key(&key) {
+                continue;
+            }
+            let mut slot = self.allocate_slot(key, indexed_spatial, &mut walk_joined);
+            self.incarnation = self
+                .incarnation
+                .checked_add(1)
+                .ok_or("resident allocation incarnation exhausted")?;
+            slot.incarnation = self.incarnation;
+            slot.revision = ensure.revision;
+            slot.model_epoch = ensure.source_revision;
+            let seed = (self.seed_bytes.len() / RECORD_BYTES) as u32;
+            encode_seed(&mut self.seed_bytes, &ensure.face, slot.incarnation, self.origin);
+            if let Some(graph) = &mut self.evidence_topology {
+                graph.set_incarnation(slot.index, slot.incarnation);
+            }
+            self.bindings.push(ResidentBinding {
+                voxel: key.0,
+                face: key.1,
+                revision: ensure.revision,
+                source_revision: ensure.source_revision,
+                address: UVec2::new(slot.index, slot.incarnation),
+            });
+            // Seed-only record: no trace task, no cap.
+            for word in [slot.index, seed, u32::MAX, u32::MAX] {
+                self.ensure_bytes.extend_from_slice(&word.to_le_bytes());
+            }
+            self.slots.insert(key, slot);
+        }
         if indexed_spatial {
             if let Some(graph) = &mut self.evidence_topology {
                 // All new nodes exist before linking; either insertion order
@@ -393,6 +417,7 @@ impl ResidentAccumulator {
             }
         }
         self.input_bytes.extend_from_slice(&self.cap_bytes);
+        self.input_bytes.extend_from_slice(&self.ensure_bytes);
         self.evidence_target = work.spatial_evidence_target.min(4096);
         self.site_limit = super::super::spatial::evidence::site_limit(work.spatial_max_donors);
         let spatial_strength = if work.spatial_reconstruction.is_finite() {
@@ -539,6 +564,36 @@ impl ResidentAccumulator {
                 .collect::<Vec<_>>(),
         )?;
         Ok(())
+    }
+
+    /// A free slot for `key`, registered in the region map, face index and
+    /// (when spatial display is on) the walk graph. Seeding is the caller's.
+    fn allocate_slot(
+        &mut self,
+        key: Key,
+        indexed_spatial: bool,
+        walk_joined: &mut HashSet<IVec3>,
+    ) -> Slot {
+        let region = key.0.div_euclid(IVec3::splat(REGION_EDGE as i32));
+        if indexed_spatial {
+            self.topology_new.push(key);
+            walk_joined.insert(region);
+        }
+        self.regions.entry(region).or_default().insert(key);
+        let index = self.free.pop().unwrap_or_else(|| {
+            let index = self.high_water;
+            self.high_water += 1;
+            index
+        });
+        self.face_index.insert(key.0, key.1, index);
+        Slot {
+            index,
+            incarnation: 0,
+            revision: u64::MAX,
+            model_epoch: u64::MAX,
+            task_epoch: 0,
+            task_index: 0,
+        }
     }
 
     pub(super) fn buffer(&self) -> Buffer {
@@ -1059,6 +1114,56 @@ mod tests {
         assert!(after_d.iter().zip(&after_c).all(|(d, c)| d > c));
         let after_e = trace(&mut gpu, &mut work);
         assert!(after_e.iter().zip(&after_d).all(|(e, d)| e > d));
+    }
+
+    #[test]
+    #[ignore = "native: eagerly ensured faces get a slot and seeded GPU state without a trace"]
+    fn ensured_faces_get_seeded_slots_before_their_first_trace() {
+        let mut gpu = super::super::tests::native_tracer();
+        gpu.enable_resident().unwrap();
+        let (scene, sources, mut probes) = super::super::tests::open_floor_fixture();
+        let materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        for (i, probe) in probes.iter_mut().enumerate() {
+            for face in 0..6 {
+                probe.display[face].indirect = Vec3::splat(0.25 + i as f32 * 0.01);
+                probe.display[face].confidence = 0.5;
+            }
+        }
+        // Trace one probe; ensure eight others (and one face that does not exist).
+        let mut work = TraceWork::from_probes(&probes[..1], false);
+        for probe in &probes[1..9] {
+            work.ensure_slots(probe);
+        }
+        let ensured: Vec<_> = work.ensure.iter().map(|e| (e.face.voxel, e.face.face)).collect();
+        assert!(!ensured.is_empty());
+        let mut ghost = SurfaceProbe::new(IVec3::new(5, 40, 5), 4);
+        ghost.revision = 1;
+        work.ensure_slots(&ghost);
+        gpu.trace_compact(Arc::clone(&scene), &sources, &materials, &mut work, 16, &emitters, false)
+            .unwrap();
+        let resident = gpu.resident.as_ref().unwrap();
+        assert!(!resident.slots.contains_key(&(ghost.voxel, 2)), "absent faces get no slot");
+        let words = read_state(&gpu);
+        let bound: HashMap<_, _> = resident
+            .bindings
+            .iter()
+            .map(|b| ((b.voxel, b.face), b.address))
+            .collect();
+        for key in ensured {
+            let slot = resident.slots[&key];
+            assert_eq!(resident.face_index.get(key.0, key.1), Some(slot.index));
+            assert_eq!(bound[&key], UVec2::new(slot.index, slot.incarnation));
+            let base = slot.index as usize * (RECORD_BYTES / 4);
+            assert_eq!(words[base + 28], slot.incarnation, "seeded incarnation");
+            assert_eq!(words[base + 5], 0, "no samples yet");
+            let probe = probes.iter().find(|p| p.voxel == key.0).unwrap();
+            assert_eq!(
+                f32::from_bits(words[base + 24]),
+                probe.display[key.1].indirect.x,
+                "seeded presentation"
+            );
+        }
     }
 
     fn check_resident_lifecycle(spatial: bool) {

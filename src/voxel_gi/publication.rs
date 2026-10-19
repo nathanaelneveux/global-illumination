@@ -314,6 +314,13 @@ fn reconcile_scene_page(
             face_topology_changed = true;
             invalidated.insert(descriptor.voxel);
         }
+        // New or newly exposed faces get resident GPU state soon, not only
+        // when first traced (see dispatch::ENSURE_PROBES_PER_BATCH).
+        if (descriptor.face_mask & !old_mask != 0 || added.last() == Some(&descriptor.voxel))
+            && runtime.slot_requested.insert(descriptor.voxel)
+        {
+            runtime.slot_requests.push_back(descriptor.voxel);
+        }
         let (faces, samples, covered, settled) = probe_metrics(&probe, field.transport_revision);
         runtime.active_faces += faces;
         runtime.completed_samples += samples;

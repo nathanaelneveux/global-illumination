@@ -261,6 +261,9 @@ struct VoxelGiRuntime {
     queued: HashSet<IVec3>,
     urgent_pending: VecDeque<IVec3>,
     urgent_queued: HashSet<IVec3>,
+    /// Probes with faces that need a resident slot (eager allocation).
+    slot_requests: VecDeque<IVec3>,
+    slot_requested: HashSet<IVec3>,
     refresh_cursor: usize,
     refresh_remaining: usize,
     refresh_total: usize,
@@ -334,6 +337,8 @@ impl Default for VoxelGiRuntime {
             queued: HashSet::new(),
             urgent_pending: VecDeque::new(),
             urgent_queued: HashSet::new(),
+            slot_requests: VecDeque::new(),
+            slot_requested: HashSet::new(),
             refresh_cursor: 0,
             refresh_remaining: 0,
             refresh_total: 0,
