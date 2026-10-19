@@ -693,6 +693,25 @@ latest completed resident presentation snapshot; the old CPU upload mirror only
 contains initialization values in this mode. Screenshots remain end-to-end
 display evidence.
 
+### Why the CPU snapshot re-seeds a relit face
+
+When a probe's revision changes (an edit nearby, a material or face change, a
+model reset), the worker re-seeds its resident slot from the CPU snapshot instead
+of capping the GPU history in place. This is load-bearing, not redundant. Up to
+three batches are in flight; one selected before the edit still accumulates
+pre-edit light into the slot, and the CPU rejects its results because of the
+revision mismatch. The CPU snapshot therefore contains only validated
+measurements, and re-seeding rolls the slot back to it.
+
+Tested on 2026-10-19 (not merged): capping in place (GPU state authoritative,
+fixed addresses) kept those stale samples in the mean and raised `house-edits`
+late flicker p50/p95 to .129-.157 / .198-.249, against .088-.110 / .132-.166 at
+`95e6d61` (four runs each, interleaved). `response` and `sources` were
+unchanged; their tracked faces sit where retention already cuts history to
+near zero. Restoring the old cap semantics alone did not help. Removing the
+CPU copy needs a GPU-side rollback first: for example, per-slot revision tags
+checked when a batch merges, with revision bumps written to the GPU at once.
+
 ## Integration contract and limits
 
 ### Construction configuration
