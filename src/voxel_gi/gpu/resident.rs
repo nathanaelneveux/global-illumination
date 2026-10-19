@@ -1369,6 +1369,10 @@ mod tests {
         let materials = VoxelMaterialTransportTable::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let mut pending = Vec::new();
+        // Batches each probe has had in its current slot: GPU state carries
+        // the sample sequence across a revision cap, as the runtime CPU
+        // mirror does, so the control traces from the same sequence.
+        let mut traced = vec![0u32; 1024];
         for (step, count) in [17, 1024, 128].into_iter().enumerate() {
             sources.environment = EnergySpectrum::new(Vec3::splat(step as f32 + 0.25), 0.7, 0.3);
             // Explicit retirement before reuse, while older snapshots are still
@@ -1385,10 +1389,13 @@ mod tests {
                         16,
                     )
                     .unwrap();
+                traced.fill(0);
             }
             let mut probes = initial[..count].to_vec();
-            for probe in &mut probes {
+            for (probe, traced) in probes.iter_mut().zip(&mut traced) {
                 probe.revision = step as u64;
+                probe.sequence = [*traced * 16; 6];
+                *traced += 1;
             }
             let mut expected = TraceWork::from_probes(&probes, false);
             let mut actual = TraceWork::from_probes(&probes, false);
