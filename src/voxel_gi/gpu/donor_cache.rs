@@ -32,17 +32,17 @@ pub(super) struct Scatter {
 }
 
 impl Scatter {
-    fn clear(&mut self) {
+    pub(super) fn clear(&mut self) {
         self.records.clear();
         self.bytes.clear();
         self.count = 0;
     }
 
-    fn write(&mut self, index: u32, value: u32) {
+    pub(super) fn write(&mut self, index: u32, value: u32) {
         self.records.push((index, value));
     }
 
-    fn finish(&mut self) {
+    pub(super) fn finish(&mut self) {
         // Stable: equal indices keep write order, so the last is the latest.
         self.records.sort_by_key(|&(index, _)| index);
         self.bytes.clear();

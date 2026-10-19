@@ -13,6 +13,12 @@ const CHECKPOINT_BYTES: usize = 48;
 const NO_SEED: u32 = 0x8000_0000;
 const ROLLBACK: u32 = 0x4000_0000;
 const NO_CAP: u32 = 0x3fff_ffff;
+/// Per-slot GPU metadata, two uint4s: identity `(voxel.xyz, face | META_LIVE)`
+/// so GPU passes can address faces by slot alone, then a scheduling word
+/// block owned by GPU passes (zeroed at allocation).
+const META_BYTES: usize = 32;
+const META_WORDS: u32 = (META_BYTES / 4) as u32;
+const META_LIVE: u32 = 8;
 const SHADER: &str = include_str!("../../../assets/shaders/voxel_accumulate.wgsl");
 type Key = (IVec3, usize);
 
@@ -53,6 +59,10 @@ pub(super) struct ResidentAccumulator {
     checkpoint: UploadBuffer,
     seeds: UploadBuffer,
     control: UploadBuffer,
+    meta: UploadBuffer,
+    meta_scatter: UploadBuffer,
+    meta_writes: donor_cache::Scatter,
+    meta_scatter_bindings: Option<CachedBindings<2>>,
     /// Per-slot (start, len) into `donor_arena`; see `donor_cache`.
     donor_table: UploadBuffer,
     donor_arena: UploadBuffer,
@@ -144,6 +154,14 @@ impl ResidentAccumulator {
                 storage | BufferUsages::COPY_SRC,
             ),
             seeds: UploadBuffer::new(device, "GI new resident measurements", storage),
+            meta: UploadBuffer::new(
+                device,
+                "GI resident slot metadata",
+                storage | BufferUsages::COPY_SRC,
+            ),
+            meta_scatter: UploadBuffer::new(device, "GI slot metadata changes", storage),
+            meta_writes: default(),
+            meta_scatter_bindings: None,
             control: UploadBuffer::new(
                 device,
                 "GI resident controls",
@@ -235,6 +253,7 @@ impl ResidentAccumulator {
                             graph.remove(slot.index);
                         }
                         self.free.push(slot.index);
+                        self.meta_writes.write(slot.index * META_WORDS + 3, 0);
                     }
                     present
                 });
@@ -454,6 +473,7 @@ impl ResidentAccumulator {
             }
         }
         self.donor_cache.finish_batch();
+        self.meta_writes.finish();
         drop(_evidence);
         let device = &context.device;
         let queue = &context.queue;
@@ -497,6 +517,24 @@ impl ResidentAccumulator {
             }
         }
         self.seeds.upload(device, queue, &self.seed_bytes)?;
+        {
+            let previous = self.meta.buffer.clone();
+            let capacity = self.meta.capacity;
+            if self
+                .meta
+                .ensure(device, (self.high_water as usize * META_BYTES).max(16))?
+            {
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Preserve GI slot metadata during growth"),
+                });
+                encoder.copy_buffer_to_buffer(&previous, 0, &self.meta.buffer, 0, capacity);
+                queue.submit([encoder.finish()]);
+            }
+        }
+        if self.meta_writes.count > 0 {
+            self.meta_scatter
+                .upload(device, queue, &self.meta_writes.bytes)?;
+        }
         if self.evidence_active {
             // Persistent buffers keep their contents across growth.
             for (buffer, bytes) in [
@@ -586,6 +624,22 @@ impl ResidentAccumulator {
             index
         });
         self.face_index.insert(key.0, key.1, index);
+        let base = index * META_WORDS;
+        for (word, value) in [
+            key.0.x as u32,
+            key.0.y as u32,
+            key.0.z as u32,
+            key.1 as u32 | META_LIVE,
+            0,
+            0,
+            0,
+            0,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            self.meta_writes.write(base + word as u32, value);
+        }
         Slot {
             index,
             incarnation: 0,
@@ -635,6 +689,16 @@ impl ResidentAccumulator {
             )
             .clone()
         });
+        let words = &self.words;
+        let meta_scatter = (self.meta_writes.count > 0).then(|| {
+            cached_bindings(
+                &mut self.meta_scatter_bindings,
+                device,
+                || words.get_bind_group_layout(0).into(),
+                [(10, &self.meta), (11, &self.meta_scatter)],
+            )
+            .clone()
+        });
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("GI resident task preparation"),
             timestamp_writes: timestamps.map(|query_set| wgpu::ComputePassTimestampWrites {
@@ -649,6 +713,14 @@ impl ResidentAccumulator {
             pass.set_bind_group(0, &**scatter, &[]);
             pass.dispatch_workgroups(self.index_scatter_count.div_ceil(64), 1, 1);
         }
+        if let Some(scatter) = &meta_scatter {
+            pass.set_pipeline(&self.words);
+            pass.set_bind_group(0, &**scatter, &[]);
+            pass.dispatch_workgroups(self.meta_writes.count.div_ceil(64), 1, 1);
+        }
+        // Consumed only once dispatched: a prepare without a dispatch (a
+        // retirement-only update) keeps its writes for the next upload.
+        self.meta_writes.clear();
         pass.set_pipeline(&self.prepare);
         pass.set_bind_group(0, &**bindings, &[]);
         debug_assert!(count <= self.input_bytes.len() / 16);
@@ -838,6 +910,33 @@ mod tests {
                 assert_eq!(rgb(&words, 32), Vec3::ZERO);
             }
             previous = Some(words);
+        }
+    }
+
+    /// GPU slot metadata names exactly the live slots' faces.
+    fn assert_slot_metadata(gpu: &GpuTracer) {
+        let resident = gpu.resident.as_ref().unwrap();
+        let words = read_words(
+            gpu,
+            &resident.meta.buffer,
+            (resident.high_water as u64 * META_BYTES as u64).max(16),
+        );
+        let mut live = vec![false; resident.high_water as usize];
+        for (key, slot) in &resident.slots {
+            let base = (slot.index * META_WORDS) as usize;
+            assert_eq!(
+                &words[base..base + 4],
+                &[key.0.x as u32, key.0.y as u32, key.0.z as u32, key.1 as u32 | META_LIVE],
+                "slot {}",
+                slot.index
+            );
+            live[slot.index as usize] = true;
+        }
+        for (index, live) in live.into_iter().enumerate() {
+            if !live {
+                let flags = words[index * META_WORDS as usize + 3];
+                assert_eq!(flags & META_LIVE, 0, "freed slot {index} still live");
+            }
         }
     }
 
@@ -1144,6 +1243,7 @@ mod tests {
             .unwrap();
         let resident = gpu.resident.as_ref().unwrap();
         assert!(!resident.slots.contains_key(&(ghost.voxel, 2)), "absent faces get no slot");
+        assert_slot_metadata(&gpu);
         let words = read_state(&gpu);
         let bound: HashMap<_, _> = resident
             .bindings
@@ -1296,6 +1396,7 @@ mod tests {
                 }
                 assert!(step < 3 || checked > 0, "exercise cached lists");
             }
+            assert_slot_metadata(&candidate);
             let expected_index = resident.face_index.table_words();
             assert_eq!(
                 read_words(&candidate, &resident.face_index_buffer.buffer, expected_index.len() as u64 * 4),
