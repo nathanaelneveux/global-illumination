@@ -708,9 +708,24 @@ fixed addresses) kept those stale samples in the mean and raised `house-edits`
 late flicker p50/p95 to .129-.157 / .198-.249, against .088-.110 / .132-.166 at
 `95e6d61` (four runs each, interleaved). `response` and `sources` were
 unchanged; their tracked faces sit where retention already cuts history to
-near zero. Restoring the old cap semantics alone did not help. Removing the
-CPU copy needs a GPU-side rollback first: for example, per-slot revision tags
-checked when a batch merges, with revision bumps written to the GPU at once.
+near zero. Restoring the old cap semantics alone did not help.
+
+Follow-ups on 2026-10-19, also not merged (patch kept in
+`target/experiments/gpu-authoritative-rollback-experiment.patch`). The baseline
+`house-edits` edit-window variation (relative std of raw values, 120-180 s) was
+.134-.172 over three runs:
+
+- **GPU rollback** (a per-slot pre-merge checkpoint plus the revision it was
+  selected under; a newer revision restores the checkpoint before capping):
+  .212-.220. A native test proves it undoes exactly the last merge.
+- **Hybrid** (rollback, plus resetting presentation, timing, sampling sequence
+  and incarnation from the CPU as the re-seed did): .182-.191.
+
+Quiet periods between edits match the baseline. So the CPU snapshot's
+statistics at an edit differ from GPU state by more than one in-flight batch.
+The next step is a native test of pipelined batches with measured retention
+and an edit, comparing the two directly. Writing revision bumps to the GPU
+"at once" would not help: a submitted batch runs before any later write lands.
 
 ## Integration contract and limits
 
