@@ -167,6 +167,7 @@ pub(super) fn start_trace_task(
     let mut cpu_sky_cache = runtime.cpu_sky_cache.take().unwrap_or_default();
     let gpu_device = gpu_device.filter(|_| !cpu).map(|device| device.clone());
     runtime.trace_task = Some(AsyncComputeTaskPool::get().spawn(async move {
+        let _span = info_span!("gi_trace_worker").entered();
         let started = Instant::now();
         let dispatched = !batch.work.probes.is_empty();
         let emission_cache = if sky_only {
@@ -203,7 +204,7 @@ pub(super) fn start_trace_task(
                 Err(error) => gpu_error = Some(error),
             }
         }
-        batch.work.apply_retention();
+        info_span!("gi_apply_retention").in_scope(|| batch.work.apply_retention());
         cpu_sky_cache.track_changes = true;
         let mut completed = None;
         if let Some(tracer) = &mut gpu_tracer {
@@ -222,7 +223,8 @@ pub(super) fn start_trace_task(
                     if ready {
                         let mut oldest = pending.pop_front().unwrap();
                         if let Some(snapshot) = oldest.snapshot {
-                            tracer.complete_readback(snapshot, &mut oldest.batch.work)?;
+                            info_span!("gi_readback")
+                                .in_scope(|| tracer.complete_readback(snapshot, &mut oldest.batch.work))?;
                             oldest.batch.gpu_ms = tracer.last_gpu_ms;
                             oldest.batch.execution_ms = Some(tracer.last_dispatch_ms);
                         } else {
@@ -232,6 +234,7 @@ pub(super) fn start_trace_task(
                         completed = Some(oldest.batch);
                     }
                     if !batch.work.probes.is_empty() {
+                        let _submit = info_span!("gi_submit").entered();
                         let snapshot = tracer.submit_compact(
                             Arc::clone(&scene),
                             &sources,

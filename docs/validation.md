@@ -445,6 +445,25 @@ transition; it must not be mistaken for improved sampler accuracy.
 - Never count display priors, filtered colors or interpolated neighbors as new
   simulation samples. Include infrared and ionizing channels in estimator tests.
 
+## Profiling with Tracy
+
+Offscreen frame interval is pinned near 20 ms by the 60 Hz runner (it did not
+move with resolution, GI display or transport load on 2026-10-19), so it does
+not measure CPU or GPU cost. Use Tracy spans for CPU work:
+
+- Bevy 0.19 links Tracy 0.13.1 (protocol 76). Build `capture` and `csvexport`
+  from the Tracy 0.13.x source (`cmake -B build -S capture`, then
+  `cmake --build build`; the same for `csvexport`). Homebrew's 0.14 cannot connect.
+- Start `tracy-capture -o target/prof/run.tracy -f -s 80`, then run the profile
+  with `cargo run --features tracy` and `RUST_LOG=info` (`warn` hides the spans).
+- `tracy-csvexport -e -s '|' run.tracy` gives self time per span. Divide by
+  the frame count for ms per frame. Span names contain commas, hence `|`.
+- GI worker stages have their own spans (`gi_trace_worker`, `gi_prepare_inputs`,
+  `gi_evidence_gather`, `gi_face_index_upload`, `gi_submit`, `gi_readback`,
+  `gi_apply_retention`, `gi_scene_build`). Bevy systems get spans automatically.
+- On Metal, Bevy records no GPU pass timestamps. GI transport has its own
+  (`transport_execution_ms`); use Xcode's Metal debugger for render passes.
+
 ## Shared Cargo cache
 
 The tracked `.cargo/config.toml` isolates workspace artifacts with the checkout-local

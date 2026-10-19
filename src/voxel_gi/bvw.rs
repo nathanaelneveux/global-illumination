@@ -185,6 +185,7 @@ pub(super) fn start_scene_task(
         page_of(camera.translation().floor().as_ivec3())
     });
     runtime.scene_task = Some(AsyncComputeTaskPool::get().spawn(async move {
+        let _span = info_span!("gi_scene_build").entered();
         let started = Instant::now();
         let changed_pages: Vec<_> = dirty_pages
             .into_iter()

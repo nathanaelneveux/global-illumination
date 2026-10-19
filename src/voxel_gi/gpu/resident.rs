@@ -140,6 +140,7 @@ impl ResidentAccumulator {
         work: &mut TraceWork,
         samples: u32,
     ) -> Result<(), String> {
+        let _span = info_span!("gi_prepare_inputs").entered();
         let indexed_spatial = work.spatial_evidence_target > 0
             && work.spatial_reconstruction.is_finite()
             && work.spatial_reconstruction > 0.0;
@@ -291,6 +292,7 @@ impl ResidentAccumulator {
         } else {
             0.0
         };
+        let _evidence = info_span!("gi_evidence_gather").entered();
         if spatial_strength > 0.0 && self.evidence_target > 0 {
             for face in &work.faces {
                 let start = self.donor_bytes.len() / DONOR_BYTES;
@@ -323,6 +325,7 @@ impl ResidentAccumulator {
                 }
             }
         }
+        drop(_evidence);
         let device = &context.device;
         let queue = &context.queue;
         let previous = self.state.buffer.clone();
@@ -337,8 +340,8 @@ impl ResidentAccumulator {
             encoder.copy_buffer_to_buffer(&previous, 0, &self.state.buffer, 0, capacity);
             queue.submit([encoder.finish()]);
         }
-        self.face_index
-            .upload(&mut self.face_index_buffer, device, queue)?;
+        info_span!("gi_face_index_upload")
+            .in_scope(|| self.face_index.upload(&mut self.face_index_buffer, device, queue))?;
         self.inputs.upload(device, queue, &self.input_bytes)?;
         self.seeds.upload(device, queue, &self.seed_bytes)?;
         if !self.spatial_bytes.is_empty() {

@@ -14,6 +14,9 @@ dev_native = [
     "dev",
     "bevy/file_watcher",
 ]
+# Profile with Tracy 0.13 (protocol 76): `cargo run --features tracy`, then
+# connect tracy-capture or the Tracy GUI. Adds per-system and render spans.
+tracy = ["bevy/trace_tracy", "bevy/debug"]
 
 [dependencies]
 avian3d = { version = "0.7", default-features = false, features = ["3d", "f32", "parry-f32", "debug-plugin"] }
