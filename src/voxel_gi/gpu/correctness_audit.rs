@@ -22,6 +22,7 @@ fn estimates(
     assert!(!sites.is_empty() && paths > 0 && paths.is_multiple_of(16384));
     let mut sums = vec![[0.0; 5]; sites.len()];
     let mut squares = sums.clone();
+    let mut known = vec![0u64; sites.len()];
     let blocks_per_batch = (4096 / sites.len()).clamp(1, 64);
     for first_block in (0..paths / 16384).step_by(blocks_per_batch) {
         let mut work = TraceWork {
@@ -49,23 +50,31 @@ fn estimates(
             .unwrap();
         }
         for (index, face) in work.faces.iter().enumerate() {
-            assert_eq!(face.samples, 16384);
+            // Paths that reach unloaded space or exhaust traversal are
+            // unknown, not black: they are excluded from mean and count.
+            assert!(face.samples <= 16384 && face.samples >= 16384 - 16, "{}", face.samples);
             let i = index % sites.len();
+            let weight = f64::from(face.samples);
+            known[i] += u64::from(face.samples);
             for b in 0..5 {
-                sums[i][b] += f64::from(channels(face.radiance)[b]) * 16384.0 / f64::from(paths);
-                squares[i][b] +=
-                    f64::from(channels(face.second_moment)[b]) * 16384.0 / f64::from(paths);
+                sums[i][b] += f64::from(channels(face.radiance)[b]) * weight;
+                squares[i][b] += f64::from(channels(face.second_moment)[b]) * weight;
             }
         }
     }
     sums.into_iter()
         .zip(squares)
-        .map(|(mean, square)| reference_oracle::Estimate {
-            paths,
-            mean,
-            standard_error: std::array::from_fn(|b| {
-                ((square[b] - mean[b].powi(2)).max(0.0) / f64::from(paths - 1)).sqrt()
-            }),
+        .zip(known)
+        .map(|((sum, square), known)| {
+            let n = known.max(2) as f64;
+            let mean = sum.map(|value| value / n);
+            reference_oracle::Estimate {
+                paths: known as u32,
+                mean,
+                standard_error: std::array::from_fn(|b| {
+                    ((square[b] / n - mean[b].powi(2)).max(0.0) / (n - 1.0)).sqrt()
+                }),
+            }
         })
         .collect()
 }
