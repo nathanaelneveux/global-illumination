@@ -607,6 +607,7 @@ impl GpuTracer {
         if (!work.faces.is_empty() || work.picks > 0)
             && let Some(resident) = &mut self.resident
         {
+            resident.set_materials(&self.context, materials)?;
             resident.prepare_inputs(&self.context, &scene, work, samples)?;
         }
         let device = &self.context.device;
@@ -1103,6 +1104,7 @@ impl GpuTracer {
                     samples: values[5].to_bits(),
                     history_cap: u32::MAX,
                     rollback: false,
+                    material: 0,
                     revision_cap: u32::MAX,
                     sequence: values[6].to_bits(),
                     updated_at: Some(submitted),

@@ -485,12 +485,17 @@ tried (the GPU marks picked faces stale and emits at most 1,024 per batch;
 main thread 2.9 -> 1.9 ms/frame; patch `target/experiments/bounded-mirror-v3.patch`)
 and shelved: CPU code still feeds the GPU from mirrored statistics. Two such
 paths were found and fixed independently (eager-slot addresses, 8f361af; relight
-caps derived from mirrored counts, now explicit). The rest is edit handling: an
+caps derived from mirrored counts, now explicit). The rest was edit handling: an
 edit's flux (`brightest_outgoing`) and which nearby faces it wakes
 (`retention_binds`) read the mirror at the moment of the edit, so with a lagging
-mirror the GPU under-reacts (response profile, rendered frame 1 s after an
-emitter removal: FLIP to settled .32-.39 vs .08). Edit flux and urgency must be
-computed on the GPU, from its own statistics, before the mirror can lag.
+mirror the GPU under-reacted (response profile, rendered frame 1 s after an
+emitter removal: FLIP to settled .32-.39 vs .08). Both are now computed on the
+GPU from its own statistics: `measure_edits` takes the brightest outgoing
+luminance (material albedo times incident, plus emission) within one voxel of
+each edit, and `apply_events` marks the faces within 64 voxels whose history
+the change binds (or all within 48 for unknown flux) urgent; selection serves
+urgent faces first, up to three quarters of its budget. The CPU no longer reads
+statistics at an edit; it refreshes sky near it and relights changed probes.
 Earlier CPU windows and quotas are in the
 [streaming experiment record](history/research-2026-10-09.md#refinement-under-continuous-terrain-loading).
 

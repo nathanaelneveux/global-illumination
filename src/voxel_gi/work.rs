@@ -195,6 +195,8 @@ pub(crate) struct FaceWork {
     /// The cap a changed slot revision applies to the GPU history: 16 for a
     /// relit face, 0 on a restart, stricter stale/source limits, else none.
     pub revision_cap: u32,
+    /// The receiver's material id (GPU edit measurement uses its albedo).
+    pub material: u8,
     pub sequence: u32,
     pub updated_at: Option<Instant>,
     pub presentation: Vec4,
@@ -268,6 +270,7 @@ impl TraceWork {
                 stale_limit.min(source_history_limit)
             },
             rollback: probe.stale_merge & (1 << face) != 0,
+            material: probe.material,
             revision_cap: if restart {
                 0
             } else {

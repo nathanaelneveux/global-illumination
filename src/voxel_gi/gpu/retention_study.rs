@@ -327,7 +327,7 @@ fn run_study(cases: Vec<Case>, output: &str) {
                     work.retention_events = vec![crate::voxel_gi::retention::RetentionEvent::single(
                         crate::voxel_gi::geometry::Bounds::point(case.changed.floor().as_ivec3()),
                         crate::voxel_gi::geometry::ChangeWeight {
-                            kind: crate::voxel_gi::geometry::ChangeKind::Edit { voxels: 1 },
+                            kind: crate::voxel_gi::geometry::ChangeKind::Edit { voxels: 1, measure: false },
                             flux: case.flux as f32,
                         },
                     )];

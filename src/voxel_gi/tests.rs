@@ -3,7 +3,7 @@ use super::*;
 use super::{
     diagnostics::toggle_voxel_gi,
     dispatch::{append_sky_work, select_probes, select_transport},
-    publication::{invalidate_near_voxel, publish_scene_page},
+    publication::publish_scene_page,
     render::{VoxelTransportAssets, VoxelTransportMaterial},
     sources::{SourceChange, invalidate_source_change},
 };
@@ -143,7 +143,7 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
 }
 
 #[test]
-fn settled_counter_tracks_local_edits_global_revisions_and_page_removal() {
+fn settled_counter_tracks_global_revisions_and_page_removal() {
     let mut field = VoxelEnergyField::default();
     let mut runtime = VoxelGiRuntime::default();
     let mut stats = VoxelGiStats::default();
@@ -163,21 +163,6 @@ fn settled_counter_tracks_local_edits_global_revisions_and_page_removal() {
     field.update_indices(&[IVec3::ZERO, far], &HashMap::new());
     update_stats_from_counters(&runtime, &field, &mut stats);
     assert_eq!(stats.settled_coverage, 1.0);
-    invalidate_near_voxel(
-        &mut runtime,
-        &mut field,
-        IVec3::ZERO,
-        48,
-        None,
-        &mut HashSet::new(),
-    );
-    update_stats_from_counters(&runtime, &field, &mut stats);
-    assert_eq!(stats.settled_coverage, 0.5);
-    assert_eq!(stats.interactive_coverage, 1.0);
-    assert_eq!(stats.bootstrap_coverage, 1.0);
-    // Counts stay: measured retention decides how much history to keep.
-    assert_eq!(field.probes[&IVec3::ZERO].samples[0], 128);
-
     // O(1) invalidation must not scan/clear histories. Old contributions no
     // longer count, including late worker results from that old revision.
     invalidate_source_change(&mut runtime, &mut field, &mut stats, SourceChange::Global);
@@ -199,7 +184,6 @@ fn settled_counter_tracks_local_edits_global_revisions_and_page_removal() {
         geometry_change: Some(default()),
         pages: VecDeque::new(),
         exact_edits: vec![],
-        edit_urgency: default(),
         build_time: Duration::ZERO,
     };
     // Removing old-revision terrain must not subtract freshly settled faces
@@ -276,7 +260,6 @@ fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
             ),
         ]),
         exact_edits: vec![],
-        edit_urgency: default(),
         build_time: Duration::ZERO,
     };
     let mut world = World::new();
@@ -343,8 +326,7 @@ fn new_receiver_display_clock_does_not_depend_on_material_id() {
             geometry_change: None,
             pages: default(),
             exact_edits: vec![],
-            edit_urgency: default(),
-            build_time: Duration::ZERO,
+                build_time: Duration::ZERO,
         };
         publish_scene_page(
             &mut runtime,
@@ -426,8 +408,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
                 geometry_change: None,
                 pages: default(),
                 exact_edits: vec![],
-                edit_urgency: default(),
-                build_time: Duration::ZERO,
+                        build_time: Duration::ZERO,
             };
             publish_scene_page(
                 &mut runtime,
@@ -544,8 +525,7 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
             // not the separate page-merge/seeding tests above.
             pages: default(),
             exact_edits: vec![],
-            edit_urgency: default(),
-            build_time: Duration::ZERO,
+                build_time: Duration::ZERO,
         };
         let task = pool.spawn(async move { result });
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -646,8 +626,7 @@ fn publication_batches_cheap_pages_without_unbounded_display_work() {
             geometry_change: Some(default()),
             pages,
             exact_edits: vec![],
-            edit_urgency: default(),
-            build_time: Duration::ZERO,
+                build_time: Duration::ZERO,
         }),
         ..default()
     });

@@ -4,10 +4,11 @@
 // schedule: (transport revision tag, stable error (f32), stable samples,
 // audit interval ms); focus: (voxel.xyz, GPU pick budget); batch: (CPU
 // traced faces, batch id (28 bits, never 0), first and end slot this
-// batch's rotating classification covers).
+// batch's rotating classification covers); edits: (positions to measure,
+// measure entries, urgent radius^2 for a measured / an unknown edit).
 struct Controls {
     counts: vec4<u32>, options: vec4<u32>, display: vec4<u32>, limits: vec4<u32>,
-    schedule: vec4<u32>, focus: vec4<u32>, batch: vec4<u32>,
+    schedule: vec4<u32>, focus: vec4<u32>, batch: vec4<u32>, edits: vec4<u32>,
 }
 @group(0) @binding(0) var<uniform> settings: Controls;
 @group(0) @binding(1) var<storage, read_write> tasks: array<vec4<u32>>;
@@ -42,7 +43,14 @@ struct Controls {
 @group(0) @binding(13) var<storage, read_write> slot_meta: array<vec4<u32>>;
 // Retention events: limits.y headers of three uint4s, then bounds records of
 // two uint4s. See resident.rs `encode_events`.
-@group(0) @binding(14) var<storage, read> events: array<vec4<u32>>;
+@group(0) @binding(14) var<storage, read_write> events: array<vec4<u32>>;
+// Luminance albedo and emission per material id (slot identity bits 16+).
+@group(0) @binding(19) var<storage, read> material_light: array<vec2<f32>>;
+// Edit bounds whose flux the GPU measures, three uint4s each: (bound record,
+// first position, positions, changed voxels), (scan min, base flux), (scan
+// size, 0). measure_max holds each entry's brightest outgoing luminance.
+@group(0) @binding(20) var<storage, read> measures: array<vec4<u32>>;
+@group(0) @binding(21) var<storage, read_write> measure_max: array<atomic<u32>>;
 // Selection scratch, cleared per batch: three 256-bucket histograms, then
 // per-class threshold buckets, remainders and tie counters, then the total.
 @group(0) @binding(15) var<storage, read_write> selection: array<atomic<u32>>;
@@ -110,7 +118,7 @@ fn prepare(@builtin(global_invocation_id) id: vec3<u32>) {
 // Selection reads a slot's count from its ranking record, never the state.
 fn mirror_count(slot: u32) {
     let index = slot * 3u + 2u;
-    slot_meta[index].w = (slot_meta[index].w & 0x80000000u) | (state[slot * 9u + 1u].y & 0x7fffffffu);
+    slot_meta[index].w = (slot_meta[index].w & 0xc0000000u) | (state[slot * 9u + 1u].y & 0x3fffffffu);
 }
 
 // A face about to be traced: its task takes the current GPU sequence, and
@@ -407,6 +415,13 @@ fn apply_events(@builtin(global_invocation_id) id: vec3<u32>) {
     // any source change, revokes stability: the face is due for an audit.
     var source_cap = NO_LIMIT;
     var woken = false;
+    // Player edits (bounds flagged bit 3): faces within the urgent radius
+    // whose history the change binds (or that were dark relative to it) are
+    // urgent; with unknown flux or the curve rule, every face in the smaller
+    // radius is (publication.rs used to decide this from CPU statistics).
+    let measured_mode = bitcast<f32>(settings.display.w) > 0.0;
+    var urgent_if_binding = false;
+    var urgent = false;
     for (var e = 0u; e < event_count; e += 1u) {
         let h0 = events[e * 3u];
         let h1 = events[e * 3u + 1u];
@@ -434,6 +449,14 @@ fn apply_events(@builtin(global_invocation_id) id: vec3<u32>) {
             let d = box_distance2(bitcast<vec3<i32>>(b0.xyz), bitcast<vec3<i32>>(b1.xyz), p);
             if d > reach { continue; }
             nearest = min(nearest, d);
+            let edit_kind = b1.w & 7u;
+            if (b1.w & 8u) != 0u && (edit_kind == 0u || edit_kind == 3u) {
+                if edit_kind == 3u && measured_mode {
+                    urgent_if_binding = urgent_if_binding || d <= settings.edits.z;
+                } else {
+                    urgent = urgent || d <= settings.edits.w;
+                }
+            }
             if exact {
                 let kind = b1.w & 7u;
                 if kind == 0u {
@@ -456,13 +479,106 @@ fn apply_events(@builtin(global_invocation_id) id: vec3<u32>) {
         // A later rollback restores the pre-merge statistics: cap them too.
         checkpoint[slot * 3u + 2u].y = min(checkpoint[slot * 3u + 2u].y, limit);
     }
-    if woken {
-        slot_meta[slot * 3u + 1u].y &= 0xfffffff0u;
-    }
     if measured && change > 0.0 {
         let index = slot * 3u + 1u;
         slot_meta[index].x = bitcast<u32>(bitcast<f32>(slot_meta[index].x) + change);
     }
+    if urgent_if_binding {
+        let pending = bitcast<f32>(slot_meta[slot * 3u + 1u].x);
+        urgent = urgent || !measured || (pending > 0.0 && binds(slot, pending));
+    }
+    if woken || urgent {
+        slot_meta[slot * 3u + 1u].y &= 0xfffffff0u;
+    }
+    if urgent {
+        slot_meta[slot * 3u + 2u].w |= URGENT;
+    }
+}
+
+// Measured retention: does a change of this size cut the face's history
+// (c sigma^2 / D^2 below its count), or was the face dark relative to it?
+fn binds(slot: u32, change: f32) -> bool {
+    let base = slot * 9u;
+    let w = vec3(0.2126, 0.7152, 0.0722);
+    let mean = bitcast<vec4<f32>>(state[base]).rgb;
+    let variance = max(bitcast<vec4<f32>>(state[base + 2u]).rgb - mean * mean, vec3(0.0));
+    let lit = dot(w, mean) >= 0.05 * change;
+    let keep = bitcast<f32>(settings.display.w) * dot(w, variance) / max(change * change, 1e-30);
+    return !lit || keep < f32(state[base + 1u].y & 0x7fffffffu);
+}
+
+fn pcg(value: u32) -> u32 {
+    let mixed = value * 747796405u + 2891336453u;
+    let word = ((mixed >> ((mixed >> 28u) + 4u)) ^ mixed) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+fn hash_voxel(voxel: vec3<i32>) -> u32 {
+    return pcg(pcg(pcg(bitcast<u32>(voxel.x)) ^ bitcast<u32>(voxel.y)) ^ bitcast<u32>(voxel.z));
+}
+
+// The face index (voxel_trace.wgsl cached_energy): a face's slot or none.
+fn face_slot(voxel: vec3<i32>, face: u32) -> u32 {
+    let header = face_index[0];
+    var probe = (hash_voxel(voxel) ^ pcg(face + 1u)) & header.x;
+    for (var attempt = 0u; attempt < header.y; attempt += 1u) {
+        let entry = face_index[probe + 1u];
+        if entry.w == 0xffffffffu { return NO_LIMIT; }
+        if all(bitcast<vec3<i32>>(entry.xyz) == voxel) && (entry.w >> 29u) == face {
+            return entry.w & 0x1fffffffu;
+        }
+        probe = (probe + 1u) & header.x;
+    }
+    return NO_LIMIT;
+}
+
+// An edit's flux, measured from the GPU's own statistics (publication.rs
+// brightest_outgoing did this from the CPU mirror): the brightest outgoing
+// luminance (albedo times incident, plus emission) of any face within one
+// voxel of the edit, one position per thread.
+@compute @workgroup_size(64)
+fn measure_edits(@builtin(global_invocation_id) id: vec3<u32>) {
+    let t = id.x;
+    if t >= settings.edits.x { return; }
+    var e = 0u;
+    for (var i = 0u; i < settings.edits.y; i += 1u) {
+        let a = measures[i * 3u];
+        if t >= a.y && t < a.y + a.z { e = i; break; }
+    }
+    let a = measures[e * 3u];
+    let size = measures[e * 3u + 2u].xyz;
+    let local = t - a.y;
+    let offset = vec3(local % size.x, (local / size.x) % size.y, local / (size.x * size.y));
+    let p = bitcast<vec3<i32>>(measures[e * 3u + 1u].xyz) + vec3<i32>(offset);
+    let w = vec3(0.2126, 0.7152, 0.0722);
+    var brightest = 0.0;
+    for (var face = 0u; face < 6u; face += 1u) {
+        let slot = face_slot(p, face);
+        if slot == NO_LIMIT { continue; }
+        let identity = slot_meta[slot * 3u];
+        if (identity.w & 8u) == 0u { continue; }
+        let base = slot * 9u;
+        var incident = 0.0;
+        if (state[base + 1u].y & 0x7fffffffu) > 0u {
+            incident = dot(w, bitcast<vec4<f32>>(state[base]).rgb) + dot(w, bitcast<vec4<f32>>(state[base + 4u]).rgb);
+        }
+        let light = material_light[identity.w >> 16u];
+        brightest = max(brightest, light.x * incident + light.y);
+    }
+    if brightest > 0.0 { atomicMax(&measure_max[e], bitcast<u32>(brightest)); }
+}
+
+// Each measured edit's flux: base (the changed voxels' own emission) plus
+// the brightest outgoing luminance times two faces per changed voxel.
+@compute @workgroup_size(64)
+fn finish_edits(@builtin(global_invocation_id) id: vec3<u32>) {
+    let e = id.x;
+    if e >= settings.edits.y { return; }
+    let a = measures[e * 3u];
+    let base_flux = bitcast<f32>(measures[e * 3u + 1u].w);
+    let brightest = bitcast<f32>(atomicLoad(&measure_max[e]));
+    events[a.x].w = bitcast<u32>(base_flux + brightest * 2.0 * f32(a.w));
+    events[a.x + 1u].w = (events[a.x + 1u].w & 0xfffffff8u) | 3u;
 }
 
 // A traced face with a pending measured change: does the change bind (would
@@ -479,12 +595,7 @@ fn mark_changed(@builtin(global_invocation_id) id: vec3<u32>) {
     let pending = bitcast<f32>(slot_meta[index].x);
     if pending <= 0.0 { return; }
     let base = slot * 9u;
-    let w = vec3(0.2126, 0.7152, 0.0722);
-    let mean = bitcast<vec4<f32>>(state[base]).rgb;
-    let variance = max(bitcast<vec4<f32>>(state[base + 2u]).rgb - mean * mean, vec3(0.0));
-    let lit = dot(w, mean) >= 0.05 * pending;
-    let keep = bitcast<f32>(settings.display.w) * dot(w, variance) / max(pending * pending, 1e-30);
-    if !lit || keep < f32(state[base + 1u].y & 0x7fffffffu) {
+    if binds(slot, pending) {
         state[base + 1u].y |= 0x80000000u;
     } else {
         slot_meta[index].x = 0u;
@@ -499,11 +610,15 @@ fn mark_changed(@builtin(global_invocation_id) id: vec3<u32>) {
 // unused share is lent to refinement, then coverage, then sweep. A histogram
 // over each class's 256 key buckets yields exact per-class thresholds.
 const BOOTSTRAP: u32 = 8u;
-const NO_CLASS: u32 = 3u;
-const SEL_THRESHOLD: u32 = 768u;
-const SEL_REMAINDER: u32 = 771u;
-const SEL_TIES: u32 = 774u;
-const SEL_TOTAL: u32 = 777u;
+// Classes: 0 coverage, 1 refinement, 2 sweep, 3 urgent (an edit's change
+// binds the face's history, or the face was dark relative to it).
+const CLASSES: u32 = 4u;
+const NO_CLASS: u32 = 4u;
+const URGENT: u32 = 0x40000000u;
+const SEL_THRESHOLD: u32 = 1024u;
+const SEL_REMAINDER: u32 = 1028u;
+const SEL_TIES: u32 = 1032u;
+const SEL_TOTAL: u32 = 1036u;
 
 struct Candidate { group: u32, bucket: u32 }
 
@@ -521,15 +636,20 @@ fn candidate(slot: u32) -> Candidate {
     let last_cpu = schedule.y >> 4u;
     if last_cpu != 0u && ((settings.batch.y - last_cpu) & 0x0fffffffu) < 4u { return none; }
     let rank = slot_meta[slot * 3u + 2u];
-    let count = rank.w & 0x7fffffffu;
+    let count = rank.w & 0x3fffffffu;
     let fresh = (schedule.y & 8u) != 0u && schedule.w == settings.schedule.x;
     let since = settings.counts.z - rank.y;
     let age_ms = select(select(since, 0u, since > 0x7fffffffu), 0x7fffffffu, rank.w < 0x80000000u);
     let required = select(settings.schedule.z, max(settings.schedule.z, 256u), bitcast<f32>(rank.z) < 0.02);
-    let due = !fresh || count < required || (schedule.y & 7u) < 4u || age_ms >= settings.schedule.w;
+    let due = !fresh || count < required || (schedule.y & 7u) < 4u || age_ms >= settings.schedule.w
+        || (rank.w & URGENT) != 0u;
     if !due { return none; }
     let p = bitcast<vec3<i32>>(identity.xyz);
     let focus = bitcast<vec3<i32>>(settings.focus.xyz);
+    if (rank.w & URGENT) != 0u {
+        let d = vec3<f32>(p - focus);
+        return Candidate(3u, min(u32(log2(dot(d, d) + 1.0) * 8.0), 255u));
+    }
     if count < BOOTSTRAP {
         let d = vec3<f32>(p - focus);
         return Candidate(0u, min(u32(log2(dot(d, d) + 1.0) * 8.0), 255u));
@@ -559,21 +679,21 @@ fn select_classify(@builtin(global_invocation_id) id: vec3<u32>) {
 
 // Histograms of all keys build in workgroup memory, then only touched bins
 // reach the global ones.
-var<workgroup> local_histogram: array<atomic<u32>, 768>;
+var<workgroup> local_histogram: array<atomic<u32>, 1024>;
 
 @compute @workgroup_size(256)
 fn select_histogram(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(local_invocation_index) local: u32,
 ) {
-    for (var b = local; b < 768u; b += 256u) { atomicStore(&local_histogram[b], 0u); }
+    for (var b = local; b < 1024u; b += 256u) { atomicStore(&local_histogram[b], 0u); }
     workgroupBarrier();
     if id.x < settings.limits.z {
         let key = slot_keys[id.x];
-        if key != 0xffffffffu { atomicAdd(&local_histogram[min(key >> 8u, 2u) * 256u + (key & 255u)], 1u); }
+        if key != 0xffffffffu { atomicAdd(&local_histogram[min(key >> 8u, 3u) * 256u + (key & 255u)], 1u); }
     }
     workgroupBarrier();
-    for (var b = local; b < 768u; b += 256u) {
+    for (var b = local; b < 1024u; b += 256u) {
         let n = atomicLoad(&local_histogram[b]);
         if n != 0u { atomicAdd(&selection[b], n); }
     }
@@ -583,47 +703,51 @@ fn select_histogram(
 // parallel and an inclusive prefix scan per class finds each threshold
 // bucket. (A single thread walking them made ~1,500 dependent global loads,
 // about 1.5 ms.)
-var<workgroup> scan: array<u32, 768>;
-var<workgroup> taken: array<u32, 3>;
+var<workgroup> scan: array<u32, 1024>;
+var<workgroup> taken: array<u32, 4>;
 
 @compute @workgroup_size(256)
 fn select_threshold(@builtin(local_invocation_index) t: u32) {
-    for (var c = 0u; c < 3u; c += 1u) {
+    for (var c = 0u; c < CLASSES; c += 1u) {
         scan[c * 256u + t] = atomicLoad(&selection[c * 256u + t]);
     }
     workgroupBarrier();
     for (var step = 1u; step < 256u; step <<= 1u) {
-        var add = array<u32, 3>(0u, 0u, 0u);
-        for (var c = 0u; c < 3u; c += 1u) {
+        var add = array<u32, 4>(0u, 0u, 0u, 0u);
+        for (var c = 0u; c < CLASSES; c += 1u) {
             if t >= step { add[c] = scan[c * 256u + t - step]; }
         }
         workgroupBarrier();
-        for (var c = 0u; c < 3u; c += 1u) { scan[c * 256u + t] += add[c]; }
+        for (var c = 0u; c < CLASSES; c += 1u) { scan[c * 256u + t] += add[c]; }
         workgroupBarrier();
     }
     if t == 0u {
+        // Urgent faces first, up to three quarters of the budget (the CPU's
+        // urgent queue preempted three of every four slots); the rest by
+        // quota, unused share lent to refinement, coverage, sweep, urgent.
         let budget = settings.focus.w;
-        var take = array<u32, 3>(budget / 4u, budget / 2u, budget - budget / 4u - budget / 2u);
-        var spare = budget;
-        for (var c = 0u; c < 3u; c += 1u) {
-            take[c] = min(take[c], scan[c * 256u + 255u]);
-            spare -= take[c];
-        }
-        let lend = array<u32, 3>(1u, 0u, 2u);
-        for (var o = 0u; o < 3u; o += 1u) {
+        var take = array<u32, 4>(0u, 0u, 0u, 0u);
+        take[3] = min(scan[3u * 256u + 255u], budget - budget / 4u);
+        let rest = budget - take[3];
+        take[0] = min(rest / 4u, scan[255u]);
+        take[1] = min(rest / 2u, scan[256u + 255u]);
+        take[2] = min(rest - rest / 4u - rest / 2u, scan[512u + 255u]);
+        var spare = budget - take[0] - take[1] - take[2] - take[3];
+        let lend = array<u32, 4>(1u, 0u, 2u, 3u);
+        for (var o = 0u; o < CLASSES; o += 1u) {
             let c = lend[o];
             let extra = min(spare, scan[c * 256u + 255u] - take[c]);
             take[c] += extra;
             spare -= extra;
         }
-        for (var c = 0u; c < 3u; c += 1u) {
+        for (var c = 0u; c < CLASSES; c += 1u) {
             taken[c] = take[c];
             atomicStore(&selection[SEL_THRESHOLD + c], 256u);
             atomicStore(&selection[SEL_REMAINDER + c], 0u);
         }
     }
     workgroupBarrier();
-    for (var c = 0u; c < 3u; c += 1u) {
+    for (var c = 0u; c < CLASSES; c += 1u) {
         let below = select(0u, scan[c * 256u + max(t, 1u) - 1u], t > 0u);
         if taken[c] > 0u && below < taken[c] && scan[c * 256u + t] >= taken[c] {
             atomicStore(&selection[SEL_THRESHOLD + c], t);
@@ -638,8 +762,8 @@ fn select_threshold(@builtin(local_invocation_index) t: u32) {
 // Ties at a threshold bucket and the pick list are reserved per workgroup:
 // one global atomic per workgroup, not per face (most faces can share one
 // bucket, and per-face atomics on one counter serialized ~1.5 ms).
-var<workgroup> group_ties: array<atomic<u32>, 3>;
-var<workgroup> group_tie_base: array<u32, 3>;
+var<workgroup> group_ties: array<atomic<u32>, 4>;
+var<workgroup> group_tie_base: array<u32, 4>;
 var<workgroup> group_picks: atomic<u32>;
 var<workgroup> group_pick_base: u32;
 
@@ -648,13 +772,13 @@ fn select_emit(
     @builtin(global_invocation_id) id: vec3<u32>,
     @builtin(local_invocation_index) local: u32,
 ) {
-    if local < 3u { atomicStore(&group_ties[local], 0u); }
+    if local < CLASSES { atomicStore(&group_ties[local], 0u); }
     if local == 0u { atomicStore(&group_picks, 0u); }
     workgroupBarrier();
     let slot = id.x;
     var key = 0xffffffffu;
     if slot < settings.limits.z { key = slot_keys[slot]; }
-    let group = min(key >> 8u, 2u);
+    let group = min(key >> 8u, 3u);
     let bucket = key & 255u;
     let threshold = atomicLoad(&selection[SEL_THRESHOLD + group]);
     let candidate = key != 0xffffffffu && bucket <= threshold;
@@ -662,7 +786,7 @@ fn select_emit(
     var tie_index = 0u;
     if tie { tie_index = atomicAdd(&group_ties[group], 1u); }
     workgroupBarrier();
-    if local < 3u {
+    if local < CLASSES {
         let n = atomicLoad(&group_ties[local]);
         group_tie_base[local] = select(0u, atomicAdd(&selection[SEL_TIES + local], n), n > 0u);
     }

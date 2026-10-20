@@ -60,6 +60,9 @@ pub(crate) struct RetentionEvent {
     pub bounds: Vec<Bounds>,
     pub weights: Vec<ChangeWeight>,
     pub union: Bounds,
+    /// Bounds containing a player's edit: faces near them whose history the
+    /// change binds become urgent on the GPU (publication used to wake them).
+    pub urgent: Vec<bool>,
     pub source_cap: Option<u32>,
     pub spheres: Vec<(Vec3, f32)>,
 }
@@ -72,6 +75,7 @@ impl RetentionEvent {
             bounds: vec![bounds],
             weights: vec![weight],
             union: bounds,
+            urgent: vec![false],
             source_cap: None,
             spheres: Vec::new(),
         }
@@ -85,7 +89,7 @@ pub(super) struct SpatialHistory {
 }
 
 impl SpatialHistory {
-    pub fn record(&mut self, change: GeometryChange) {
+    pub fn record(&mut self, change: GeometryChange, edits: &[IVec3]) {
         let mut bounds: Vec<Bounds> = Vec::new();
         let mut seen = bevy::platform::collections::HashSet::new();
         for (_, changes) in change.nearby {
@@ -122,10 +126,15 @@ impl SpatialHistory {
                 max: u.max.max(b.max),
             },
         );
+        let urgent = bounds
+            .iter()
+            .map(|b| edits.iter().any(|&voxel| b.distance_squared(Bounds::point(voxel)) == 0))
+            .collect();
         self.pending.push(RetentionEvent {
             bounds,
             weights,
             union,
+            urgent,
             source_cap: None,
             spheres: Vec::new(),
         });
@@ -139,6 +148,7 @@ impl SpatialHistory {
             bounds: Vec::new(),
             weights: Vec::new(),
             union: point,
+            urgent: Vec::new(),
             source_cap: Some(cap),
             spheres: spheres.to_vec(),
         });
@@ -241,11 +251,11 @@ mod tests {
     fn measured_change_follows_flux_height_and_falls_back_when_unknown() {
         let change_at = |point: IVec3, weight: ChangeWeight, receiver: IVec3| {
             let mut history = SpatialHistory::default();
-            history.record(event(point, Some(weight)));
+            history.record(event(point, Some(weight)), &[]);
             resolve(&history.take_events(), receiver).1
         };
         let edit = ChangeWeight {
-            kind: ChangeKind::Edit { voxels: 1 },
+            kind: ChangeKind::Edit { voxels: 1, measure: false },
             flux: 10.0,
         };
         let change = change_at(IVec3::ZERO, edit, IVec3::new(10, 0, 0)).unwrap();
@@ -271,14 +281,14 @@ mod tests {
         };
         assert_eq!(change_at(IVec3::ZERO, unload, IVec3::ONE), Some(0.0));
         let mut unknown = SpatialHistory::default();
-        unknown.record(event(IVec3::ZERO, None));
+        unknown.record(event(IVec3::ZERO, None), &[]);
         assert_eq!(resolve(&unknown.take_events(), IVec3::new(64, 0, 0)), (809, None));
     }
 
     #[test]
     fn events_are_handed_over_once_and_sources_cap_everywhere() {
         let mut history = SpatialHistory::default();
-        history.record(event(IVec3::new(64, 0, 0), None));
+        history.record(event(IVec3::new(64, 0, 0), None), &[]);
         history.record_source(64, &[(Vec3::new(0.0, 0.0, 300.0), 10.0)]);
         let events = history.take_events();
         assert_eq!(events.len(), 2);
@@ -288,7 +298,7 @@ mod tests {
         assert_eq!(source_limit(&events, IVec3::new(0, 0, 295)), 4);
         assert!(woken(&events, IVec3::new(4000, 0, 0)), "source changes wake everyone");
         let mut far = SpatialHistory::default();
-        far.record(event(IVec3::new(4000, 0, 0), None));
+        far.record(event(IVec3::new(4000, 0, 0), None), &[]);
         let far = far.take_events();
         assert_eq!(resolve(&far, IVec3::ZERO), (u32::MAX, Some(0.0)));
         assert!(!woken(&far, IVec3::ZERO), "out of reach");

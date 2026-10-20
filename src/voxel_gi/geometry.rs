@@ -13,6 +13,10 @@ use super::world::{AIR, PAGE_EDGE, REGION_EDGE, TransportScene};
 /// hint: counts are untouched. Probes whose own faces or material change cap
 /// their CPU-side sample estimate to `NEAR_HISTORY`.
 pub(super) const RELIGHT_RADIUS: i32 = 48;
+/// Player edits of known flux wake (make urgent on the GPU) the faces within
+/// this radius whose history the change binds; unknown flux, or the curve
+/// rule, wakes every face within RELIGHT_RADIUS.
+pub(super) const MEASURED_RELIGHT_RADIUS: i32 = 64;
 pub(super) const NEAR_HISTORY: u32 = 16;
 pub(super) const UNTRACKED_HISTORY: u32 = 64;
 
@@ -23,10 +27,12 @@ pub(super) const UNTRACKED_HISTORY: u32 = 64;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ChangeKind {
     Unknown,
-    /// Voxel content changed. The scene worker adds emission; publication adds
-    /// the light falling on the edited surfaces, from the field.
+    /// Voxel content changed. The scene worker adds emission; with `measure`,
+    /// the GPU adds the light leaving the surfaces around the edit, from its
+    /// own statistics (`measure_edits`), before retention applies the change.
     Edit {
         voxels: u32,
+        measure: bool,
     },
     /// A region loaded. Only terrain above a receiver can replace sky it saw
     /// (rays into unloaded space are excluded, not black), so the flux is per
@@ -203,6 +209,7 @@ impl SceneChanges {
                 } else {
                     ChangeKind::Edit {
                         voxels: changed_voxels,
+                        measure: false,
                     }
                 };
                 let flux = if matches!(kind, ChangeKind::Edit { .. }) {

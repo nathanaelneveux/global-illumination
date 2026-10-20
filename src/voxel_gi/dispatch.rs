@@ -403,7 +403,7 @@ pub(super) fn apply_trace_task(
         change
             .nearby
             .retain(|page, _| field.pages.contains_key(page));
-        runtime.spatial_history.record(change);
+        runtime.spatial_history.record(change, &[]);
     }
     timing.record_gpu_batch(result.batch.as_ref().and_then(|batch| batch.gpu_ms));
     stats.backend = result

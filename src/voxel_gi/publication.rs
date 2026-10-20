@@ -86,12 +86,13 @@ pub(super) fn apply_scene_task(
         runtime.generation = runtime.generation.wrapping_add(1);
         if let Some(mut change) = result.geometry_change.take() {
             advance_transport_revision(&mut runtime, &mut field);
-            finalize_change_flux(&mut change, &field, &runtime.materials, &runtime.sources);
-            result.edit_urgency = edit_urgency(&change, &result.exact_edits, settings.measured_retention());
+            finalize_change_flux(&mut change, &runtime.sources);
             change
                 .nearby
                 .retain(|page, _| field.pages.contains_key(page));
-            runtime.spatial_history.record(change);
+            // The GPU measures edits' flux and wakes the faces near player
+            // edits whose history the change binds (no CPU statistics read).
+            runtime.spatial_history.record(change, &result.exact_edits);
         }
         field
             .publishing_pages
@@ -111,9 +112,6 @@ pub(super) fn apply_scene_task(
             for voxel in older.exact_edits {
                 if !result.exact_edits.contains(&voxel) {
                     result.exact_edits.push(voxel);
-                    if let Some(flux) = older.edit_urgency.flux.get(&voxel) {
-                        result.edit_urgency.flux.insert(voxel, *flux);
-                    }
                 }
             }
         }
@@ -359,27 +357,18 @@ fn finish_scene_page(
     stats: &mut VoxelGiStats,
     result: &mut SceneBuildResult,
     page: IVec3,
-    mut invalidated: HashSet<IVec3>,
+    invalidated: HashSet<IVec3>,
     added: Vec<IVec3>,
     publish_started: Instant,
 ) {
-    let mut urgent = HashSet::new();
+    // Sky corners near a player edit can change (shadows). The light itself
+    // is the GPU's: retention events wake the faces whose history it binds.
+    let mut near_edits = HashSet::new();
     for &voxel in &result.exact_edits {
-        let mut nearby = HashSet::new();
-        let urgency = result.edit_urgency.flux.get(&voxel).and_then(|flux| {
-            (result.edit_urgency.retention > 0.0).then_some((result.edit_urgency.retention, *flux))
-        });
-        let radius = if urgency.is_some() {
-            MEASURED_RELIGHT_RADIUS
-        } else {
-            EDIT_RELIGHT_RADIUS
-        };
-        invalidate_near_voxel(runtime, field, voxel, radius, urgency, &mut nearby);
-        urgent.extend(nearby.iter().copied());
-        invalidated.extend(nearby);
+        probes_near(field, voxel, EDIT_RELIGHT_RADIUS, &mut near_edits);
     }
     let relit_probes = invalidated.len();
-    let mut urgent: Vec<_> = urgent.into_iter().collect();
+    let mut urgent: Vec<_> = near_edits.into_iter().collect();
     urgent.sort_unstable_by_key(|voxel| {
         result
             .exact_edits
@@ -388,9 +377,8 @@ fn finish_scene_page(
             .min()
             .unwrap_or(0)
     });
-    enqueue_sky(runtime, urgent.iter().copied());
+    enqueue_sky(runtime, urgent);
     enqueue_sky(runtime, added.iter().copied());
-    enqueue_urgent(runtime, urgent);
     // Existing probes whose revision changed here (material or exposed faces:
     // relit, history capped) are event work: only a CPU job carries the new
     // revision and its cap to the GPU, and until one does, the mirror rejects
@@ -427,105 +415,22 @@ fn finish_scene_page(
     }
 }
 
-/// Measured retention can reach past the fixed radius for bright edits. 64
-/// still scans the same page neighbourhood as 48 (two pages each way).
-const MEASURED_RELIGHT_RADIUS: i32 = 64;
-
-/// Flux of the edit bounds containing each exact edit, after
-/// `finalize_change_flux`. Unknown flux leaves an edit out (fixed radius).
-fn edit_urgency(
-    change: &super::geometry::GeometryChange,
-    exact_edits: &[IVec3],
-    retention: f32,
-) -> super::EditUrgency {
-    let mut urgency = super::EditUrgency {
-        retention,
-        ..default()
-    };
-    if retention <= 0.0 {
-        return urgency;
-    }
-    for &voxel in exact_edits {
-        let point = super::geometry::Bounds::point(voxel);
-        let mut flux = None;
-        for (bounds, weight) in &change.weights {
-            if bounds.distance_squared(point) != 0 {
-                continue;
-            }
-            if let super::geometry::ChangeKind::Edit { .. } = weight.kind {
-                flux = Some(flux.unwrap_or(0.0f32).max(weight.flux));
-            } else {
-                flux = None;
-                break;
-            }
-        }
-        if let Some(flux) = flux {
-            urgency.flux.insert(voxel, flux);
-        }
-    }
-    urgency
-}
-
-/// The measured-retention test for a whole probe: would a change of this size
-/// cut any face's history (`c sigma^2 / D^2` below its count), or is a face
-/// dark relative to it? Same rule as `TraceWork::apply_retention`.
-fn retention_binds(probe: &SurfaceProbe, retention: f32, change: f32) -> bool {
-    let w = Vec3::new(0.2126, 0.7152, 0.0722);
-    (0..6).any(|face| {
-        if probe.face_mask & (1 << face) == 0 {
-            return false;
-        }
-        let mean = probe.radiance[face].visible;
-        let variance = w.dot((probe.second_moment[face].visible - mean * mean).max(Vec3::ZERO));
-        let lit = w.dot(mean) >= 0.05 * change;
-        !lit || retention * variance / (change * change).max(1e-30) < probe.samples[face] as f32
-    })
-}
-
-pub(super) fn invalidate_near_voxel(
-    runtime: &mut VoxelGiRuntime,
-    field: &mut VoxelEnergyField,
-    center: IVec3,
-    radius: i32,
-    urgency: Option<(f32, f32)>,
-    invalidated: &mut HashSet<IVec3>,
-) {
+/// Probes within `radius` of `center` (two pages each way at 48).
+fn probes_near(field: &VoxelEnergyField, center: IVec3, radius: i32, found: &mut HashSet<IVec3>) {
     let page_radius = (radius + PAGE_EDGE as i32 - 1) / PAGE_EDGE as i32;
     let center_page = page_of(center);
     let radius_squared = i64::from(radius) * i64::from(radius);
-    let mut candidates = Vec::new();
     for z in -page_radius..=page_radius {
         for y in -page_radius..=page_radius {
             for x in -page_radius..=page_radius {
-                if let Some(voxels) = field.pages.get(&(center_page + IVec3::new(x, y, z))) {
-                    candidates.extend(voxels.iter().copied());
+                for &voxel in field.pages.get(&(center_page + IVec3::new(x, y, z))).into_iter().flatten() {
+                    if (voxel.as_i64vec3() - center.as_i64vec3()).length_squared() <= radius_squared
+                        && field.probes.contains_key(&voxel)
+                    {
+                        found.insert(voxel);
+                    }
                 }
             }
-        }
-    }
-    for voxel in candidates {
-        let delta = voxel.as_i64vec3() - center.as_i64vec3();
-        if delta.length_squared() > radius_squared {
-            continue;
-        }
-        if let Some(probe) = field.probes.get_mut(&voxel) {
-            if let Some((retention, flux)) = urgency {
-                let change = flux / (std::f32::consts::PI * delta.length_squared().max(1) as f32);
-                if !retention_binds(probe, retention, change) {
-                    continue;
-                }
-            }
-            let (_, samples, covered, settled) = probe_metrics(probe, field.transport_revision);
-            probe.request_refresh();
-            let (_, next_samples, next_covered, next_settled) =
-                probe_metrics(probe, field.transport_revision);
-            runtime.completed_samples =
-                runtime.completed_samples.saturating_sub(samples) + next_samples;
-            runtime.covered_faces = runtime.covered_faces.saturating_sub(covered) + next_covered;
-            runtime.settled_faces = runtime.settled_faces.saturating_sub(settled) + next_settled;
-            // Nothing visible changed yet: do not upload every receiver in the
-            // edit radius merely because its measurements now need refreshing.
-            invalidated.insert(voxel);
         }
     }
 }
@@ -535,81 +440,25 @@ mod donor_tests {
     use super::*;
 
     #[test]
-    fn edit_urgency_wakes_only_faces_whose_history_the_edit_would_cut() {
-        use super::super::EnergySpectrum;
-        // 32 floor faces in a row, each with 4,096 samples of mean 0.01 and
-        // standard deviation 0.01: measured retention cuts a face's history
-        // once the predicted change exceeds 0.01 / sqrt(4096) = 1.5625e-4.
-        let fixture = || {
-            let mut field = VoxelEnergyField::default();
-            let voxels: Vec<_> = (0..32).map(|x| IVec3::new(x, 0, 0)).collect();
-            for &voxel in &voxels {
-                let mut probe = SurfaceProbe::new(voxel, 4);
-                probe.samples[2] = 4096;
-                probe.radiance[2] = EnergySpectrum::new(Vec3::splat(0.01), 0.0, 0.0);
-                probe.second_moment[2] = EnergySpectrum::new(Vec3::splat(0.0002), 0.0, 0.0);
-                field.probes.insert(voxel, probe);
-            }
-            field.pages.insert(IVec3::ZERO, voxels);
-            (VoxelGiRuntime::default(), field)
-        };
-        let woken = |radius, urgency| {
-            let (mut runtime, mut field) = fixture();
-            let mut nearby = HashSet::new();
-            invalidate_near_voxel(&mut runtime, &mut field, IVec3::ZERO, radius, urgency, &mut nearby);
-            let untouched = field.probes.values().filter(|p| p.revision == 0).count();
-            assert_eq!(untouched + nearby.len(), 32, "unwoken faces keep in-flight results");
-            nearby.len()
-        };
-        // flux 0.01: D = 0.01 / (pi d^2) > 1.5625e-4 only for d <= 4.
-        assert_eq!(woken(MEASURED_RELIGHT_RADIUS, Some((1.0, 0.01))), 5);
-        // A bright edit reaches every face in range.
-        assert_eq!(woken(MEASURED_RELIGHT_RADIUS, Some((1.0, 100.0))), 32);
-        // Unknown flux or the curve rule: the whole fixed radius.
-        assert_eq!(woken(EDIT_RELIGHT_RADIUS, None), 32);
-        // A dark face (nothing measured) always wakes.
-        let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
-        probe.samples[2] = 0;
-        assert!(retention_binds(&probe, 1.0, 1e-9));
-    }
-
-    #[test]
-    fn flux_scan_sees_every_face_and_falls_back_past_its_budget() {
-        use super::super::geometry::Bounds;
-        let materials = super::super::VoxelMaterialTransportTable::default();
-        let albedo = luminance(materials.get(0).diffuse.visible);
-        assert!(albedo > 0.0);
-        let mut field = VoxelEnergyField::default();
-        let bright = IVec3::new(13, 0, 17);
-        let mut voxels = Vec::new();
-        for z in 0..32 {
-            for x in 0..32 {
-                let voxel = IVec3::new(x, 0, z);
-                let mut probe = SurfaceProbe::new(voxel, 4);
-                probe.material = 0;
-                let level = if voxel == bright { 100.0 } else { 0.01 };
-                probe.radiance[2] = super::super::EnergySpectrum::new(Vec3::splat(level), 0.0, 0.0);
-                field.probes.insert(voxel, probe);
-                voxels.push(voxel);
-            }
+    fn edits_are_measured_on_the_gpu_within_the_scan_budget() {
+        use super::super::geometry::{Bounds, ChangeKind, ChangeWeight, GeometryChange};
+        let small = Bounds::point(IVec3::ZERO);
+        let huge = Bounds { min: IVec3::ZERO, max: IVec3::splat(40) };
+        let mut change = GeometryChange::default();
+        for b in [small, huge] {
+            change.weights.insert(
+                b,
+                ChangeWeight { kind: ChangeKind::Edit { voxels: 1, measure: false }, flux: 0.5 },
+            );
         }
-        field.pages.insert(IVec3::ZERO, voxels);
-        let expected = albedo * 100.0;
-        // Large box: the page list (1,024) is shorter than its volume.
-        let mut budget = FLUX_SCAN_BUDGET;
-        let wide = Bounds { min: IVec3::ZERO, max: IVec3::new(30, 0, 30) };
-        let found = brightest_outgoing(&field, &materials, wide, &mut budget).unwrap();
-        assert!((found - expected).abs() < 1e-3 * expected);
-        assert_eq!(budget, FLUX_SCAN_BUDGET - 1024);
-        // Small box: positions are scanned directly.
-        let near = Bounds::point(bright + IVec3::X);
-        let found = brightest_outgoing(&field, &materials, near, &mut budget).unwrap();
-        assert!((found - expected).abs() < 1e-3 * expected);
-        assert_eq!(budget, FLUX_SCAN_BUDGET - 1024 - 27);
-        // Past the budget the flux is unknown, never an underestimate.
-        let mut budget = 26;
-        assert_eq!(brightest_outgoing(&field, &materials, near, &mut budget), None);
-        assert_eq!(budget, 26);
+        finalize_change_flux(&mut change, &Default::default());
+        // A 3x3x3 scan fits; 43^3 positions exceed the budget: unknown flux
+        // (the distance curve), never an underestimate.
+        assert_eq!(
+            change.weights[&small],
+            ChangeWeight { kind: ChangeKind::Edit { voxels: 1, measure: true }, flux: 0.5 }
+        );
+        assert_eq!(change.weights[&huge], ChangeWeight::UNKNOWN);
     }
 
     fn unchanged_page_fixture() -> (
@@ -656,7 +505,6 @@ mod donor_tests {
             geometry_change: None,
             pages: default(),
             exact_edits: Vec::new(),
-            edit_urgency: default(),
             build_time: Duration::ZERO,
         }
     }
@@ -725,8 +573,11 @@ mod donor_tests {
             pointer
         );
         assert_eq!(field.probes[&voxel].display[2].indirect, Vec3::splat(2.0));
-        assert!(runtime.urgent_queued.contains(&voxel));
-        // Urgent, but the count stays for measured retention to cap.
+        // Its sky is refreshed; whether its light is urgent is the GPU's
+        // decision (retention events), not a CPU wake.
+        assert!(runtime.sky_queued.contains(&voxel));
+        assert!(!runtime.urgent_queued.contains(&voxel));
+        // The count stays for measured retention to cap.
         assert_eq!(field.probes[&voxel].samples[2], 64);
         assert!(!field.publishing_pages.contains(&IVec3::ZERO));
         assert_eq!(runtime.active_faces, 1024);
@@ -896,20 +747,19 @@ fn luminance(value: Vec3) -> f32 {
     0.2126 * value.x + 0.7152 * value.y + 0.0722 * value.z
 }
 
-/// Lookups (probe positions or page-list entries) per scene update. Edits past
+/// GPU scan positions (each a voxel's six faces) per scene update. Edits past
 /// it get unknown flux, so their receivers use the distance curve instead.
 const FLUX_SCAN_BUDGET: usize = 16_384;
 
-/// Complete measured-retention flux bounds from the field before recording.
-/// Edits add the brightest outgoing light among receivers at and around the
-/// changed bounds (reflectance times incident light, plus emission) times about
-/// two faces per changed voxel. Loads get the brighter of sky radiance and
-/// reflected sunlight per unit of height above a receiver, times the region's
-/// width. Approximate bounds, not a certified dependency analysis.
+/// Flux bounds for measured retention. Edits keep the changed voxels' own
+/// emission (scene worker) and are measured on the GPU (`measure_edits`: the
+/// brightest outgoing luminance within one voxel, from the GPU's statistics)
+/// while their one-voxel scans fit the budget; past it they are unknown (the
+/// distance curve). Loads get the brighter of sky radiance and reflected
+/// sunlight per unit of height above a receiver, times the region's width.
+/// Approximate bounds, not a certified dependency analysis.
 fn finalize_change_flux(
     change: &mut super::geometry::GeometryChange,
-    field: &VoxelEnergyField,
-    materials: &super::VoxelMaterialTransportTable,
     sources: &super::sources::TransportSources,
 ) {
     use super::geometry::ChangeKind;
@@ -920,91 +770,21 @@ fn finalize_change_flux(
             .map(|light| 0.5 * luminance(light.radiance.visible))
             .fold(0.0, f32::max),
     );
-    let mut budget = FLUX_SCAN_BUDGET;
+    let mut budget = FLUX_SCAN_BUDGET as u64;
     for (bounds, weight) in change.weights.iter_mut() {
-        match weight.kind {
+        match &mut weight.kind {
             ChangeKind::Load { .. } => weight.flux = sky * super::world::REGION_EDGE as f32,
-            ChangeKind::Edit { voxels } => {
-                match brightest_outgoing(field, materials, *bounds, &mut budget) {
-                    Some(brightest) => weight.flux += brightest * 2.0 * voxels as f32,
-                    None => *weight = super::geometry::ChangeWeight::UNKNOWN,
+            ChangeKind::Edit { measure, .. } => {
+                let size = (bounds.max - bounds.min + IVec3::splat(3)).max(IVec3::ONE).as_i64vec3();
+                let positions = (size.x * size.y * size.z) as u64;
+                if positions <= budget {
+                    budget -= positions;
+                    *measure = true;
+                } else {
+                    *weight = super::geometry::ChangeWeight::UNKNOWN;
                 }
             }
             ChangeKind::Unknown | ChangeKind::Unload | ChangeKind::Light => {}
         }
     }
-}
-
-/// Brightest outgoing luminance (reflected incident plus emission) of any
-/// surface face within one voxel of `bounds`: every probe there, not a sample.
-/// Scans positions or the overlapping pages' probe lists, whichever is
-/// shorter. None when that exceeds the remaining budget.
-fn brightest_outgoing(
-    field: &VoxelEnergyField,
-    materials: &super::VoxelMaterialTransportTable,
-    bounds: super::geometry::Bounds,
-    budget: &mut usize,
-) -> Option<f32> {
-    let min = bounds.min - IVec3::ONE;
-    let max = bounds.max + IVec3::ONE;
-    let size = (max - min + IVec3::ONE).max(IVec3::ONE).as_i64vec3();
-    let volume = (size.x * size.y * size.z) as u64;
-    let (page_min, page_max) = (page_of(min), page_of(max));
-    let page_span = (page_max - page_min + IVec3::ONE).as_i64vec3();
-    if (page_span.x * page_span.y * page_span.z) as u64 > *budget as u64 {
-        return None;
-    }
-    let mut listed = 0u64;
-    for z in page_min.z..=page_max.z {
-        for y in page_min.y..=page_max.y {
-            for x in page_min.x..=page_max.x {
-                listed += field.pages.get(&IVec3::new(x, y, z)).map_or(0, |p| p.len() as u64);
-            }
-        }
-    }
-    let cost = volume.min(listed);
-    if cost > *budget as u64 {
-        return None;
-    }
-    *budget -= cost as usize;
-    let mut brightest = 0.0f32;
-    let mut visit = |probe: &super::world::SurfaceProbe| {
-        let material = materials.get(probe.material);
-        let albedo = luminance(material.diffuse.visible);
-        let emission = luminance(material.emission.visible);
-        for face in 0..6 {
-            if probe.face_mask & (1 << face) != 0 {
-                let incident = luminance(probe.radiance[face].visible)
-                    + luminance(probe.direct[face].visible);
-                brightest = brightest.max(albedo * incident + emission);
-            }
-        }
-    };
-    if volume <= listed {
-        for z in min.z..=max.z {
-            for y in min.y..=max.y {
-                for x in min.x..=max.x {
-                    if let Some(probe) = field.probes.get(&IVec3::new(x, y, z)) {
-                        visit(probe);
-                    }
-                }
-            }
-        }
-    } else {
-        for z in page_min.z..=page_max.z {
-            for y in page_min.y..=page_max.y {
-                for x in page_min.x..=page_max.x {
-                    for voxel in field.pages.get(&IVec3::new(x, y, z)).into_iter().flatten() {
-                        if voxel.cmpge(min).all()
-                            && voxel.cmple(max).all()
-                            && let Some(probe) = field.probes.get(voxel)
-                        {
-                            visit(probe);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Some(brightest)
 }
