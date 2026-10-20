@@ -320,6 +320,19 @@ impl GpuTracer {
     pub(crate) fn resident_buffer(&self) -> Option<Buffer> {
         self.resident.as_ref().map(|state| state.buffer())
     }
+    /// Published retention changes, applied on the GPU before the next
+    /// batch's rays (kept until a batch with resident inputs runs).
+    pub(super) fn queue_retention(
+        &mut self,
+        events: &mut Vec<super::retention::RetentionEvent>,
+    ) {
+        if let Some(resident) = &mut self.resident {
+            resident.events.append(events);
+        } else {
+            events.clear();
+        }
+    }
+
     pub(super) fn enable_resident(&mut self) -> Result<(), String> {
         if self.resident.is_none() {
             self.resident = Some(resident::ResidentAccumulator::new(&self.context)?);

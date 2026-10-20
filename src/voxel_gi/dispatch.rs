@@ -146,6 +146,9 @@ pub(super) fn start_trace_task(
     runtime
         .trace_pending
         .extend(selected.probes.iter().map(|job| job.voxel));
+    // Every published change rides with the next dispatched batch, whatever
+    // it selected: the GPU applies each to all resident faces in range.
+    selected.retention_events = runtime.spatial_history.take_events();
     let paths = selected.faces.len() as u64 * u64::from(samples);
     stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
     let scene = Arc::clone(&runtime.scene);
@@ -197,9 +200,9 @@ pub(super) fn start_trace_task(
                 Err(error) => gpu_error = Some(error),
             }
         }
-        info_span!("gi_apply_retention").in_scope(|| batch.work.apply_retention());
         let mut completed = None;
         if let Some(tracer) = &mut gpu_tracer {
+            tracer.queue_retention(&mut batch.work.retention_events);
             tracer.sky_cache.track_changes = true;
             tracer.sky_cache.deferred_results = true;
             let result = (|| -> Result<(), String> {
@@ -323,8 +326,7 @@ pub(super) fn select_probes(
 ) -> Vec<SurfaceProbe> {
     // Reference view for existing policy tests. Production never materializes
     // these full receiver copies; it transfers only TraceWork.
-    let mut work = select_transport(runtime, field, &VoxelGiSettings::default());
-    work.apply_retention();
+    let work = select_transport(runtime, field, &VoxelGiSettings::default());
     work.probes
         .iter()
         .map(|job| {
@@ -442,11 +444,11 @@ pub(super) fn select_transport(
         let Some(probe) = field.probes.get(&voxel) else {
             continue;
         };
-        let retention = runtime.spatial_history.snapshot(voxel);
-        // Conservative page wakeup is O(1). Exact per-receiver distances are
-        // evaluated by the worker; page-edge false positives may get an audit,
-        // but never an unjustified cap or a lost late sunlight notification.
-        force |= retention.pending(probe.retention_revision);
+        // Retention itself was applied on the GPU when the change published.
+        // A receiver that has not been traced since is due for an audit; the
+        // page stamp is O(1), and page-edge false positives only cost one.
+        let wake = runtime.spatial_history.wake(voxel, probe.retention_revision);
+        force |= wake.is_some();
         let mask = scheduling::due_faces(probe, field.transport_revision, now, settings, force);
         if mask == 0 {
             continue;
@@ -470,7 +472,7 @@ pub(super) fn select_transport(
             u32::MAX,
             history_limit,
         );
-        selected.defer_retention(probe.retention_revision, retention);
+        selected.probes.last_mut().unwrap().retention = wake;
     }
     runtime.selection_seen = seen;
     runtime.ranked_candidates = adaptive;
@@ -513,9 +515,7 @@ pub(super) fn apply_trace_task(
         change
             .nearby
             .retain(|page, _| field.pages.contains_key(page));
-        runtime
-            .spatial_history
-            .record(change, super::retention::Origin::Sunlight);
+        runtime.spatial_history.record(change);
     }
     timing.record_gpu_batch(result.batch.as_ref().and_then(|batch| batch.gpu_ms));
     stats.backend = result

@@ -91,9 +91,7 @@ pub(super) fn apply_scene_task(
             change
                 .nearby
                 .retain(|page, _| field.pages.contains_key(page));
-            runtime
-                .spatial_history
-                .record(change, super::retention::Origin::Geometry);
+            runtime.spatial_history.record(change);
         }
         field
             .publishing_pages

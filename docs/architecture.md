@@ -288,12 +288,29 @@ have the same convergence or invalidation requirements.
 
 On the surface-cache branch the default is **measured retention**
 (`measured_retention` = 1; see [retention research](retention-research.md)).
-Each journal event carries a flux bound. A face whose MSE-optimal history
+Each change event carries a flux bound. A face whose MSE-optimal history
 `c sigma^2 / D^2` (with `D = flux / (pi d^2)`) would bind keeps that much. The
 face is not read as a cache source for one batch, and uses the fresh batch's
-noise if it was dark. Unknown changes and unselected probe faces keep the
-distance curve below. `config/gi-retention-curve.json` restores the curve
-everywhere.
+noise if it was dark. Changes of unknown flux keep the distance curve below.
+`config/gi-retention-curve.json` restores the curve everywhere.
+
+Retention is applied **on the GPU, to every resident face in range, when the
+change publishes** (`apply_events` in `voxel_accumulate.wgsl`; `retention.rs`
+`resolve` is its CPU statement, checked face by face by a native test). Each
+event is its deduplicated change bounds with their flux and their union box (an
+early out); every face in reach sums each bound's exact change. (A single
+aggregate over a whole streaming event, its total flux at the union's
+distance, overstated changes enough to double the hallway's median settle
+time: measured retention cut history throughout initial streaming.) A
+curve cap lands in the face's GPU count at once. A known measured change
+accumulates per slot; when the face is next traced, `mark_changed` decides
+from its current GPU statistics whether it binds (or the face was dark), and
+accumulate applies it. Nothing waits for a face's next CPU selection, so there
+are no per-page journals, eviction summaries or worker-side snapshot queries.
+The CPU keeps one stamp per receiver page, the newest event there: receivers
+not traced since are due for an audit, and publication restarts their
+stability. Since every face is covered, measured retention now also replaces
+the curve cap formerly applied to a selected probe's unselected faces.
 
 Freshness, retained statistical weight, scheduling urgency and displayed values
 are independent. A revision can make an estimate stale without clearing its
@@ -355,7 +372,8 @@ compatible history, but rejects distance alone as a general influence bound.
 Spatial retention must also survive bounded-journal eviction; retaining
 more samples without that metadata is not a complete solution.
 
-The preceding [sun-aware retention experiment](history/sun-aware-retention.md) separates
+Historical design (superseded by GPU application above): the
+[sun-aware retention experiment](history/sun-aware-retention.md) separates
 spatial evidence, measured sampler quality, stale-light budget and an empirical
 history floor. Changed shared-corner sunlight supplies secondary change origins;
 calibration remeasures paths to a fixed quality goal when sampling improves.
@@ -644,10 +662,11 @@ RGB. Slot incarnations separate allocation identity from scene freshness.
 Growth copies measurements; retirement is local to changed regions; recycling
 initializes the new surface before its address can be used for rendering.
 
-The CPU selects work and applies the same retention evidence as the original
-backend. A GPU prepare pass caps its **own latest** history and supplies the
-current sequence to the ray task; delayed CPU counts cannot resurrect history
-or repeat paths. Probe-wide evidence also caps unselected resident faces. The
+The CPU selects work; edit and streaming retention is applied by a GPU pass to
+every resident face (see Revisions and history). A GPU prepare pass caps its
+**own latest** history with source and revision caps and supplies the current
+sequence to the ray task; delayed CPU counts cannot resurrect history or repeat
+paths. A probe's source cap also covers its unselected resident faces. The
 ray estimator is unchanged. A resolve pass accumulates measurements and applies
 the existing presentation filter. The material reads that native buffer through
 generation-checked addresses, independently of CPU delivery.

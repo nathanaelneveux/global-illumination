@@ -30,13 +30,9 @@ pub(crate) struct TraceWork {
     /// Faces that need a resident slot before they are traced, so every
     /// published face has GPU state (and a seeded presentation) early.
     pub ensure: Vec<EnsureFace>,
-    pub(super) pending_retention: Vec<RetentionWork>,
-}
-
-pub(super) struct RetentionWork {
-    probe_index: usize,
-    since: u64,
-    snapshot: super::retention::Snapshot,
+    /// Changes published since the previous batch, applied on the GPU to
+    /// every resident face in range before this batch's rays.
+    pub retention_events: Vec<super::retention::RetentionEvent>,
 }
 
 pub(crate) struct ProbeWork {
@@ -50,8 +46,10 @@ pub(crate) struct ProbeWork {
     pub source_revision: u64,
     pub transport_revision: u64,
     pub restart: bool,
-    /// Spatial evidence and cap; None preserves the legacy comparison policy.
-    pub retention: Option<(u64, u32)>,
+    /// The newest retention event this receiver observes by being traced
+    /// (its page stamp), when one woke it. Its statistics were already
+    /// capped on the GPU; publication restarts its stability.
+    pub retention: Option<u64>,
     pub sky: [[u32; 4]; 6],
     start: usize,
 }
@@ -71,15 +69,11 @@ impl ProbeWork {
         now: Instant,
         settings: &super::VoxelGiSettings,
     ) {
-        let same_revision = probe.transport_revision == self.transport_revision
-            && self.retention.is_none_or(|(_, cap)| cap == u32::MAX);
+        let same_revision =
+            probe.transport_revision == self.transport_revision && self.retention.is_none();
         let previous_stable = probe.stable_batches;
         let previous_display_time = probe.display_updated_at;
-        if let Some((revision, cap)) = self.retention {
-            // Consume evidence for all faces atomically, including faces not
-            // selected in this batch. Partial selections must not lose a cap
-            // when the probe-level scene revision advances.
-            probe.samples = probe.samples.map(|samples| samples.min(cap));
+        if let Some(revision) = self.retention {
             probe.retention_revision = revision;
         }
         // These faces' merges were accepted: nothing left for the GPU to undo.
@@ -158,9 +152,6 @@ pub(crate) struct FaceWork {
     /// A change constraint, not a copy of the CPU snapshot's possibly old count.
     /// Resident accumulation applies this to its own latest statistical weight.
     pub history_cap: u32,
-    /// Physical retention only: predicted luminance change at this face from
-    /// recent edits (zero = none). Replaces `history_cap` when enabled.
-    pub change_prior: f32,
     /// The CPU rejected this face's last merged batch: the GPU must undo it.
     pub rollback: bool,
     pub sequence: u32,
@@ -174,56 +165,7 @@ impl TraceWork {
         self.probes.clear();
         self.faces.clear();
         self.ensure.clear();
-        self.pending_retention.clear();
-    }
-
-    pub fn defer_retention(&mut self, since: u64, snapshot: super::retention::Snapshot) {
-        self.pending_retention.push(RetentionWork {
-            probe_index: self.probes.len() - 1,
-            since,
-            snapshot,
-        });
-    }
-
-    /// Resolve geometry and late-sun evidence off the game thread, before either
-    /// backend merges fresh paths. Source caps were already applied at selection.
-    pub fn apply_retention(&mut self) {
-        for pending in self.pending_retention.drain(..) {
-            let probe = &mut self.probes[pending.probe_index];
-            let (cap, change) = pending.snapshot.resolve(
-                probe.voxel,
-                pending.since,
-                self.measured_retention > 0.0,
-            );
-            probe.retention = Some((pending.snapshot.revision, cap));
-            let c = self.measured_retention;
-            for face in &mut self.faces[probe.faces()] {
-                // Unselected faces of this probe still take the curve cap.
-                face.history_cap = face.history_cap.min(cap);
-                match change {
-                    // Measured: flag only faces whose predicted history binds,
-                    // or that were dark relative to the change. The GPU decides.
-                    Some(change) if change > 0.0 => {
-                        let m = face.radiance.visible;
-                        let second = face.second_moment.visible;
-                        let w = Vec3::new(0.2126, 0.7152, 0.0722);
-                        let variance = w.dot((second - m * m).max(Vec3::ZERO));
-                        let lit = w.dot(m) >= 0.05 * change;
-                        let predicted = c * variance / (change * change).max(1e-30);
-                        if !lit || predicted < face.samples as f32 {
-                            face.change_prior = change;
-                        }
-                    }
-                    Some(_) => {}
-                    // Unknown flux: the curve cap, passed to the GPU as negative.
-                    None if self.measured_retention > 0.0 && cap != u32::MAX => {
-                        face.change_prior = -(cap as f32);
-                        face.samples = face.samples.min(cap);
-                    }
-                    None => face.samples = face.samples.min(cap),
-                }
-            }
-        }
+        self.retention_events.clear();
     }
 
     /// Queue slot allocation for this probe's faces that have none yet.
@@ -280,7 +222,6 @@ impl TraceWork {
             } else {
                 stale_limit.min(source_history_limit)
             },
-            change_prior: 0.0,
             rollback: probe.stale_merge & (1 << face) != 0,
             updated_at: if restart {
                 None
@@ -397,44 +338,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deferred_caps_run_once_and_preserve_stronger_source_caps() {
-        use super::super::{
-            geometry::{Bounds, GeometryChange, PageChanges},
-            retention::{Origin, SpatialHistory},
-        };
-        let mut history = SpatialHistory::default();
-        history.record(
-            GeometryChange {
-                nearby: bevy::platform::collections::HashMap::from_iter([(
-                    IVec3::ZERO,
-                    PageChanges::new(IVec3::ZERO, vec![Bounds::point(IVec3::new(64, 0, 0))]),
-                )]),
-                ..default()
-            },
-            Origin::Geometry,
-        );
-        let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
-        probe.samples = [4096; 6];
-        for (source_cap, expected) in [(u32::MAX, 809), (64, 64), (0, 0)] {
-            let mut work = TraceWork::default();
-            work.push(&probe, 4, 1, 1, false, u32::MAX, source_cap);
-            work.defer_retention(0, history.snapshot(probe.voxel));
-            assert_eq!(work.faces[0].samples, 4096.min(source_cap));
-            work.apply_retention();
-            assert_eq!(work.faces[0].samples, expected);
-            work.faces[0].samples += 16;
-            work.apply_retention();
-            assert_eq!(
-                work.faces[0].samples,
-                expected + 16,
-                "resolved work cannot cap fresh samples again"
-            );
-            assert!(work.pending_retention.is_empty());
-        }
-    }
-
-    #[test]
-    fn spatial_evidence_caps_unselected_faces_and_does_not_consume_later_events() {
+    fn retention_wake_publishes_the_selected_stamp_and_restarts_stability() {
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 63);
         probe.samples = [4096; 6];
         probe.radiance = [EnergySpectrum::ONE; 6];
@@ -442,11 +346,12 @@ mod tests {
         probe.sequence = [9000; 6];
         let mut work = TraceWork::default();
         work.push(&probe, 1, 1, 0, false, 256, u32::MAX);
-        work.probes[0].retention = Some((7, 256));
+        work.probes[0].retention = Some(7);
         work.faces[0].samples += 16;
         work.faces[0].sequence += 16;
         work.probes[0].publish(&work.faces, &mut probe, Instant::now(), &default());
-        assert_eq!(probe.samples, [272, 256, 256, 256, 256, 256]);
+        // Counts come from the GPU, which already applied the change.
+        assert_eq!(probe.samples, [272, 4096, 4096, 4096, 4096, 4096]);
         assert_eq!(probe.sequence, [9016, 9000, 9000, 9000, 9000, 9000]);
         assert_eq!(
             probe.retention_revision, 7,
@@ -455,51 +360,6 @@ mod tests {
         assert_eq!(probe.fresh_mask, 1);
         assert_eq!(probe.radiance, [EnergySpectrum::ONE; 6]);
         assert_eq!(probe.second_moment, [EnergySpectrum::ONE * 2.0; 6]);
-    }
-
-    #[test]
-    fn zero_retention_preserves_unselected_display_moments_and_sequences() {
-        let mut probe = SurfaceProbe::new(IVec3::ZERO, 63);
-        probe.samples = [4096; 6];
-        probe.radiance = [EnergySpectrum::ONE; 6];
-        probe.second_moment = [EnergySpectrum::ONE * 2.0; 6];
-        probe.sequence = [9000; 6];
-        for display in &mut probe.display {
-            display.indirect = Vec3::splat(0.7);
-            display.confidence = 0.75;
-        }
-        let mut history = super::super::retention::SpatialHistory::default();
-        history.record(
-            super::super::geometry::GeometryChange {
-                nearby: bevy::platform::collections::HashMap::from_iter([(
-                    IVec3::ZERO,
-                    super::super::geometry::PageChanges::new(
-                        IVec3::ZERO,
-                        vec![super::super::geometry::Bounds::point(IVec3::ZERO)],
-                    ),
-                )]),
-                ..default()
-            },
-            super::super::retention::Origin::Geometry,
-        );
-        let mut work = TraceWork::default();
-        work.push(&probe, 1, 1, 0, false, u32::MAX, u32::MAX);
-        work.defer_retention(0, history.snapshot(probe.voxel));
-        work.apply_retention();
-        assert_eq!(work.faces[0].samples, 0);
-        assert_eq!(work.faces[0].radiance, EnergySpectrum::ONE);
-        assert_eq!(work.faces[0].sequence, 9000);
-        work.faces[0].samples = 16;
-        work.faces[0].sequence += 16;
-        work.probes[0].publish(&work.faces, &mut probe, Instant::now(), &default());
-        assert_eq!(probe.samples, [16, 0, 0, 0, 0, 0]);
-        for face in 1..6 {
-            assert_eq!(probe.display[face].indirect, Vec3::splat(0.7));
-            assert_eq!(probe.display[face].confidence, 0.75);
-            assert_eq!(probe.radiance[face], EnergySpectrum::ONE);
-            assert_eq!(probe.second_moment[face], EnergySpectrum::ONE * 2.0);
-            assert_eq!(probe.sequence[face], 9000);
-        }
     }
 
     #[test]

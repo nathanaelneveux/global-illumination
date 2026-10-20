@@ -598,11 +598,16 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
             }
             let selected = select_probes(&mut runtime, field);
             assert_eq!(selected.len(), 2);
-            // Whole-range curve: 4 voxels from the edit keeps nothing; 128
-            // voxels away the cap (12,971) exceeds the 4,096 retained samples.
+            // One GPU event for both. Whole-range curve: 4 voxels from the
+            // edit keeps nothing; 128 voxels away the cap (12,971) exceeds
+            // the 4,096 retained samples. CPU counts wait for the GPU's.
+            let events = runtime.spatial_history.take_events();
+            assert_eq!(events.len(), 1);
             for probe in selected {
                 let retained = if probe.voxel == near { 0 } else { 4096 };
-                assert_eq!(probe.samples[2], retained, "material {material}");
+                let (cap, _) = retention::resolve(&events, probe.voxel);
+                assert_eq!(cap.min(4096), retained, "material {material}");
+                assert_eq!(probe.samples[2], 4096);
                 assert_eq!(probe.radiance[2], EnergySpectrum::ONE);
                 assert_eq!(probe.sequence[2], 4096);
                 assert_eq!(probe.display[2].indirect, Vec3::ONE);
@@ -702,9 +707,10 @@ fn urgent_work_cannot_starve_loaded_world_sweep() {
 
 #[test]
 fn late_sun_evidence_wakes_a_current_receiver_without_resetting_distant_history() {
-    for (changed, expected_samples) in [
-        (IVec3::ZERO, 0),
-        (IVec3::new(31 + retention::INFLUENCE_RADIUS, 0, 0), 4096), // wake-only
+    // Caps are the GPU's (apply_events); selection sees only the wake.
+    for (changed, gpu_events) in [
+        (IVec3::ZERO, 1),
+        (IVec3::new(31 + retention::INFLUENCE_RADIUS, 0, 0), 0), // wake-only
     ] {
         let voxel = IVec3::ZERO;
         let mut probe = SurfaceProbe::new(voxel, 4);
@@ -729,12 +735,11 @@ fn late_sun_evidence_wakes_a_current_receiver_without_resetting_distant_history(
             )]),
             ..default()
         };
-        runtime
-            .spatial_history
-            .record(change, retention::Origin::Sunlight);
+        runtime.spatial_history.record(change);
         let selected = select_probes(&mut runtime, &field);
         assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].samples[2], expected_samples);
+        assert_eq!(selected[0].samples[2], 4096);
+        assert_eq!(runtime.spatial_history.take_events().len(), gpu_events);
         assert_eq!(selected[0].sequence[2], 8192);
         assert_eq!(selected[0].radiance[2], EnergySpectrum::ONE);
         assert_eq!(

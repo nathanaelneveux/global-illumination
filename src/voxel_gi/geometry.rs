@@ -52,7 +52,9 @@ impl ChangeWeight {
         flux: 0.0,
     };
 
-    /// Predicted luminance change at a receiver, or None to fall back.
+    /// Predicted luminance change at a receiver, or None to fall back. The
+    /// GPU's `apply_events` evaluates this; the CPU statement serves tests.
+    #[cfg(test)]
     pub fn change_at(self, distance_squared: i64, receiver_y: i32) -> Option<f32> {
         let area = match self.kind {
             ChangeKind::Unknown => return None,

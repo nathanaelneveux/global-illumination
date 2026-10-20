@@ -288,14 +288,9 @@ fn run_study(cases: Vec<Case>, output: &str) {
                             // H = c sigma^2 / D^2 below their current samples. Dark
                             // faces (no retained noise) always qualify. Far, small
                             // changes predict huge H and cost nothing.
-                            let change = case.flux / (std::f64::consts::PI * f64::from(d.max(1.0)).powi(2));
-                            let m = channels(face.radiance);
-                            let second = channels(face.second_moment);
-                            let w = [0.2126, 0.7152, 0.0722];
-                            let var: f64 = (0..3).map(|i| w[i] * f64::from((second[i] - m[i] * m[i]).max(0.0))).sum();
-                            let lit = luminance(face.radiance) >= 0.05 * change;
-                            let predicted = f64::from(c) * var / (change * change).max(1e-30);
-                            face.change_prior = if !lit || predicted < f64::from(face.samples) { change as f32 } else { 0.0 };
+                            // Applied on the GPU, from the changed voxel's box
+                            // distance (not this study's center distance `d`).
+                            let _ = (c, d);
                             u32::MAX
                         }
                         Arm::PhysicalSigned(c) => {
@@ -329,6 +324,13 @@ fn run_study(cases: Vec<Case>, output: &str) {
                 }
                 if let Arm::Measured(c) = arm {
                     work.measured_retention = c;
+                    work.retention_events = vec![crate::voxel_gi::retention::RetentionEvent::single(
+                        crate::voxel_gi::geometry::Bounds::point(case.changed.floor().as_ivec3()),
+                        crate::voxel_gi::geometry::ChangeWeight {
+                            kind: crate::voxel_gi::geometry::ChangeKind::Edit { voxels: 1 },
+                            flux: case.flux as f32,
+                        },
+                    )];
                 }
                 let mut errors = Vec::new();
                 let mut completed = 0;
@@ -337,7 +339,6 @@ fn run_study(cases: Vec<Case>, output: &str) {
                         trace(&mut gpu, &case, &case.after, &after_emitters, &mut work);
                         for face in &mut work.faces {
                             face.history_cap = u32::MAX;
-                            face.change_prior = 0.0;
                         }
                         completed += 1;
                     }
