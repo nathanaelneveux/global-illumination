@@ -115,6 +115,7 @@ impl ProbeWork {
         }
         // These faces' merges were accepted: nothing left for the GPU to undo.
         probe.stale_merge &= !self.trace_mask;
+        probe.relit_mask &= !self.trace_mask;
         if !same_revision || self.restart {
             probe.fresh_mask = 0;
             probe.stable_batches = [0; 6];
@@ -191,6 +192,9 @@ pub(crate) struct FaceWork {
     pub history_cap: u32,
     /// The CPU rejected this face's last merged batch: the GPU must undo it.
     pub rollback: bool,
+    /// The cap a changed slot revision applies to the GPU history: 16 for a
+    /// relit face, 0 on a restart, stricter stale/source limits, else none.
+    pub revision_cap: u32,
     pub sequence: u32,
     pub updated_at: Option<Instant>,
     pub presentation: Vec4,
@@ -264,6 +268,16 @@ impl TraceWork {
                 stale_limit.min(source_history_limit)
             },
             rollback: probe.stale_merge & (1 << face) != 0,
+            revision_cap: if restart {
+                0
+            } else {
+                let relit = if probe.relit_mask & (1 << face) != 0 {
+                    super::geometry::NEAR_HISTORY
+                } else {
+                    u32::MAX
+                };
+                relit.min(stale_limit).min(source_history_limit)
+            },
             updated_at: if restart {
                 None
             } else {
@@ -535,6 +549,27 @@ mod tests {
                 assert_eq!(work.faces[0].radiance, EnergySpectrum::ZERO);
             }
         }
+    }
+
+    #[test]
+    fn relit_faces_carry_an_explicit_cap_never_the_mirrored_count() {
+        let mut probe = SurfaceProbe::new(IVec3::ZERO, 5);
+        // The CPU never merged this face: its count reads 0.
+        probe.samples = [0; 6];
+        probe.request_relight();
+        let mut work = TraceWork::default();
+        work.push(&probe, 5, 0, 0, false, u32::MAX, u32::MAX);
+        assert!(work.faces.iter().all(|f| f.revision_cap == super::super::geometry::NEAR_HISTORY));
+        work.probes[0].publish(&work.faces, &mut probe, Instant::now(), &Default::default());
+        assert_eq!(probe.relit_mask, 0, "an accepted job consumes the relight");
+        // A refresh (nearby edit) changes the revision but caps nothing.
+        probe.request_refresh();
+        let mut work = TraceWork::default();
+        work.push(&probe, 5, 0, 0, false, u32::MAX, u32::MAX);
+        assert!(work.faces.iter().all(|f| f.revision_cap == u32::MAX));
+        let mut work = TraceWork::default();
+        work.push(&probe, 5, 0, 0, true, u32::MAX, u32::MAX);
+        assert!(work.faces.iter().all(|f| f.revision_cap == 0), "restart");
     }
 
     #[test]

@@ -394,12 +394,9 @@ impl ResidentAccumulator {
                     slot.model_epoch = job.source_revision;
                     self.meta_writes
                         .write(slot.index * META_WORDS + 6, job.revision as u32);
-                    // `samples` holds exactly this probe's relight/source caps
-                    // (zero on restart), applied by the CPU at the revision
-                    // change. Not `history_cap`: in measured mode that carries
-                    // the distance-curve cap meant only for unselected faces,
-                    // and applying it here wiped relit faces' history.
-                    seed = NO_SEED | face.samples.min(NO_CAP);
+                    // The explicit relight/stale/source cap (zero on restart),
+                    // never the CPU's count: that mirror can lag the GPU.
+                    seed = NO_SEED | face.revision_cap.min(NO_CAP);
                 }
                 face.resident = UVec2::new(slot.index, slot.incarnation);
                 if seed >= NO_SEED && face.rollback {
@@ -2129,6 +2126,11 @@ mod tests {
                 work.response_seconds = 0.075;
                 for job in &mut work.probes {
                     job.sky_requested = false;
+                }
+                // Each step's revision change restarts the probes (the
+                // control traces them fresh): an explicit zero cap.
+                for face in &mut work.faces {
+                    face.revision_cap = face.samples;
                 }
             }
             let snapshot = candidate

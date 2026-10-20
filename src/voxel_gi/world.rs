@@ -507,6 +507,11 @@ pub struct SurfaceProbe {
     /// Faces whose last GPU merge the CPU rejected (selected before a revision
     /// or model change). The next selection asks the GPU to undo that merge.
     pub(crate) stale_merge: u8,
+    /// Faces relit (material or exposure change) since their last accepted
+    /// CPU job: that job caps their GPU history to NEAR_HISTORY. The cap is
+    /// sent explicitly, never derived from `samples`: the CPU's counts are a
+    /// mirror of the GPU's and can lag it (or read 0 for a face never merged).
+    pub(crate) relit_mask: u8,
     pub(crate) transport_revision: u64,
     /// Independent spatial evidence consumed by statistical retention.
     /// Sunlight changes can arrive after transport refreshed in the same scene.
@@ -542,6 +547,7 @@ impl SurfaceProbe {
             trace_mask: 63,
             fresh_mask: 63,
             stale_merge: 0,
+            relit_mask: 0,
             transport_revision: 0,
             retention_revision: 0,
             stable_batches: [0; 6],
@@ -582,6 +588,7 @@ impl SurfaceProbe {
     /// only newly exposed faces start without compatible measurements.
     pub(crate) fn request_relight(&mut self) {
         self.request_refresh();
+        self.relit_mask |= self.face_mask;
         let limit = super::geometry::NEAR_HISTORY;
         self.samples = self.samples.map(|count| count.min(limit));
     }

@@ -1103,6 +1103,7 @@ impl GpuTracer {
                     samples: values[5].to_bits(),
                     history_cap: u32::MAX,
                     rollback: false,
+                    revision_cap: u32::MAX,
                     sequence: values[6].to_bits(),
                     updated_at: Some(submitted),
                     presentation: Vec4::new(values[7], values[13], values[14], values[15]),
