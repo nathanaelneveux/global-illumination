@@ -391,8 +391,20 @@ fn finish_scene_page(
     enqueue_sky(runtime, urgent.iter().copied());
     enqueue_sky(runtime, added.iter().copied());
     enqueue_urgent(runtime, urgent);
+    // Existing probes whose revision changed here (material or exposed faces:
+    // relit, history capped) are event work: only a CPU job carries the new
+    // revision and its cap to the GPU, and until one does, the mirror rejects
+    // the GPU's picks of them. New probes need none (eager slots, coverage).
+    let added: HashSet<IVec3> = added.into_iter().collect();
+    let mut relit: Vec<_> = invalidated
+        .iter()
+        .copied()
+        .filter(|voxel| !added.contains(voxel))
+        .collect();
+    relit.sort_unstable_by_key(|voxel| voxel.to_array());
+    enqueue_urgent(runtime, relit);
     runtime.sky_remaining = field.order.len();
-    // New and relit faces' coverage and the world sweep are the GPU's picks.
+    // New faces' coverage and the world sweep are the GPU's picks.
     result.exact_edits.clear();
     field.publishing_pages.remove(&page);
     update_stats_from_counters(runtime, field, stats);

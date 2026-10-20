@@ -443,6 +443,10 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             );
             let p = &field.probes[&voxel];
             assert!(p.revision > late.revision);
+            assert!(
+                runtime.urgent_queued.contains(&voxel),
+                "a relit probe is CPU event work: only its job carries the cap"
+            );
             assert_eq!(p.samples[2], geometry::NEAR_HISTORY);
             assert_eq!(p.sequence[2], 2048);
             assert_eq!(p.radiance[2], EnergySpectrum::ONE);
