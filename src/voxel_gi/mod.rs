@@ -22,7 +22,6 @@ pub(crate) mod render;
 #[cfg(test)]
 mod research;
 mod retention;
-mod revision;
 mod sampling;
 mod scheduling;
 mod settings;
@@ -250,23 +249,13 @@ struct VoxelGiRuntime {
     /// Last global material/model replacement. Scene edits use spatial history
     /// instead; residency of an emitting voxel must not restart the world.
     model_reset_source_revision: u64,
-    source_history: sources::SourceHistory,
-    nearby: Vec<IVec3>,
-    regional: Vec<IVec3>,
-    nearby_cursor: usize,
-    adaptive_cursor: usize,
-    focus_page: Option<IVec3>,
-    focus_dirty: bool,
-    pending: VecDeque<IVec3>,
-    queued: HashSet<IVec3>,
     urgent_pending: VecDeque<IVec3>,
     urgent_queued: HashSet<IVec3>,
+    /// Batch ids for GPU selection (28 bits, never zero).
+    batch_counter: u32,
     /// Probes with faces that need a resident slot (eager allocation).
     slot_requests: VecDeque<IVec3>,
     slot_requested: HashSet<IVec3>,
-    refresh_cursor: usize,
-    refresh_remaining: usize,
-    refresh_total: usize,
     active_faces: u64,
     covered_faces: u64,
     completed_samples: u64,
@@ -279,7 +268,6 @@ struct VoxelGiRuntime {
     /// The one in-flight worker returns its allocation for the next dispatch.
     trace_scratch: TraceWork,
     selection_seen: bevy::platform::collections::HashSet<IVec3>,
-    ranked_candidates: scheduling::RankedCandidates,
     gpu_tracer: Option<gpu::GpuTracer>,
     emission_cache: Option<emission::EmissionCache>,
     sky_pending: VecDeque<IVec3>,
@@ -326,22 +314,11 @@ impl Default for VoxelGiRuntime {
             source_revision: 0,
             batch_size: 256,
             model_reset_source_revision: 0,
-            source_history: default(),
-            nearby: Vec::new(),
-            regional: Vec::new(),
-            nearby_cursor: 0,
-            adaptive_cursor: 0,
-            focus_page: None,
-            focus_dirty: true,
-            pending: VecDeque::new(),
-            queued: HashSet::new(),
             urgent_pending: VecDeque::new(),
             urgent_queued: HashSet::new(),
+            batch_counter: 0,
             slot_requests: VecDeque::new(),
             slot_requested: HashSet::new(),
-            refresh_cursor: 0,
-            refresh_remaining: 0,
-            refresh_total: 0,
             active_faces: 0,
             covered_faces: 0,
             completed_samples: 0,
@@ -353,7 +330,6 @@ impl Default for VoxelGiRuntime {
             trace_pending: default(),
             trace_scratch: TraceWork::default(),
             selection_seen: default(),
-            ranked_candidates: default(),
             gpu_tracer: None,
             emission_cache: None,
             sky_pending: default(),
@@ -422,7 +398,6 @@ struct TransportBatch {
     gpu_ms: Option<f32>,
     execution_ms: Option<f32>,
     sky_only: bool,
-    transport_count: usize,
     sky_count: usize,
     scene_generation: u64,
     sky_revision: u64,
@@ -437,21 +412,6 @@ fn advance_transport_revision(runtime: &mut VoxelGiRuntime, field: &mut VoxelEne
     // Old histories remain useful, but have not passed stability checks in the
     // new scene. Revision-aware deltas cannot subtract them from this new count.
     runtime.settled_faces = 0;
-}
-
-fn request_global_refresh(runtime: &mut VoxelGiRuntime, probes: usize) {
-    // Never rewind the sweep on edits: continuous digging would otherwise
-    // repeatedly service the first pages and permanently starve distant ones.
-    runtime.refresh_remaining = probes;
-    runtime.refresh_total = probes;
-}
-
-fn enqueue_many(runtime: &mut VoxelGiRuntime, voxels: impl IntoIterator<Item = IVec3>) {
-    for voxel in voxels {
-        if runtime.queued.insert(voxel) {
-            runtime.pending.push_back(voxel);
-        }
-    }
 }
 
 fn enqueue_urgent(runtime: &mut VoxelGiRuntime, voxels: impl IntoIterator<Item = IVec3>) {
@@ -492,7 +452,7 @@ fn update_stats_from_counters(
 ) {
     let faces = runtime.active_faces;
     stats.surface_probes = field.probes.len();
-    stats.pending_probes = runtime.queued.len();
+    stats.pending_probes = runtime.urgent_pending.len();
     stats.bootstrap_coverage = if faces == 0 {
         1.0
     } else {
@@ -508,11 +468,8 @@ fn update_stats_from_counters(
     } else {
         runtime.settled_faces as f32 / faces as f32
     };
-    stats.global_refresh = if runtime.refresh_total == 0 {
-        1.0
-    } else {
-        1.0 - runtime.refresh_remaining as f32 / runtime.refresh_total as f32
-    };
+    // The world sweep is continuous on the GPU (oldest faces first).
+    stats.global_refresh = 1.0;
     stats.fully_bootstrapped = stats.bootstrap_coverage >= 1.0 && field.publishing_pages.is_empty();
 }
 

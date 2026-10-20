@@ -1,13 +1,12 @@
-//! Bounded selection, worker dispatch, and revision-checked measurement publication.
-//! Every loaded receiver remains eligible independently of camera visibility.
+//! CPU event selection, worker dispatch, and revision-checked publication of
+//! CPU jobs and GPU picks. Bulk selection happens on the GPU; every loaded
+//! receiver remains eligible independently of camera visibility.
 use super::{
     TraceBatchResult, VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats, emission,
-    enqueue_many, enqueue_urgent, geometry, gpu, page_of, probe_metrics, scheduling,
+    enqueue_urgent, geometry, gpu, probe_metrics, scheduling,
     telemetry::GiWorkTimings,
-    tracer::BOOTSTRAP_SAMPLES,
     update_stats_from_counters,
     work::TraceWork,
-    world::SurfaceProbe,
 };
 use bevy::{
     prelude::*,
@@ -92,10 +91,10 @@ pub(super) fn start_trace_task(
             .into_iter()
             .filter(|voxel| field.probes.contains_key(voxel)),
     );
-    let focus = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
-        page_of(camera.translation().floor().as_ivec3())
-    });
-    info_span!("gi_update_focus").in_scope(|| update_focus(&mut runtime, &field, focus));
+    let focus = cameras
+        .iter()
+        .next()
+        .map_or(IVec3::ZERO, |camera| camera.translation().floor().as_ivec3());
     runtime.batch_size = runtime.batch_size.min(settings.batch_limit());
     runtime.sky_batch_size = runtime.sky_batch_size.min(settings.batch_limit());
     // Three owned staging allocations bound queue latency and memory. When full,
@@ -114,10 +113,24 @@ pub(super) fn start_trace_task(
     selected.spatial_reconstruction = settings.spatial_reconstruction;
     selected.spatial_evidence_target = settings.spatial_evidence_target.min(4096);
     selected.spatial_max_donors = settings.spatial_max_donors;
+    // The rest of the face budget is the GPU's to pick.
+    selected.picks = if can_submit {
+        runtime.batch_size.saturating_sub(selected.faces.len()) as u32
+    } else {
+        0
+    };
+    selected.focus = focus;
+    runtime.batch_counter = (runtime.batch_counter % 0x0fff_ffff) + 1;
+    selected.batch_id = runtime.batch_counter;
+    selected.transport_revision = field.transport_revision;
+    selected.source_revision = runtime.source_revision;
+    selected.stable_error = settings.stable_error();
+    selected.stable_samples = settings.stable_samples();
+    selected.audit_ms = settings.audit_interval().as_millis() as u32;
     let samples = settings.batch_samples();
-    // Eager slots ride with a batch that has faces (only those prepare
-    // resident inputs). Bounded per batch so streaming cannot burst.
-    if !selected.faces.is_empty() {
+    // Eager slots ride with any batch that prepares resident inputs.
+    // Bounded per batch so streaming cannot burst.
+    if !selected.faces.is_empty() || selected.picks > 0 {
         let mut drained = 0;
         while drained < ENSURE_PROBES_PER_BATCH
             && let Some(voxel) = runtime.slot_requests.pop_front()
@@ -135,8 +148,8 @@ pub(super) fn start_trace_task(
     } else {
         0
     };
-    let sky_only = transport_count == 0;
-    if selected.probes.is_empty() && runtime.gpu_pending.is_empty() {
+    let sky_only = transport_count == 0 && selected.picks == 0;
+    if selected.probes.is_empty() && selected.picks == 0 && runtime.gpu_pending.is_empty() {
         runtime.trace_scratch = selected;
         stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
         stats.idle_scheduler_frames += 1;
@@ -156,7 +169,6 @@ pub(super) fn start_trace_task(
         work: selected,
         paths,
         sky_only,
-        transport_count,
         sky_count,
         scene_generation: runtime.generation,
         sky_revision: runtime.sky_revision,
@@ -228,7 +240,7 @@ pub(super) fn start_trace_task(
                         }
                         completed = Some(oldest.batch);
                     }
-                    if !batch.work.probes.is_empty() {
+                    if !batch.work.probes.is_empty() || batch.work.picks > 0 {
                         let _submit = info_span!("gi_submit").entered();
                         let snapshot = tracer.submit_compact(
                             Arc::clone(&scene),
@@ -276,46 +288,6 @@ pub(super) fn start_trace_task(
     }));
 }
 
-/// Only receiver membership inside the local sampling window invalidates its
-/// index. Face/material changes still refresh transport, but do not change this
-/// voxel list. Distant streaming must not restart a player's refinement sweep.
-pub(super) fn invalidate_focus_page(runtime: &mut VoxelGiRuntime, page: IVec3) {
-    if runtime
-        .focus_page
-        .is_some_and(|focus| (page.as_i64vec3() - focus.as_i64vec3()).abs().max_element() <= 2)
-    {
-        runtime.focus_dirty = true;
-    }
-}
-
-pub(super) fn update_focus(runtime: &mut VoxelGiRuntime, field: &VoxelEnergyField, focus: IVec3) {
-    let moved = runtime.focus_page != Some(focus);
-    if !moved && !runtime.focus_dirty {
-        return;
-    }
-    runtime.focus_page = Some(focus);
-    runtime.focus_dirty = false;
-    runtime.nearby.clear();
-    runtime.regional.clear();
-    // Constant-size page lookup, independent of total loaded-world size.
-    let mut pages: Vec<_> = (-2..=2)
-        .flat_map(|z| (-2..=2).flat_map(move |y| (-2..=2).map(move |x| IVec3::new(x, y, z))))
-        .map(|offset| focus + offset)
-        .filter(|page| field.pages.contains_key(page))
-        .collect();
-    pages.sort_unstable_by_key(|page| ((*page - focus).length_squared(), page.z, page.y, page.x));
-    for page in pages {
-        if (page - focus).abs().max_element() <= 1 {
-            runtime.nearby.extend_from_slice(&field.pages[&page]);
-        } else {
-            runtime.regional.extend_from_slice(&field.pages[&page]);
-        }
-    }
-    if moved {
-        runtime.nearby_cursor = 0;
-    }
-}
-
 /// At least one quarter of dispatch slots belongs to a fair loaded-world
 /// sweep. Coverage and refinement also have reserved opportunities, so streamed
 /// bootstrap work cannot indefinitely preempt refinement near the player.
@@ -323,7 +295,7 @@ pub(super) fn update_focus(runtime: &mut VoxelGiRuntime, field: &VoxelEnergyFiel
 pub(super) fn select_probes(
     runtime: &mut VoxelGiRuntime,
     field: &VoxelEnergyField,
-) -> Vec<SurfaceProbe> {
+) -> Vec<super::world::SurfaceProbe> {
     // Reference view for existing policy tests. Production never materializes
     // these full receiver copies; it transfers only TraceWork.
     let work = select_transport(runtime, field, &VoxelGiSettings::default());
@@ -349,6 +321,10 @@ pub(super) fn select_probes(
         .collect()
 }
 
+/// The CPU selects only event work: faces an edit, relight or explicit
+/// request made urgent, with their revision caps and rollbacks. Bulk
+/// coverage, refinement and the world sweep are picked on the GPU from its
+/// own statistics (`select_*` in voxel_accumulate.wgsl), in the same batch.
 pub(super) fn select_transport(
     runtime: &mut VoxelGiRuntime,
     field: &VoxelEnergyField,
@@ -357,131 +333,41 @@ pub(super) fn select_transport(
     let now = Instant::now();
     let mut selected = std::mem::take(&mut runtime.trace_scratch);
     selected.clear();
-    selected.probes.reserve(runtime.batch_size);
-    selected.faces.reserve(runtime.batch_size);
     let mut seen = std::mem::take(&mut runtime.selection_seen);
     seen.clear();
-    seen.reserve(runtime.batch_size);
-    let mut adaptive = std::mem::take(&mut runtime.ranked_candidates);
     let mut deferred_urgent = Vec::new();
-    adaptive.clear();
-    let _refresh = info_span!("gi_select_rank").entered();
-    if runtime.urgent_pending.len() < runtime.batch_size {
-        adaptive.refresh(
-            field,
-            &runtime.nearby,
-            &runtime.regional,
-            &mut runtime.adaptive_cursor,
-            now,
-            runtime.batch_size,
-        );
-    }
-    drop(_refresh);
     let _choose = info_span!("gi_select_choose").entered();
-    // Search capacity is bounded independently of emitted work. In particular,
-    // resting neighbors are holes to skip, not GPU work that used the budget.
-    for index in 0..settings.batch_limit().min(field.order.len()) {
-        if selected.probes.len() >= runtime.batch_size {
-            break;
-        }
-        let mut voxel = None;
-        let mut force = false;
-        if index % 4 != 0 {
-            if let Some(next) = runtime.urgent_pending.pop_front() {
-                runtime.urgent_queued.remove(&next);
-                voxel = Some(next);
-                force = true;
-            } else {
-                // One quarter coverage, one quarter global, and half adaptive
-                // refinement. Empty queues lend their slots; explicit edits
-                // still take priority in all three non-global slots. Keeping a
-                // refinement reservation is essential while terrain streams.
-                if index % 4 == 1
-                    && let Some(next) = runtime.pending.pop_front()
-                {
-                    runtime.queued.remove(&next);
-                    voxel = Some(next);
-                }
-                if voxel.is_none() {
-                    while let Some(candidate) = adaptive.pop() {
-                        if !seen.contains(&candidate) {
-                            voxel = Some(candidate);
-                            break;
-                        }
-                    }
-                }
-                if voxel.is_none() && !runtime.nearby.is_empty() {
-                    voxel = Some(runtime.nearby[runtime.nearby_cursor % runtime.nearby.len()]);
-                    runtime.nearby_cursor = (runtime.nearby_cursor + 1) % runtime.nearby.len();
-                }
-                if voxel.is_none()
-                    && let Some(next) = runtime.pending.pop_front()
-                {
-                    runtime.queued.remove(&next);
-                    voxel = Some(next);
-                }
-            }
-        }
-        let voxel = voxel.unwrap_or_else(|| {
-            let next = field.order[runtime.refresh_cursor % field.order.len()];
-            runtime.refresh_cursor = (runtime.refresh_cursor + 1) % field.order.len();
-            runtime.refresh_remaining = runtime.refresh_remaining.saturating_sub(1);
-            next
-        });
+    while selected.faces.len() < runtime.batch_size
+        && let Some(voxel) = runtime.urgent_pending.pop_front()
+    {
+        runtime.urgent_queued.remove(&voxel);
         if !seen.insert(voxel) {
             continue;
         }
         if runtime.trace_pending.contains(&voxel) {
-            if force {
-                deferred_urgent.push(voxel);
-            }
+            deferred_urgent.push(voxel);
             continue;
         }
-        // A reserved sweep slot can encounter an explicitly requested voxel
-        // before its urgent queue entry. Honor the force now, not after it has
-        // already been selected (or skipped as settled).
-        force |= runtime.urgent_queued.contains(&voxel);
         let Some(probe) = field.probes.get(&voxel) else {
             continue;
         };
-        // Retention itself was applied on the GPU when the change published.
-        // A receiver that has not been traced since is due for an audit; the
-        // page stamp is O(1), and page-edge false positives only cost one.
-        let wake = runtime.spatial_history.wake(voxel, probe.retention_revision);
-        force |= wake.is_some();
-        let mask = scheduling::due_faces(probe, field.transport_revision, now, settings, force);
+        let mask = scheduling::due_faces(probe, field.transport_revision, now, settings, true);
         if mask == 0 {
             continue;
-        }
-        let mut restart = false;
-        let mut history_limit = u32::MAX;
-        if probe.source_revision != runtime.source_revision {
-            restart = probe.source_revision < runtime.model_reset_source_revision;
-            history_limit = runtime.source_history.history_limit(
-                probe.voxel,
-                probe.source_revision,
-                runtime.source_revision,
-            );
         }
         selected.push(
             probe,
             mask,
             field.transport_revision,
             runtime.source_revision,
-            restart,
+            false,
             u32::MAX,
-            history_limit,
+            u32::MAX,
         );
-        selected.probes.last_mut().unwrap().retention = wake;
     }
     runtime.selection_seen = seen;
-    runtime.ranked_candidates = adaptive;
     enqueue_urgent(runtime, deferred_urgent);
     selected
-}
-
-pub(super) fn probe_has_pending_samples(probe: &SurfaceProbe) -> bool {
-    (0..6).any(|face| probe.face_mask & (1 << face) != 0 && probe.samples[face] < BOOTSTRAP_SAMPLES)
 }
 
 pub(super) fn apply_trace_task(
@@ -584,7 +470,6 @@ pub(super) fn apply_trace_task(
     }
     let sky_current =
         batch.scene_generation == runtime.generation && batch.sky_revision == runtime.sky_revision;
-    let mut requeue = Vec::new();
     let transport_revision = field.transport_revision;
     let _merge = info_span!("gi_merge_jobs").entered();
     for job in &batch.work.probes {
@@ -598,9 +483,6 @@ pub(super) fn apply_trace_task(
         {
             // The GPU already merged this batch; undo it at the next selection.
             old.stale_merge |= job.trace_mask;
-            if probe_has_pending_samples(old) {
-                requeue.push(voxel);
-            }
             continue;
         }
         if sky_current && job.sky_requested {
@@ -633,18 +515,57 @@ pub(super) fn apply_trace_task(
             runtime.completed_samples.saturating_sub(old_samples) + new_samples;
         runtime.covered_faces = runtime.covered_faces.saturating_sub(old_covered) + new_covered;
         runtime.settled_faces = runtime.settled_faces.saturating_sub(old_settled) + new_settled;
-        let pending = probe_has_pending_samples(old);
         if publish_display {
             runtime.mark_display_dirty(voxel);
         }
-        if pending {
-            requeue.push(voxel);
+    }
+    // GPU picks: the GPU already merged them into its own statistics; the
+    // CPU mirror takes them unless the probe changed since its slot's last
+    // revision reached the GPU (then the pick traced pre-change light: the
+    // CPU's next job for the probe undoes it, unless that job is already in
+    // flight, submitted after the pick, and capped it).
+    let picked = std::mem::take(&mut batch.work.picked);
+    for (face, tag) in &picked {
+        let voxel = face.voxel;
+        let Some(old) = field.probes.get_mut(&voxel) else {
+            continue;
+        };
+        if old.face_mask & (1 << face.face) == 0 {
+            continue;
+        }
+        if old.revision as u32 != *tag
+            || batch.work.source_revision < runtime.model_reset_source_revision
+        {
+            if !runtime.trace_pending.contains(&voxel) {
+                old.stale_merge |= 1 << face.face;
+            }
+            continue;
+        }
+        let (_, old_samples, old_covered, old_settled) = probe_metrics(old, transport_revision);
+        let publish_display = old.resident[face.face] != face.resident;
+        let job = super::work::ProbeWork::picked(
+            old,
+            face.face,
+            batch.work.transport_revision,
+            batch.work.source_revision,
+        );
+        job.publish(std::slice::from_ref(face), old, merge_started, &settings);
+        let (_, new_samples, new_covered, new_settled) = probe_metrics(old, transport_revision);
+        runtime.completed_samples =
+            runtime.completed_samples.saturating_sub(old_samples) + new_samples;
+        runtime.covered_faces = runtime.covered_faces.saturating_sub(old_covered) + new_covered;
+        runtime.settled_faces = runtime.settled_faces.saturating_sub(old_settled) + new_settled;
+        if publish_display {
+            runtime.mark_display_dirty(voxel);
         }
     }
+    let traced_faces = batch.work.faces.len() + picked.len();
+    stats.traced_paths = stats
+        .traced_paths
+        .saturating_add(picked.len() as u64 * u64::from(settings.batch_samples()));
     drop(_merge);
     batch.work.clear();
     runtime.trace_scratch = batch.work;
-    enqueue_many(&mut runtime, requeue);
     stats.traced_paths = stats.traced_paths.saturating_add(batch.paths);
     stats.last_merge_ms = merge_started.elapsed().as_secs_f32() * 1000.0;
     // Adjust work to measured execution time rather than fixing throughput to
@@ -653,7 +574,7 @@ pub(super) fn apply_trace_task(
         stats.last_trace_batch_ms = measured_ms;
         runtime.batch_size = scheduling::next_budget(
             runtime.batch_size,
-            batch.transport_count,
+            traced_faces,
             measured_ms,
             settings.budget_ms(),
             settings.batch_limit(),

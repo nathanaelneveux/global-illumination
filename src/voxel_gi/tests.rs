@@ -5,7 +5,7 @@ use super::{
     dispatch::{append_sky_work, select_probes, select_transport},
     publication::{invalidate_near_voxel, publish_scene_page},
     render::{VoxelTransportAssets, VoxelTransportMaterial},
-    sources::{SourceChange, invalidate_model, invalidate_source_change},
+    sources::{SourceChange, invalidate_source_change},
 };
 use bevy::platform::collections::HashMap;
 use bevy_voxel_world::rendering::VoxelWorldMaterialHandle;
@@ -108,7 +108,6 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
                     work: TraceWork::from_probes(&[probe], case == 1),
                     paths: 4,
                     sky_only: case == 1,
-                    transport_count: usize::from(case != 1),
                     sky_count: usize::from(case == 1),
                     ..default()
                 }),
@@ -472,7 +471,6 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
                     batch: Some(TransportBatch {
                         work: TraceWork::from_probes(&[late], false),
                         paths: 4,
-                        transport_count: 1,
                         ..default()
                     }),
                     pending: default(),
@@ -596,17 +594,16 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
                 assert!(!estimate.transport_current);
                 assert_eq!(estimate.effective_samples, 4096);
             }
-            let selected = select_probes(&mut runtime, field);
-            assert_eq!(selected.len(), 2);
             // One GPU event for both. Whole-range curve: 4 voxels from the
             // edit keeps nothing; 128 voxels away the cap (12,971) exceeds
             // the 4,096 retained samples. CPU counts wait for the GPU's.
             let events = runtime.spatial_history.take_events();
             assert_eq!(events.len(), 1);
-            for probe in selected {
-                let retained = if probe.voxel == near { 0 } else { 4096 };
-                let (cap, _) = retention::resolve(&events, probe.voxel);
+            for voxel in [near, far] {
+                let retained = if voxel == near { 0 } else { 4096 };
+                let (cap, _) = retention::resolve(&events, voxel);
                 assert_eq!(cap.min(4096), retained, "material {material}");
+                let probe = &field.probes[&voxel];
                 assert_eq!(probe.samples[2], 4096);
                 assert_eq!(probe.radiance[2], EnergySpectrum::ONE);
                 assert_eq!(probe.sequence[2], 4096);
@@ -680,197 +677,6 @@ fn publication_batches_cheap_pages_without_unbounded_display_work() {
 }
 
 #[test]
-fn urgent_work_cannot_starve_loaded_world_sweep() {
-    let mut field = VoxelEnergyField::default();
-    for x in 0..64 {
-        let voxel = IVec3::new(x, 0, 0);
-        field.order.push(voxel);
-        field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
-    }
-    let mut runtime = VoxelGiRuntime {
-        batch_size: 8,
-        nearby: vec![IVec3::ZERO],
-        ..default()
-    };
-    let mut visited = HashSet::new();
-    for _ in 0..32 {
-        request_global_refresh(&mut runtime, field.order.len());
-        enqueue_urgent(&mut runtime, (0..6).map(|x| IVec3::new(x, 0, 0)));
-        visited.extend(
-            select_probes(&mut runtime, &field)
-                .into_iter()
-                .map(|probe| probe.voxel),
-        );
-    }
-    assert_eq!(visited.len(), 64);
-}
-
-#[test]
-fn late_sun_evidence_wakes_a_current_receiver_without_resetting_distant_history() {
-    // Caps are the GPU's (apply_events); selection sees only the wake.
-    for (changed, gpu_events) in [
-        (IVec3::ZERO, 1),
-        (IVec3::new(31 + retention::INFLUENCE_RADIUS, 0, 0), 0), // wake-only
-    ] {
-        let voxel = IVec3::ZERO;
-        let mut probe = SurfaceProbe::new(voxel, 4);
-        probe.samples = [4096; 6];
-        probe.sequence = [8192; 6];
-        probe.radiance = [EnergySpectrum::ONE; 6];
-        probe.second_moment = [EnergySpectrum::ONE; 6];
-        probe.stable_batches = [8; 6];
-        probe.face_updated_at = [Some(Instant::now()); 6];
-        let mut field = VoxelEnergyField::default();
-        field.probes.insert(voxel, probe);
-        field.order.push(voxel);
-        let mut runtime = VoxelGiRuntime {
-            batch_size: 1,
-            ..default()
-        };
-        assert!(select_probes(&mut runtime, &field).is_empty());
-        let change = geometry::GeometryChange {
-            nearby: HashMap::from_iter([(
-                IVec3::ZERO,
-                geometry::PageChanges::new(IVec3::ZERO, vec![geometry::Bounds::point(changed)]),
-            )]),
-            ..default()
-        };
-        runtime.spatial_history.record(change);
-        let selected = select_probes(&mut runtime, &field);
-        assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].samples[2], 4096);
-        assert_eq!(runtime.spatial_history.take_events().len(), gpu_events);
-        assert_eq!(selected[0].sequence[2], 8192);
-        assert_eq!(selected[0].radiance[2], EnergySpectrum::ONE);
-        assert_eq!(
-            field.transport_revision, 0,
-            "sky evidence does not fabricate geometry revisions"
-        );
-    }
-}
-
-#[test]
-fn streaming_coverage_cannot_exclude_refinement_candidates() {
-    let mut field = VoxelEnergyField::default();
-    let far: Vec<_> = (0..1024).map(|x| IVec3::new(x, 0, 1024)).collect();
-    let near: Vec<_> = (0..64).map(|x| IVec3::new(x, 0, 0)).collect();
-    for &voxel in far.iter().chain(&near) {
-        let mut p = SurfaceProbe::new(voxel, 4);
-        // Refinement still needed, but initial coverage already exists.
-        p.samples[2] = 256;
-        field.order.push(voxel);
-        field.probes.insert(voxel, p);
-    }
-    let mut runtime = VoxelGiRuntime {
-        batch_size: 64,
-        nearby: near.clone(),
-        regional: near.clone(),
-        ..default()
-    };
-    enqueue_many(&mut runtime, far.iter().copied());
-    let chosen = select_probes(&mut runtime, &field);
-    assert_eq!(chosen.len(), 64);
-    assert!(chosen.iter().filter(|p| p.voxel.z == 0).count() >= 32);
-    assert!(chosen.iter().filter(|p| p.voxel.z == 1024).count() >= 16);
-    assert!(
-        runtime.refresh_cursor >= 16,
-        "all-world sweep still advances"
-    );
-    assert!(runtime.pending.len() < far.len(), "coverage still advances");
-}
-
-#[test]
-fn nearby_bootstrap_cannot_consume_both_coverage_and_refinement_shares() {
-    let mut field = VoxelEnergyField::default();
-    let far: Vec<_> = (0..1024).map(|x| IVec3::new(x, 0, 1024)).collect();
-    let near: Vec<_> = (0..64).map(|x| IVec3::new(x, 0, 0)).collect();
-    for &voxel in far.iter().chain(&near) {
-        let mut p = SurfaceProbe::new(voxel, 4);
-        if voxel.z == 0 && voxel.x < 32 {
-            p.samples[2] = 256;
-        }
-        field.order.push(voxel);
-        field.probes.insert(voxel, p);
-    }
-    let mut runtime = VoxelGiRuntime {
-        batch_size: 64,
-        nearby: near.clone(),
-        regional: near,
-        ..default()
-    };
-    enqueue_many(&mut runtime, far.iter().copied());
-    let chosen = select_probes(&mut runtime, &field);
-    assert_eq!(chosen.len(), 64);
-    assert!(
-        chosen
-            .iter()
-            .filter(|p| p.voxel.z == 0 && p.voxel.x < 32)
-            .count()
-            >= 32
-    );
-    assert!(chosen.iter().filter(|p| p.voxel.z == 1024).count() >= 16);
-    assert!(runtime.refresh_cursor >= 16);
-    assert!(runtime.pending.len() < far.len());
-}
-
-#[test]
-fn refinement_regions_keep_close_window_and_global_sweep() {
-    let mut field = VoxelEnergyField::default();
-    let focus = IVec3::new(1, -1, -1);
-    for page in [focus, focus + IVec3::X * 2, focus + IVec3::X * 3] {
-        let voxel = page * 32;
-        field.order.push(voxel);
-        field.pages.insert(page, vec![voxel]);
-        field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
-    }
-    let mut runtime = VoxelGiRuntime::default();
-    dispatch::update_focus(&mut runtime, &field, focus);
-    assert_eq!(runtime.nearby, [focus * 32]);
-    assert_eq!(runtime.regional, [(focus + IVec3::X * 2) * 32]);
-    let mut seen = HashSet::new();
-    for _ in 0..12 {
-        seen.extend(
-            select_probes(&mut runtime, &field)
-                .into_iter()
-                .map(|p| p.voxel),
-        );
-    }
-    assert_eq!(seen.len(), field.order.len());
-}
-
-#[test]
-fn distant_streaming_preserves_focus_indices_and_sweep_progress() {
-    let mut field = VoxelEnergyField::default();
-    let mut runtime = VoxelGiRuntime::default();
-    let focus = IVec3::new(-2, 1, 3);
-    field.pages.insert(focus, vec![focus * 32]);
-    dispatch::update_focus(&mut runtime, &field, focus);
-    runtime.nearby_cursor = 127;
-    for page in [focus + IVec3::X * 3, focus - IVec3::Z * 50] {
-        field.pages.insert(page, vec![page * 32]);
-        dispatch::invalidate_focus_page(&mut runtime, page);
-        assert!(!runtime.focus_dirty);
-        dispatch::update_focus(&mut runtime, &field, focus);
-        assert_eq!(runtime.nearby, [focus * 32]);
-        assert_eq!(runtime.nearby_cursor, 127);
-    }
-    let ring = focus + IVec3::X * 2;
-    field.pages.insert(ring, vec![ring * 32]);
-    dispatch::invalidate_focus_page(&mut runtime, ring);
-    assert!(runtime.focus_dirty);
-    dispatch::update_focus(&mut runtime, &field, focus);
-    assert_eq!(runtime.regional, [ring * 32]);
-    assert_eq!(runtime.nearby_cursor, 127);
-    field.pages.remove(&focus);
-    dispatch::invalidate_focus_page(&mut runtime, focus);
-    dispatch::update_focus(&mut runtime, &field, focus);
-    assert!(runtime.nearby.is_empty());
-    dispatch::update_focus(&mut runtime, &field, ring);
-    assert_eq!(runtime.nearby_cursor, 0);
-    assert!(runtime.nearby.contains(&(ring * 32)));
-}
-
-#[test]
 fn in_flight_lighting_cannot_restore_indices_moved_by_streaming() {
     let mut field = VoxelEnergyField::default();
     let voxels = [IVec3::ZERO, IVec3::X, IVec3::Y, IVec3::Z];
@@ -897,92 +703,6 @@ fn in_flight_lighting_cannot_restore_indices_moved_by_streaming() {
     for (index, voxel) in field.order.iter().enumerate() {
         assert_eq!(field.probes[voxel].order_index, index);
     }
-}
-
-#[test]
-fn moving_sources_preserve_history_and_work_queues() {
-    let voxel = IVec3::ZERO;
-    let mut probe = SurfaceProbe::new(voxel, 4);
-    probe.samples[2] = 64;
-    probe.sequence[2] = 100;
-    let mut field = VoxelEnergyField::default();
-    field.probes.insert(voxel, probe);
-    field.order.push(voxel);
-    let mut runtime = VoxelGiRuntime::default();
-    enqueue_many(&mut runtime, [voxel]);
-    invalidate_source_change(
-        &mut runtime,
-        &mut field,
-        &mut VoxelGiStats::default(),
-        SourceChange::Global,
-    );
-    assert_eq!(field.probes[&voxel].samples[2], 64);
-    assert_eq!(runtime.pending.len(), 1);
-    let selected = select_probes(&mut runtime, &field);
-    assert_eq!(selected[0].samples[2], 4);
-    assert_eq!(selected[0].sequence[2], 100);
-}
-
-#[test]
-fn global_model_replacement_restarts_measurements_not_presentation() {
-    let mut field = VoxelEnergyField::default();
-    for voxel in [IVec3::ZERO, IVec3::new(10_000, 0, 0)] {
-        let mut probe = SurfaceProbe::new(voxel, 5);
-        probe.samples = [128; 6];
-        probe.radiance = [EnergySpectrum::ONE; 6];
-        probe.second_moment = [EnergySpectrum::ONE; 6];
-        probe.sequence = [1000; 6];
-        probe.display[0].indirect = Vec3::ONE;
-        field.probes.insert(voxel, probe);
-        field.order.push(voxel);
-    }
-    let mut runtime = VoxelGiRuntime::default();
-    invalidate_model(&mut runtime, &mut field, &mut VoxelGiStats::default());
-    // A later moving-light revision must not hide the pending model reset.
-    invalidate_source_change(
-        &mut runtime,
-        &mut field,
-        &mut VoxelGiStats::default(),
-        SourceChange::Global,
-    );
-    let selected = select_probes(&mut runtime, &field);
-    assert_eq!(selected.len(), 2);
-    for probe in selected {
-        assert_eq!(probe.samples, [0; 6]);
-        assert_eq!(probe.radiance, [EnergySpectrum::ZERO; 6]);
-        assert_eq!(probe.second_moment, [EnergySpectrum::ZERO; 6]);
-        assert_eq!(probe.display[0].indirect, Vec3::ONE);
-        assert_eq!(probe.sequence, [1000; 6]);
-        assert_eq!(probe.revision, 0, "worker result must remain mergeable");
-        assert_eq!(probe.source_revision, runtime.source_revision);
-    }
-}
-
-#[test]
-fn remote_local_light_motion_wakes_without_destroying_transport_history() {
-    let voxel = IVec3::new(10_000, 0, 0);
-    let mut probe = SurfaceProbe::new(voxel, 4);
-    probe.samples[2] = 128;
-    probe.sequence[2] = 1000;
-    probe.updated_at = Some(Instant::now());
-    probe.face_updated_at[2] = probe.updated_at;
-    let mut field = VoxelEnergyField::default();
-    field.probes.insert(voxel, probe);
-    field.order.push(voxel);
-    let mut runtime = VoxelGiRuntime::default();
-    sources::invalidate_source_change(
-        &mut runtime,
-        &mut field,
-        &mut VoxelGiStats::default(),
-        sources::SourceChange::Local(vec![(Vec3::ZERO, 24.0)]),
-    );
-    let selected = select_probes(&mut runtime, &field);
-    assert_eq!(selected[0].samples[2], 64);
-    assert_eq!(selected[0].sequence[2], 1000);
-    assert_eq!(selected[0].fresh_mask, 0);
-    assert_eq!(selected[0].trace_mask, 4);
-    assert!(!field.estimate(voxel, Vec3::Y).unwrap().transport_current);
-    assert_eq!(field.probes[&voxel].samples[2], 128);
 }
 
 #[test]
@@ -1059,6 +779,7 @@ fn dispatch_reuses_returned_storage_without_retaining_candidates() {
     let allocation = runtime.trace_scratch.probes.as_ptr();
     let face_allocation = runtime.trace_scratch.faces.as_ptr();
     for _ in 0..2 {
+        enqueue_urgent(&mut runtime, [IVec3::ZERO]);
         let mut selected = select_transport(&mut runtime, &field, &VoxelGiSettings::default());
         assert_eq!(selected.probes.as_ptr(), allocation);
         assert_eq!(selected.faces.as_ptr(), face_allocation);
@@ -1066,34 +787,6 @@ fn dispatch_reuses_returned_storage_without_retaining_candidates() {
         selected.clear();
         runtime.trace_scratch = selected;
     }
-}
-
-#[test]
-fn resting_candidates_do_not_consume_the_dispatch_allowance() {
-    let now = Instant::now();
-    let mut field = VoxelEnergyField::default();
-    for x in 0..4096 {
-        let voxel = IVec3::new(x, 0, 0);
-        let mut probe = SurfaceProbe::new(voxel, 4);
-        probe.samples[2] = 256;
-        probe.stable_batches[2] = 4;
-        probe.face_updated_at[2] = Some(now);
-        field.order.push(voxel);
-        field.probes.insert(voxel, probe);
-    }
-    let noisy = IVec3::new(3000, 0, 0);
-    field.probes.get_mut(&noisy).unwrap().stable_batches[2] = 0;
-    let mut runtime = VoxelGiRuntime {
-        batch_size: 64,
-        ..default()
-    };
-    // A previously requested bootstrap queue can contain newly settled
-    // probes; this also places the distant target beyond the ranked window.
-    enqueue_many(&mut runtime, field.order.iter().take(64).copied());
-    let selected = select_probes(&mut runtime, &field);
-    assert_eq!(selected.len(), 1);
-    assert_eq!(selected[0].voxel, noisy);
-    assert_eq!(selected[0].samples[2], 256);
 }
 
 #[test]
@@ -1203,7 +896,7 @@ fn partial_face_queries_keep_independent_age_and_revision_freshness() {
 }
 
 #[test]
-fn settled_scheduler_can_be_idle_and_far_geometry_invalidation_wakes_it() {
+fn cpu_selects_only_event_work_and_sky_requests() {
     let now = Instant::now();
     let mut field = VoxelEnergyField::default();
     for x in 0..64 {
@@ -1218,33 +911,15 @@ fn settled_scheduler_can_be_idle_and_far_geometry_invalidation_wakes_it() {
     }
     let mut runtime = VoxelGiRuntime::default();
     assert!(select_probes(&mut runtime, &field).is_empty());
-    let requested = field.order[runtime.refresh_cursor % field.order.len()];
+    let requested = field.order[17];
     enqueue_urgent(&mut runtime, [requested]);
     let forced = select_probes(&mut runtime, &field);
-    assert_eq!(
-        forced.len(),
-        1,
-        "the reserved sweep must not swallow a simulation refresh request"
-    );
+    assert_eq!(forced.len(), 1, "a simulation refresh request is CPU event work");
     assert_eq!(forced[0].voxel, requested);
     assert_eq!(forced[0].trace_mask, 5);
+    // Far invalidation makes every face due, but bulk work is the GPU's pick.
     field.transport_revision += 1;
-    let selected = select_probes(&mut runtime, &field);
-    assert!(!selected.is_empty());
-    let mut visited: HashSet<_> = selected.iter().map(|probe| probe.voxel).collect();
-    for _ in 0..8 {
-        visited.extend(
-            select_probes(&mut runtime, &field)
-                .iter()
-                .map(|probe| probe.voxel),
-        );
-    }
-    assert_eq!(visited.len(), 64);
-    assert!(
-        selected
-            .iter()
-            .all(|probe| probe.trace_mask == 5 && probe.fresh_mask == 0 && probe.samples[2] == 256)
-    );
+    assert!(select_probes(&mut runtime, &field).is_empty());
     assert!(
         field.probes.values().all(|probe| probe.samples[2] == 256),
         "scheduling must not mutate published histories"

@@ -6,7 +6,7 @@ use super::super::render::{GpuProbePatchQueue, GpuTransportCache};
 use super::*;
 use serde::Serialize;
 
-const LIMIT: usize = 200_000;
+const LIMIT: usize = 600_000;
 
 #[derive(Clone, PartialEq, Serialize)]
 struct State {

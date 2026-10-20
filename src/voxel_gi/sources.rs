@@ -3,7 +3,7 @@
 use super::spectrum::EnergySpectrum;
 use super::{
     EnergyEmitter, VoxelEnergyField, VoxelGiRuntime, VoxelGiStats, VoxelMaterialTransportTable,
-    advance_transport_revision, request_global_refresh, sky_cache, telemetry::GiWorkTimings,
+    advance_transport_revision, sky_cache, telemetry::GiWorkTimings,
     update_stats_from_counters,
 };
 use bevy::ecs::system::SystemParam;
@@ -26,36 +26,6 @@ impl Default for VoxelGiEnvironment {
 pub(super) enum SourceChange {
     Global,
     Local(Vec<(Vec3, f32)>),
-}
-
-#[derive(Default)]
-pub(super) struct SourceHistory(super::revision::ChangeHistory<SourceChange>);
-
-impl SourceHistory {
-    fn record(&mut self, from: u64, to: u64, change: SourceChange) {
-        self.0.record(from, to, change);
-    }
-
-    pub fn history_limit(&self, voxel: IVec3, from: u64, to: u64) -> u32 {
-        if from == to {
-            return u32::MAX;
-        }
-        let mut limit = 64;
-        let complete = self.0.visit_since(from, to, |change| {
-            let nearby = match change {
-                SourceChange::Global => true,
-                SourceChange::Local(volumes) => volumes.iter().any(|(position, radius)| {
-                    voxel.as_vec3().distance_squared(*position) <= radius * radius
-                }),
-            };
-            if nearby {
-                limit = 4;
-            }
-        });
-        // A missing transition may have changed a nearby source. Never assume
-        // it was remote just because the most recent light is elsewhere.
-        if complete { limit } else { 4 }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -300,6 +270,8 @@ pub(super) fn invalidate_model(
 ) {
     invalidate_source_change(runtime, field, stats, SourceChange::Global);
     runtime.model_reset_source_revision = runtime.source_revision;
+    // A model reset restarts every measurement.
+    runtime.spatial_history.record_source(0, &[]);
 }
 
 pub(super) fn invalidate_source_change(
@@ -309,15 +281,16 @@ pub(super) fn invalidate_source_change(
     change: SourceChange,
 ) {
     // A moving source must not discard every in-flight batch every frame.
-    // Keep a versioned snapshot; shorten history lazily when each probe runs.
-    let from = runtime.source_revision;
-    runtime.source_revision = from.wrapping_add(1);
-    runtime
-        .source_history
-        .record(from, runtime.source_revision, change);
+    // Every face's history is capped on the GPU when this publishes: at most
+    // 4 samples near a changed light (or everywhere for a global change), 64
+    // elsewhere. Every face becomes due for an audit.
+    runtime.source_revision = runtime.source_revision.wrapping_add(1);
+    match change {
+        SourceChange::Global => runtime.spatial_history.record_source(4, &[]),
+        SourceChange::Local(volumes) => runtime.spatial_history.record_source(64, &volumes),
+    }
     field.source_revision = runtime.source_revision;
     advance_transport_revision(runtime, field);
-    request_global_refresh(runtime, field.order.len());
     update_stats_from_counters(runtime, field, stats);
 }
 
@@ -615,20 +588,25 @@ mod tests {
     }
 
     #[test]
-    fn missed_source_updates_include_all_changes_and_missing_history_is_conservative() {
-        let mut history = SourceHistory::default();
-        history.record(0, 1, SourceChange::Local(vec![(Vec3::ZERO, 24.0)]));
-        history.record(1, 2, SourceChange::Local(vec![(Vec3::X * 200.0, 24.0)]));
-        assert_eq!(history.history_limit(IVec3::ZERO, 0, 2), 4);
-        assert_eq!(history.history_limit(IVec3::ZERO, 1, 2), 64);
-        assert_eq!(history.history_limit(IVec3::Y * 200, 0, 2), 64);
-        assert_eq!(history.history_limit(IVec3::ZERO, 2, 2), u32::MAX);
-        for from in 2..12 {
-            history.record(from, from + 1, SourceChange::Local(vec![]));
-        }
-        assert_eq!(history.history_limit(IVec3::ZERO, 0, 12), 4);
-        history.record(12, 13, SourceChange::Global);
-        assert_eq!(history.history_limit(IVec3::Y * 200, 12, 13), 4);
+    fn source_changes_cap_every_face_on_the_gpu() {
+        use crate::voxel_gi::retention::source_limit;
+        let mut runtime = VoxelGiRuntime::default();
+        let mut field = VoxelEnergyField::default();
+        let mut stats = VoxelGiStats::default();
+        invalidate_source_change(
+            &mut runtime,
+            &mut field,
+            &mut stats,
+            SourceChange::Local(vec![(Vec3::ZERO, 24.0)]),
+        );
+        let events = runtime.spatial_history.take_events();
+        assert_eq!(source_limit(&events, IVec3::ZERO), 4);
+        assert_eq!(source_limit(&events, IVec3::Y * 200), 64);
+        invalidate_source_change(&mut runtime, &mut field, &mut stats, SourceChange::Global);
+        assert_eq!(source_limit(&runtime.spatial_history.take_events(), IVec3::Y * 200), 4);
+        invalidate_model(&mut runtime, &mut field, &mut stats);
+        assert_eq!(source_limit(&runtime.spatial_history.take_events(), IVec3::Y * 200), 0);
+        assert_eq!(runtime.source_revision, 3);
     }
 
     #[test]

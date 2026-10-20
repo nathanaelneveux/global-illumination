@@ -1,13 +1,9 @@
-//! Bounded adaptive candidate selection; the caller separately reserves a fair
-//! all-loaded-world sweep and drains edits/simulation requests first.
-use bevy::platform::collections::HashSet;
-use bevy::prelude::*;
+//! Per-face stability and due rules. GPU selection (voxel_accumulate.wgsl
+//! `candidate`, `record_stability`) mirrors these for bulk work; the CPU
+//! applies them to its event jobs and publication mirror.
 use std::time::Instant;
 
-use super::{
-    field::VoxelEnergyField, settings::VoxelGiSettings, statistics::relative_error_with_floor,
-    world::SurfaceProbe,
-};
+use super::{settings::VoxelGiSettings, statistics::relative_error_with_floor, world::SurfaceProbe};
 
 const STABLE_BATCHES: u8 = 4;
 // Dark indirect energy is often below the presentation filter's 0.02 floor.
@@ -176,122 +172,11 @@ pub(crate) fn record_face_batch(
     probe.fresh_mask |= 1 << face;
 }
 
-fn priority(probe: &SurfaceProbe, source_revision: u64, now: Instant) -> f32 {
-    let age = probe
-        .face_updated_at
-        .iter()
-        .flatten()
-        .min()
-        .copied()
-        .or(probe.updated_at)
-        .map_or(10.0, |time| {
-            now.saturating_duration_since(time).as_secs_f32()
-        })
-        .min(10.0);
-    let mut error: f32 = 0.0;
-    for face in 0..6 {
-        if probe.face_mask & (1 << face) != 0 {
-            let value = if probe.samples[face] == 0 {
-                8.0
-            } else {
-                refinement_error(probe, face)
-            };
-            error = error.max(value);
-        }
-    }
-    error + age * 0.1 + f32::from(probe.source_revision != source_revision)
-}
-
-/// Retained bounded ranking storage. Ranking order and sweep fairness do not
-/// depend on hash iteration; the set only deduplicates the ordered windows.
-#[derive(Default)]
-pub(crate) struct RankedCandidates {
-    seen: HashSet<IVec3>,
-    ranked: Vec<(bool, f32, IVec3)>,
-}
-
-impl RankedCandidates {
-    pub fn clear(&mut self) {
-        self.seen.clear();
-        self.ranked.clear();
-    }
-
-    pub fn pop(&mut self) -> Option<IVec3> {
-        self.ranked.pop().map(|(_, _, voxel)| voxel)
-    }
-
-    pub fn refresh(
-        &mut self,
-        field: &VoxelEnergyField,
-        nearby: &[IVec3],
-        regional: &[IVec3],
-        cursor: &mut usize,
-        now: Instant,
-        budget: usize,
-    ) {
-        // Keep the close-range window and its fallback sweep intact. The second
-        // ranking window covers the next page ring, instead of spending more
-        // opportunistic slots on the already-reserved all-world sweep. If that
-        // ring is empty, retain the original global uncertainty window.
-        let window = budget.clamp(64, 1024);
-        self.clear();
-        let seen = &mut self.seen;
-        let candidates = &mut self.ranked;
-        let outer = if regional.is_empty() {
-            &field.order[..]
-        } else {
-            regional
-        };
-        for (positions, bonus) in [(outer, 0.0), (nearby, 0.25)] {
-            for index in 0..window.min(positions.len()) {
-                let voxel = positions[cursor.wrapping_add(index) % positions.len()];
-                if seen.insert(voxel)
-                    && let Some(probe) = field.probes.get(&voxel)
-                {
-                    // Coverage has its own reservation. An unknown receiver's
-                    // deliberately high uncertainty must not consume the entire
-                    // refinement share as well. Keep unknown candidates as
-                    // fallback when this bounded window has no measured work.
-                    let measured = (0..6)
-                        .any(|face| probe.face_mask & (1 << face) != 0 && probe.samples[face] > 0);
-                    candidates.push((
-                        measured,
-                        priority(probe, field.source_revision, now) + bonus,
-                        voxel,
-                    ));
-                }
-            }
-        }
-        *cursor = cursor.wrapping_add(window);
-        candidates.sort_unstable_by(|(ma, a, va), (mb, b, vb)| {
-            ma.cmp(mb)
-                .then_with(|| a.total_cmp(b))
-                .then_with(|| (va.x, va.y, va.z).cmp(&(vb.x, vb.y, vb.z)))
-        });
-    }
-}
-
-#[cfg(test)]
-fn ranked_candidates(
-    field: &VoxelEnergyField,
-    nearby: &[IVec3],
-    cursor: &mut usize,
-    now: Instant,
-    budget: usize,
-) -> Vec<IVec3> {
-    let mut scratch = RankedCandidates::default();
-    scratch.refresh(field, nearby, &[], cursor, now, budget);
-    scratch
-        .ranked
-        .into_iter()
-        .map(|(_, _, voxel)| voxel)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::EnergySpectrum;
     use super::*;
+    use bevy::prelude::*;
 
     #[test]
     fn sparse_due_windows_cannot_collapse_search_capacity() {
@@ -488,94 +373,9 @@ mod tests {
         stable.second_moment[2] = stable.radiance[2] * stable.radiance[2];
         let mut uncertain = stable.clone();
         uncertain.second_moment[2].infrared = 100.0;
-        assert!(priority(&uncertain, 0, now) > priority(&stable, 0, now) + 1.0);
+        assert!(refinement_error(&uncertain, 2) > refinement_error(&stable, 2) + 1.0);
         uncertain.second_moment[2].infrared = 1.0;
         uncertain.second_moment[2].ionizing = 100.0;
-        assert!(priority(&uncertain, 0, now) > priority(&stable, 0, now) + 1.0);
-        assert!(priority(&stable, 1, now) > priority(&stable, 0, now));
-    }
-
-    #[test]
-    fn candidate_search_is_bounded_and_rotates_across_offscreen_terrain() {
-        let mut field = VoxelEnergyField::default();
-        for x in 0..3000 {
-            let voxel = IVec3::new(x, 0, 0);
-            field.order.push(voxel);
-            field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
-        }
-        let mut cursor = 0;
-        let mut visited = HashSet::new();
-        for _ in 0..3 {
-            let candidates = ranked_candidates(&field, &[], &mut cursor, Instant::now(), 8192);
-            assert!(candidates.len() <= 1024);
-            visited.extend(candidates);
-        }
-        assert_eq!(visited.len(), 3000);
-    }
-
-    #[test]
-    fn regional_ranking_replaces_only_the_opportunistic_global_window() {
-        let mut field = VoxelEnergyField::default();
-        for x in 0..4096 {
-            let v = IVec3::new(x, 0, 0);
-            field.order.push(v);
-            field.probes.insert(v, SurfaceProbe::new(v, 4));
-        }
-        let nearby = &field.order[..32];
-        let regional = &field.order[3000..3100];
-        let mut scratch = RankedCandidates::default();
-        let mut cursor = 0;
-        let mut visited = HashSet::new();
-        for _ in 0..2 {
-            scratch.refresh(&field, nearby, regional, &mut cursor, Instant::now(), 64);
-            let candidates: Vec<_> = std::iter::from_fn(|| scratch.pop()).collect();
-            assert_eq!(candidates.len(), 96);
-            assert!(nearby.iter().all(|v| candidates.contains(v)));
-            assert!(
-                candidates
-                    .iter()
-                    .all(|v| nearby.contains(v) || regional.contains(v))
-            );
-            visited.extend(candidates);
-        }
-        assert!(regional.iter().all(|v| visited.contains(v)));
-    }
-
-    #[test]
-    fn ranking_reuses_storage_and_keeps_deterministic_order_with_overlapping_windows() {
-        let now = Instant::now();
-        let mut field = VoxelEnergyField::default();
-        for x in 0..256 {
-            let voxel = IVec3::new(x, 0, 0);
-            field.order.push(voxel);
-            field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
-        }
-        // First half overlaps the global window; the near bonus belongs only
-        // to sites not already seen there, as in the original ordered search.
-        let nearby: Vec<_> = (32..96).map(|x| IVec3::new(x, 0, 0)).collect();
-        let mut scratch = RankedCandidates::default();
-        let mut cursor = 0;
-        scratch.refresh(&field, &nearby, &[], &mut cursor, now, 64);
-        let ranked_ptr = scratch.ranked.as_ptr();
-        let ranked_capacity = scratch.ranked.capacity();
-        let seen_capacity = scratch.seen.capacity();
-        let expected: Vec<_> = (64..96)
-            .rev()
-            .chain((0..64).rev())
-            .map(|x| IVec3::new(x, 0, 0))
-            .collect();
-        for _ in 0..4 {
-            assert_eq!(cursor, 64);
-            let actual: Vec<_> = std::iter::from_fn(|| scratch.pop()).collect();
-            assert_eq!(actual, expected);
-            cursor = 0;
-            scratch.refresh(&field, &nearby, &[], &mut cursor, now, 64);
-            assert_eq!(scratch.ranked.as_ptr(), ranked_ptr);
-            assert_eq!(scratch.ranked.capacity(), ranked_capacity);
-            assert_eq!(scratch.seen.capacity(), seen_capacity);
-        }
-        scratch.clear();
-        assert!(scratch.pop().is_none());
-        assert!(scratch.seen.is_empty());
+        assert!(refinement_error(&uncertain, 2) > refinement_error(&stable, 2) + 1.0);
     }
 }

@@ -441,28 +441,45 @@ paths is not mistaken for proof of darkness. All bands participate in uncertaint
 The relative-error calculation is a heuristic over correlated, bounded samples,
 not a confidence interval or certified convergence test.
 
-Settled faces remain eligible for two-second audits. Simulation requests and
-changes wake them. Bounded candidate searches combine urgent/bootstrap work,
-nearby rotating windows and a reserved one-quarter global sweep. Under continuous
-streaming, another quarter serves initial coverage and half serves refinement;
-explicit edits preempt the three non-global slots. Empty queues lend their slots.
-Measured receivers rank ahead of unmeasured fallback candidates in refinement's
-bounded window, so initial coverage cannot consume both reservations. The camera is
-a priority hint, never the extent of the lighting field. Empty/settled candidates
-do not consume the ray allowance or collapse the scheduler budget.
+Settled faces remain eligible for two-second audits. Changes wake them.
 
-The close window covers the camera page and its immediate neighbors; the second
-adaptive window covers the disjoint next page ring (Chebyshev page distance two).
-If that ring is empty it falls back to global uncertainty ranking. Both windows
-remain capped at 1,024 candidates, with the existing near bonus and close-range
-fallback cursor. This gives large rooms useful refinement across their far wall
-without mixing all surrounding terrain into the close-range sweep. It changes
-work allocation, not transport extent, spatial filtering, or the sampling PDF.
-Only receiver membership changes inside these two page rings invalidate the
-local index; distant streaming does not rebuild it or rewind its cursor.
-The reserved global sweep still visits every loaded receiver, including hidden
-simulation bands. The [streaming experiment record](history/research-2026-10-09.md#refinement-under-continuous-terrain-loading)
-includes the rejected wider-window and separate-lane alternatives.
+**Bulk work is selected on the GPU** (`select_classify` / `select_threshold` /
+`select_emit` in `voxel_accumulate.wgsl`), inside the batch that traces it,
+from the GPU's own statistics. The CPU sends only event work: faces an edit,
+relight or explicit request made urgent, with their revision caps and
+rollbacks; the rest of the face budget is the GPU's. Every live, due face
+competes in one class: coverage (fewer than 8 samples, nearest the camera
+first), refinement (within two pages of the camera; highest relative error +
+0.1 per second of age, +0.25 within one page) or the world sweep (beyond;
+oldest first). Quotas are 1/4, 1/2 and 1/4 of the GPU's budget; an empty
+class lends its share to refinement, then coverage, then the sweep. One
+histogram per class over 256 log-scaled key buckets gives exact per-class
+thresholds; ties at a threshold bucket are taken in arbitrary order.
+
+Selection is memory-bound (~800k slots in the hallway on an M4), so it reads
+a compact per-slot ranking record, never the 144-byte state: noise per
+sample, last merge time, brightness and a mirrored count, written by the
+passes that change them. Each batch re-ranks one rotating quarter of the
+slots; keys persist, and a picked face's or CPU job's key is cleared until
+its quarter comes round. Histograms and pick reservations aggregate per
+workgroup (per-face global atomics on the few hot buckets serialized), and
+the threshold scan runs in one workgroup. The selection pass costs ~0.6 ms
+of GPU time per batch at that size, inside the trace budget.
+
+Stability is tracked per slot on the GPU (`record_stability`, the same rule
+as `scheduling::record_face_batch`): stable batches, freshness against the
+transport revision, and the last CPU job's batch. A face with a CPU job in
+its readback window (four batches) is never picked, so a pick cannot race
+that job's merge. Retention events and source changes revoke stability on
+the GPU. Every face the GPU ranks is considered each batch, not a rotating
+window; the camera is a priority hint, never the extent of the lighting field.
+
+Picks return with the batch's readback (slot, revision tag, incarnation) and
+merge into the CPU mirror like CPU jobs. A pick whose slot's revision tag is
+older than the probe's revision traced pre-change light: the CPU's next job
+for the probe undoes it (rollback), unless one is already in flight.
+Earlier CPU windows and quotas are in the
+[streaming experiment record](history/research-2026-10-09.md#refinement-under-continuous-terrain-loading).
 
 Only selected measurements cross the worker boundary in `TraceWork`; topology
 indices, temporal display and scheduler state stay authoritative on the main

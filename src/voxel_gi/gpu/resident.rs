@@ -13,12 +13,15 @@ const CHECKPOINT_BYTES: usize = 48;
 const NO_SEED: u32 = 0x8000_0000;
 const ROLLBACK: u32 = 0x4000_0000;
 const NO_CAP: u32 = 0x3fff_ffff;
-/// Per-slot GPU metadata, two uint4s: identity `(voxel.xyz, face | META_LIVE)`
-/// so GPU passes can address faces by slot alone, then a scheduling word
-/// block owned by GPU passes (zeroed at allocation).
-const META_BYTES: usize = 32;
+/// Per-slot GPU metadata, three uint4s: identity `(voxel.xyz, face |
+/// META_LIVE)` so GPU passes can address faces by slot alone, then
+/// scheduling and ranking records owned by GPU passes (zeroed at allocation).
+const META_BYTES: usize = 48;
 const META_WORDS: u32 = (META_BYTES / 4) as u32;
 const META_LIVE: u32 = 8;
+/// GPU selection scratch: three 256-bucket histograms, thresholds,
+/// remainders, tie counters and the pick total.
+const SELECTION_WORDS: usize = 3 * 256 + 3 * 3 + 1;
 const SHADER: &str = include_str!("../../../assets/shaders/voxel_accumulate.wgsl");
 type Key = (IVec3, usize);
 
@@ -72,6 +75,23 @@ pub(super) struct ResidentAccumulator {
     mark_changed: ComputePipeline,
     events_bindings: Option<CachedBindings<5>>,
     mark_bindings: Option<CachedBindings<4>>,
+    /// Slot index -> face, for decoding GPU picks.
+    by_index: Vec<Option<Key>>,
+    /// GPU pick budget and CPU traced faces of the prepared batch.
+    picks: u32,
+    cpu_faces: u32,
+    selection: UploadBuffer,
+    slot_keys: UploadBuffer,
+    select_classify: ComputePipeline,
+    select_threshold: ComputePipeline,
+    select_emit: ComputePipeline,
+    select_histogram: ComputePipeline,
+    histogram_bindings: Option<CachedBindings<3>>,
+    /// Slots classified this batch: one quarter of the range, rotating.
+    classify_range: (u32, u32),
+    classify_bindings: Option<CachedBindings<3>>,
+    threshold_bindings: Option<CachedBindings<2>>,
+    emit_bindings: Option<CachedBindings<7>>,
     /// Per-slot (start, len) into `donor_arena`; see `donor_cache`.
     donor_table: UploadBuffer,
     donor_arena: UploadBuffer,
@@ -93,7 +113,7 @@ pub(super) struct ResidentAccumulator {
     evidence: ComputePipeline,
     scatter: ComputePipeline,
     scatter_bindings: Option<CachedBindings<2>>,
-    prepare_bindings: Option<CachedBindings<6>>,
+    prepare_bindings: Option<CachedBindings<8>>,
     accumulate_bindings: Option<CachedBindings<6>>,
     evidence_bindings: Option<CachedBindings<5>>,
     words: ComputePipeline,
@@ -128,6 +148,10 @@ impl ResidentAccumulator {
         let words = pipeline("scatter_words");
         let apply_events = pipeline("apply_events");
         let mark_changed = pipeline("mark_changed");
+        let select_classify = pipeline("select_classify");
+        let select_threshold = pipeline("select_threshold");
+        let select_emit = pipeline("select_emit");
+        let select_histogram = pipeline("select_histogram");
         if let Some(error) = bevy::tasks::block_on(scope.pop()) {
             return Err(error.to_string());
         }
@@ -158,7 +182,11 @@ impl ResidentAccumulator {
             index_scatter: UploadBuffer::new(device, "GI face index changes", storage),
             index_scatter_bytes: Vec::new(),
             index_scatter_count: 0,
-            inputs: UploadBuffer::new(device, "GI resident jobs", storage),
+            inputs: UploadBuffer::new(
+                device,
+                "GI resident jobs",
+                storage | BufferUsages::COPY_SRC,
+            ),
             checkpoint: UploadBuffer::new(
                 device,
                 "GI resident merge checkpoints",
@@ -181,6 +209,24 @@ impl ResidentAccumulator {
             mark_changed,
             events_bindings: None,
             mark_bindings: None,
+            by_index: Vec::new(),
+            picks: 0,
+            cpu_faces: 0,
+            selection: UploadBuffer::new(device, "GI selection scratch", storage),
+            slot_keys: UploadBuffer::new(
+                device,
+                "GI selection keys",
+                storage | BufferUsages::COPY_SRC,
+            ),
+            select_classify,
+            select_threshold,
+            select_emit,
+            select_histogram,
+            histogram_bindings: None,
+            classify_range: (0, 0),
+            classify_bindings: None,
+            threshold_bindings: None,
+            emit_bindings: None,
             control: UploadBuffer::new(
                 device,
                 "GI resident controls",
@@ -273,6 +319,7 @@ impl ResidentAccumulator {
                         }
                         self.free.push(slot.index);
                         self.meta_writes.write(slot.index * META_WORDS + 3, 0);
+                        self.by_index[slot.index as usize] = None;
                     }
                     present
                 });
@@ -329,6 +376,8 @@ impl ResidentAccumulator {
                     slot.incarnation = self.incarnation;
                     slot.revision = job.revision;
                     slot.model_epoch = job.source_revision;
+                    self.meta_writes
+                        .write(slot.index * META_WORDS + 6, job.revision as u32);
                     seed = (self.seed_bytes.len() / RECORD_BYTES) as u32;
                     encode_seed(&mut self.seed_bytes, face, slot.incarnation, self.origin);
                     if let Some(graph) = &mut self.evidence_topology {
@@ -339,6 +388,8 @@ impl ResidentAccumulator {
                 {
                     slot.revision = job.revision;
                     slot.model_epoch = job.source_revision;
+                    self.meta_writes
+                        .write(slot.index * META_WORDS + 6, job.revision as u32);
                     // `samples` holds exactly this probe's relight/source caps
                     // (zero on restart), applied by the CPU at the revision
                     // change. Not `history_cap`: in measured mode that carries
@@ -390,6 +441,8 @@ impl ResidentAccumulator {
             slot.incarnation = self.incarnation;
             slot.revision = ensure.revision;
             slot.model_epoch = ensure.source_revision;
+            self.meta_writes
+                .write(slot.index * META_WORDS + 6, ensure.revision as u32);
             let seed = (self.seed_bytes.len() / RECORD_BYTES) as u32;
             encode_seed(&mut self.seed_bytes, &ensure.face, slot.incarnation, self.origin);
             if let Some(graph) = &mut self.evidence_topology {
@@ -449,6 +502,13 @@ impl ResidentAccumulator {
                 }
             }
         }
+        // GPU picks append after the CPU's traced faces: unused records stay
+        // 0xffffffff, which every pass skips.
+        self.cpu_faces = (self.input_bytes.len() / 16) as u32;
+        debug_assert_eq!(self.cpu_faces as usize, work.faces.len());
+        self.picks = work.picks;
+        self.input_bytes
+            .resize(self.input_bytes.len() + work.picks as usize * 16, 0xff);
         self.input_bytes.extend_from_slice(&self.cap_bytes);
         self.input_bytes.extend_from_slice(&self.ensure_bytes);
         self.evidence_target = work.spatial_evidence_target.min(4096);
@@ -536,6 +596,28 @@ impl ResidentAccumulator {
         if self.event_count > 0 {
             self.events_buffer.upload(device, queue, &self.event_bytes)?;
         }
+        self.selection.ensure(device, SELECTION_WORDS * 4)?;
+        {
+            // Keys persist across batches (rotating classification): keep
+            // them through growth; new slots have none until classified.
+            let previous = self.slot_keys.buffer.clone();
+            let capacity = self.slot_keys.capacity;
+            if self
+                .slot_keys
+                .ensure(device, (self.high_water as usize * 4).max(16))?
+            {
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Preserve GI selection keys during growth"),
+                });
+                encoder.copy_buffer_to_buffer(&previous, 0, &self.slot_keys.buffer, 0, capacity);
+                queue.submit([encoder.finish()]);
+                let fresh = vec![0xff; (self.slot_keys.capacity - capacity) as usize];
+                queue.write_buffer(&self.slot_keys.buffer, capacity, &fresh);
+            }
+        }
+        let chunk = self.high_water.div_ceil(4);
+        let first = (work.batch_id % 4) * chunk;
+        self.classify_range = (first.min(self.high_water), (first + chunk).min(self.high_water));
         {
             let previous = self.meta.buffer.clone();
             let capacity = self.meta.capacity;
@@ -587,7 +669,7 @@ impl ResidentAccumulator {
         #[cfg(test)]
         let milliseconds = self.clock_ms.unwrap_or(milliseconds);
         let control = [
-            work.faces.len() as u32,
+            self.cpu_faces + self.picks,
             samples,
             milliseconds,
             if work.history_limit == 0 {
@@ -611,6 +693,18 @@ impl ResidentAccumulator {
             self.event_count,
             self.high_water,
             (super::super::retention::INFLUENCE_RADIUS as u32).pow(2),
+            work.transport_revision as u32,
+            work.stable_error.to_bits(),
+            work.stable_samples,
+            work.audit_ms,
+            work.focus.x as u32,
+            work.focus.y as u32,
+            work.focus.z as u32,
+            self.picks,
+            self.cpu_faces,
+            work.batch_id,
+            self.classify_range.0,
+            self.classify_range.1,
         ];
         self.control.upload(
             device,
@@ -643,12 +737,20 @@ impl ResidentAccumulator {
             index
         });
         self.face_index.insert(key.0, key.1, index);
+        if self.by_index.len() <= index as usize {
+            self.by_index.resize(index as usize + 1, None);
+        }
+        self.by_index[index as usize] = Some(key);
         let base = index * META_WORDS;
         for (word, value) in [
             key.0.x as u32,
             key.0.y as u32,
             key.0.z as u32,
             key.1 as u32 | META_LIVE,
+            0,
+            0,
+            0,
+            0,
             0,
             0,
             0,
@@ -671,6 +773,17 @@ impl ResidentAccumulator {
 
     pub(super) fn buffer(&self) -> Buffer {
         self.state.buffer.clone()
+    }
+
+    /// The prepared batch's GPU pick records: buffer, byte offset and count.
+    pub(super) fn pick_records(&self) -> (&Buffer, u64, u32) {
+        (&self.inputs.buffer, u64::from(self.cpu_faces) * 16, self.picks)
+    }
+
+    /// The face a pick record names, if its slot still holds that allocation.
+    pub(super) fn picked_face(&self, slot: u32, incarnation: u32) -> Option<Key> {
+        let key = (*self.by_index.get(slot as usize)?)?;
+        (self.slots.get(&key)?.incarnation == incarnation).then_some(key)
     }
 
     /// Measurements and face ownership read by path termination.
@@ -697,8 +810,13 @@ impl ResidentAccumulator {
                 (4, &self.inputs),
                 (5, &self.seeds),
                 (12, &self.checkpoint),
+                (13, &self.meta),
+                (16, &self.slot_keys),
             ],
         );
+        if self.picks > 0 {
+            encoder.clear_buffer(&self.selection.buffer, 0, None);
+        }
         let scatter_bindings = (self.index_scatter_count > 0).then(|| {
             cached_bindings(
                 &mut self.scatter_bindings,
@@ -764,6 +882,68 @@ impl ResidentAccumulator {
             pass.dispatch_workgroups(self.high_water.div_ceil(64), 1, 1);
             self.events.clear();
             self.event_count = 0;
+        }
+        drop(pass);
+        // GPU picks, in their own pass (own timing): after retention (which
+        // may revoke stability), before the traced faces' changes are marked.
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("GI resident selection"),
+            timestamp_writes: timestamps.filter(|_| self.picks > 0).map(|query_set| {
+                wgpu::ComputePassTimestampWrites {
+                    query_set,
+                    beginning_of_pass_write_index: Some(6),
+                    end_of_pass_write_index: Some(7),
+                }
+            }),
+        });
+        if self.picks > 0 {
+            let classify = cached_bindings(
+                &mut self.classify_bindings,
+                device,
+                || self.select_classify.get_bind_group_layout(0).into(),
+                [(0, &self.control), (13, &self.meta), (16, &self.slot_keys)],
+            );
+            let (first, end) = self.classify_range;
+            if end > first {
+                pass.set_pipeline(&self.select_classify);
+                pass.set_bind_group(0, &**classify, &[]);
+                pass.dispatch_workgroups((end - first).div_ceil(256), 1, 1);
+            }
+            let histogram = cached_bindings(
+                &mut self.histogram_bindings,
+                device,
+                || self.select_histogram.get_bind_group_layout(0).into(),
+                [(0, &self.control), (15, &self.selection), (16, &self.slot_keys)],
+            );
+            pass.set_pipeline(&self.select_histogram);
+            pass.set_bind_group(0, &**histogram, &[]);
+            pass.dispatch_workgroups(self.high_water.div_ceil(256), 1, 1);
+            let threshold = cached_bindings(
+                &mut self.threshold_bindings,
+                device,
+                || self.select_threshold.get_bind_group_layout(0).into(),
+                [(0, &self.control), (15, &self.selection)],
+            );
+            pass.set_pipeline(&self.select_threshold);
+            pass.set_bind_group(0, &**threshold, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+            let emit = cached_bindings(
+                &mut self.emit_bindings,
+                device,
+                || self.select_emit.get_bind_group_layout(0).into(),
+                [
+                    (0, &self.control),
+                    (1, tasks),
+                    (3, &self.state),
+                    (4, &self.inputs),
+                    (13, &self.meta),
+                    (15, &self.selection),
+                    (16, &self.slot_keys),
+                ],
+            );
+            pass.set_pipeline(&self.select_emit);
+            pass.set_bind_group(0, &**emit, &[]);
+            pass.dispatch_workgroups(self.high_water.div_ceil(256), 1, 1);
         }
         let mark = cached_bindings(
             &mut self.mark_bindings,
@@ -866,10 +1046,12 @@ impl ResidentAccumulator {
     }
 }
 
-/// Event headers `(union.min, 0) (union.max, 0) (0, 0, first bound, bounds)`,
-/// then bounds `(min, flux) (max, kind | top << 3)`.
-/// Kinds: 0 unknown, 1 unload, 2 load, 3 edit, 4 light. Tops saturate to 28
-/// bits (an air-only load's i32::MIN replaces no sky either way).
+/// Event headers `(union.min, flags) (union.max, 0) (cap, 0, first bound,
+/// bounds)`, then bounds `(min, flux) (max, kind | top << 3)`. Kinds: 0
+/// unknown, 1 unload, 2 load, 3 edit, 4 light. Tops saturate to 28 bits (an
+/// air-only load's i32::MIN replaces no sky either way). Flag bit 1: a source
+/// change; `cap` applies everywhere and its bounds are spheres
+/// `(center, radius^2)` (f32), within which the cap is 4.
 fn encode_events(
     bytes: &mut Vec<u8>,
     events: &[super::super::retention::RetentionEvent],
@@ -884,6 +1066,14 @@ fn encode_events(
         }
     };
     for event in events {
+        if let Some(cap) = event.source_cap {
+            let count = event.spheres.len() as u32;
+            push(bytes, [0, 0, 0, 2]);
+            push(bytes, [0; 4]);
+            push(bytes, [cap, 0, first, count]);
+            first += count;
+            continue;
+        }
         let u = event.union;
         push(bytes, [u.min.x as u32, u.min.y as u32, u.min.z as u32, 0]);
         push(bytes, [u.max.x as u32, u.max.y as u32, u.max.z as u32, 0]);
@@ -892,6 +1082,11 @@ fn encode_events(
         first += count;
     }
     for event in events {
+        for &(center, radius) in &event.spheres {
+            let c = center.to_array().map(f32::to_bits);
+            push(bytes, [c[0], c[1], c[2], (radius * radius).to_bits()]);
+            push(bytes, [0, 0, 0, 5]);
+        }
         for (b, w) in event.bounds.iter().zip(&event.weights) {
             let (kind, top) = match w.kind {
                 ChangeKind::Unknown => (0, 0),
@@ -1458,6 +1653,89 @@ mod tests {
                 }
             }
             assert!(capped + changed > 100, "exercise the rule: {capped} {changed}");
+        }
+    }
+
+    #[test]
+    #[ignore = "native GPU selection: coverage order, eventual coverage, CPU-owned faces"]
+    fn gpu_picks_cover_nearest_first_and_never_race_cpu_jobs() {
+        let mut gpu = super::super::tests::native_tracer();
+        gpu.enable_resident().unwrap();
+        let (scene, sources, probes) = super::super::tests::open_floor_fixture();
+        let materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        let focus = IVec3::new(3, 5, 3);
+        let mut batch = 0u32;
+        let mut run = |gpu: &mut GpuTracer, cpu: &[SurfaceProbe], ensure: &[SurfaceProbe], picks: u32| {
+            batch += 1;
+            let mut work = TraceWork::from_probes(cpu, false);
+            for probe in ensure {
+                work.ensure_slots(probe);
+            }
+            for job in &mut work.probes {
+                job.sky_requested = false;
+            }
+            work.picks = picks;
+            work.focus = focus;
+            work.batch_id = batch;
+            work.stable_error = 0.12;
+            work.stable_samples = 32;
+            work.audit_ms = 1_000_000;
+            gpu.trace_compact(Arc::clone(&scene), &sources, &materials, &mut work, 16, &emitters, false)
+                .unwrap();
+            work.picked.iter().map(|(face, _)| (face.voxel, face.face)).collect::<Vec<_>>()
+        };
+        // Every face resident and unmeasured (seeded before selection in
+        // the first batch); the CPU traces one probe then.
+        let owned = probes[0].clone();
+        let mut covered = HashSet::new();
+        let mut first = true;
+        // Coverage keeps a quarter of the budget once refinement has work
+        // (as the CPU's quotas did), so this takes ~70 rounds, not 16.
+        for round in 0..120 {
+            // Classification rotates over quarters of the slots: the first
+            // four batches pick little while every slot gets ranked.
+            let budget = if round < 4 { 1 } else { 64 };
+            let picked = if round == 0 {
+                run(&mut gpu, std::slice::from_ref(&owned), &probes, budget)
+            } else {
+                run(&mut gpu, &[], &[], budget)
+            };
+            assert!(picked.len() <= budget as usize);
+            let unique: HashSet<_> = picked.iter().copied().collect();
+            assert_eq!(unique.len(), picked.len(), "a face is picked once per batch");
+            if round < 4 {
+                assert!(!unique.contains(&(owned.voxel, 2)), "CPU job still in flight");
+            }
+            if first && round >= 4 && !picked.is_empty() {
+                // Coverage goes nearest the focus first (log-distance buckets).
+                let d2 = |v: IVec3| (v - focus).length_squared();
+                let farthest = picked.iter().map(|(v, _)| d2(*v)).max().unwrap();
+                let nearest_left = probes
+                    .iter()
+                    .filter(|p| p.voxel != owned.voxel && !unique.contains(&(p.voxel, 2)))
+                    .map(|p| d2(p.voxel))
+                    .min()
+                    .unwrap();
+                assert!(
+                    ((farthest as f32 + 1.0).log2() * 8.0) as u32
+                        <= ((nearest_left as f32 + 1.0).log2() * 8.0) as u32,
+                    "{farthest} vs {nearest_left}"
+                );
+                first = false;
+            }
+            covered.extend(unique.into_iter().filter(|key| key.0 != owned.voxel));
+            if covered.len() + 1 == probes.len() {
+                break;
+            }
+        }
+        assert_eq!(covered.len() + 1, probes.len(), "every face covered by GPU picks");
+        // Picks really traced: each face now has samples on the GPU.
+        let words = read_state(&gpu);
+        let resident = gpu.resident.as_ref().unwrap();
+        for (voxel, face) in covered {
+            let slot = resident.slots[&(voxel, face)];
+            assert!(words[slot.index as usize * (RECORD_BYTES / 4) + 5] >= 16);
         }
     }
 

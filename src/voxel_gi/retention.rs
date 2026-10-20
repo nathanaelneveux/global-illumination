@@ -6,10 +6,10 @@
 //! to every resident face in range when it is published, against that face's
 //! own current statistics (`apply_events` in voxel_accumulate.wgsl). Nothing
 //! is deferred to a face's next selection, so there are no per-page journals
-//! and no conservative summaries of evicted events. The CPU keeps only a
-//! per-page stamp of the newest event: receivers that have not been traced
-//! since are due for an audit regardless of their earlier stability.
-use bevy::{platform::collections::HashMap, prelude::*};
+//! and no conservative summaries of evicted events. Analytic source changes
+//! travel the same way (sources.rs history caps). Any event in reach also
+//! revokes a face's stability on the GPU, so GPU selection audits it.
+use bevy::prelude::*;
 
 use super::geometry::{Bounds, ChangeWeight, GeometryChange};
 use super::tracer::HISTORY_LIMIT;
@@ -33,8 +33,10 @@ pub(super) const INFLUENCE_RADIUS: i32 = {
 };
 
 /// H(d) = round((d / 12)^4), using squared distance without a square root.
+/// The GPU's `curve_limit` evaluates it; this CPU statement serves tests.
 /// Geometry and changed illumination share this law. Unlimited is a sentinel
 /// so callers do not mark already-consumed/no-cut evidence as a new reset.
+#[cfg(test)]
 pub(super) fn limit(distance_squared: i64) -> u32 {
     debug_assert!(distance_squared >= 0);
     let scaled = distance_squared as f64 / DISTANCE_SCALE.pow(2) as f64;
@@ -51,11 +53,15 @@ pub(super) fn limit(distance_squared: i64) -> u32 {
 /// change: an aggregate over a whole streaming event (its total flux at the
 /// union's distance) overstated changes so far that measured retention cut
 /// history during streaming and doubled the hallway's median settle time.
+/// A source change instead caps every face: `source_cap` everywhere, 4
+/// within `spheres`.
 #[derive(Clone)]
 pub(crate) struct RetentionEvent {
     pub bounds: Vec<Bounds>,
     pub weights: Vec<ChangeWeight>,
     pub union: Bounds,
+    pub source_cap: Option<u32>,
+    pub spheres: Vec<(Vec3, f32)>,
 }
 
 impl RetentionEvent {
@@ -66,38 +72,25 @@ impl RetentionEvent {
             bounds: vec![bounds],
             weights: vec![weight],
             union: bounds,
+            source_cap: None,
+            spheres: Vec::new(),
         }
     }
 }
 
 #[derive(Default)]
 pub(super) struct SpatialHistory {
-    revision: u64,
-    /// Newest event revision per receiver page: wakes receivers that have
-    /// not observed it. Their statistics were already capped on the GPU.
-    pages: HashMap<IVec3, u64>,
     /// Published events not yet handed to the GPU worker, oldest first.
     pending: Vec<RetentionEvent>,
 }
 
 impl SpatialHistory {
     pub fn record(&mut self, change: GeometryChange) {
-        if change.nearby.is_empty() {
-            return;
-        }
-        self.revision = self
-            .revision
-            .checked_add(1)
-            .expect("retention revision exhausted");
         let mut bounds: Vec<Bounds> = Vec::new();
         let mut seen = bevy::platform::collections::HashSet::new();
-        for (page, changes) in change.nearby {
-            self.pages.insert(page, self.revision);
-            // A page whose nearest change permits unlimited history gains no
-            // cap from it; its stamp still wakes the receivers.
-            if limit(changes.minimum_distance_squared) == u32::MAX {
-                continue;
-            }
+        for (_, changes) in change.nearby {
+            // Reach is tested per face on the GPU: a change can wake faces
+            // (an audit) even where it can cap nothing.
             for b in changes.bounds {
                 if seen.insert(b) {
                     bounds.push(b);
@@ -133,6 +126,21 @@ impl SpatialHistory {
             bounds,
             weights,
             union,
+            source_cap: None,
+            spheres: Vec::new(),
+        });
+    }
+
+    /// An analytic source change (sources.rs): every face keeps at most
+    /// `cap` samples, at most 4 within any of `spheres` (center, radius).
+    pub fn record_source(&mut self, cap: u32, spheres: &[(Vec3, f32)]) {
+        let point = Bounds::point(IVec3::ZERO);
+        self.pending.push(RetentionEvent {
+            bounds: Vec::new(),
+            weights: Vec::new(),
+            union: point,
+            source_cap: Some(cap),
+            spheres: spheres.to_vec(),
         });
     }
 
@@ -141,19 +149,6 @@ impl SpatialHistory {
         std::mem::take(&mut self.pending)
     }
 
-    /// A page disappears only after its receivers are retired. Recreating it
-    /// creates new probes without history, so its stamp can then be dropped.
-    pub fn retire(&mut self, page: IVec3) {
-        self.pages.remove(&page);
-    }
-
-    /// The newest event at this receiver's page, if it has not observed it.
-    pub fn wake(&self, voxel: IVec3, since: u64) -> Option<u64> {
-        self.pages
-            .get(&super::page_of(voxel))
-            .copied()
-            .filter(|&revision| revision > since)
-    }
 }
 
 /// CPU statement of the GPU rule for one receiver: the curve cap from the
@@ -166,7 +161,7 @@ pub(super) fn resolve(events: &[RetentionEvent], voxel: IVec3) -> (u32, Option<f
     let receiver = Bounds::point(voxel);
     let mut cap = u32::MAX;
     let mut change = Some(0.0f32);
-    for event in events {
+    for event in events.iter().filter(|e| e.source_cap.is_none()) {
         let outside = event.union.distance_squared(receiver);
         if outside > reach {
             continue;
@@ -196,10 +191,36 @@ pub(super) fn resolve(events: &[RetentionEvent], voxel: IVec3) -> (u32, Option<f
     (cap, change)
 }
 
+/// CPU statement of the GPU's source caps for one receiver.
+#[cfg(test)]
+pub(super) fn source_limit(events: &[RetentionEvent], voxel: IVec3) -> u32 {
+    let mut cap = u32::MAX;
+    for event in events {
+        if let Some(base) = event.source_cap {
+            let near = event
+                .spheres
+                .iter()
+                .any(|(center, radius)| voxel.as_vec3().distance_squared(*center) <= radius * radius);
+            cap = cap.min(if near { base.min(4) } else { base });
+        }
+    }
+    cap
+}
+
+/// Whether any event revokes this receiver's stability on the GPU.
+#[cfg(test)]
+pub(super) fn woken(events: &[RetentionEvent], voxel: IVec3) -> bool {
+    let reach = i64::from(INFLUENCE_RADIUS).pow(2);
+    events.iter().any(|event| {
+        event.source_cap.is_some() || event.union.distance_squared(Bounds::point(voxel)) <= reach
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::voxel_gi::geometry::ChangeKind;
+    use bevy::platform::collections::HashMap;
     use crate::voxel_gi::geometry::PageChanges;
 
     fn event(point: IVec3, weight: Option<ChangeWeight>) -> GeometryChange {
@@ -255,28 +276,23 @@ mod tests {
     }
 
     #[test]
-    fn events_wake_their_pages_once_and_are_handed_over_once() {
+    fn events_are_handed_over_once_and_sources_cap_everywhere() {
         let mut history = SpatialHistory::default();
         history.record(event(IVec3::new(64, 0, 0), None));
-        assert_eq!(history.wake(IVec3::ZERO, 0), Some(1));
-        assert_eq!(history.wake(IVec3::ZERO, 1), None);
+        history.record_source(64, &[(Vec3::new(0.0, 0.0, 300.0), 10.0)]);
         let events = history.take_events();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert!(history.take_events().is_empty());
         assert_eq!(resolve(&events, IVec3::ZERO).0, 809);
-        history.retire(IVec3::ZERO);
-        assert_eq!(history.wake(IVec3::ZERO, 0), None);
-        // A page beyond the curve's reach is woken but gets no GPU event.
+        assert_eq!(source_limit(&events, IVec3::ZERO), 64);
+        assert_eq!(source_limit(&events, IVec3::new(0, 0, 295)), 4);
+        assert!(woken(&events, IVec3::new(4000, 0, 0)), "source changes wake everyone");
         let mut far = SpatialHistory::default();
-        far.record(GeometryChange {
-            nearby: HashMap::from_iter([(
-                IVec3::ZERO,
-                PageChanges::new(IVec3::ZERO, vec![Bounds::point(IVec3::new(4000, 0, 0))]),
-            )]),
-            ..Default::default()
-        });
-        assert_eq!(far.wake(IVec3::ZERO, 0), Some(1));
-        assert!(far.take_events().is_empty());
+        far.record(event(IVec3::new(4000, 0, 0), None));
+        let far = far.take_events();
+        assert_eq!(resolve(&far, IVec3::ZERO), (u32::MAX, Some(0.0)));
+        assert!(!woken(&far, IVec3::ZERO), "out of reach");
+        assert_eq!(source_limit(&far, IVec3::ZERO), u32::MAX);
     }
 
     #[test]

@@ -697,7 +697,8 @@ fn trace_moments(face_index: u32, first: u32, step: u32) -> PathMoments {
 // Serial reference layout: one invocation per face.
 @compute @workgroup_size(64)
 fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
-    if id.x >= params.counts.x { return; }
+    // Unused GPU pick capacity keeps a face of 0xffffffff.
+    if id.x >= params.counts.x || tasks[id.x].face == 0xffffffffu { return; }
     let moment = trace_moments(id.x, 0u, 1u);
     write_result(id.x, moment.mean, moment.second, moment.radiation, moment.known);
 }
@@ -709,7 +710,7 @@ var<workgroup> path_moments: array<PathMoments, 64>;
 fn trace_faces_parallel(@builtin(global_invocation_id) id: vec3<u32>,
     @builtin(local_invocation_index) local: u32) {
     let face_index = id.x / PATH_LANES;
-    let valid = face_index < params.counts.x;
+    let valid = face_index < params.counts.x && tasks[face_index].face != 0xffffffffu;
     let lane = local % PATH_LANES;
     var moment: PathMoments;
     if valid { moment = trace_moments(face_index, lane, PATH_LANES); }

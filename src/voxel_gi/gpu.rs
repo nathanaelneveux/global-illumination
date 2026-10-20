@@ -102,11 +102,14 @@ struct GpuFaceTask {
 /// all three padding words initialized. No Rust struct layout or unsafe cast.
 fn encode_tasks(bytes: &mut Vec<u8>, work: &TraceWork, sky: &[IVec3]) {
     bytes.clear();
-    bytes.reserve((work.faces.len() + sky.len()) * TASK_BYTES);
+    bytes.reserve((work.faces.len() + work.picks as usize + sky.len()) * TASK_BYTES);
+    // GPU pick capacity follows the CPU's faces; `select_emit` fills it and
+    // the tracer skips what stays face 0xffffffff.
     let tasks = work
         .faces
         .iter()
         .map(|face| (face.voxel, face.face as u32, face.sequence))
+        .chain((0..work.picks).map(|_| (IVec3::ZERO, u32::MAX, 0)))
         .chain(sky.iter().map(|&position| (position, 0, 0)));
     for (voxel, face, sequence) in tasks {
         let record = [
@@ -411,7 +414,7 @@ impl GpuTracer {
                     .create_query_set(&wgpu::QuerySetDescriptor {
                         label: Some("GI transport timing"),
                         ty: wgpu::QueryType::Timestamp,
-                        count: 6,
+                        count: 8,
                     })
             });
         Ok(Self {
@@ -592,7 +595,7 @@ impl GpuTracer {
         };
         // Reusing measured corners needs no queue writes, geometry upload, or
         // GPU submission. Leave geometry synchronization until rays need it.
-        if work.faces.is_empty() && sky_pending.is_empty() {
+        if work.faces.is_empty() && work.picks == 0 && sky_pending.is_empty() {
             self.last_dispatch_ms = 0.0;
             self.last_gpu_ms = Some(0.0);
             self.last_prepare_ms = work_started.elapsed().as_secs_f32() * 1000.0;
@@ -601,7 +604,7 @@ impl GpuTracer {
             self.sky_cache.apply(&mut work.probes);
             return Ok(None);
         }
-        if !work.faces.is_empty()
+        if (!work.faces.is_empty() || work.picks > 0)
             && let Some(resident) = &mut self.resident
         {
             resident.prepare_inputs(&self.context, &scene, work, samples)?;
@@ -759,7 +762,8 @@ impl GpuTracer {
                 .upload(device, queue, &ShaderBuffer::from(gpu_lights).data.unwrap())?;
             self.sources = Some(sources.clone());
         }
-        let face_count = work.faces.len();
+        let picks = if self.resident.is_some() { work.picks } else { 0 };
+        let face_count = work.faces.len() + picks as usize;
         #[cfg(not(test))]
         encode_tasks(&mut self.task_bytes, work, &sky_pending);
         #[cfg(test)]
@@ -797,9 +801,12 @@ impl GpuTracer {
         )?;
         self.tasks.upload(device, queue, &self.task_bytes)?;
         let face_bytes = face_count * RESULT_BYTES;
-        let readback_bytes = face_bytes + sky_pending.len() * SKY_RESULT_BYTES;
+        let pick_offset = face_bytes + sky_pending.len() * SKY_RESULT_BYTES;
+        let readback_bytes = pick_offset + picks as usize * 16;
+        // Resident batches: preparation, rays, accumulation, then (with GPU
+        // picks) selection in its own pass.
         let timestamp_count = if self.resident.is_some() && face_count > 0 {
-            6
+            if picks > 0 { 8 } else { 6 }
         } else {
             2
         };
@@ -889,12 +896,12 @@ impl GpuTracer {
                 timestamp_writes: self.timestamps.as_ref().map(|query_set| {
                     wgpu::ComputePassTimestampWrites {
                         query_set,
-                        beginning_of_pass_write_index: Some(if timestamp_count == 6 {
+                        beginning_of_pass_write_index: Some(if timestamp_count >= 6 {
                             2
                         } else {
                             0
                         }),
-                        end_of_pass_write_index: Some(if timestamp_count == 6 { 3 } else { 1 }),
+                        end_of_pass_write_index: Some(if timestamp_count >= 6 { 3 } else { 1 }),
                     }
                 }),
             });
@@ -929,8 +936,20 @@ impl GpuTracer {
             0,
             &readback.buffer,
             0,
-            readback_bytes as u64,
+            pick_offset as u64,
         );
+        if picks > 0
+            && let Some(resident) = &self.resident
+        {
+            let (records, offset, count) = resident.pick_records();
+            encoder.copy_buffer_to_buffer(
+                records,
+                offset,
+                &readback.buffer,
+                pick_offset as u64,
+                u64::from(count) * 16,
+            );
+        }
         if let Some(query) = &self.timestamps {
             encoder.resolve_query_set(query, 0..timestamp_count, &self.timestamp_resolve.buffer, 0);
             encoder.copy_buffer_to_buffer(
@@ -957,6 +976,8 @@ impl GpuTracer {
             completion: std::sync::Mutex::new(receiver),
             submitted,
             face_bytes,
+            cpu_faces: work.faces.len(),
+            picks,
             bytes: readback_bytes,
             timestamp_bytes: timestamp_bytes as usize,
             samples,
@@ -977,6 +998,8 @@ impl GpuTracer {
             buffer: readback,
             submitted,
             face_bytes,
+            cpu_faces,
+            picks,
             bytes: readback_bytes,
             timestamp_bytes,
             samples,
@@ -1048,9 +1071,48 @@ impl GpuTracer {
             face.custom_direct = Vec3::new(values[21], values[22], values[23]);
             face.updated_at = Some(submitted);
         }
+        let pick_offset = face_bytes + sky_pending.len() * SKY_RESULT_BYTES;
+        if let Some(resident) = &self.resident {
+            for (pick, record) in view[pick_offset..readback_bytes]
+                .chunks_exact(16)
+                .take(picks as usize)
+                .enumerate()
+            {
+                let word = |i: usize| u32::from_le_bytes(record[i * 4..i * 4 + 4].try_into().unwrap());
+                let (slot, tag, incarnation) = (word(0), word(2), word(3));
+                // Unused capacity, or a hole left by a retired slot's stale key.
+                if slot == u32::MAX {
+                    continue;
+                }
+                let Some((voxel, face)) = resident.picked_face(slot, incarnation) else {
+                    continue;
+                };
+                let index = cpu_faces + pick;
+                let bytes = &view[index * RESULT_BYTES..(index + 1) * RESULT_BYTES];
+                let values: [f32; 24] = std::array::from_fn(|i| {
+                    f32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
+                });
+                let picked = super::work::FaceWork {
+                    voxel,
+                    face,
+                    radiance: decode_spectrum(&values[0..4], values[4]),
+                    second_moment: decode_spectrum(&values[8..12], values[12]),
+                    direct: decode_spectrum(&values[16..20], values[20]),
+                    custom_direct: Vec3::new(values[21], values[22], values[23]),
+                    samples: values[5].to_bits(),
+                    history_cap: u32::MAX,
+                    rollback: false,
+                    sequence: values[6].to_bits(),
+                    updated_at: Some(submitted),
+                    presentation: Vec4::new(values[7], values[13], values[14], values[15]),
+                    resident: UVec2::new(slot, incarnation),
+                };
+                work.picked.push((picked, tag));
+            }
+        }
         for (position, bytes) in sky_pending
             .into_iter()
-            .zip(view[face_bytes..readback_bytes].chunks_exact(SKY_RESULT_BYTES))
+            .zip(view[face_bytes..pick_offset].chunks_exact(SKY_RESULT_BYTES))
         {
             self.sky_cache.store_ticket(
                 sky_ticket,
@@ -2558,3 +2620,4 @@ pub(super) mod tests {
         );
     }
 }
+

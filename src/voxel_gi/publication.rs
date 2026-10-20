@@ -2,8 +2,8 @@
 //! publish atomically with retained measurements and display-only initialization.
 use super::{
     SceneBuildResult, VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats,
-    advance_transport_revision, diagnostics, enqueue_many, enqueue_sky, enqueue_urgent, history,
-    page_of, probe_metrics, request_global_refresh,
+    advance_transport_revision, diagnostics, enqueue_sky, enqueue_urgent, history, page_of,
+    probe_metrics,
     telemetry::GiWorkTimings,
     update_stats_from_counters,
     world::{PAGE_EDGE, SurfaceProbe, SurfaceProbeDescriptor},
@@ -163,9 +163,6 @@ pub(super) fn publish_scene_page(
     descriptors: Vec<SurfaceProbeDescriptor>,
 ) {
     let started = Instant::now();
-    if descriptors.is_empty() {
-        runtime.spatial_history.retire(page);
-    }
     // Worker scans include touching pages, even when their exposed topology
     // did not change. Preserve their allocations, indices and measurements
     // directly; global scene freshness and explicit edit requests still apply.
@@ -176,7 +173,6 @@ pub(super) fn publish_scene_page(
             stats,
             result,
             page,
-            field.probe_count(),
             HashSet::new(),
             Vec::new(),
             started,
@@ -337,7 +333,6 @@ fn reconcile_scene_page(
     let topology_changed =
         old_count != field.probes.len() || !old_affected.is_empty() || !added.is_empty();
     if topology_changed {
-        super::dispatch::invalidate_focus_page(runtime, page);
         runtime.gpu_removed.extend(old_affected.keys().copied());
         runtime.gpu_added.extend(added.iter().copied());
         field.update_indices(&added, &old_affected);
@@ -352,7 +347,6 @@ fn reconcile_scene_page(
         stats,
         result,
         page,
-        old_count,
         invalidated,
         added,
         publish_started,
@@ -365,7 +359,6 @@ fn finish_scene_page(
     stats: &mut VoxelGiStats,
     result: &mut SceneBuildResult,
     page: IVec3,
-    old_count: usize,
     mut invalidated: HashSet<IVec3>,
     added: Vec<IVec3>,
     publish_started: Instant,
@@ -399,14 +392,7 @@ fn finish_scene_page(
     enqueue_sky(runtime, added.iter().copied());
     enqueue_urgent(runtime, urgent);
     runtime.sky_remaining = field.order.len();
-    if old_count == 0 {
-        enqueue_many(runtime, field.order.iter().copied());
-    } else {
-        enqueue_many(runtime, invalidated);
-    }
-    if old_count > 0 {
-        request_global_refresh(runtime, field.order.len());
-    }
+    // New and relit faces' coverage and the world sweep are the GPU's picks.
     result.exact_edits.clear();
     field.publishing_pages.remove(&page);
     update_stats_from_counters(runtime, field, stats);

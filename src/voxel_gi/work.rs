@@ -33,6 +33,20 @@ pub(crate) struct TraceWork {
     /// Changes published since the previous batch, applied on the GPU to
     /// every resident face in range before this batch's rays.
     pub retention_events: Vec<super::retention::RetentionEvent>,
+    /// GPU selection: a budget of faces the GPU picks itself after the CPU's
+    /// traced faces, and what it ranks them by. Picks return in `picked`.
+    pub picks: u32,
+    pub focus: IVec3,
+    /// Never zero (28 bits): GPU picks avoid faces of recent CPU jobs.
+    pub batch_id: u32,
+    pub transport_revision: u64,
+    pub source_revision: u64,
+    pub stable_error: f32,
+    pub stable_samples: u32,
+    pub audit_ms: u32,
+    /// GPU-picked faces decoded from the readback, with the revision (low 32
+    /// bits) the slot had when it was picked.
+    pub picked: Vec<(FaceWork, u32)>,
 }
 
 pub(crate) struct ProbeWork {
@@ -55,6 +69,29 @@ pub(crate) struct ProbeWork {
 }
 
 impl ProbeWork {
+    /// The header for one GPU-picked face of `probe`, at the batch's
+    /// revisions; its face is the only one in the slice publication gets.
+    pub fn picked(
+        probe: &SurfaceProbe,
+        face: usize,
+        transport_revision: u64,
+        source_revision: u64,
+    ) -> Self {
+        Self {
+            voxel: probe.voxel,
+            face_mask: probe.face_mask,
+            sky_requested: false,
+            trace_mask: 1 << face,
+            revision: probe.revision,
+            source_revision,
+            transport_revision,
+            restart: false,
+            retention: None,
+            sky: [[0; 4]; 6],
+            start: 0,
+        }
+    }
+
     pub fn faces(&self) -> Range<usize> {
         self.start..self.start + self.trace_mask.count_ones() as usize
     }
@@ -166,6 +203,7 @@ impl TraceWork {
         self.faces.clear();
         self.ensure.clear();
         self.retention_events.clear();
+        self.picked.clear();
     }
 
     /// Queue slot allocation for this probe's faces that have none yet.
