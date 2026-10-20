@@ -626,7 +626,11 @@ impl ResidentAccumulator {
                 .chain(requests.into_iter().filter(|(address, _)| {
                     self.picked_face(address.x, address.y).is_some()
                 }));
-            let wanted: Vec<_> = wanted.collect();
+            // One plan per slot, at its smallest count: an older request's
+            // higher count must not release a list this batch's edit needs.
+            let mut wanted: Vec<_> = wanted.filter(|(address, _)| address.y != 0).collect();
+            wanted.sort_unstable_by_key(|(address, count)| (address.x, *count));
+            wanted.dedup_by_key(|(address, _)| address.x);
             for (address, count) in wanted {
                 let predicted = count.saturating_add(samples);
                 let sites = super::super::spatial::evidence::candidate_limit(
@@ -1794,6 +1798,56 @@ mod tests {
         work.probes[0].revision += 1;
         gpu.trace_compact(scene, &sources, &materials, &mut work, 16, &emitters, false).unwrap();
         assert!(work.faces[0].samples <= retained + 16, "{}", work.faces[0].samples);
+    }
+
+    #[test]
+    #[ignore = "native: an older pick request cannot release a list this batch's edit needs"]
+    fn older_requests_cannot_release_edit_donors() {
+        use crate::voxel_gi::geometry::{Bounds, ChangeKind, ChangeWeight};
+        use crate::voxel_gi::retention::RetentionEvent;
+        let mut gpu = super::super::tests::native_tracer();
+        gpu.enable_resident().unwrap();
+        let (scene, sources, probes) = super::super::tests::open_floor_fixture();
+        let materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        let trace = |gpu: &mut GpuTracer, work: &mut TraceWork| {
+            work.spatial_reconstruction = 1.0;
+            work.spatial_evidence_target = 1024;
+            work.measured_retention = 1.0;
+            for job in &mut work.probes { job.sky_requested = false; }
+            gpu.trace_compact(scene.clone(), &sources, &materials, work, 16, &emitters, false).unwrap();
+        };
+        let mut cpu = TraceWork::from_probes(&probes[264..272], false);
+        cpu.batch_id = 1;
+        for face in &mut cpu.faces {
+            face.samples = 2048;
+            face.radiance = EnergySpectrum::new(Vec3::splat(0.4), 0.0, 0.0);
+            face.second_moment = EnergySpectrum::new(Vec3::splat(0.17), 0.0, 0.0);
+        }
+        trace(&mut gpu, &mut cpu);
+        // A GPU pick queues the face's (high, pre-edit) count for the next
+        // prepare, which also plans the edit's CPU job for the same face.
+        let mut picked = TraceWork::default();
+        picked.batch_id = 5;
+        picked.picks = 8;
+        trace(&mut gpu, &mut picked);
+        let &(voxel, face, _) = picked.pick_tags.first().expect("GPU picks");
+        let address = cpu.faces.iter().find(|f| (f.voxel, f.face) == (voxel, face)).unwrap().resident;
+        let mut edit = RetentionEvent::single(
+            Bounds::point(voxel + IVec3::Y),
+            ChangeWeight { kind: ChangeKind::Edit { voxels: 1, measure: false }, flux: 100.0 },
+        );
+        edit.urgent = vec![true];
+        cpu.batch_id = 6;
+        cpu.retention_events.push(edit);
+        trace(&mut gpu, &mut cpu);
+        let result = cpu.faces.iter().find(|f| f.resident == address).unwrap();
+        let resident = gpu.resident.as_ref().unwrap();
+        let donors = resident.donor_cache.donors(address.x).len();
+        let table = read_words(&gpu, &resident.donor_table.buffer, resident.high_water as u64 * 8);
+        let gpu_donors = table[address.x as usize * 2 + 1];
+        assert!(result.samples < 1024, "{}", result.samples);
+        assert!(donors > 0 && gpu_donors > 0, "the older request released the list");
     }
 
     /// Faces converged past the evidence target whose history a change caps:
