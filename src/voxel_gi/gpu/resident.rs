@@ -1734,6 +1734,160 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "native: a rolled-back merge keeps the retention its change applied"]
+    fn rollback_keeps_history_removed_by_a_change() {
+        use crate::voxel_gi::geometry::{Bounds, ChangeKind, ChangeWeight};
+        use crate::voxel_gi::retention::RetentionEvent;
+        let mut gpu = super::super::tests::native_tracer();
+        gpu.enable_resident().unwrap();
+        let (scene, sources, probes) = super::super::tests::open_floor_fixture();
+        let materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        let mut work = TraceWork::from_probes(&probes[264..265], false);
+        work.faces[0].samples = 4096;
+        work.faces[0].radiance = EnergySpectrum::new(Vec3::splat(0.4), 0.0, 0.0);
+        work.faces[0].second_moment = EnergySpectrum::new(Vec3::splat(0.17), 0.0, 0.0);
+        work.measured_retention = 1.0;
+        work.retention_events.push(RetentionEvent::single(
+            Bounds::point(work.faces[0].voxel + IVec3::Y),
+            ChangeWeight { kind: ChangeKind::Edit { voxels: 1, measure: false }, flux: 100.0 },
+        ));
+        gpu.trace_compact(scene.clone(), &sources, &materials, &mut work, 16, &emitters, false)
+            .unwrap();
+        let retained = work.faces[0].samples;
+        assert!(retained <= 16);
+        // A second edit rejects that merge (not the first edit's change):
+        // the rollback must not restore the pre-change history (was 4,112).
+        work.retention_events.clear();
+        work.faces[0].rollback = true;
+        work.probes[0].revision += 1;
+        gpu.trace_compact(scene, &sources, &materials, &mut work, 16, &emitters, false).unwrap();
+        assert!(work.faces[0].samples <= retained + 16, "{}", work.faces[0].samples);
+    }
+
+    #[test]
+    #[ignore = "native: a batch with no known paths defers a pending change"]
+    fn all_unknown_batch_defers_a_pending_change() {
+        let mut gpu = super::super::tests::native_tracer();
+        gpu.enable_resident().unwrap();
+        let (scene, sources, probes) = super::super::tests::open_floor_fixture();
+        let materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        let mut work = TraceWork::from_probes(&probes[..1], false);
+        work.measured_retention = 1.0;
+        gpu.trace_compact(scene, &sources, &materials, &mut work, 16, &emitters, false).unwrap();
+        let slot = gpu.resident.as_ref().unwrap().slots[&(work.faces[0].voxel, work.faces[0].face)].index;
+        // The state `mark_changed` leaves for a binding change, then an
+        // all-unknown result: nothing to resolve the change with yet.
+        let resident = gpu.resident.as_ref().unwrap();
+        gpu.context.queue.write_buffer(
+            &resident.state.buffer,
+            u64::from(slot) * RECORD_BYTES as u64 + 20,
+            &(4096u32 | 0x8000_0000).to_le_bytes(),
+        );
+        gpu.context.queue.write_buffer(
+            &resident.meta.buffer,
+            u64::from(slot) * META_BYTES as u64 + 16,
+            &1.0f32.to_le_bytes(),
+        );
+        let mut unknown = UploadBuffer::new(
+            &gpu.context.device,
+            "All-unknown result",
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        unknown.upload(&gpu.context.device, &gpu.context.queue, &[0u8; RESULT_BYTES]).unwrap();
+        let mut encoder = gpu.context.device.create_command_encoder(&default());
+        gpu.resident.as_mut().unwrap().dispatch_accumulate(
+            &gpu.context.device,
+            &mut encoder,
+            &unknown,
+            1,
+            None,
+        );
+        gpu.context.queue.submit([encoder.finish()]);
+        let resident = gpu.resident.as_ref().unwrap();
+        let meta = read_words(&gpu, &resident.meta.buffer, resident.high_water as u64 * META_BYTES as u64);
+        let pending = f32::from_bits(meta[slot as usize * META_WORDS as usize + 4]);
+        assert!(pending > 0.0, "an all-unknown batch consumed the change");
+    }
+
+    #[test]
+    #[ignore = "native: a mirror record classified before a same-batch CPU job is older than it"]
+    fn mirror_record_never_replaces_a_newer_cpu_result() {
+        let mut gpu = super::super::tests::native_tracer();
+        gpu.enable_resident().unwrap();
+        let (scene, sources, probes) = super::super::tests::open_floor_fixture();
+        let materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        let run = |gpu: &mut GpuTracer, work: &mut TraceWork| {
+            for job in &mut work.probes {
+                job.sky_requested = false;
+            }
+            work.picks = 64;
+            work.mirror_budget = 1024;
+            gpu.trace_compact(scene.clone(), &sources, &materials, work, 16, &emitters, false)
+                .unwrap();
+        };
+        let mut first = TraceWork::default();
+        first.batch_id = 1;
+        for probe in &probes {
+            first.ensure_slots(probe);
+        }
+        run(&mut gpu, &mut first);
+        let &(voxel, face, _) = first.pick_tags.first().expect("a GPU-picked face");
+        let probe = probes.iter().find(|p| p.voxel == voxel).unwrap();
+        // Same classification quarter: the picked face is mirror-stale while
+        // a CPU job traces it.
+        let mut next = TraceWork::from_probes(std::slice::from_ref(probe), false);
+        next.batch_id = 5;
+        run(&mut gpu, &mut next);
+        let (mirror, _) = next
+            .picked
+            .iter()
+            .find(|(f, _)| f.voxel == voxel && f.face == face)
+            .expect("the CPU-traced face is also in the mirror");
+        let mut published = probe.clone();
+        let settings = crate::voxel_gi::VoxelGiSettings::default();
+        next.probes[0].publish(&next.faces, &mut published, Instant::now(), &settings);
+        assert!(mirror.sequence < published.sequence[face]);
+        assert!(mirror.predates(&published), "dispatch would publish the older record");
+    }
+
+    #[test]
+    #[ignore = "native: a CPU job's face is never picked by the next submissions"]
+    fn cpu_job_owns_its_face_for_the_in_flight_submissions() {
+        let mut gpu = super::super::tests::native_tracer();
+        gpu.enable_resident().unwrap();
+        let (scene, sources, probes) = super::super::tests::open_floor_fixture();
+        let materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        let mut pending = TraceWork::from_probes(&probes[..1], false);
+        pending.batch_id = 1;
+        pending.picks = 1;
+        for job in &mut pending.probes {
+            job.sky_requested = false;
+        }
+        for probe in &probes {
+            pending.ensure_slots(probe);
+        }
+        let owned: Vec<_> = pending.faces.iter().map(|f| (f.voxel, f.face)).collect();
+        let _unpublished = gpu
+            .submit_compact(scene.clone(), &sources, &materials, &mut pending, 16, &emitters, false)
+            .unwrap()
+            .unwrap();
+        // At most three batches are in flight, so batch 4 is the last one
+        // submitted before job 1 publishes. Batch IDs count submissions only
+        // (`start_trace_task`); poll-only frames once expired this window.
+        let mut next = TraceWork::default();
+        next.batch_id = 4;
+        next.picks = 1024;
+        next.mirror_budget = 1024;
+        gpu.trace_compact(scene, &sources, &materials, &mut next, 16, &emitters, false).unwrap();
+        assert!(!next.pick_tags.is_empty());
+        assert!(next.pick_tags.iter().all(|&(p, f, _)| !owned.contains(&(p, f))));
+    }
+
+    #[test]
     #[ignore = "native: eagerly ensured faces get a slot and seeded GPU state without a trace"]
     fn ensured_faces_get_seeded_slots_before_their_first_trace() {
         let mut gpu = super::super::tests::native_tracer();

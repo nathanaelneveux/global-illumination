@@ -382,6 +382,13 @@ impl TraceWork {
 }
 
 impl FaceWork {
+    /// The probe already holds a later merge of this face (GPU sequences only
+    /// advance; wrapping compare). A statistics-mirror record is classified
+    /// before the batch traces, so a CPU job in the same batch is newer.
+    pub fn predates(&self, probe: &SurfaceProbe) -> bool {
+        (probe.sequence[self.face].wrapping_sub(self.sequence) as i32) > 0
+    }
+
     pub fn write(&self, probe: &mut SurfaceProbe) {
         let face = self.face;
         probe.radiance[face] = self.radiance;

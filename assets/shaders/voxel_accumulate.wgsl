@@ -159,10 +159,12 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
     // averaged; only the known count advances history.
     let fresh_count = u32(bitcast<f32>(output[result + 1u].y));
     // Retention marked by `mark_changed`: the predicted change accumulated
-    // since this face was last traced. Consumed whether or not it binds.
+    // since this face was last traced. Consumed whether or not it binds, but
+    // only by a batch with known paths: an all-unknown batch defers it
+    // (`mark_changed` flags the face again on its next trace).
     let meta_index = inputs[i].x * 3u + 1u;
     let pending = bitcast<f32>(slot_meta[meta_index].x);
-    slot_meta[meta_index].x = 0u;
+    if fresh_count > 0u { slot_meta[meta_index].x = 0u; }
     // Physical retention: keep H = c * sigma^2 / D^2 samples, the MSE optimum
     // for a change of size D (predicted by `apply_events`). sigma^2 is
     // the retained per-sample variance. A face that was dark relative to the
@@ -181,6 +183,9 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
         let variance = select(dot(w, old_variance), dot(w, fresh_variance), dot(w, old_mean) < 0.05 * change);
         let keep = physical * variance / (change * change);
         previous_count = min(previous_count, u32(min(keep, 65536.0)));
+        // The change is consumed now: a rollback of this merge restores the
+        // retained history, never the pre-change count.
+        checkpoint[cp + 2u].y = min(checkpoint[cp + 2u].y, previous_count);
     }
     let count = min(previous_count + fresh_count, control.w);
     // Recency k >= 1 weights sample i of n by (i/n)^(k-1); k = 1 is the mean.

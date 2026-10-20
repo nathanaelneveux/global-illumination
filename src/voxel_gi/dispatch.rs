@@ -122,8 +122,6 @@ pub(super) fn start_trace_task(
         0
     };
     selected.focus = focus;
-    runtime.batch_counter = (runtime.batch_counter % 0x0fff_ffff) + 1;
-    selected.batch_id = runtime.batch_counter;
     selected.transport_revision = field.transport_revision;
     selected.source_revision = runtime.source_revision;
     selected.stable_error = settings.stable_error();
@@ -152,6 +150,13 @@ pub(super) fn start_trace_task(
         0
     };
     let sky_only = transport_count == 0 && selected.picks == 0;
+    // Batch IDs count submissions only: the GPU protects a CPU job's face for
+    // four IDs and re-ranks the quarter `batch_id % 4`, so poll-only frames
+    // must not advance it (they expired ownership of unpublished jobs).
+    if !selected.probes.is_empty() || selected.picks > 0 {
+        runtime.batch_counter = (runtime.batch_counter % 0x0fff_ffff) + 1;
+        selected.batch_id = runtime.batch_counter;
+    }
     if selected.probes.is_empty() && selected.picks == 0 && runtime.gpu_pending.is_empty() {
         runtime.trace_scratch = selected;
         stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
@@ -525,7 +530,8 @@ pub(super) fn apply_trace_task(
     // The statistics mirror of GPU-picked faces, at most mirror_budget per
     // batch (the GPU emits faces whose mirror is stale; the GPU state is the
     // authority). A face whose probe changed since its slot's revision
-    // reached the GPU is skipped: its CPU job will carry the new revision.
+    // reached the GPU is skipped: its CPU job will carry the new revision. So
+    // is a record older than the probe's last merge (a same-batch CPU job).
     // A GPU pick whose slot's revision is older than its probe's traced
     // pre-change light (it was in flight at the change): the probe's next CPU
     // job undoes it, unless that job is already in flight (submitted after
@@ -551,6 +557,7 @@ pub(super) fn apply_trace_task(
         }
         if old.revision as u32 != *tag
             || batch.work.source_revision < runtime.model_reset_source_revision
+            || face.predates(old)
         {
             continue;
         }
