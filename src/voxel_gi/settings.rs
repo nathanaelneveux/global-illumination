@@ -61,6 +61,11 @@ pub struct VoxelGiSettings {
     pub stable_min_samples: u32,
     /// Per-band relative-error heuristic, not a certified convergence bound.
     pub stable_relative_error: f32,
+    /// Faces whose CPU statistics mirror the GPU merges per batch (the GPU
+    /// state is the authority; GPU-picked faces' mirror lags under heavy
+    /// refinement). Bounds the main-thread merge. Validation of display
+    /// quality from CPU recorders raises it (config/gi-mirror-full.json).
+    pub statistics_mirror_per_batch: u32,
 }
 
 impl Default for VoxelGiSettings {
@@ -83,6 +88,7 @@ impl Default for VoxelGiSettings {
             stable_audit_interval: Duration::from_secs(2),
             stable_min_samples: 64,
             stable_relative_error: 0.12,
+            statistics_mirror_per_batch: 1024,
         }
     }
 }
@@ -123,6 +129,10 @@ impl VoxelGiSettings {
     pub(super) fn display_response_seconds(&self) -> f32 {
         self.display_response.as_secs_f32().clamp(0.01, 0.5)
     }
+    pub(super) fn mirror_per_batch(&self) -> u32 {
+        self.statistics_mirror_per_batch.clamp(64, 65536)
+    }
+
     pub(super) fn budget_ms(&self) -> f32 {
         if self.trace_budget_ms.is_finite() {
             self.trace_budget_ms.clamp(0.25, 16.0)

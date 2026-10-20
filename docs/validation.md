@@ -558,6 +558,12 @@ The mirror is the latest queued/completed CPU snapshot, which may differ from
 the currently rendered GPU frame; the pinned image is needed to correlate an
 actual visual failure. Pinning cannot recover events before the pin.
 
+The CPU statistics mirror is bounded: at most `statistics_mirror_per_batch`
+GPU-picked faces reach it per batch, so the watch and the validation recorders
+(live-site, house, response timing) can read lagging statistics. Run with
+`VOXEL_GI_SETTINGS=config/gi-mirror-full.json` when those numbers must be
+current, and judge default-setting runs by their rendered captures.
+
 This is a gameplay diagnostic, not a frozen reference or a quality/FPS pass.
 An automated smoke test can pin known coordinates using
 `VOXEL_GI_WATCH_FACE=x,y,z,face` (face order +X,-X,+Y,-Y,+Z,-Z); this does not

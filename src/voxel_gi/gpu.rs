@@ -801,9 +801,20 @@ impl GpuTracer {
             &ShaderBuffer::from(vec![params]).data.unwrap(),
         )?;
         self.tasks.upload(device, queue, &self.task_bytes)?;
+        // Readback: the CPU's faces, sky corners, then (with GPU picks) the
+        // statistics-mirror count and records. Picks themselves are not read
+        // back: the mirror catches up with them under a fixed budget.
         let face_bytes = face_count * RESULT_BYTES;
-        let pick_offset = face_bytes + sky_pending.len() * SKY_RESULT_BYTES;
-        let readback_bytes = pick_offset + picks as usize * 16;
+        let cpu_bytes = work.faces.len() * RESULT_BYTES;
+        let sky_bytes = sky_pending.len() * SKY_RESULT_BYTES;
+        let mirror_offset = cpu_bytes + sky_bytes;
+        let mirror_records = if picks > 0 { work.mirror_budget.max(1) } else { 0 };
+        let picks_offset = mirror_offset + 16 + mirror_records as usize * resident::MIRROR_RECORD_BYTES;
+        let readback_bytes = if picks > 0 {
+            picks_offset + picks as usize * 16
+        } else {
+            mirror_offset
+        };
         // Resident batches: preparation, rays, accumulation, then (with GPU
         // picks) selection in its own pass.
         let timestamp_count = if self.resident.is_some() && face_count > 0 {
@@ -812,7 +823,7 @@ impl GpuTracer {
             2
         };
         let timestamp_bytes = timestamp_count as u64 * 8;
-        self.output.ensure(device, readback_bytes)?;
+        self.output.ensure(device, face_bytes + sky_bytes)?;
         let mut readback = self.readbacks.pop().unwrap_or_else(|| {
             UploadBuffer::new(
                 device,
@@ -932,22 +943,37 @@ impl GpuTracer {
                 self.timestamps.as_ref(),
             );
         }
-        encoder.copy_buffer_to_buffer(
-            &self.output.buffer,
-            0,
-            &readback.buffer,
-            0,
-            pick_offset as u64,
-        );
+        if cpu_bytes > 0 {
+            encoder.copy_buffer_to_buffer(&self.output.buffer, 0, &readback.buffer, 0, cpu_bytes as u64);
+        }
+        if sky_bytes > 0 {
+            encoder.copy_buffer_to_buffer(
+                &self.output.buffer,
+                face_bytes as u64,
+                &readback.buffer,
+                cpu_bytes as u64,
+                sky_bytes as u64,
+            );
+        }
         if picks > 0
             && let Some(resident) = &self.resident
         {
+            let (count, count_offset, records, budget) = resident.mirror_buffers();
+            debug_assert_eq!(budget, mirror_records);
+            encoder.copy_buffer_to_buffer(count, count_offset, &readback.buffer, mirror_offset as u64, 4);
+            encoder.copy_buffer_to_buffer(
+                records,
+                0,
+                &readback.buffer,
+                mirror_offset as u64 + 16,
+                (mirror_records as usize * resident::MIRROR_RECORD_BYTES) as u64,
+            );
             let (records, offset, count) = resident.pick_records();
             encoder.copy_buffer_to_buffer(
                 records,
                 offset,
                 &readback.buffer,
-                pick_offset as u64,
+                picks_offset as u64,
                 u64::from(count) * 16,
             );
         }
@@ -976,9 +1002,9 @@ impl GpuTracer {
             submission,
             completion: std::sync::Mutex::new(receiver),
             submitted,
-            face_bytes,
-            cpu_faces: work.faces.len(),
+            face_bytes: cpu_bytes,
             picks,
+            mirror_records,
             bytes: readback_bytes,
             timestamp_bytes: timestamp_bytes as usize,
             samples,
@@ -999,8 +1025,8 @@ impl GpuTracer {
             buffer: readback,
             submitted,
             face_bytes,
-            cpu_faces,
             picks,
+            mirror_records,
             bytes: readback_bytes,
             timestamp_bytes,
             samples,
@@ -1072,36 +1098,30 @@ impl GpuTracer {
             face.custom_direct = Vec3::new(values[21], values[22], values[23]);
             face.updated_at = Some(submitted);
         }
-        let pick_offset = face_bytes + sky_pending.len() * SKY_RESULT_BYTES;
-        let picked_before = work.picked.len();
-        if let Some(resident) = &self.resident {
-            for (pick, record) in view[pick_offset..readback_bytes]
-                .chunks_exact(16)
-                .take(picks as usize)
-                .enumerate()
+        let mirror_offset = face_bytes + sky_pending.len() * SKY_RESULT_BYTES;
+        if picks > 0
+            && let Some(resident) = &self.resident
+        {
+            let word = |at: usize| u32::from_le_bytes(view[at..at + 4].try_into().unwrap());
+            let count = word(mirror_offset).min(mirror_records) as usize;
+            for record in view[mirror_offset + 16..]
+                .chunks_exact(resident::MIRROR_RECORD_BYTES)
+                .take(count)
             {
                 let word = |i: usize| u32::from_le_bytes(record[i * 4..i * 4 + 4].try_into().unwrap());
-                let (slot, tag, incarnation) = (word(0), word(2), word(3));
-                // Unused capacity, or a hole left by a retired slot's stale key.
-                if slot == u32::MAX {
-                    continue;
-                }
+                let (slot, incarnation, tag) = (word(0), word(1), word(2));
                 let Some((voxel, face)) = resident.picked_face(slot, incarnation) else {
                     continue;
                 };
-                let index = cpu_faces + pick;
-                let bytes = &view[index * RESULT_BYTES..(index + 1) * RESULT_BYTES];
-                let values: [f32; 24] = std::array::from_fn(|i| {
-                    f32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
-                });
-                let picked = super::work::FaceWork {
+                let values: [f32; 24] = std::array::from_fn(|i| f32::from_bits(word(4 + i)));
+                let mirrored = super::work::FaceWork {
                     voxel,
                     face,
                     radiance: decode_spectrum(&values[0..4], values[4]),
                     second_moment: decode_spectrum(&values[8..12], values[12]),
                     direct: decode_spectrum(&values[16..20], values[20]),
                     custom_direct: Vec3::new(values[21], values[22], values[23]),
-                    samples: values[5].to_bits(),
+                    samples: values[5].to_bits() & 0x3fff_ffff,
                     history_cap: u32::MAX,
                     rollback: false,
                     material: 0,
@@ -1111,17 +1131,31 @@ impl GpuTracer {
                     presentation: Vec4::new(values[7], values[13], values[14], values[15]),
                     resident: UVec2::new(slot, incarnation),
                 };
-                work.picked.push((picked, tag));
+                work.picked.push((mirrored, tag));
             }
         }
-        if let Some(resident) = &mut self.resident {
-            for (face, _) in &work.picked[picked_before..] {
-                resident.request_donor_list(face.resident, face.samples);
+        // Picked faces' donor lists build in the next batch, from the pick
+        // records (slot, count before the merge, incarnation).
+        if picks > 0
+            && let Some(resident) = &mut self.resident
+        {
+            let picks_offset =
+                mirror_offset + 16 + mirror_records as usize * resident::MIRROR_RECORD_BYTES;
+            for record in view[picks_offset..readback_bytes].chunks_exact(16) {
+                let word = |i: usize| u32::from_le_bytes(record[i * 4..i * 4 + 4].try_into().unwrap());
+                let (slot, tag, count, incarnation) = (word(0), word(1), word(2), word(3));
+                if slot == u32::MAX {
+                    continue;
+                }
+                if let Some((voxel, face)) = resident.picked_face(slot, incarnation) {
+                    work.pick_tags.push((voxel, face, tag));
+                }
+                resident.request_donor_list(UVec2::new(slot, incarnation), count.saturating_add(samples));
             }
         }
         for (position, bytes) in sky_pending
             .into_iter()
-            .zip(view[face_bytes..pick_offset].chunks_exact(SKY_RESULT_BYTES))
+            .zip(view[face_bytes..mirror_offset].chunks_exact(SKY_RESULT_BYTES))
         {
             self.sky_cache.store_ticket(
                 sky_ticket,

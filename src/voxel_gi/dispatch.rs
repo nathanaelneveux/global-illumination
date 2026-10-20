@@ -129,6 +129,7 @@ pub(super) fn start_trace_task(
     selected.stable_error = settings.stable_error();
     selected.stable_samples = settings.stable_samples();
     selected.audit_ms = settings.audit_interval().as_millis() as u32;
+    selected.mirror_budget = settings.mirror_per_batch();
     let samples = settings.batch_samples();
     // Eager slots ride with any batch that prepares resident inputs.
     // Bounded per batch so streaming cannot burst.
@@ -521,12 +522,25 @@ pub(super) fn apply_trace_task(
             runtime.mark_display_dirty(voxel);
         }
     }
-    // GPU picks: the GPU already merged them into its own statistics; the
-    // CPU mirror takes them unless the probe changed since its slot's last
-    // revision reached the GPU (then the pick traced pre-change light: the
-    // CPU's next job for the probe undoes it, unless that job is already in
-    // flight, submitted after the pick, and capped it).
+    // The statistics mirror of GPU-picked faces, at most mirror_budget per
+    // batch (the GPU emits faces whose mirror is stale; the GPU state is the
+    // authority). A face whose probe changed since its slot's revision
+    // reached the GPU is skipped: its CPU job will carry the new revision.
+    // A GPU pick whose slot's revision is older than its probe's traced
+    // pre-change light (it was in flight at the change): the probe's next CPU
+    // job undoes it, unless that job is already in flight (submitted after
+    // the pick, it capped it). Emitter removal leaves bright stale light
+    // otherwise (response capture 1 s after removal: FLIP .38 vs .08).
+    for &(voxel, face, tag) in &batch.work.pick_tags {
+        if let Some(old) = field.probes.get_mut(&voxel)
+            && old.revision as u32 != tag
+            && !runtime.trace_pending.contains(&voxel)
+        {
+            old.stale_merge |= 1 << face;
+        }
+    }
     let picked = std::mem::take(&mut batch.work.picked);
+    let _merge_picks = info_span!("gi_merge_picks").entered();
     for (face, tag) in &picked {
         let voxel = face.voxel;
         let Some(old) = field.probes.get_mut(&voxel) else {
@@ -538,9 +552,6 @@ pub(super) fn apply_trace_task(
         if old.revision as u32 != *tag
             || batch.work.source_revision < runtime.model_reset_source_revision
         {
-            if !runtime.trace_pending.contains(&voxel) {
-                old.stale_merge |= 1 << face.face;
-            }
             continue;
         }
         let (_, old_samples, old_covered, old_settled) = probe_metrics(old, transport_revision);
@@ -561,10 +572,14 @@ pub(super) fn apply_trace_task(
             runtime.mark_display_dirty(voxel);
         }
     }
-    let traced_faces = batch.work.faces.len() + picked.len();
+    drop(_merge_picks);
+    // Faces traced: the CPU's and the GPU's picks (the mirror records are a
+    // bounded subset of those; counting them shrank the budget).
+    let picks_traced = batch.work.pick_tags.len();
+    let traced_faces = batch.work.faces.len() + picks_traced;
     stats.traced_paths = stats
         .traced_paths
-        .saturating_add(picked.len() as u64 * u64::from(settings.batch_samples()));
+        .saturating_add(picks_traced as u64 * u64::from(settings.batch_samples()));
     drop(_merge);
     batch.work.clear();
     runtime.trace_scratch = batch.work;

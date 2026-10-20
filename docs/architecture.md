@@ -474,18 +474,24 @@ that job's merge. Retention events and source changes revoke stability on
 the GPU. Every face the GPU ranks is considered each batch, not a rotating
 window; the camera is a priority hint, never the extent of the lighting field.
 
-Picks return with the batch's readback (slot, revision tag, incarnation) and
-merge into the CPU mirror like CPU jobs. A pick whose slot's revision tag is
-older than the probe's revision traced pre-change light: the CPU's next job
-for the probe undoes it (rollback), unless one is already in flight.
+Picks return with the batch's readback (slot, revision tag, incarnation); the
+CPU uses them for evidence donor lists and rollback. A pick whose slot's
+revision tag is older than the probe's revision traced pre-change light: the
+CPU's next job for the probe undoes it, unless one is already in flight.
 
-The per-pick merge into the CPU mirror is most of the remaining main-thread
-GI cost (gameplay Tracy, 59e7346: ~1.4 of 2.9 ms/frame). A bounded mirror was
-tried (the GPU marks picked faces stale and emits at most 1,024 per batch;
-main thread 2.9 -> 1.9 ms/frame; patch `target/experiments/bounded-mirror-v3.patch`)
-and shelved: CPU code still feeds the GPU from mirrored statistics. Two such
-paths were found and fixed independently (eager-slot addresses, 8f361af; relight
-caps derived from mirrored counts, now explicit). The rest was edit handling: an
+The GPU state is the statistics authority; the CPU keeps a bounded mirror for
+diagnostics, validation recorders and the CPU fallback display. A pick marks
+its face's mirror stale, and selection emits at most
+`statistics_mirror_per_batch` (default 1,024) stale faces' full state per
+batch; the CPU merges those records unless the probe changed since. The
+per-pick merge was most of the main-thread GI cost (gameplay Tracy, 59e7346:
+~1.4 of 2.9 ms/frame). `config/gi-mirror-full.json` mirrors every pick, for
+validation recorders that need current CPU statistics (house-edits, cave):
+recorder metrics of other profiles read a lagging mirror, so rendered frames
+(FLIP) judge them. The first bounded mirror was shelved because CPU code still
+fed the GPU from mirrored statistics. Two such paths were fixed independently
+(eager-slot addresses, 8f361af; relight caps derived from mirrored counts, now
+explicit). The rest was edit handling: an
 edit's flux (`brightest_outgoing`) and which nearby faces it wakes
 (`retention_binds`) read the mirror at the moment of the edit, so with a lagging
 mirror the GPU under-reacted (response profile, rendered frame 1 s after an

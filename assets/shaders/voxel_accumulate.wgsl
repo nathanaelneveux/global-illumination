@@ -5,10 +5,12 @@
 // audit interval ms); focus: (voxel.xyz, GPU pick budget); batch: (CPU
 // traced faces, batch id (28 bits, never 0), first and end slot this
 // batch's rotating classification covers); edits: (positions to measure,
-// measure entries, urgent radius^2 for a measured / an unknown edit).
+// measure entries, urgent radius^2 for a measured / an unknown edit);
+// mirror: (statistics-mirror records per batch, ...).
 struct Controls {
     counts: vec4<u32>, options: vec4<u32>, display: vec4<u32>, limits: vec4<u32>,
     schedule: vec4<u32>, focus: vec4<u32>, batch: vec4<u32>, edits: vec4<u32>,
+    mirror: vec4<u32>,
 }
 @group(0) @binding(0) var<uniform> settings: Controls;
 @group(0) @binding(1) var<storage, read_write> tasks: array<vec4<u32>>;
@@ -37,7 +39,7 @@ struct Controls {
 // Per slot, three uint4s: (voxel.xyz, face | LIVE); (pending predicted
 // change (f32), schedule, revision tag, transport tag); and the ranking
 // record (noise per sample (f32), last merge ms, brightest visible band
-// (f32), measured flag (bit 31) | count). Schedule: bits 0-2 stable batches, bit 3 fresh,
+// (f32), measured (bit 31) | urgent (bit 30) | mirror stale (bit 29) | count). Schedule: bits 0-2 stable batches, bit 3 fresh,
 // bits 4-31 the batch of the last CPU job. Selection reads these and one
 // state word per slot, not the 144-byte state. See resident.rs META_BYTES.
 @group(0) @binding(13) var<storage, read_write> slot_meta: array<vec4<u32>>;
@@ -57,6 +59,11 @@ struct Controls {
 // Per slot: its class and key bucket this batch (group << 8 | bucket), or
 // 0xffffffff when not a candidate. Written by classify, read by emit.
 @group(0) @binding(16) var<storage, read_write> slot_keys: array<u32>;
+// The CPU's statistics mirror for faces the GPU picked: per record (slot,
+// incarnation, revision tag, 0) and the face's six result uint4s; the
+// record count is selection[SEL_MIRRORS]. Classification emits faces whose mirror is
+// stale, up to mirror.x per batch; the CPU merges only these.
+@group(0) @binding(17) var<storage, read_write> mirror_out: array<vec4<u32>>;
 
 // Word updates to a persistent buffer (donor arena or list table): word 0 is
 // the count, then (word index, value) pairs. Indices are unique per batch.
@@ -118,7 +125,7 @@ fn prepare(@builtin(global_invocation_id) id: vec3<u32>) {
 // Selection reads a slot's count from its ranking record, never the state.
 fn mirror_count(slot: u32) {
     let index = slot * 3u + 2u;
-    slot_meta[index].w = (slot_meta[index].w & 0xc0000000u) | (state[slot * 9u + 1u].y & 0x3fffffffu);
+    slot_meta[index].w = (slot_meta[index].w & 0xe0000000u) | (state[slot * 9u + 1u].y & 0x1fffffffu);
 }
 
 // A face about to be traced: its task takes the current GPU sequence, and
@@ -224,14 +231,15 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var word = 0u; word < 6u; word += 1u) {
         output[result + word] = state[base + word];
     }
-    record_stability(inputs[i].x, previous_mean, bitcast<f32>(previous_ionizing));
+    // A GPU pick's result is not read back: its CPU mirror is now stale.
+    record_stability(inputs[i].x, previous_mean, bitcast<f32>(previous_ionizing), i >= settings.batch.x);
 }
 
 // Per-face stability after a merge (scheduling.rs record_face_batch): stable
 // batches advance while the face stays in the same transport revision, its
 // display has settled on its mean, it has its required samples, and both its
 // relative error and its drift in this batch are small. Then fresh.
-fn record_stability(slot: u32, before: vec4<f32>, before_ionizing: f32) {
+fn record_stability(slot: u32, before: vec4<f32>, before_ionizing: f32, picked: bool) {
     let base = slot * 9u;
     let index = slot * 3u + 1u;
     let schedule = slot_meta[index];
@@ -261,7 +269,7 @@ fn record_stability(slot: u32, before: vec4<f32>, before_ionizing: f32) {
         bitcast<u32>(sample_noise(base)),
         settings.counts.z,
         bitcast<u32>(max3(after.xyz)),
-        0x80000000u | count,
+        0x80000000u | count | select(slot_meta[slot * 3u + 2u].w & MIRROR_STALE, MIRROR_STALE, picked),
     );
 }
 
@@ -615,10 +623,12 @@ const BOOTSTRAP: u32 = 8u;
 const CLASSES: u32 = 4u;
 const NO_CLASS: u32 = 4u;
 const URGENT: u32 = 0x40000000u;
+const MIRROR_STALE: u32 = 0x20000000u;
 const SEL_THRESHOLD: u32 = 1024u;
 const SEL_REMAINDER: u32 = 1028u;
 const SEL_TIES: u32 = 1032u;
 const SEL_TOTAL: u32 = 1036u;
+const SEL_MIRRORS: u32 = 1037u;
 
 struct Candidate { group: u32, bucket: u32 }
 
@@ -636,7 +646,7 @@ fn candidate(slot: u32) -> Candidate {
     let last_cpu = schedule.y >> 4u;
     if last_cpu != 0u && ((settings.batch.y - last_cpu) & 0x0fffffffu) < 4u { return none; }
     let rank = slot_meta[slot * 3u + 2u];
-    let count = rank.w & 0x3fffffffu;
+    let count = rank.w & 0x1fffffffu;
     let fresh = (schedule.y & 8u) != 0u && schedule.w == settings.schedule.x;
     let since = settings.counts.z - rank.y;
     let age_ms = select(select(since, 0u, since > 0x7fffffffu), 0x7fffffffu, rank.w < 0x80000000u);
@@ -669,12 +679,42 @@ fn candidate(slot: u32) -> Candidate {
 // Classification rotates: each batch re-ranks one contiguous quarter of the
 // slots (selection is memory-bound; ~1 ms for all ~800k on an M4). Keys
 // persist; a picked or CPU-owned face's key is cleared until re-ranked.
+var<workgroup> group_mirrors: atomic<u32>;
+var<workgroup> group_mirror_base: u32;
+
 @compute @workgroup_size(256)
-fn select_classify(@builtin(global_invocation_id) id: vec3<u32>) {
+fn select_classify(
+    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(local_invocation_index) local: u32,
+) {
+    if local == 0u { atomicStore(&group_mirrors, 0u); }
+    workgroupBarrier();
     let slot = settings.batch.z + id.x;
-    if slot >= settings.batch.w { return; }
-    let c = candidate(slot);
-    slot_keys[slot] = select(0xffffffffu, (c.group << 8u) | c.bucket, c.group != NO_CLASS);
+    var stale = false;
+    var mirror_index = 0u;
+    if slot < settings.batch.w {
+        let c = candidate(slot);
+        slot_keys[slot] = select(0xffffffffu, (c.group << 8u) | c.bucket, c.group != NO_CLASS);
+        stale = (slot_meta[slot * 3u + 2u].w & MIRROR_STALE) != 0u
+            && (slot_meta[slot * 3u].w & 8u) != 0u;
+        if stale { mirror_index = atomicAdd(&group_mirrors, 1u); }
+    }
+    workgroupBarrier();
+    if local == 0u {
+        let n = atomicLoad(&group_mirrors);
+        group_mirror_base = select(0u, atomicAdd(&selection[SEL_MIRRORS], n), n > 0u);
+    }
+    workgroupBarrier();
+    let record = group_mirror_base + mirror_index;
+    if !stale || record >= settings.mirror.x { return; }
+    // Emitted: the mirror is current once the CPU merges this record.
+    slot_meta[slot * 3u + 2u].w &= ~MIRROR_STALE;
+    let base = slot * 9u;
+    let out = record * 7u;
+    mirror_out[out] = vec4(slot, state[base + 7u].x, slot_meta[slot * 3u + 1u].z, 0u);
+    for (var word = 0u; word < 6u; word += 1u) {
+        mirror_out[out + 1u + word] = state[base + word];
+    }
 }
 
 // Histograms of all keys build in workgroup memory, then only touched bins
@@ -757,8 +797,8 @@ fn select_threshold(@builtin(local_invocation_index) t: u32) {
 }
 
 // Picks append after the CPU's traced faces: a task (voxel, face, current
-// sequence) and an input record (slot, no seed/cap, revision tag,
-// incarnation) the readback returns for the CPU's mirror.
+// sequence) and an input record (slot, revision tag, count before the
+// merge, incarnation) the readback returns.
 // Ties at a threshold bucket and the pick list are reserved per workgroup:
 // one global atomic per workgroup, not per face (most faces can share one
 // bucket, and per-face atomics on one counter serialized ~1.5 ms).
@@ -812,5 +852,8 @@ fn select_emit(
     let base = slot * 9u;
     tasks[task * 2u] = vec4(identity.xyz, identity.w & 7u);
     begin_trace(base, task);
-    inputs[task] = vec4(slot, 0xbfffffffu, slot_meta[slot * 3u + 1u].z, state[base + 7u].x);
+    // Read back: the slot's revision tag (stale picks are undone by the
+    // probe's next CPU job) and the count before this merge (donor lists).
+    // No pass reads y or z of a pick record.
+    inputs[task] = vec4(slot, slot_meta[slot * 3u + 1u].z, state[base + 1u].y & 0x3fffffffu, state[base + 7u].x);
 }

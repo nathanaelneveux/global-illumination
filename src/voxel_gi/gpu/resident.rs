@@ -21,7 +21,11 @@ const META_WORDS: u32 = (META_BYTES / 4) as u32;
 const META_LIVE: u32 = 8;
 /// GPU selection scratch: three 256-bucket histograms, thresholds,
 /// remainders, tie counters and the pick total.
-const SELECTION_WORDS: usize = 4 * 256 + 4 * 3 + 1;
+const SELECTION_WORDS: usize = 4 * 256 + 4 * 3 + 2;
+/// A statistics-mirror record: a header and six uint4s. The GPU emits at most
+/// `TraceWork::mirror_budget` per batch; the CPU merges only those.
+pub(super) const MIRROR_RECORD_BYTES: usize = 7 * 16;
+const SEL_MIRRORS: u64 = 1037;
 const SHADER: &str = include_str!("../../../assets/shaders/voxel_accumulate.wgsl");
 type Key = (IVec3, usize);
 
@@ -99,6 +103,10 @@ pub(super) struct ResidentAccumulator {
     cpu_faces: u32,
     selection: UploadBuffer,
     slot_keys: UploadBuffer,
+    mirror_out: UploadBuffer,
+    mirror_budget: u32,
+    /// Bytes of `slot_keys` initialized (to none, or by classification).
+    slot_keys_valid: u64,
     select_classify: ComputePipeline,
     select_threshold: ComputePipeline,
     select_emit: ComputePipeline,
@@ -106,7 +114,7 @@ pub(super) struct ResidentAccumulator {
     histogram_bindings: Option<CachedBindings<3>>,
     /// Slots classified this batch: one quarter of the range, rotating.
     classify_range: (u32, u32),
-    classify_bindings: Option<CachedBindings<3>>,
+    classify_bindings: Option<CachedBindings<6>>,
     threshold_bindings: Option<CachedBindings<2>>,
     emit_bindings: Option<CachedBindings<7>>,
     /// Per-slot (start, len) into `donor_arena`; see `donor_cache`.
@@ -247,10 +255,21 @@ impl ResidentAccumulator {
             list_requests: Vec::new(),
             picks: 0,
             cpu_faces: 0,
-            selection: UploadBuffer::new(device, "GI selection scratch", storage),
+            selection: UploadBuffer::new(
+                device,
+                "GI selection scratch",
+                storage | BufferUsages::COPY_SRC,
+            ),
             slot_keys: UploadBuffer::new(
                 device,
                 "GI selection keys",
+                storage | BufferUsages::COPY_SRC,
+            ),
+            slot_keys_valid: 0,
+            mirror_budget: 1024,
+            mirror_out: UploadBuffer::new(
+                device,
+                "GI statistics mirror records",
                 storage | BufferUsages::COPY_SRC,
             ),
             select_classify,
@@ -671,6 +690,9 @@ impl ResidentAccumulator {
                 .ensure(device, self.measure_entries as usize * 4)?;
         }
         self.selection.ensure(device, SELECTION_WORDS * 4)?;
+        self.mirror_budget = work.mirror_budget.max(1);
+        self.mirror_out
+            .ensure(device, self.mirror_budget as usize * MIRROR_RECORD_BYTES)?;
         {
             // Keys persist across batches (rotating classification): keep
             // them through growth; new slots have none until classified.
@@ -685,8 +707,12 @@ impl ResidentAccumulator {
                 });
                 encoder.copy_buffer_to_buffer(&previous, 0, &self.slot_keys.buffer, 0, capacity);
                 queue.submit([encoder.finish()]);
-                let fresh = vec![0xff; (self.slot_keys.capacity - capacity) as usize];
-                queue.write_buffer(&self.slot_keys.buffer, capacity, &fresh);
+                // Keys never written (including the initial allocation's,
+                // which read zero: nearest coverage) start as none.
+                let valid = self.slot_keys_valid.min(capacity);
+                let fresh = vec![0xff; (self.slot_keys.capacity - valid) as usize];
+                queue.write_buffer(&self.slot_keys.buffer, valid, &fresh);
+                self.slot_keys_valid = self.slot_keys.capacity;
             }
         }
         let chunk = self.high_water.div_ceil(4);
@@ -783,6 +809,10 @@ impl ResidentAccumulator {
             self.measure_entries,
             (super::super::geometry::MEASURED_RELIGHT_RADIUS as u32).pow(2),
             (super::super::geometry::RELIGHT_RADIUS as u32).pow(2),
+            self.mirror_budget,
+            0,
+            0,
+            0,
         ];
         self.control.upload(
             device,
@@ -881,6 +911,12 @@ impl ResidentAccumulator {
     /// The prepared batch's GPU pick records: buffer, byte offset and count.
     pub(super) fn pick_records(&self) -> (&Buffer, u64, u32) {
         (&self.inputs.buffer, u64::from(self.cpu_faces) * 16, self.picks)
+    }
+
+    /// The statistics mirror of the prepared batch: the buffer and byte
+    /// offset of its record count, the records, and their budget.
+    pub(super) fn mirror_buffers(&self) -> (&Buffer, u64, &Buffer, u32) {
+        (&self.selection.buffer, SEL_MIRRORS * 4, &self.mirror_out.buffer, self.mirror_budget)
     }
 
     pub(super) fn request_donor_list(&mut self, address: UVec2, count: u32) {
@@ -1046,7 +1082,14 @@ impl ResidentAccumulator {
                 &mut self.classify_bindings,
                 device,
                 || self.select_classify.get_bind_group_layout(0).into(),
-                [(0, &self.control), (13, &self.meta), (16, &self.slot_keys)],
+                [
+                    (0, &self.control),
+                    (3, &self.state),
+                    (13, &self.meta),
+                    (15, &self.selection),
+                    (16, &self.slot_keys),
+                    (17, &self.mirror_out),
+                ],
             );
             let (first, end) = self.classify_range;
             if end > first {
@@ -1846,8 +1889,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "native GPU selection: coverage order, eventual coverage, CPU-owned faces"]
-    fn gpu_picks_cover_nearest_first_and_never_race_cpu_jobs() {
+    #[ignore = "native GPU selection: coverage order, eventual coverage, CPU-owned faces, mirror"]
+    fn gpu_picks_cover_nearest_first_never_race_cpu_jobs_and_reach_the_mirror() {
         let mut gpu = super::super::tests::native_tracer();
         gpu.enable_resident().unwrap();
         let (scene, sources, probes) = super::super::tests::open_floor_fixture();
@@ -1870,62 +1913,72 @@ mod tests {
             work.stable_error = 0.12;
             work.stable_samples = 32;
             work.audit_ms = 1_000_000;
+            work.mirror_budget = 1024;
             gpu.trace_compact(Arc::clone(&scene), &sources, &materials, &mut work, 16, &emitters, false)
                 .unwrap();
             work.picked.iter().map(|(face, _)| (face.voxel, face.face)).collect::<Vec<_>>()
         };
-        // Every face resident and unmeasured (seeded before selection in
-        // the first batch); the CPU traces one probe then.
-        let owned = probes[0].clone();
-        let mut covered = HashSet::new();
-        let mut first = true;
-        // Coverage keeps a quarter of the budget once refinement has work
-        // (as the CPU's quotas did), so this takes ~70 rounds, not 16.
-        for round in 0..120 {
-            // Classification rotates over quarters of the slots: the first
-            // four batches pick little while every slot gets ranked.
+        let counts = |gpu: &GpuTracer| -> HashMap<(IVec3, usize), u32> {
+            if gpu.resident.as_ref().unwrap().high_water == 0 {
+                return HashMap::new();
+            }
+            let words = read_state(gpu);
+            gpu.resident.as_ref().unwrap().slots.iter()
+                .map(|(key, slot)| (*key, words[slot.index as usize * (RECORD_BYTES / 4) + 5] & 0x3fff_ffff))
+                .collect()
+        };
+        // Every face resident and unmeasured (seeded before selection in the
+        // first batch); the CPU traces one probe then. Classification
+        // rotates over quarters of the slots, so the first four batches pick
+        // little while every slot gets ranked.
+        let owned = (probes[0].voxel, 2);
+        let mut mirrored = HashSet::new();
+        for round in 0..124 {
             let budget = if round < 4 { 1 } else { 64 };
-            let picked = if round == 0 {
-                run(&mut gpu, std::slice::from_ref(&owned), &probes, budget)
+            let before = counts(&gpu);
+            mirrored.extend(if round == 0 {
+                run(&mut gpu, std::slice::from_ref(&probes[0]), &probes, budget)
             } else {
                 run(&mut gpu, &[], &[], budget)
-            };
-            assert!(picked.len() <= budget as usize);
-            let unique: HashSet<_> = picked.iter().copied().collect();
-            assert_eq!(unique.len(), picked.len(), "a face is picked once per batch");
-            if round < 4 {
-                assert!(!unique.contains(&(owned.voxel, 2)), "CPU job still in flight");
+            });
+            let after = counts(&gpu);
+            let picked: Vec<_> = after
+                .iter()
+                .filter(|(key, n)| before.get(*key).is_some_and(|b| *n > b) && (round > 0 || **key != owned))
+                .map(|(key, _)| *key)
+                .collect();
+            assert!(picked.len() <= budget as usize, "round {round}: {}", picked.len());
+            if (1..4).contains(&round) {
+                assert!(!picked.contains(&owned), "a face with a CPU job in flight is never picked");
             }
-            if first && round >= 4 && !picked.is_empty() {
+            if round == 4 {
                 // Coverage goes nearest the focus first (log-distance buckets).
                 let d2 = |v: IVec3| (v - focus).length_squared();
+                let bucket = |d: i32| ((d as f32 + 1.0).log2() * 8.0) as u32;
                 let farthest = picked.iter().map(|(v, _)| d2(*v)).max().unwrap();
-                let nearest_left = probes
+                // Still candidates: unmeasured, with a live key (a pick whose
+                // paths all left the loaded world stays unmeasured, keyless).
+                let resident = gpu.resident.as_ref().unwrap();
+                let keys = read_words(&gpu, &resident.slot_keys.buffer, resident.high_water as u64 * 4);
+                let nearest_left = after
                     .iter()
-                    .filter(|p| p.voxel != owned.voxel && !unique.contains(&(p.voxel, 2)))
-                    .map(|p| d2(p.voxel))
+                    .filter(|(key, n)| {
+                        **n == 0
+                            && !picked.contains(key)
+                            && keys[resident.slots[*key].index as usize] != u32::MAX
+                    })
+                    .map(|((v, _), _)| d2(*v))
                     .min()
                     .unwrap();
-                assert!(
-                    ((farthest as f32 + 1.0).log2() * 8.0) as u32
-                        <= ((nearest_left as f32 + 1.0).log2() * 8.0) as u32,
-                    "{farthest} vs {nearest_left}"
-                );
-                first = false;
-            }
-            covered.extend(unique.into_iter().filter(|key| key.0 != owned.voxel));
-            if covered.len() + 1 == probes.len() {
-                break;
+                assert!(bucket(farthest) <= bucket(nearest_left), "{farthest} vs {nearest_left}");
             }
         }
-        assert_eq!(covered.len() + 1, probes.len(), "every face covered by GPU picks");
-        // Picks really traced: each face now has samples on the GPU.
-        let words = read_state(&gpu);
-        let resident = gpu.resident.as_ref().unwrap();
-        for (voxel, face) in covered {
-            let slot = resident.slots[&(voxel, face)];
-            assert!(words[slot.index as usize * (RECORD_BYTES / 4) + 5] >= 16);
-        }
+        let after = counts(&gpu);
+        assert!(after.values().all(|n| *n >= 16), "every face covered by GPU picks");
+        // Every face the GPU picked reached the CPU mirror (the owned face's
+        // results came back with its CPU job instead, unless also picked).
+        let missing: Vec<_> = after.keys().filter(|k| **k != owned && !mirrored.contains(*k)).collect();
+        assert!(missing.is_empty(), "{} picked faces never mirrored", missing.len());
     }
 
     #[test]

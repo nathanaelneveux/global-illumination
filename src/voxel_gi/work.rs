@@ -44,9 +44,13 @@ pub(crate) struct TraceWork {
     pub stable_error: f32,
     pub stable_samples: u32,
     pub audit_ms: u32,
-    /// GPU-picked faces decoded from the readback, with the revision (low 32
-    /// bits) the slot had when it was picked.
+    /// Statistics-mirror records the GPU emits this batch.
+    pub mirror_budget: u32,
+    /// Statistics-mirror records decoded from the readback, with the revision
+    /// (low 32 bits) the slot had.
     pub picked: Vec<(FaceWork, u32)>,
+    /// This batch's GPU picks: face and the revision tag its slot had.
+    pub pick_tags: Vec<(IVec3, usize, u32)>,
 }
 
 pub(crate) struct ProbeWork {
@@ -210,6 +214,7 @@ impl TraceWork {
         self.ensure.clear();
         self.retention_events.clear();
         self.picked.clear();
+        self.pick_tags.clear();
     }
 
     /// Queue slot allocation for this probe's faces that have none yet.
