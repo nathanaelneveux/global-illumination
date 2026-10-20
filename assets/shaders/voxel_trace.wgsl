@@ -53,7 +53,7 @@ struct RayResult {
     voxel: vec3<i32>,
     material: u32,
     position: vec3<f32>,
-    status: u32, // 0 escaped, 1 hit, 2 unknown
+    status: u32, // 0 escaped, 1 hit, 2 unknown, 3 cut at the diffuse reach
     normal: vec3<f32>,
 }
 @group(0) @binding(0) var<uniform> params: Params;
@@ -405,9 +405,11 @@ fn trace_diffuse(origin: vec3<f32>, direction: vec3<f32>) -> RayResult {
     let reach = connection_reach();
     var result = trace(origin, direction, reach);
     // A truncated miss is sky only if the remaining coarse frontier is empty.
-    // Specialization removes this policy from default and shadow traversal.
+    // Otherwise it ends at the reach with no energy: a known black sample
+    // (status 3), not unloaded space. Specialization removes this policy from
+    // default and shadow traversal.
     if LIMITED_REACH && result.status == 0u && geometry_ahead(origin + direction * reach, direction, params.extra.y - reach) {
-        result.status = 2u;
+        result.status = 3u;
     }
     return result;
 }
@@ -591,6 +593,7 @@ fn trace_path(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3
             break;
         }
         if hit.status == 2u { path.unknown = true; break; }
+        if hit.status == 3u { break; }
         let material = materials[hit.material];
         let direct = direct_at(hit.position, hit.normal);
         let emission_weight = material.emission_extra.y;
