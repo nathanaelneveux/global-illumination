@@ -1072,6 +1072,7 @@ impl GpuTracer {
             face.updated_at = Some(submitted);
         }
         let pick_offset = face_bytes + sky_pending.len() * SKY_RESULT_BYTES;
+        let picked_before = work.picked.len();
         if let Some(resident) = &self.resident {
             for (pick, record) in view[pick_offset..readback_bytes]
                 .chunks_exact(16)
@@ -1108,6 +1109,11 @@ impl GpuTracer {
                     resident: UVec2::new(slot, incarnation),
                 };
                 work.picked.push((picked, tag));
+            }
+        }
+        if let Some(resident) = &mut self.resident {
+            for (face, _) in &work.picked[picked_before..] {
+                resident.request_donor_list(face.resident, face.samples);
             }
         }
         for (position, bytes) in sky_pending

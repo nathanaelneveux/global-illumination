@@ -77,6 +77,9 @@ pub(super) struct ResidentAccumulator {
     mark_bindings: Option<CachedBindings<4>>,
     /// Slot index -> face, for decoding GPU picks.
     by_index: Vec<Option<Key>>,
+    /// GPU-picked faces (address, count after that merge) whose donor lists
+    /// the next batch builds: the CPU learns of a pick only at readback.
+    list_requests: Vec<(UVec2, u32)>,
     /// GPU pick budget and CPU traced faces of the prepared batch.
     picks: u32,
     cpu_faces: u32,
@@ -210,6 +213,7 @@ impl ResidentAccumulator {
             events_bindings: None,
             mark_bindings: None,
             by_index: Vec::new(),
+            list_requests: Vec::new(),
             picks: 0,
             cpu_faces: 0,
             selection: UploadBuffer::new(device, "GI selection scratch", storage),
@@ -521,10 +525,20 @@ impl ResidentAccumulator {
         let _evidence = info_span!("gi_evidence_gather").entered();
         if indexed_spatial {
             let mut donors = Vec::new();
-            for face in &work.faces {
-                // CPU feedback only bounds candidate work; current GPU
-                // histories decide support. Caps are applied before rays.
-                let predicted = face.samples.min(face.history_cap).saturating_add(samples);
+            // CPU feedback only bounds candidate work; current GPU histories
+            // decide support. Caps are applied before rays. Faces the GPU
+            // picked get their lists one batch late, for their next picks.
+            let requests = std::mem::take(&mut self.list_requests);
+            let wanted = work
+                .faces
+                .iter()
+                .map(|face| (face.resident, face.samples.min(face.history_cap)))
+                .chain(requests.into_iter().filter(|(address, _)| {
+                    self.picked_face(address.x, address.y).is_some()
+                }));
+            let wanted: Vec<_> = wanted.collect();
+            for (address, count) in wanted {
+                let predicted = count.saturating_add(samples);
                 let sites = super::super::spatial::evidence::candidate_limit(
                     self.evidence_target,
                     predicted,
@@ -532,19 +546,21 @@ impl ResidentAccumulator {
                 );
                 if predicted >= self.evidence_target {
                     // Done borrowing: release the list (rebuilt if needed again).
-                    self.donor_cache.invalidate(face.resident.x);
-                } else if self.donor_cache.needs(face.resident.x, sites as u32 - 1) {
+                    self.donor_cache.invalidate(address.x);
+                } else if self.donor_cache.needs(address.x, sites as u32 - 1) {
                     let graph = self.evidence_topology.as_ref().expect("adaptive topology");
-                    self.evidence_gather.collect(face.resident, sites, |address, edge| {
+                    self.evidence_gather.collect(address, sites, |address, edge| {
                         graph.neighbor(address.x, edge)
                     });
                     donors.clear();
                     donors.extend(self.evidence_gather.values().skip(1).map(|a| a.x));
                     // Fewer sites than asked: the walk ran out of surface.
                     let complete = donors.len() + 1 < sites;
-                    self.donor_cache.store(face.resident.x, &donors, complete);
+                    self.donor_cache.store(address.x, &donors, complete);
                 }
             }
+        } else {
+            self.list_requests.clear();
         }
         self.donor_cache.finish_batch();
         self.meta_writes.finish();
@@ -778,6 +794,10 @@ impl ResidentAccumulator {
     /// The prepared batch's GPU pick records: buffer, byte offset and count.
     pub(super) fn pick_records(&self) -> (&Buffer, u64, u32) {
         (&self.inputs.buffer, u64::from(self.cpu_faces) * 16, self.picks)
+    }
+
+    pub(super) fn request_donor_list(&mut self, address: UVec2, count: u32) {
+        self.list_requests.push((address, count));
     }
 
     /// The face a pick record names, if its slot still holds that allocation.
