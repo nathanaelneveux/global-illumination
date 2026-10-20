@@ -175,19 +175,17 @@ pub(super) fn start_scene_task(
 
     let affected_pages = affected_probe_pages(&dirty_pages, &removed_pages);
     let previous_scene = Arc::clone(&runtime.scene);
-    let retention_radius = if runtime.spatial_history.is_some() {
-        super::retention::INFLUENCE_RADIUS
-    } else {
-        super::geometry::RELIGHT_RADIUS
-    };
+    let retention_radius = super::retention::INFLUENCE_RADIUS;
     let voxel_lookup = (!full_resample.is_empty() || !input.complete_edit_tracking)
         .then(|| voxel_world.get_voxel_fn());
     let chunk_lookup = voxel_world.get_chunk_data_fn();
     let generator = generator.clone();
+    let materials = Arc::clone(&runtime.materials);
     let focus_page = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
         page_of(camera.translation().floor().as_ivec3())
     });
     runtime.scene_task = Some(AsyncComputeTaskPool::get().spawn(async move {
+        let _span = info_span!("gi_scene_build").entered();
         let started = Instant::now();
         let changed_pages: Vec<_> = dirty_pages
             .into_iter()
@@ -232,8 +230,12 @@ pub(super) fn start_scene_task(
             changed_pages,
             &removed_pages,
         ));
-        let changes =
-            super::geometry::SceneChanges::with_radius(&previous_scene, &scene, retention_radius);
+        let changes = super::geometry::SceneChanges::with_materials(
+            &previous_scene,
+            &scene,
+            retention_radius,
+            Some(&materials),
+        );
         let descriptors = if changes.changed {
             scan_surface_probe_pages(&scene, &affected_pages, focus_page)
         } else {
@@ -336,7 +338,11 @@ mod tests {
             )
             .unwrap();
         app.update();
-        app.world_mut().write_message(ChunkWillUpdate::<PrototypeWorld>::new(page, Entity::PLACEHOLDER));
+        app.world_mut()
+            .write_message(ChunkWillUpdate::<PrototypeWorld>::new(
+                page,
+                Entity::PLACEHOLDER,
+            ));
         app.update();
         let snapshot = app.world().resource::<VoxelGiRuntime>().page_edits.0[&page].clone();
         assert_eq!(snapshot[&position], 2);

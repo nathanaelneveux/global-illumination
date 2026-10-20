@@ -14,7 +14,6 @@ mod field;
 mod geometry;
 mod gpu;
 mod gpu_scene;
-mod guiding;
 mod history;
 mod naadf;
 mod publication;
@@ -23,7 +22,6 @@ pub(crate) mod render;
 #[cfg(test)]
 mod research;
 mod retention;
-mod revision;
 mod sampling;
 mod scheduling;
 mod settings;
@@ -32,7 +30,6 @@ mod sky_cache;
 mod sources;
 mod spatial;
 mod spectrum;
-mod startup;
 mod statistics;
 mod telemetry;
 mod tracer;
@@ -44,18 +41,16 @@ mod world;
 use std::collections::VecDeque;
 // Bounded, engine-owned integer coordinates; no untrusted string keys.
 use bevy::platform::collections::HashSet;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 use bevy::tasks::Task;
-use rayon::ThreadPool;
 
 pub use field::{EnergyEstimate, VoxelEnergyField};
-pub use settings::{TransportSettings, VoxelGiSettings, VoxelGiVisualWeights};
+pub use settings::{TransportSettings, VoxelGiSettings};
 pub use sources::VoxelGiEnvironment;
 pub use spectrum::{EnergyEmitter, EnergySpectrum};
-pub use startup::{RetentionPolicy, RetentionSummary, TransportBackend, VoxelGiStartup};
 pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 
 use bvw::{collect_chunk_changes, start_scene_task};
@@ -114,7 +109,6 @@ impl Plugin for VoxelGiPlugin {
                     .chain()
                     .in_set(VoxelGiSystems),
             );
-        startup::initialize(app);
     }
 
     fn finish(&self, app: &mut App) {
@@ -130,9 +124,6 @@ impl Plugin for VoxelGiPlugin {
             })
         {
             app.insert_resource(limits);
-        }
-        if app.world().resource::<VoxelGiStartup>().backend == TransportBackend::Cpu {
-            return;
         }
         let context = app
             .get_sub_app(bevy::render::RenderApp)
@@ -242,7 +233,6 @@ struct VoxelGiRuntime {
     sources: TransportSources,
     materials: Arc<VoxelMaterialTransportTable>,
     transport: TransportSettings,
-    trace_pool: Arc<OnceLock<ThreadPool>>,
     loaded_pages: HashSet<IVec3>,
     dirty_pages: HashSet<IVec3>,
     full_resample_pages: HashSet<IVec3>,
@@ -253,29 +243,19 @@ struct VoxelGiRuntime {
     dirty_since: Option<Instant>,
     urgent_edit: bool,
     generation: u64,
-    geometry_history: geometry::GeometryHistory,
-    spatial_history: Option<retention::SpatialHistory>,
-    #[cfg(debug_assertions)]
-    retention_audit: validation::retention_audit::Recorder,
+    spatial_history: retention::SpatialHistory,
     source_revision: u64,
     batch_size: usize,
     /// Last global material/model replacement. Scene edits use spatial history
     /// instead; residency of an emitting voxel must not restart the world.
     model_reset_source_revision: u64,
-    source_history: sources::SourceHistory,
-    nearby: Vec<IVec3>,
-    regional: Vec<IVec3>,
-    nearby_cursor: usize,
-    adaptive_cursor: usize,
-    focus_page: Option<IVec3>,
-    focus_dirty: bool,
-    pending: VecDeque<IVec3>,
-    queued: HashSet<IVec3>,
     urgent_pending: VecDeque<IVec3>,
     urgent_queued: HashSet<IVec3>,
-    refresh_cursor: usize,
-    refresh_remaining: usize,
-    refresh_total: usize,
+    /// Batch ids for GPU selection (28 bits, never zero).
+    batch_counter: u32,
+    /// Probes with faces that need a resident slot (eager allocation).
+    slot_requests: VecDeque<IVec3>,
+    slot_requested: HashSet<IVec3>,
     active_faces: u64,
     covered_faces: u64,
     completed_samples: u64,
@@ -288,10 +268,8 @@ struct VoxelGiRuntime {
     /// The one in-flight worker returns its allocation for the next dispatch.
     trace_scratch: TraceWork,
     selection_seen: bevy::platform::collections::HashSet<IVec3>,
-    ranked_candidates: scheduling::RankedCandidates,
     gpu_tracer: Option<gpu::GpuTracer>,
     emission_cache: Option<emission::EmissionCache>,
-    cpu_sky_cache: Option<sky_cache::SkyCache>,
     sky_pending: VecDeque<IVec3>,
     sky_queued: HashSet<IVec3>,
     sky_cursor: usize,
@@ -322,7 +300,6 @@ impl Default for VoxelGiRuntime {
             sources: TransportSources::default(),
             materials: Arc::new(VoxelMaterialTransportTable::default()),
             transport: TransportSettings::default(),
-            trace_pool: Arc::new(OnceLock::new()),
             loaded_pages: HashSet::new(),
             dirty_pages: HashSet::new(),
             full_resample_pages: HashSet::new(),
@@ -333,27 +310,15 @@ impl Default for VoxelGiRuntime {
             dirty_since: None,
             urgent_edit: false,
             generation: 0,
-            geometry_history: default(),
-            spatial_history: None,
-            #[cfg(debug_assertions)]
-            retention_audit: default(),
+            spatial_history: default(),
             source_revision: 0,
             batch_size: 256,
             model_reset_source_revision: 0,
-            source_history: default(),
-            nearby: Vec::new(),
-            regional: Vec::new(),
-            nearby_cursor: 0,
-            adaptive_cursor: 0,
-            focus_page: None,
-            focus_dirty: true,
-            pending: VecDeque::new(),
-            queued: HashSet::new(),
             urgent_pending: VecDeque::new(),
             urgent_queued: HashSet::new(),
-            refresh_cursor: 0,
-            refresh_remaining: 0,
-            refresh_total: 0,
+            batch_counter: 0,
+            slot_requests: VecDeque::new(),
+            slot_requested: HashSet::new(),
             active_faces: 0,
             covered_faces: 0,
             completed_samples: 0,
@@ -365,10 +330,8 @@ impl Default for VoxelGiRuntime {
             trace_pending: default(),
             trace_scratch: TraceWork::default(),
             selection_seen: default(),
-            ranked_candidates: default(),
             gpu_tracer: None,
             emission_cache: None,
-            cpu_sky_cache: None,
             sky_pending: default(),
             sky_queued: default(),
             sky_cursor: 0,
@@ -408,7 +371,6 @@ struct TraceBatchResult {
     trace_time: Duration,
     gpu_tracer: Option<gpu::GpuTracer>,
     emission_cache: Option<emission::EmissionCache>,
-    cpu_sky_cache: sky_cache::SkyCache,
     gpu_error: Option<String>,
     sunlight_change: Option<geometry::GeometryChange>,
 }
@@ -425,7 +387,6 @@ struct TransportBatch {
     gpu_ms: Option<f32>,
     execution_ms: Option<f32>,
     sky_only: bool,
-    transport_count: usize,
     sky_count: usize,
     scene_generation: u64,
     sky_revision: u64,
@@ -440,21 +401,6 @@ fn advance_transport_revision(runtime: &mut VoxelGiRuntime, field: &mut VoxelEne
     // Old histories remain useful, but have not passed stability checks in the
     // new scene. Revision-aware deltas cannot subtract them from this new count.
     runtime.settled_faces = 0;
-}
-
-fn request_global_refresh(runtime: &mut VoxelGiRuntime, probes: usize) {
-    // Never rewind the sweep on edits: continuous digging would otherwise
-    // repeatedly service the first pages and permanently starve distant ones.
-    runtime.refresh_remaining = probes;
-    runtime.refresh_total = probes;
-}
-
-fn enqueue_many(runtime: &mut VoxelGiRuntime, voxels: impl IntoIterator<Item = IVec3>) {
-    for voxel in voxels {
-        if runtime.queued.insert(voxel) {
-            runtime.pending.push_back(voxel);
-        }
-    }
 }
 
 fn enqueue_urgent(runtime: &mut VoxelGiRuntime, voxels: impl IntoIterator<Item = IVec3>) {
@@ -495,7 +441,7 @@ fn update_stats_from_counters(
 ) {
     let faces = runtime.active_faces;
     stats.surface_probes = field.probes.len();
-    stats.pending_probes = runtime.queued.len();
+    stats.pending_probes = runtime.urgent_pending.len();
     stats.bootstrap_coverage = if faces == 0 {
         1.0
     } else {
@@ -511,11 +457,8 @@ fn update_stats_from_counters(
     } else {
         runtime.settled_faces as f32 / faces as f32
     };
-    stats.global_refresh = if runtime.refresh_total == 0 {
-        1.0
-    } else {
-        1.0 - runtime.refresh_remaining as f32 / runtime.refresh_total as f32
-    };
+    // The world sweep is continuous on the GPU (oldest faces first).
+    stats.global_refresh = 1.0;
     stats.fully_bootstrapped = stats.bootstrap_coverage >= 1.0 && field.publishing_pages.is_empty();
 }
 

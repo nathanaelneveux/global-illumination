@@ -1,7 +1,6 @@
 //! Demo tuning surface. The reusable solver owns settings and invalidation;
 //! this adapter owns widgets, session comparisons and opt-in JSON import/export.
 use super::*;
-use bevy::camera::Exposure;
 use crate::voxel_gi::{TransportSettings, VoxelGiSettings, render::GpuTransportSettings};
 
 #[cfg(test)]
@@ -63,32 +62,6 @@ pub(super) fn load_launch_settings(app: &mut App) {
         .unwrap_or_else(|error| panic!("Cannot load VOXEL_GI_SETTINGS={path:?}: {error}"));
     // Fail visibly on invalid files rather than benchmarking a silent fallback.
     app.insert_resource(settings);
-}
-
-/// Renderer-specific unit conversion belongs to the demo adapter, not to the
-/// transport scheduler. Use the least masking active-camera exposure if several
-/// views render the same world. An absent material leaves conservative defaults.
-pub(super) fn update_visual_weights(
-    settings: Res<VoxelGiSettings>,
-    cameras: Query<(&Camera, Option<&Exposure>), With<Camera3d>>,
-    handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
-    materials: Res<Assets<VoxelTransportMaterial>>,
-    mut weights: ResMut<super::super::VoxelGiVisualWeights>,
-) {
-    if !settings.visible_refinement {
-        return;
-    }
-    let exposure = cameras
-        .iter()
-        .filter(|(camera, _)| camera.is_active)
-        .map(|(_, exposure)| exposure.copied().unwrap_or_default().exposure())
-        .min_by(f32::total_cmp)
-        .unwrap_or_else(|| Exposure::default().exposure());
-    weights.direct = exposure * (10000.0 / std::f32::consts::PI);
-    weights.indirect = handle
-        .as_ref()
-        .and_then(|h| materials.get(&h.handle))
-        .map_or(1.0, |m| m.extension.settings.intensity.max(0.0));
 }
 
 fn parse_settings(json: &str) -> Result<VoxelGiSettings, String> {
@@ -227,8 +200,6 @@ fn contents(
             ui.add(egui::Slider::new(&mut settings.simulation_sampling_importance, 0.01..=1.0).logarithmic(true).text("IR / radiation sampling importance"))
                 .on_hover_text("RGB importance stays one. Lower values prioritize visible emitter sampling while retaining nonzero support for invisible sources. Changes uncertainty, not physical energy or retained history. Simulation bands may take longer to settle.");
             ui.checkbox(&mut settings.adaptive_updates, "Let settled faces sleep between audits");
-            ui.checkbox(&mut settings.emitter_guiding, "Source-informed path guiding")
-                .on_hover_text("Reduces rare bright indirect paths near concentrated emitters. Changes directions, not energy or history. Costs some raw throughput; disable for the cosine-sampling control.");
             ui.add(egui::Slider::new(&mut settings.stable_relative_error, 0.01..=0.5).logarithmic(true).text("Settle error tolerance"))
                 .on_hover_text("All-band heuristic, not guaranteed convergence. Lower is stricter; already settled faces reassess on their next audit.");
             ui.add(egui::Slider::new(&mut settings.stable_min_samples, 32..=256).text("Minimum samples"))

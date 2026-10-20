@@ -1,8 +1,8 @@
 //! Optional demo instrumentation, separate from transport scheduling. The HUD
 //! reuses O(1) counters; expensive field summaries and scripted edits are opt-in.
-mod tuning;
 #[cfg(debug_assertions)]
 mod face_watch;
+mod tuning;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::window::{CursorOptions, PrimaryWindow};
@@ -22,9 +22,7 @@ pub(crate) struct VoxelGiDiagnosticsPlugin;
 /// Demo boundary only. Invalid input is reported by main rather than panicking
 /// inside construction of the reusable GI plugin. No process-global mutation.
 pub(crate) fn configure_demo_launch(app: &mut App) -> Result<(), String> {
-    let startup = parse_startup(|name| std::env::var(name).ok())?;
-    app.insert_resource(startup)
-        .init_resource::<super::VoxelGiSettings>();
+    app.init_resource::<super::VoxelGiSettings>();
     if std::env::var("VOXEL_GI_CONTINUOUS").is_ok_and(|v| v == "1") {
         app.world_mut()
             .resource_mut::<super::VoxelGiSettings>()
@@ -33,78 +31,12 @@ pub(crate) fn configure_demo_launch(app: &mut App) -> Result<(), String> {
     Ok(())
 }
 
-fn parse_startup(
-    mut value: impl FnMut(&str) -> Option<String>,
-) -> Result<super::VoxelGiStartup, String> {
-    use super::{RetentionPolicy, RetentionSummary, TransportBackend, VoxelGiStartup};
-    let backend = match value("VOXEL_GI_BACKEND").as_deref() {
-        None | Some("auto" | "gpu") => TransportBackend::Auto,
-        Some("cpu") => TransportBackend::Cpu,
-        Some("resident") => TransportBackend::Resident,
-        Some("sync") => TransportBackend::Synchronous,
-        Some("reuse") => TransportBackend::Reuse,
-        Some("reuse-wide") => TransportBackend::ReuseWide,
-        Some(other) => {
-            return Err(format!(
-                "unknown VOXEL_GI_BACKEND={other:?}; choose auto, gpu, resident, sync, reuse, reuse-wide or cpu"
-            ));
-        }
-    };
-    let summary = RetentionSummary::launch(value("VOXEL_GI_RETENTION_SUMMARY").as_deref())?;
-    let retention = if super::retention::launch_enabled(value("VOXEL_GI_RETENTION").as_deref())? {
-        RetentionPolicy::WholeRange(summary)
-    } else {
-        RetentionPolicy::Legacy
-    };
-    Ok(VoxelGiStartup { backend, retention })
-}
-
-#[cfg(test)]
-mod launch_tests {
-    use super::*;
-    #[test]
-    fn typed_launch_preserves_defaults_aliases_and_rejects_typos() {
-        assert_eq!(
-            parse_startup(|_| None).unwrap(),
-            super::super::VoxelGiStartup::default()
-        );
-        assert_eq!(
-            parse_startup(|key| (key == "VOXEL_GI_BACKEND").then(|| "cpu".into()))
-                .unwrap()
-                .backend,
-            super::super::TransportBackend::Cpu
-        );
-        for alias in ["auto", "gpu"] {
-            assert_eq!(
-                parse_startup(|key| (key == "VOXEL_GI_BACKEND").then(|| alias.into()))
-                    .unwrap()
-                    .backend,
-                super::super::TransportBackend::Auto
-            );
-        }
-        assert_eq!(
-            parse_startup(|key| (key == "VOXEL_GI_BACKEND").then(|| "sync".into()))
-                .unwrap()
-                .backend,
-            super::super::TransportBackend::Synchronous
-        );
-        for key in [
-            "VOXEL_GI_BACKEND",
-            "VOXEL_GI_RETENTION",
-            "VOXEL_GI_RETENTION_SUMMARY",
-        ] {
-            assert!(parse_startup(|k| (k == key).then(|| "typo".into())).is_err());
-        }
-    }
-}
 
 impl Plugin for VoxelGiDiagnosticsPlugin {
     fn build(&self, app: &mut App) {
         tuning::load_launch_settings(app);
         #[cfg(debug_assertions)]
         face_watch::install(app);
-        app.init_resource::<super::VoxelGiVisualWeights>()
-            .add_systems(Update, tuning::update_visual_weights.before(VoxelGiSystems));
         if terminal_stats_enabled() {
             app.add_plugins(LogDiagnosticsPlugin::default())
                 .add_systems(Update, log_voxel_gi_stats.after(VoxelGiSystems));

@@ -10,25 +10,9 @@ mod reference;
 mod reference_image;
 pub(super) mod reference_oracle;
 mod response;
-pub(super) mod retention_audit;
 mod sample_sweep;
 mod structures;
 pub(super) mod temporal;
-
-/// Debug-only ablation of statistical history truncation. Revision checks,
-/// geometry identity, genuinely new faces and explicit model replacement keep
-/// their production semantics. Combine with VOXEL_GI_CONTINUOUS=1 to measure
-/// sampling continuously instead of the normal adaptive wake/audit policy.
-pub(super) fn retained_history_limit(normal: u32) -> u32 {
-    static RETAIN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *RETAIN
-        .get_or_init(|| std::env::var("VOXEL_GI_EXPERIMENT_RETAIN_HISTORY").is_ok_and(|v| v == "1"))
-    {
-        u32::MAX
-    } else {
-        normal
-    }
-}
 
 use super::render::VoxelTransportMaterial;
 use super::world::FACE_OFFSETS;
@@ -143,7 +127,6 @@ pub(super) struct ValidationRun {
     capture_pause_until: f32,
     done: bool,
     reference: reference::ReferenceRun,
-    retention_snapshots: retention_audit::SceneSnapshots,
 }
 
 pub(super) fn run_validation(
@@ -213,17 +196,6 @@ pub(super) fn run_validation(
                 return;
             }
         };
-        if retention_audit::enabled()
-            && (profile != Profile::Cave
-                || runtime.spatial_history.is_none()
-                || !crate::headless_validation()
-                || std::env::var_os("VOXEL_GI_VALIDATE_EXIT").is_none())
-        {
-            error!("Retention audit requires the calibrated headless cave profile with EXIT");
-            run.done = true;
-            commands.write_message(AppExit::error());
-            return;
-        }
         if std::env::var_os("VOXEL_GI_VALIDATE_SKY").is_some()
             || std::env::var_os("VOXEL_GI_VALIDATE_TOGGLES").is_some()
             || std::env::var_os("VOXEL_GI_SMOKE_EDIT").is_some()
@@ -304,8 +276,14 @@ pub(super) fn run_validation(
         run.structures
             .tick(elapsed, player, &mut commands, &cameras, &mut lights);
     }
-    if matches!(profile, Profile::Cave | Profile::Canyon | Profile::Hallway | Profile::LiveCave | Profile::LiveHallway)
-        && !run.cave_camera_initialized
+    if matches!(
+        profile,
+        Profile::Cave
+            | Profile::Canyon
+            | Profile::Hallway
+            | Profile::LiveCave
+            | Profile::LiveHallway
+    ) && !run.cave_camera_initialized
     {
         let (eye, target, fov) = if profile == Profile::LiveHallway {
             // The user's view: beside the lamp, looking down the dark end.
@@ -314,7 +292,7 @@ pub(super) fn run_validation(
         } else if profile == Profile::LiveCave {
             (Vec3::new(47., -11.4, -18.), Vec3::new(76., -17., -34.), 65.)
         } else if profile == Profile::Hallway {
-            reference_image::hallway_view()
+            crate::structures::hallway::overview()
         } else if profile == Profile::Canyon {
             (crate::canyon_scene::EYE, crate::canyon_scene::TARGET, 65.)
         } else {
@@ -334,13 +312,20 @@ pub(super) fn run_validation(
         }
         run.cave_camera_initialized = true;
     }
-    if matches!(profile, Profile::Cave | Profile::Structures | Profile::LiveCave) {
+    if matches!(
+        profile,
+        Profile::Cave | Profile::Structures | Profile::LiveCave
+    ) {
         run.cave.record(elapsed, &field);
-        run.retention_snapshots.record(elapsed, &runtime);
     }
     if matches!(
         profile,
-        Profile::House | Profile::HouseEdits | Profile::Cave | Profile::Structures | Profile::LiveCave | Profile::LiveHallway
+        Profile::House
+            | Profile::HouseEdits
+            | Profile::Cave
+            | Profile::Structures
+            | Profile::LiveCave
+            | Profile::LiveHallway
     ) {
         run.temporal
             .record(elapsed, profile, &field, &runtime, &cache, &queue);
@@ -598,15 +583,6 @@ pub(super) fn run_validation(
         commands.write_message(AppExit::error());
         return;
     }
-    if let Err(error) = runtime.retention_audit.save(
-        evidence.output.as_ref().unwrap(),
-        run.started.unwrap(),
-        runtime.spatial_history.as_ref().map(|h| h.summary_mode()),
-    ) {
-        evidence.fail(&format!("Could not save retention attribution: {error}"));
-        commands.write_message(AppExit::error());
-        return;
-    }
     if matches!(profile, Profile::Cave | Profile::Structures | Profile::LiveCave)
         && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("cave.json"),
             json!({"samples": run.cave.samples, "note": "Fixed wall receivers; all five measured bands, RGB display, history and measurement age. No ground-truth/convergence claim."}).to_string()) {
@@ -647,21 +623,19 @@ pub(super) fn run_validation(
             "moves": run.background.moves, "speed_voxels_per_second": 4.32,
             "note": "Inactive BVW loader walks from (-96,40,0) toward -Z. Does not render or alter GI view priority. Loaded terrain participates in transport."},
         "presentation": "shared-corner sun + corner-reconstructed indirect; preferred modes except compare/stress",
-        "history_experiment": if retained_history_limit(0) == u32::MAX { "retain-compatible-history" } else { "production" },
-        "spatial_retention": if runtime.spatial_history.is_some() { super::retention::POLICY_NAME } else { "baseline-16-256-journal8" },
-        "retention_summary": runtime.spatial_history.as_ref().map(|h| h.summary_mode().name()),
+        "spatial_retention": super::retention::POLICY_NAME,
         "settings": {"transport": settings.transport, "samples_per_dispatch": settings.batch_samples(),
             "simulation_sampling_importance": settings.sampling_importance().infrared,
             "spatial_reconstruction": settings.spatial_reconstruction,
             "spatial_evidence_target": settings.spatial_evidence_target,
             "spatial_max_donors": settings.spatial_max_donors,
-            "visible_refinement": settings.visible_refinement,
             "temporal_trace_scope": "pre-spatial temporal face estimates; use captures for spatial presentation",
             "trace_budget_ms": settings.trace_budget_ms, "max_probes_per_dispatch": settings.max_probes_per_dispatch,
             "scene_publish_budget_ms": settings.scene_publish_budget.as_secs_f32() * 1000.0,
             "adaptive_updates": settings.adaptive_updates, "display_response_ms": settings.display_response.as_secs_f32() * 1000.0,
             "display_transition_frames": settings.display_transition_frames,
-            "emitter_guiding": settings.emitter_guiding,
+            "measured_retention": settings.measured_retention,
+            "spatial_evidence_target": settings.spatial_evidence_target,
             "display_upload_interval_ms": settings.display_upload_interval.as_secs_f32() * 1000.0,
             "stable_min_samples": settings.stable_min_samples, "stable_relative_error": settings.stable_relative_error,
             "stable_audit_interval_ms": settings.stable_audit_interval.as_secs_f32() * 1000.0},
@@ -716,17 +690,6 @@ pub(super) fn run_validation(
                     evidence.fail(&error);
                     commands.write_message(AppExit::error());
                 }
-            }
-        } else if retention_audit::enabled() {
-            let snapshots = std::mem::take(&mut run.retention_snapshots);
-            if let Err(error) = run.reference.start_retention(
-                snapshots,
-                device.as_deref(),
-                &settings,
-                output.clone(),
-            ) {
-                evidence.fail(&error);
-                commands.write_message(AppExit::error());
             }
         } else if reference::ReferenceRun::requested() {
             if let Err(error) = run.reference.start(

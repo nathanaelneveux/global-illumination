@@ -19,27 +19,25 @@ pub struct VoxelGiSettings {
     /// Defaults to 0.125 on every backend, independently of path reuse; use one
     /// for equal-band sampling. This is not a fixed ratio of sample counts.
     pub simulation_sampling_importance: f32,
-    /// Source-informed directional sampling. Changes the proposal,
-    /// not the lighting equation or history validity. Both backends retain a
-    /// cosine component and use the same mixture PDF for emission MIS.
-    /// Experimental: helps the sparse hallway, but regresses the cave's raw
-    /// worst-patch visual threshold. Keep off until cross-scene qualification.
-    pub emitter_guiding: bool,
+    /// Measured retention constant c (default 1); zero restores the whole-range
+    /// distance curve.
+    /// Resident only. Each edit, load or sunlight change predicts a luminance
+    /// change D at nearby faces from its flux; a face whose MSE-optimal history
+    /// c * sigma^2 / D^2 would bind keeps that much, is not used as a cache
+    /// source for one batch, and uses the fresh batch's noise if it was dark.
+    pub measured_retention: f32,
     /// Resident-only, nonrecursive spatial RGB reconstruction.
     /// Zero is the unchanged corner display; one enables uncertainty-weighted
     /// connected-surface filtering. Never changes transport or simulation data.
     pub spatial_reconstruction: f32,
-    /// Display-evidence target. Zero selects the fixed stencil;
-    /// positive values choose a bounded adaptive footprint instead. This is not
+    /// Display-evidence target: a bounded adaptive footprint gathers neighbours
+    /// until this much support. Zero disables reconstruction. This is not
     /// physical history or an accuracy guarantee. Requires spatial strength > 0.
     pub spatial_evidence_target: u32,
     /// Maximum unique candidate neighbors in adaptive reconstruction, excluding
     /// the receiver. Zero retains the legacy radius/work bound. This limits
     /// footprint and cost, not target support, physical history or blend strength.
     pub spatial_max_donors: u32,
-    /// Experimental refinement ranking by projected RGB error in total light.
-    /// Does not change stability, coverage, edit urgency, or the fair world sweep.
-    pub visible_refinement: bool,
     /// Disable for a same-kernel continuous-sampling A/B baseline.
     pub adaptive_updates: bool,
     pub trace_budget_ms: f32,
@@ -63,6 +61,11 @@ pub struct VoxelGiSettings {
     pub stable_min_samples: u32,
     /// Per-band relative-error heuristic, not a certified convergence bound.
     pub stable_relative_error: f32,
+    /// Faces whose CPU statistics mirror the GPU merges per batch (the GPU
+    /// state is the authority; GPU-picked faces' mirror lags under heavy
+    /// refinement). Bounds the main-thread merge. Validation of display
+    /// quality from CPU recorders raises it (config/gi-mirror-full.json).
+    pub statistics_mirror_per_batch: u32,
 }
 
 impl Default for VoxelGiSettings {
@@ -71,11 +74,10 @@ impl Default for VoxelGiSettings {
             transport: TransportSettings::default(),
             samples_per_dispatch: 16,
             simulation_sampling_importance: DEFAULT_SIMULATION_SAMPLING_IMPORTANCE,
-            emitter_guiding: false,
+            measured_retention: 1.0,
             spatial_reconstruction: 1.0,
-            spatial_evidence_target: 2048,
+            spatial_evidence_target: 1024,
             spatial_max_donors: 0,
-            visible_refinement: false,
             adaptive_updates: true,
             trace_budget_ms: 4.0,
             max_probes_per_dispatch: 8192,
@@ -86,24 +88,7 @@ impl Default for VoxelGiSettings {
             stable_audit_interval: Duration::from_secs(2),
             stable_min_samples: 64,
             stable_relative_error: 0.12,
-        }
-    }
-}
-
-/// Host-supplied conversion from normalized transport to visible shading units.
-/// Used only by optional visual ranking, never by physical transport. A renderer
-/// with camera exposure or an artistic GI gain should update these together.
-#[derive(Resource, Clone, Copy, Debug)]
-pub struct VoxelGiVisualWeights {
-    pub direct: f32,
-    pub indirect: f32,
-}
-
-impl Default for VoxelGiVisualWeights {
-    fn default() -> Self {
-        Self {
-            direct: 1.0,
-            indirect: 1.0,
+            statistics_mirror_per_batch: 1024,
         }
     }
 }
@@ -116,6 +101,13 @@ impl VoxelGiSettings {
             DEFAULT_SIMULATION_SAMPLING_IMPORTANCE
         };
         super::EnergySpectrum::new(Vec3::ONE, weight, weight)
+    }
+    pub(super) fn measured_retention(&self) -> f32 {
+        if self.measured_retention.is_finite() {
+            self.measured_retention.clamp(0.0, 64.0)
+        } else {
+            0.0
+        }
     }
     pub(super) fn batch_samples(&self) -> u32 {
         self.samples_per_dispatch.clamp(1, 64)
@@ -137,6 +129,10 @@ impl VoxelGiSettings {
     pub(super) fn display_response_seconds(&self) -> f32 {
         self.display_response.as_secs_f32().clamp(0.01, 0.5)
     }
+    pub(super) fn mirror_per_batch(&self) -> u32 {
+        self.statistics_mirror_per_batch.clamp(64, 65536)
+    }
+
     pub(super) fn budget_ms(&self) -> f32 {
         if self.trace_budget_ms.is_finite() {
             self.trace_budget_ms.clamp(0.25, 16.0)
@@ -209,23 +205,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preferred_spatial_default_has_explicit_unfiltered_and_fixed_controls() {
+    fn preferred_spatial_default_has_explicit_unfiltered_control() {
         let settings = VoxelGiSettings::default();
-        assert!(!settings.emitter_guiding);
-        let guided: VoxelGiSettings =
-            serde_json::from_str(include_str!("../../config/gi-guiding.json")).unwrap();
-        assert!(guided.emitter_guiding);
-        assert_eq!(guided.transport, settings.transport);
-        let cosine: VoxelGiSettings =
-            serde_json::from_str(include_str!("../../config/gi-guiding-control.json")).unwrap();
-        assert!(!cosine.emitter_guiding);
-        assert_eq!(cosine.transport, settings.transport);
         let preset: VoxelGiSettings =
-            serde_json::from_str(include_str!("../../config/gi-display-evidence-2048.json"))
+            serde_json::from_str(include_str!("../../config/gi-display-evidence-1024.json"))
                 .unwrap();
         assert_eq!(settings, preset);
         assert_eq!(settings.spatial_reconstruction, 1.0);
-        assert_eq!(settings.spatial_evidence_target, 2048);
+        assert_eq!(settings.spatial_evidence_target, 1024);
         assert_eq!(settings.spatial_max_donors, 0);
         let control: VoxelGiSettings =
             serde_json::from_str(include_str!("../../config/gi-display-unfiltered.json")).unwrap();
@@ -237,14 +224,6 @@ mod tests {
             control.sampling_importance(),
             settings.sampling_importance()
         );
-        let fixed: VoxelGiSettings =
-            serde_json::from_str(include_str!("../../config/gi-adaptive-spatial.json")).unwrap();
-        assert_eq!(fixed.spatial_reconstruction, 1.0);
-        assert_eq!(fixed.spatial_evidence_target, 0);
-        let ranking: VoxelGiSettings =
-            serde_json::from_str(include_str!("../../config/gi-visible-refinement.json")).unwrap();
-        assert!(ranking.visible_refinement);
-        assert_eq!(ranking.spatial_reconstruction, 0.0);
     }
 
     #[test]

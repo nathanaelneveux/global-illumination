@@ -22,21 +22,21 @@ depends on greedy-mesh vertices or screen resolution.
   requirements, and the shared build cache.
 - [Cave reference](docs/cave-reference.md): complete chamber geometry audit,
   high-sample rendered target, independent estimator checks and image comparison.
-- [October 8 audit](docs/audit.md): findings, fixes, retained boundaries, and
+- [October 8 audit](docs/history/audit.md): findings, fixes, retained boundaries, and
   verification for this cleanup.
-- [October 10 scene-history audit](docs/scene-history-audit.md): removal of the
+- [October 10 scene-history audit](docs/history/scene-history-audit.md): removal of the
   emitter-triggered global reset and receiver material-swap reset, completed
   policy controls, response tradeoffs and next performance targets.
-- [Streaming and cave performance](docs/streaming-performance.md): batching,
+- [Streaming and cave performance](docs/history/streaming-performance.md): batching,
   publication and upload wins, attribution, and remaining cave noise/frame tails.
-- [Current performance experiments](docs/experiments.md): measured winners,
+- [Current performance experiments](docs/history/experiments.md): measured winners,
   isolated alternatives, and the limits of each result.
-- [Edit-directed history experiment](docs/history-edit-guided.md): paired edit
+- [Edit-directed history experiment](docs/history/history-edit-guided.md): paired edit
   and sunlight-change diagnostics, measured benefits, and why they are not yet
   a gameplay policy replacement.
-- [Many-emitter research decisions](docs/research-2026-10-09.md): light-tree win,
+- [Many-emitter research decisions](docs/history/research-2026-10-09.md): light-tree win,
   cave workload, residency contract, and rejected/deferred correction strategies.
-- [Historical experiments](docs/experiments-2026-10.md): previous measurements,
+- [Historical experiments](docs/history/experiments-2026-10.md): previous measurements,
   rejected experiments, and their limitations. This is not the current design.
 
 ```sh
@@ -46,45 +46,30 @@ cargo run --locked
 The default uses GPU-resident accumulation with asynchronous simulation snapshots
 and RGB-prioritized emitter sampling (RGB importance 1, IR/radiation 0.125).
 All five bands keep receiving unfiltered physical estimates; simulation bands
-may be noisier. This sampling priority is independent of path reuse and applies
-to every backend. `config/gi-equal-band.json` selects equal-band importance;
-it does not disable guiding. Explicit values in settings files remain respected.
+may be noisier. `config/gi-equal-band.json` selects equal-band importance.
+Explicit values in settings files remain respected.
 
-Source-informed path guiding is **experimental and defaults off**. It reduces
-rare high-energy hallway outliers, but the full corrected cave image study
-fails the existing visual target at 2048 paths (first passes at 8192); the
-matched unguided control passes at 2048. It also has sampling overhead. This
-disqualifies its earlier promotion as a universal default. To investigate the
-hallway benefit, use `VOXEL_GI_SETTINGS=config/gi-guiding.json cargo run --locked`.
-The known sparse-hallway variance remains a follow-up, not a solved default.
-See [diagnosis, evidence and limits](docs/hallway-path-outliers.md).
+On the `gi-surface-cache` branch, a path that hits a measured face ends there
+with that face's cached energy, which gives infinite bounces. See
+[surface cache](docs/surface-cache.md). Path reuse and source guiding were
+removed on this branch: neither was qualified with the cache. Their history
+lives in [path reuse](docs/history/resident-path-reuse.md) and
+[hallway outliers](docs/history/hallway-path-outliers.md).
+The game always uses resident GPU accumulation; the synchronous and CPU
+runtime backends were removed on this branch (last present at `c68a924`). The
+CPU tracer remains as a test oracle.
 
-The historically qualified path-reuse experiment is still opt-in:
-
-```sh
-VOXEL_GI_BACKEND=reuse VOXEL_GI_SETTINGS=config/gi-guiding-control.json cargo run --locked
-```
-
-Reuse combined with RGB priority reaches the cave's calibrated visual threshold
-at 1280 rather than the earlier 2048-sample target. The independent
-RGB-prioritized control first passes at 2048 in the subsequent matched spatial
-study. Reuse costs more per batch and is not a universal throughput win. See
-[measurements and tradeoffs](docs/resident-path-reuse.md).
-Those historical results used guiding off; the combined reuse/guiding mode has
-not been qualified. Reuse needs renewed qualification after the transport
-correctness fixes, including its separate reconnection visibility. Reproducing
-older equal-band results requires both
-`simulation_sampling_importance: 1.0` and `emitter_guiding: false` in the preset.
-`VOXEL_GI_BACKEND=sync` keeps the synchronous backend available; add the equal-band
-preset to reproduce its historical sampling priority too.
-
-Early spatial RGB reconstruction now defaults to the user-selected **2048
-evidence target with its full adaptive footprint**, without an extra donor cap.
+Early spatial RGB reconstruction defaults to a **1024 evidence target** on this
+branch, with its full adaptive footprint and no extra donor cap. The cache
+estimator passes the user-calibrated FLIP gate at 1024 raw paths, half of the
+old 2048. That target also keeps smooth-wall noise inside the preferred envelope
+at every prefix; see [surface cache](docs/surface-cache.md#display-evidence-target).
+`config/gi-display-evidence-2048.json` restores the previous target.
 It filters presentation only, never physical samples or simulation data.
 Use `VOXEL_GI_SETTINGS=config/gi-display-unfiltered.json` for the unfiltered
 control; sampler accuracy must be qualified separately from this reconstruction.
 Total-light-aware refinement remains opt-in. See [controls, architecture and image
-evidence](docs/early-spatial-reconstruction.md). `gi-display-evidence-2048-cap32/64/128.json`
+evidence](docs/history/early-spatial-reconstruction.md). `gi-display-evidence-2048-cap32/64/128.json`
 presets explicitly trade maximum candidate neighbors for cost. The 64-neighbor
 option improves measured cave throughput, but loses four-sample smoothness and
 has not qualified as a universal edit-response improvement.
@@ -152,51 +137,50 @@ visibility keeps its independent 768-voxel horizon; analytic point lights retain
 their source ranges. All loaded receivers remain eligible, including IR/radiation.
 
 The opt-in `VOXEL_GI_SCENE=canyon` fixture tests high rims and long daylight
-sightlines. See the [reach/depth study and invalidation constraints](docs/transport-horizon.md)
+sightlines. See the [reach/depth study and invalidation constraints](docs/history/transport-horizon.md)
 for controlled comparisons; neither shorter rays nor its live captures alone
 establish a safe history-invalidation radius.
 
-The [distance/history study](docs/distance-history.md) measures actual streamed
+The [distance/history study](docs/history/distance-history.md) measures actual streamed
 geometry changes and retained-history tails. Remote retention substantially
 reduces repeated cave noise, but a distant bounced-sun shadow rejects a universal
 384-block cutoff.
-The [sun-aware follow-up](docs/sun-aware-retention.md) retains the remote-cave win
+The [sun-aware follow-up](docs/history/sun-aware-retention.md) retains the remote-cave win
 without changing the measured baseline shadow/edit responses, and calibrates
 history curves against measured sampler quality. The
-[runtime follow-up](docs/runtime-retention.md) introduced page-local history,
+[runtime follow-up](docs/history/runtime-retention.md) introduced page-local history,
 incremental sun-change evidence and worker-side retention queries. These remain
-the default architecture; use `VOXEL_GI_RETENTION=baseline cargo run --locked`
-for the original global-journal control. Repeated composed-cave tests show substantially less
+the default architecture; the original global-journal control was removed on
+the surface-cache branch (last present at `8cab848`). Repeated composed-cave tests show substantially less
 corner oscillation with comparable frame pacing, not a complete convergence or
 locked-60-FPS solution.
 
-The [distance-band follow-up](docs/distance-band-retention.md) preserves distance
-information when those page journals overflow and is now the default. Use
-`VOXEL_GI_RETENTION_SUMMARY=floors cargo run --locked` for the previous summary.
+The [distance-band follow-up](docs/history/distance-band-retention.md) preserves distance
+information when those page journals overflow and is now the only summary.
 Eight exact events remain; band storage is allocated only on first overflow.
 Lighting thresholds, sampling and BVW are unchanged. The summary's measured
 late-stability gain does not establish faster startup or qualified windowed FPS.
 
-The [near-history calibration](docs/near-history-calibration.md) separately
+The [near-history calibration](docs/history/near-history-calibration.md) separately
 measures post-edit paths to sustained FLIP acceptance and repeated-cap noise.
 It uses common native sample tapes and actual material captures; replay-clock
 seconds are not gameplay latency. The inherited near 48/16 defaults are not
 assumed analytically valid; the completed replacement decision is below.
-The [cross-scene follow-up](docs/history-cross-scene.md) tightens crossing
+The [cross-scene follow-up](docs/history/history-cross-scene.md) tightens crossing
 observations and adds actual house skylight, doorway and emitter images.
 
 Those studies found that higher floors help small edits but can retain too much
 stale source brightness; a cave-only blanket replacement was not promoted.
-The [distance and visible-sunlight follow-up](docs/history-cross-scene.md#distance-attribution-and-a-visible-sunlight-patch)
+The [distance and visible-sunlight follow-up](docs/history/history-cross-scene.md#distance-attribution-and-a-visible-sunlight-patch)
 adds a floor-facing 3x3 skylight and regional FLIP measurements. Its proposed
 16-block neighborhood was an intermediate experiment, not the final equation.
 
-The [controlled hallway study](docs/hallway-history-study.md) supports equal-sized
+The [controlled hallway study](docs/history/hallway-history-study.md) supports equal-sized
 floor measurements from the adjacent block out to 64 blocks, with literal retained
 weights below 16, matched source/occluder controls and native material captures.
 The hallway is also visitable west of the house; see the [route](docs/structures.md).
 
-The [whole-range history decision](docs/whole-range-history.md) is now integrated:
+The [whole-range history decision](docs/history/whole-range-history.md) is now integrated:
 `min(existing_weight, round((distance / 12)^4))` over the **entire** distance
 range. There is no 48-block handoff, inherited far plateau, or fixed 278/384
 cutoff. Both coefficients were free; crossing 48/256 is a measured selection,
@@ -204,13 +188,13 @@ not a required anchor. It replaces the earlier near-only recommendation.
 Native comparisons support a better speed/noise balance, with explicit
 brightening and diffuse-roof regressions in the report; it is not a universal
 speedup. Keep the current 65,536 ceiling: the earlier
-[static/cap decision](docs/history-decision.md) did not qualify a permanent
+[static/cap decision](docs/history/history-decision.md) did not qualify a permanent
 2,048 cap. **A normal `cargo run --locked` uses the whole-range curve** for
 geometry and changed sunlight, with per-receiver queries still on the tracing worker.
-`VOXEL_GI_RETENTION=whole-range` selects it explicitly; `calibrated` is a
-compatibility alias for the new curve, not the old formula. The previous
-calibrated runtime is preserved at `5381c17`. See the
-[integration record](docs/whole-range-history.md#runtime-integration).
+On the surface-cache branch it is the fallback for changes of unknown flux;
+measured retention ([research](docs/retention-research.md)) is the default. The
+previous calibrated runtime is preserved at `5381c17`. See the
+[integration record](docs/history/whole-range-history.md#runtime-integration).
 
 **Copy applied JSON** exports transport/work settings (not display toggles/gain).
 Paste JSON into the same panel to import, or save it to a file and launch with

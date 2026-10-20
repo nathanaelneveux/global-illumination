@@ -127,6 +127,51 @@ pub(super) fn absorbing_corner() -> ResearchFixture {
 /// Enclosed diffuse/emissive furnace. Every direction from an inner surface
 /// reaches the same material, so the finite-depth answer is E * sum(albedo^k),
 /// k=0..=bounces, including the solver's terminal emission connection.
+/// Sealed room with a 5x5 skylight, a red wall and a directional sun. Floor
+/// receivers on a 2-voxel grid. Shared by resident/display native tests.
+pub(super) fn skylight_room() -> ResearchFixture {
+    let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+    for z in 4..=27 {
+        for y in 4..=20 {
+            for x in 4..=27 {
+                let shell = x == 4 || x == 27 || y == 4 || y == 20 || z == 4 || z == 27;
+                let skylight = y == 20 && (13..=17).contains(&x) && (13..=17).contains(&z);
+                if shell && !skylight {
+                    page[linear_index(UVec3::new(x, y, z), PAGE_SIZE)] = if x == 4 { 3 } else { 2 };
+                }
+            }
+        }
+    }
+    let mut materials = VoxelMaterialTransportTable::default();
+    materials.set(
+        3,
+        super::MaterialTransport {
+            diffuse: EnergySpectrum::new(Vec3::new(0.8, 0.06, 0.03), 0.5, 0.1),
+            ..default()
+        },
+    );
+    ResearchFixture {
+        scene: Arc::new(TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, page)],
+            &[],
+        )),
+        materials,
+        sources: TransportSources {
+            directional: vec![DirectionalTransportLight {
+                direction: Vec3::new(0.3, 1.0, 0.2).normalize(),
+                radiance: EnergySpectrum::new(Vec3::splat(6.0), 3.0, 1.0),
+                custom_visible: Vec3::ZERO,
+            }],
+            ..default()
+        },
+        receivers: (6..26)
+            .step_by(2)
+            .flat_map(|z| (6..26).step_by(2).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
+            .collect(),
+    }
+}
+
 pub(super) fn furnace() -> ResearchFixture {
     let mut page = vec![AIR; volume_len(PAGE_SIZE)];
     for z in 8..24 {

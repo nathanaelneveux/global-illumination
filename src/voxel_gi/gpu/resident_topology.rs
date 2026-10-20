@@ -85,6 +85,7 @@ mod tests {
         Slot {
             index,
             incarnation: index + 1,
+            material: 0,
             revision: 0,
             model_epoch: 0,
             task_epoch: 0,

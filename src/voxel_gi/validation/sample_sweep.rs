@@ -24,18 +24,26 @@ pub(super) const COUNTS: &[u32] = &[
 // Include the real startup prefix and unaligned windows. All are disjoint from
 // one another and the reference's 4,194,304 / 6,291,456 starts, below 2^24.
 const STARTS: [u32; 4] = [0, 574_117, 1_853_903, 3_102_719];
-const GUIDING_COUNTS: &[u32] = &[4, 16, 64, 128, 256, 512, 1024, 1536, 2048, 4096, 8192];
 pub(super) type Means = Vec<[f64; 5]>;
 
 pub(super) fn requested() -> bool {
     std::env::var("VOXEL_GI_VALIDATE_SAMPLE_SWEEP").is_ok_and(|v| v == "1")
         || spatial_requested()
-        || guiding_requested()
-        || roulette_requested()
 }
 
+/// Converge the resident surface cache on the frozen scene, then measure the
+/// reference and raw prefixes against that frozen cache.
+pub(super) fn cache_requested() -> bool {
+    std::env::var("VOXEL_GI_VALIDATE_CACHE_SWEEP").is_ok_and(|v| v == "1")
+}
+
+/// Short-history batches reach the cache's feedback fixed point; long-history
+/// batches then average down the cached values' own noise.
+pub(super) const CACHE_CONVERGE_BATCHES: [(u32, u32); 2] = [(256, 640), (65_536, 512)];
+
+/// Evidence sweeps need second moments and wider batches.
 pub(super) fn spatial_requested() -> bool {
-    std::env::var("VOXEL_GI_VALIDATE_SPATIAL_SWEEP").is_ok_and(|v| v == "1") || evidence_requested()
+    evidence_requested()
 }
 
 pub(super) fn evidence_requested() -> bool {
@@ -72,52 +80,18 @@ fn parse_evidence_targets(value: &str) -> Option<Vec<u32>> {
         .then_some(targets)
 }
 
-pub(super) fn reuse_requested() -> bool {
-    std::env::var("VOXEL_GI_VALIDATE_REUSE_SWEEP").is_ok_and(|v| v == "1")
-}
-
-/// Proposal-only comparison: both arms use RGB-prioritized independent paths,
-/// identical prefixes/batches, and no temporal or adaptive spatial filtering.
-pub(super) fn guiding_requested() -> bool {
-    std::env::var("VOXEL_GI_VALIDATE_GUIDING_SWEEP").is_ok_and(|v| v == "1")
-}
-
-/// Matched estimator comparison, with early roulette disabled only in the
-/// diagnostic candidate. This does not change the gameplay sampler.
-pub(super) fn roulette_requested() -> bool {
-    std::env::var("VOXEL_GI_VALIDATE_ROULETTE_SWEEP").is_ok_and(|v| v == "1")
-}
-
-pub(super) fn paired_requested() -> bool {
-    reuse_requested() || guiding_requested() || roulette_requested()
-}
-
-fn counts(control: bool) -> &'static [u32] {
-    if guiding_requested() || roulette_requested() {
-        GUIDING_COUNTS
-    } else if evidence_targets_requested() {
+fn counts() -> &'static [u32] {
+    if evidence_targets_requested() {
         &[4, 16, 64, 128, 256, 512, 1024, 1280, 1536, 2048]
     } else if evidence_requested() {
         &[1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
-    } else if spatial_requested() {
-        &[16, 64, 256, 512, 1024, 2048, 4096]
-    } else if reuse_requested() && control {
-        &[1024, 1536, 2048]
-    } else if reuse_requested() {
-        &[64, 256, 512, 768, 1024, 1280, 1536, 2048, 4096]
     } else {
         COUNTS
     }
 }
 
 pub(super) fn path_count(faces: usize) -> u64 {
-    let paths = *counts(false).last().unwrap()
-        + if paired_requested() {
-            *counts(true).last().unwrap()
-        } else {
-            0
-        };
-    faces as u64 * u64::from(paths) * STARTS.len() as u64
+    faces as u64 * u64::from(*counts().last().unwrap()) * STARTS.len() as u64
 }
 
 #[derive(Serialize, Deserialize)]
@@ -153,25 +127,10 @@ pub(super) fn run(
     emitters: &Arc<EmissionDistribution>,
     sites: &[(IVec3, usize)],
     progress: &AtomicU64,
-    control: bool,
-    emitter_guiding: bool,
 ) -> Result<Vec<Window>, String> {
-    if roulette_requested()
-        && (reuse_requested() || spatial_requested() || guiding_requested() || emitter_guiding)
-    {
-        return Err("ROULETTE_SWEEP requires independent unguided paths and no spatial sweep".into());
-    }
-    if guiding_requested() && (reuse_requested() || spatial_requested()) {
-        return Err("GUIDING_SWEEP must be isolated from reuse and spatial/evidence sweeps".into());
-    }
-    if guiding_requested() && emitter_guiding == control {
-        return Err(
-            "GUIDING_SWEEP requires guiding enabled for candidate and disabled for control".into(),
-        );
-    }
     let mut windows = Vec::new();
     for sequence_start in STARTS {
-        let mut prefixes: Vec<_> = counts(control)
+        let mut prefixes: Vec<_> = counts()
             .iter()
             .map(|&paths| Prefix {
                 paths,
@@ -180,9 +139,8 @@ pub(super) fn run(
                 gpu_ms: Some(0.0),
             })
             .collect();
-        // Reuse needs a representative neighborhood, not a 512-face reference
-        // serialization tile. Both samplers get identical 2048-face batches.
-        let chunk_size = if reuse_requested() || spatial_requested() {
+        // Spatial variants need representative neighbourhoods in one batch.
+        let chunk_size = if spatial_requested() {
             2048
         } else {
             512
@@ -190,7 +148,6 @@ pub(super) fn run(
         for (chunk_index, chunk) in sites.chunks(chunk_size).enumerate() {
             let mut work = TraceWork {
                 transport,
-                emitter_guiding,
                 ..default()
             };
             for &(voxel, face) in chunk {
@@ -205,7 +162,7 @@ pub(super) fn run(
             for prefix in &mut prefixes {
                 while completed < prefix.paths {
                     let paths = (prefix.paths - completed).min(
-                        if reuse_requested() || spatial_requested() {
+                        if spatial_requested() {
                             16
                         } else {
                             1024
@@ -227,7 +184,8 @@ pub(super) fn run(
                     progress.fetch_add(chunk.len() as u64 * u64::from(paths), Ordering::Relaxed);
                 }
                 for (i, face) in work.faces.iter().enumerate() {
-                    if face.samples != prefix.paths
+                    // Samples reaching unloaded space are excluded, not black.
+                    if face.samples > prefix.paths
                         || face.sequence != sequence_start + prefix.paths
                     {
                         return Err("Sweep lost its cumulative sample count or sequence".into());
@@ -248,53 +206,6 @@ pub(super) fn run(
         });
     }
     Ok(windows)
-}
-
-/// Identical nonrecursive filter to the native resident pass, applied to frozen
-/// raw prefixes so temporal response and scheduling do not confound the image
-/// comparison. This oracle is checked against native GPU presentation in tests.
-pub(super) fn spatial_values(sites: &[(IVec3, usize)], prefix: &Prefix) -> Means {
-    use super::super::spatial::{Sample, neighbors, reconstruct};
-    let indices: bevy::platform::collections::HashMap<_, _> = sites
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(i, k)| (k, i))
-        .collect();
-    let moments = prefix
-        .second_moments
-        .as_ref()
-        .expect("spatial sweep moments");
-    let samples: Vec<_> = prefix
-        .means
-        .iter()
-        .zip(moments)
-        .map(|(m, s)| {
-            let mean = Vec3::new(m[0] as f32, m[1] as f32, m[2] as f32);
-            Sample {
-                mean,
-                second: Vec3::from_array(*s),
-                count: prefix.paths,
-                display: mean,
-            }
-        })
-        .collect();
-    sites
-        .iter()
-        .enumerate()
-        .map(|(i, &(voxel, face))| {
-            let rgb = reconstruct(
-                samples[i],
-                neighbors(voxel, face, |p, f| {
-                    indices.get(&(p, f)).map(|&i| samples[i])
-                }),
-                1.0,
-            );
-            let mut result = prefix.means[i];
-            result[..3].copy_from_slice(&rgb.to_array().map(f64::from));
-            result
-        })
-        .collect()
 }
 
 /// Presentation-only target-evidence sweep. Same sites, paths and ordinary
@@ -368,9 +279,6 @@ pub(super) fn evidence_values(
 }
 
 #[cfg(test)]
-mod footprint_replay;
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -398,7 +306,7 @@ mod tests {
 
     #[test]
     fn prefix_windows_are_disjoint_below_history_ceiling_and_sampler_period() {
-        for counts in [COUNTS, GUIDING_COUNTS] {
+        for counts in [COUNTS] {
             assert!(counts.windows(2).all(|v| v[0] < v[1]));
             assert!(*counts.last().unwrap() < super::super::super::tracer::HISTORY_LIMIT);
         }

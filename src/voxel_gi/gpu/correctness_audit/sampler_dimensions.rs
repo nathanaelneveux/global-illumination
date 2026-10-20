@@ -80,7 +80,6 @@ fn sampler_dimension_study() {
                     &fixture,
                     &emitters,
                     default(),
-                    false,
                     &sites,
                     262144,
                     start,

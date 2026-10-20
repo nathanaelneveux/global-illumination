@@ -22,27 +22,6 @@ const BLOCK_PATHS: u32 = 32_768;
 const DISPATCH_PATHS: u32 = 1024;
 const CHUNK_FACES: usize = 512;
 
-#[path = "model_comparison.rs"]
-mod model_comparison;
-#[path = "near_fixture.rs"]
-mod near_fixture;
-#[path = "near_history.rs"]
-mod near_history;
-
-pub(super) fn calibration_house_view() -> Option<(Vec3, Vec3, f32)> {
-    let fixture = near_fixture::Fixture::selected().ok()?;
-    (near_history::requested() && fixture.is_house()).then(|| fixture.view())
-}
-
-pub(super) fn hallway_view() -> (Vec3, Vec3, f32) {
-    if near_history::requested() {
-        near_fixture::Fixture::selected()
-            .expect("valid hallway fixture")
-            .view()
-    } else {
-        crate::structures::hallway::overview()
-    }
-}
 
 type ProbeMap = HashMap<IVec3, SurfaceProbe>;
 type Means = Vec<[f64; 5]>;
@@ -94,8 +73,6 @@ struct Bake {
 
 pub(super) fn requested() -> bool {
     std::env::var("VOXEL_GI_VALIDATE_REFERENCE_IMAGE").is_ok_and(|v| v == "1")
-        || model_comparison::requested()
-        || near_history::requested()
 }
 
 pub(super) fn install(app: &mut App) {
@@ -118,21 +95,6 @@ pub(super) fn install(app: &mut App) {
 /// workload, placed near the floor; the geometry audit still verifies every
 /// chamber voxel. This changes only the opt-in offline fixture's residency.
 fn setup_residency(mut commands: Commands, evidence: Res<CaptureEvidence>) {
-    if calibration_house_view().is_some() {
-        return;
-    }
-    if near_fixture::Fixture::selected().is_ok_and(|f| f.is_hallway()) {
-        for offset in [16, 64, 88] {
-            let eye = crate::structures::hallway::floor_receiver(offset).as_vec3() + Vec3::Y * 4.;
-            super::background::spawn_loader(
-                &mut commands,
-                &evidence,
-                "Offline hallway residency (not rendered)",
-                Transform::from_translation(eye).looking_at(eye + Vec3::X, Vec3::Y),
-            );
-        }
-        return;
-    }
     let origin = if crate::cave_scene::enabled() {
         Vec3::ZERO
     } else {
@@ -224,20 +186,7 @@ impl ReferenceImage {
         profile: Profile,
         output: PathBuf,
     ) -> Result<Self, String> {
-        let fixture = if near_history::requested() {
-            near_fixture::Fixture::selected()?
-        } else {
-            near_fixture::Fixture::CaveTorch
-        };
-        let house = near_history::requested() && fixture.is_house();
-        let expected_profile = if house {
-            Profile::House
-        } else if fixture.is_hallway() {
-            Profile::Hallway
-        } else {
-            Profile::Cave
-        };
-        if profile != expected_profile
+        if profile != Profile::Cave
             || !crate::headless_validation()
             || std::env::var_os("VOXEL_GI_VALIDATE_EXIT").is_none()
         {
@@ -267,7 +216,7 @@ impl ReferenceImage {
         let mut mismatched = 0;
         let mut samples = Vec::new();
         let mut pages: HashMap<IVec3, (usize, usize)> = default();
-        let (min, max) = fixture.bounds(origin);
+        let (min, max) = (origin + IVec3::splat(4), origin + IVec3::new(59, 43, 59));
         for z in min.z..=max.z {
             for y in min.y..=max.y {
                 for x in min.x..=max.x {
@@ -301,7 +250,7 @@ impl ReferenceImage {
             json!({"page":page.to_array(),"unknown":unknown,"mismatched":mismatched,
                 "bvw_chunk_present":chunk.is_some(),"bvw_chunk_empty":chunk.as_ref().map(|c| c.is_empty())})
         }).collect();
-        let audit = json!({"fixture":fixture.name(),"unknown_voxels":unknown,"mismatched_voxels":mismatched,
+        let audit = json!({"fixture":"cave-torch","unknown_voxels":unknown,"mismatched_voxels":mismatched,
             "pages":pages,"samples":samples,"note":"Unedited fixture: compare every bounded voxel against the host generator and sample BVW values at mismatches. Unknown and wrong-material cells invalidate the reference."});
         std::fs::write(
             output.join("cave-geometry-audit.json"),
@@ -313,29 +262,7 @@ impl ReferenceImage {
                 "Cave GI snapshot differs from generated geometry: {unknown} unknown and {mismatched} wrong-material voxels; see cave-geometry-audit.json"
             ));
         }
-        let sites = if fixture.is_hallway() {
-            // Only measured floor patches and their coplanar corner donors.
-            // The native paths still traverse the entire audited world.
-            let mut sites = HashSet::new();
-            for offset in fixture.hallway_offsets() {
-                let receiver = crate::structures::hallway::floor_receiver(offset);
-                for x in -1..=1 {
-                    for z in -1..=1 {
-                        let p = receiver + IVec3::new(x, 0, z);
-                        if exposed(&runtime.scene, p, 2) {
-                            sites.insert((p, 2));
-                        }
-                    }
-                }
-            }
-            let mut sites: Vec<_> = sites.into_iter().collect();
-            sites.sort_unstable_by_key(|(p, f)| (p.x, p.y, p.z, *f));
-            sites
-        } else if house {
-            interior_sites(&runtime.scene, min, max)
-        } else {
-            chamber_sites(&runtime.scene, origin)
-        };
+        let sites = chamber_sites(&runtime.scene, origin);
         if sites.is_empty() || !cache.ready {
             return Err("Reference image has no chamber receivers or live display cache".into());
         }
@@ -351,20 +278,19 @@ impl ReferenceImage {
                 })?;
             base.entry(voxel).or_insert_with(|| probe.clone());
         }
-        if model_comparison::requested() {
-            return model_comparison::start(runtime, device, output, origin, sites, base);
-        }
-        if near_history::requested() {
-            if settings.transport != super::super::TransportSettings::default() {
-                return Err(
-                    "Near-history calibration requires the baseline transport model".into(),
-                );
-            }
-            return near_history::start(runtime, device, output, origin, sites, base);
-        }
         let progress = Arc::new(AtomicU64::new(0));
         let sweep_requested = super::sample_sweep::requested();
-        let total_paths = sites.len() as u64 * u64::from(paths) * 2
+        let cache_mode = super::sample_sweep::cache_requested();
+        let converge_paths: u64 = if cache_mode {
+            super::sample_sweep::CACHE_CONVERGE_BATCHES
+                .iter()
+                .map(|&(_, batches)| u64::from(batches) * 16)
+                .sum::<u64>()
+                * sites.len() as u64
+        } else {
+            0
+        };
+        let total_paths = converge_paths + sites.len() as u64 * u64::from(paths) * 2
             + if sweep_requested {
                 super::sample_sweep::path_count(sites.len())
             } else {
@@ -381,7 +307,6 @@ impl ReferenceImage {
         let materials = runtime.materials.clone();
         let transport = settings.transport;
         let importance = settings.sampling_importance();
-        let emitter_guiding = settings.emitter_guiding;
         let generation = runtime.generation;
         let worker_progress = progress.clone();
         let worker_output = output.clone();
@@ -389,54 +314,43 @@ impl ReferenceImage {
             let mut gpu = GpuTracer::new(device.clone())?;
             let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
             let prioritized = Arc::new(EmissionDistribution::with_importance(&scene, &materials, importance));
-            let mut short_paths = if super::sample_sweep::roulette_requested() {
-                Some(GpuTracer::short_path_candidate(device.clone())?)
-            } else {None};
-            let mut control_gpu = if super::sample_sweep::paired_requested() {
-                let mut tracer=GpuTracer::new(device.clone())?;
-                if super::sample_sweep::reuse_requested() { tracer.enable_resident()?; }
-                Some(tracer)
-            } else {None};
-            let mut reuse = if super::sample_sweep::reuse_requested() {
-                let mut tracer=GpuTracer::new(device)?;
-                tracer.enable_reuse()?;
-                Some(tracer)
-            } else {None};
+            // Cache mode: converge resident measurements for every site, then
+            // freeze them. The reference and every prefix read that same cache,
+            // so they differ only in their own path count.
+            let _cache_source = if cache_mode {
+                let mut resident = GpuTracer::new(device.clone())?;
+                resident.enable_resident()?;
+                let mut work = TraceWork { transport, ..default() };
+                for &(voxel, face) in &sites {
+                    let probe = SurfaceProbe::new(voxel, 1 << face);
+                    work.push(&probe, 1 << face, 0, 0, false, u32::MAX, u32::MAX);
+                    work.probes.last_mut().unwrap().sky_requested = false;
+                }
+                for (limit, batches) in super::sample_sweep::CACHE_CONVERGE_BATCHES {
+                    work.history_limit = limit;
+                    for _ in 0..batches {
+                        resident.trace_compact(scene.clone(), &sources, &materials, &mut work, 16, &prioritized, false)?;
+                        worker_progress.fetch_add(sites.len() as u64 * 16, Ordering::Relaxed);
+                    }
+                }
+                gpu.share_cache_from(&resident)?;
+                Some(resident)
+            } else { None };
             let sweep = if sweep_requested {
-                super::sample_sweep::run(short_paths.as_mut().or(reuse.as_mut()).unwrap_or(&mut gpu), &scene, &sources, &materials,
-                    transport, &prioritized, &sites, &worker_progress, false, emitter_guiding)?
+                super::sample_sweep::run(&mut gpu, &scene, &sources, &materials,
+                    transport, &prioritized, &sites, &worker_progress)?
             } else { Vec::new() };
-            let matched_proposal = super::sample_sweep::guiding_requested() || super::sample_sweep::roulette_requested();
-            let control_importance = if matched_proposal {importance} else {EnergySpectrum::ONE};
-            let control_emitters = if matched_proposal {&prioritized} else {&emitters};
-            let control = if sweep_requested && let Some(control_gpu) = control_gpu.as_mut() {
-                super::sample_sweep::run(control_gpu, &scene, &sources, &materials,
-                    transport, control_emitters, &sites, &worker_progress, true, false)?
-            } else {Vec::new()};
             if sweep_requested {
                 std::fs::write(worker_output.join("cave-sample-sweep.json"),
                     serde_json::to_vec(&json!({"schema_version":1,
                         "scene_generation":generation,"origin":origin.to_array(),
                         "transport":transport,"face_count":sites.len(),
-                        "sampler":if super::sample_sweep::reuse_requested() {"fresh-paired-reuse"} else {"independent-paths"},
-                        "emitter_guiding":emitter_guiding,
-                        "early_roulette":!super::sample_sweep::roulette_requested(),
-                        "batch_faces":if super::sample_sweep::reuse_requested() || super::sample_sweep::spatial_requested(){2048}else{512},
+                        "sampler":if cache_mode {"frozen-surface-cache"} else {"independent-paths"},
+                        "batch_faces":if super::sample_sweep::spatial_requested(){2048}else{512},
                         "sampling_importance":[importance.visible.x,importance.visible.y,importance.visible.z,importance.infrared,importance.ionizing],
                         "windows":sweep,
                         "note":"Same exact frozen scene and sites as cave-reference.json. Unfiltered production estimator prefixes, disjoint unaligned sequence windows, no resets or scheduling. Equal-confidence connected corners; images use normal textures and tonemapping. Not an interactive timing or temporal-filter study."})).unwrap())
                     .map_err(|e| e.to_string())?;
-                if !control.is_empty() {
-                    std::fs::write(worker_output.join("cave-control-sweep.json"),
-                        serde_json::to_vec(&json!({"schema_version":1,"scene_generation":generation,
-                        "origin":origin.to_array(),"transport":transport,"face_count":sites.len(),
-                        "sampler":if super::sample_sweep::reuse_requested(){"resident-independent-paths"}else{"independent-paths"},
-                        "emitter_guiding":false,"batch_faces":if super::sample_sweep::reuse_requested(){2048}else{512},
-                        "early_roulette":true,
-                        "sampling_importance":[control_importance.visible.x,control_importance.visible.y,control_importance.visible.z,control_importance.infrared,control_importance.ionizing],
-                        "windows":control})).unwrap())
-                        .map_err(|e|e.to_string())?;
-                }
             }
             let mut replicas = Vec::new();
             for replica in 0..2 {
@@ -483,12 +397,14 @@ impl ReferenceImage {
             let discrepancy: Vec<_> = replicas[0].iter().zip(&replicas[1])
                 .map(|(a,b)| rgb_error(a, b)).collect();
             let mut oracle_checks = Vec::new();
-            for (local, face) in [
+            // The CPU oracle integrates the finite three-hit target, not the
+            // cache's infinite-bounce fixed point: cache mode relies on replicas.
+            for (local, face) in if cache_mode { vec![] } else { vec![
                 (IVec3::new(4,22,15),0), (IVec3::new(59,9,50),1),
                 (IVec3::new(22,37,59),5), (IVec3::new(8,43,56),3),
                 (IVec3::new(8,4,8),2), (IVec3::new(30,22,32),1),
                 (IVec3::new(7,40,8),3), (IVec3::new(59,37,36),1),
-            ] {
+            ] } {
                 let voxel = origin + local;
                 if let Some(index) = sites.iter().position(|&s| s == (voxel, face)) {
                     let oracle = super::reference_oracle::estimate(&scene, &materials, &sources,
@@ -503,12 +419,13 @@ impl ReferenceImage {
             }
             let discrepancy_summary = percentiles(&discrepancy);
             let rejected_bands: usize = oracle_checks.iter().map(|c| c["rejected_bands"].as_array().unwrap().len()).sum();
-            let qualification = json!({"qualified":rejected_bands==0 && oracle_checks.len()==8
+            let qualification = json!({"qualified":rejected_bands==0 && (cache_mode || oracle_checks.len()==8)
                 && discrepancy_summary["p99"].as_f64().unwrap()<=0.01
                 && discrepancy_summary["max"].as_f64().unwrap()<=0.05,
                 "oracle_rejected_bands":rejected_bands,"oracle_sites":oracle_checks.len(),
                 "replica_relative_rgb_difference":discrepancy_summary,
-                "criteria":"Eight independent cosine checks pass; replica RGB difference p99 <=1%, maximum <=5%. These are empirical agreement checks, not certified confidence bounds."});
+                "cache_mode":cache_mode,
+                "criteria":if cache_mode {"Frozen converged surface cache: replica RGB difference p99 <=1%, maximum <=5%. No finite-depth CPU oracle applies to the infinite-bounce cache."} else {"Eight independent cosine checks pass; replica RGB difference p99 <=1%, maximum <=5%. These are empirical agreement checks, not certified confidence bounds."}});
             let rows: Vec<_> = sites.iter().enumerate().map(|(i, &(voxel,face))| {
                 let p = &base[&voxel];
                 json!({"voxel":voxel.to_array(),"face":face,
@@ -536,7 +453,7 @@ impl ReferenceImage {
                 ReferenceFrame { name:name.into(), values:values.clone(), pending:default(), confidence:None, sky:None }
             }).collect();
             let mut evidence_reports = Vec::new();
-            for (label, windows) in [("samples",sweep),("control",control)] {
+            for (label, windows) in [("samples",sweep)] {
               for (window, data) in windows.into_iter().enumerate() {
                 for prefix in data.prefixes {
                     if super::sample_sweep::evidence_requested() {
@@ -550,13 +467,6 @@ impl ReferenceImage {
                             values,pending:default(),confidence:None,sky:None,
                         });
                       }
-                    }
-                    if super::sample_sweep::spatial_requested() {
-                        frames.push_back(ReferenceFrame {
-                            name:format!("spatial-{}-window-{window}",prefix.paths),
-                            values:super::sample_sweep::spatial_values(&sites, &prefix), pending:default(),
-                            confidence:None, sky:None,
-                        });
                     }
                     frames.push_back(ReferenceFrame {
                         name:format!("{label}-{}-window-{window}",prefix.paths),

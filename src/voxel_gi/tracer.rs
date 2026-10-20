@@ -5,8 +5,6 @@ use rayon::prelude::*;
 
 use super::TransportSettings;
 use super::emission::{EmissionDistribution, face_point};
-use super::guiding::{DirectionGuide, GuideAnchor};
-#[cfg(test)]
 use super::sampling::hemisphere;
 use super::sampling::pcg;
 use super::sampling::{sample_1d, stream_id};
@@ -22,13 +20,6 @@ use super::world::{
     VoxelMaterialTransportTable,
 };
 
-#[cfg(test)]
-#[path = "edit_guided.rs"]
-pub(crate) mod edit_guided;
-
-#[cfg(test)]
-#[path = "path_audit.rs"]
-mod path_audit;
 
 const RAY_EPSILON: f32 = 0.001;
 const MAX_TRACE_STEPS: usize = 2_048;
@@ -345,7 +336,6 @@ pub(crate) fn trace_work_batch(
                 samples_per_face,
                 emitters,
                 transport,
-                work.emitter_guiding,
             );
         });
     }
@@ -381,7 +371,6 @@ fn trace_face(
     samples_per_face: u32,
     emitters: &EmissionDistribution,
     transport: TransportSettings,
-    guided: bool,
 ) {
     // The caller installs this work in the GI-owned, bounded Rayon pool. That
     // retains useful path-level parallelism without occupying Bevy's render and
@@ -392,27 +381,21 @@ fn trace_face(
     let surface_position = voxel_center + normal * 0.5;
     (work.direct, work.custom_direct) = direct_at_surface(scene, sources, surface_position, normal);
     let stream = stream_id(work.voxel, face as u32);
-    let anchor = if guided {
-        GuideAnchor::select(scene, emitters, surface_position, normal)
-    } else {
-        GuideAnchor::default()
-    };
-    let guide = anchor.at(surface_position);
     for _ in 0..samples_per_face {
         let sequence = work.sequence;
-        let direction = guide.sample(
+        let direction = hemisphere(
             normal,
             sample_1d(stream, sequence, 0),
             sample_1d(stream, sequence, 1),
         );
         let origin = voxel_center + normal * 0.501;
-        let pdf = guide.pdf(normal, direction);
-        let cosine = normal.dot(direction).max(0.0) / std::f32::consts::PI;
-        let path = if cosine > 0.0 && pdf > 0.0 {
+        let pdf = cosine_pdf(normal, direction);
+        // Cosine sampling: cosine / pdf is exactly one for the continuation.
+        let path = if pdf > 0.0 {
             trace_path(
                 scene, sources, materials, origin, direction, stream, sequence, normal, emitters,
-                transport, anchor, pdf,
-            ) * (cosine / pdf)
+                transport, pdf,
+            )
         } else {
             EnergySpectrum::ZERO
         };
@@ -427,7 +410,6 @@ fn trace_face(
                 sequence,
                 0,
                 transport.reach,
-                guide,
             );
         let sample = sample.finite_or_zero();
         let count = (work.samples + 1).min(HISTORY_LIMIT);
@@ -462,7 +444,6 @@ fn trace_path(
     mut previous_normal: Vec3,
     emitters: &EmissionDistribution,
     transport: TransportSettings,
-    anchor: GuideAnchor,
     mut previous_pdf: f32,
 ) -> EnergySpectrum {
     let mut result = EnergySpectrum::ZERO;
@@ -512,7 +493,6 @@ fn trace_path(
         result += throughput * material.emission * emission_weight;
         let direct = direct_radiance(scene, sources, hit).0;
         let terminal = bounce + 1 == transport.bounces;
-        let guide = anchor.at(hit.position);
         let emissive_direct = if terminal {
             sample_terminal_emission(
                 scene,
@@ -524,7 +504,6 @@ fn trace_path(
                 sequence,
                 bounce,
                 transport.reach,
-                guide,
             )
         } else {
             sample_emitter(
@@ -537,7 +516,6 @@ fn trace_path(
                 sequence,
                 bounce + 1,
                 transport.reach,
-                guide,
             )
         };
         result += throughput * material.diffuse * (direct + emissive_direct);
@@ -546,8 +524,7 @@ fn trace_path(
         }
         throughput = throughput * material.diffuse;
 
-        // Throughput alone does not bound the next radiance, particularly for
-        // guided paths. Only exact zero is safe to discard deterministically;
+        // Throughput alone does not bound the next radiance. Only exact zero is safe to discard deterministically;
         // roulette below compensates surviving paths for stochastic termination.
         if throughput.max_component() == 0.0 {
             break;
@@ -563,20 +540,22 @@ fn trace_path(
         origin = hit.position + hit.normal * (RAY_EPSILON * 2.0);
         previous_position = hit.position;
         previous_normal = hit.normal;
-        direction = guide.sample(
+        direction = hemisphere(
             hit.normal,
             sample_1d(stream, sequence, 2 + bounce * 2),
             sample_1d(stream, sequence, 3 + bounce * 2),
         );
-        previous_pdf = guide.pdf(hit.normal, direction);
-        let cosine = hit.normal.dot(direction).max(0.0) / std::f32::consts::PI;
-        if cosine <= 0.0 || previous_pdf <= 0.0 {
+        previous_pdf = cosine_pdf(hit.normal, direction);
+        if previous_pdf <= 0.0 {
             break;
         }
-        throughput *= cosine / previous_pdf;
     }
 
     result.finite_or_zero()
+}
+
+fn cosine_pdf(normal: Vec3, direction: Vec3) -> f32 {
+    normal.dot(direction).max(0.0) / std::f32::consts::PI
 }
 
 fn sample_emitter(
@@ -589,7 +568,6 @@ fn sample_emitter(
     sequence: u32,
     bounce: u32,
     reach: f32,
-    guide: DirectionGuide,
 ) -> EnergySpectrum {
     let stream = stream ^ pcg(bounce.wrapping_add(0xa341_316c));
     let Some(emitter) = emitters.select_at(position, normal, sample_1d(stream, sequence, 12))
@@ -617,7 +595,7 @@ fn sample_emitter(
         return EnergySpectrum::ZERO;
     }
     let light_pdf = emitter.probability * distance_squared / emitter_cosine;
-    let cosine_pdf = receiver_cosine / std::f32::consts::PI;
+    let directional_pdf = receiver_cosine / std::f32::consts::PI;
     // Build visibility from both offset endpoints. Keeping the unoffset
     // direction/length after moving the origin can hit the selected light
     // before a fixed distance trim at grazing angles (false self-occlusion).
@@ -635,15 +613,14 @@ fn sample_emitter(
         return EnergySpectrum::ZERO;
     }
     materials.get(emitter.material).emission
-        * (cosine_pdf / (light_pdf + guide.pdf(normal, direction)))
+        * (directional_pdf / (light_pdf + directional_pdf))
 }
 
 /// The terminal surface has no continuing path to balance light-only NEE.
 /// Choose one light/directional sample with equal probability, then divide by the
 /// mixture PDF (single-sample balance MIS). Same emission integral and at most
 /// one connection ray, without arbitrarily clamping rare high-energy samples.
-/// The cosine-only control contributes at most twice the emitter's energy;
-/// the guided proposal retains at least half the cosine PDF (bound four).
+/// Each terminal connection contributes at most twice the emitter's energy.
 fn sample_terminal_emission(
     scene: &TransportScene,
     materials: &VoxelMaterialTransportTable,
@@ -654,7 +631,6 @@ fn sample_terminal_emission(
     sequence: u32,
     bounce: u32,
     reach: f32,
-    guide: DirectionGuide,
 ) -> EnergySpectrum {
     if emitters.faces.is_empty() {
         return EnergySpectrum::ZERO;
@@ -672,10 +648,9 @@ fn sample_terminal_emission(
             sequence,
             bounce + 1,
             reach,
-            guide,
         ) * 2.0;
     }
-    let direction = guide.sample(
+    let direction = hemisphere(
         normal,
         sample_1d(stream, sequence, 2 + bounce * 2),
         sample_1d(stream, sequence, 3 + bounce * 2),
@@ -700,8 +675,8 @@ fn sample_terminal_emission(
         emitters.probability_at(position, normal, hit.voxel, face, hit.material, materials)
             * distance_squared
             / hit.normal.dot(-direction).max(1e-8);
-    let cosine_pdf = normal.dot(direction).max(0.0) / std::f32::consts::PI;
-    emission * (2.0 * cosine_pdf / (guide.pdf(normal, direction) + light_pdf))
+    let directional_pdf = cosine_pdf(normal, direction);
+    emission * (2.0 * directional_pdf / (directional_pdf + light_pdf))
 }
 
 fn direct_radiance(
@@ -916,7 +891,6 @@ mod tests {
                     sequence,
                     0,
                     MAX_PATH_DISTANCE,
-                    DirectionGuide::default(),
                 );
                 assert_eq!(
                     result.max_component() > 0.0,
@@ -987,7 +961,6 @@ mod tests {
             Vec3::Y,
             &emitters,
             default(),
-            GuideAnchor::default(),
             direction.y / std::f32::consts::PI,
         );
         let expected = sources.environment * (0.01 * 0.01 / 0.1 * (0.65 + 0.35 * last_direction.y));
@@ -1030,12 +1003,7 @@ mod tests {
                 integral += 4.0 / (std::f64::consts::PI * d2 * d2 * 128.0 * 128.0);
             }
         }
-        for guided in [false, true] {
-            let guide = if guided {
-                GuideAnchor::select(&scene, &emitters, position, Vec3::Y).at(position)
-            } else {
-                DirectionGuide::default()
-            };
+        {
             for bounce in 0..3 {
                 let mut mean = EnergySpectrum::ZERO;
                 for sequence in 0..65_536 {
@@ -1049,7 +1017,6 @@ mod tests {
                         sequence,
                         bounce,
                         768.0,
-                        guide,
                     );
                     let normalized = [
                         value.visible.x / energy.visible.x,
@@ -1061,7 +1028,7 @@ mod tests {
                     assert!(
                         normalized
                             .iter()
-                            .all(|v| v.is_finite() && (0.0..=4.00001).contains(v))
+                            .all(|v| v.is_finite() && (0.0..=2.00001).contains(v))
                     );
                     mean += value * (1.0 / 65_536.0);
                 }
@@ -1071,7 +1038,7 @@ mod tests {
                 {
                     assert!(
                         (measured as f64 / power as f64 / integral - 1.0).abs() < 0.015,
-                        "terminal guided={guided} bounce {bounce}: {measured}/{power} vs {integral}"
+                        "terminal bounce {bounce}: {measured}/{power} vs {integral}"
                     );
                 }
             }

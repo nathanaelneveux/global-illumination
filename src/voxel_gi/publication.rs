@@ -2,8 +2,8 @@
 //! publish atomically with retained measurements and display-only initialization.
 use super::{
     SceneBuildResult, VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats,
-    advance_transport_revision, diagnostics, enqueue_many, enqueue_sky, enqueue_urgent, history,
-    page_of, probe_metrics, request_global_refresh,
+    advance_transport_revision, diagnostics, enqueue_sky, enqueue_urgent, history, page_of,
+    probe_metrics,
     telemetry::GiWorkTimings,
     update_stats_from_counters,
     world::{PAGE_EDGE, SurfaceProbe, SurfaceProbeDescriptor},
@@ -85,16 +85,14 @@ pub(super) fn apply_scene_task(
         runtime.scene = result.scene.clone();
         runtime.generation = runtime.generation.wrapping_add(1);
         if let Some(mut change) = result.geometry_change.take() {
-            let from = field.transport_revision;
             advance_transport_revision(&mut runtime, &mut field);
-            if let Some(history) = &mut runtime.spatial_history {
-                change.nearby.retain(|page, _| field.pages.contains_key(page));
-                history.record(change, super::retention::Origin::Geometry);
-            } else {
-                runtime
-                    .geometry_history
-                    .record(from, field.transport_revision, change);
-            }
+            finalize_change_flux(&mut change, &runtime.sources);
+            change
+                .nearby
+                .retain(|page, _| field.pages.contains_key(page));
+            // The GPU measures edits' flux and wakes the faces near player
+            // edits whose history the change binds (no CPU statistics read).
+            runtime.spatial_history.record(change, &result.exact_edits);
         }
         field
             .publishing_pages
@@ -110,6 +108,12 @@ pub(super) fn apply_scene_task(
                     .into_iter()
                     .filter(|(page, _)| !replaced.contains(page)),
             );
+            // An overtaken publication may not have reached its edit wakeups.
+            for voxel in older.exact_edits {
+                if !result.exact_edits.contains(&voxel) {
+                    result.exact_edits.push(voxel);
+                }
+            }
         }
         runtime.scene_publication = Some(result);
     }
@@ -157,11 +161,6 @@ pub(super) fn publish_scene_page(
     descriptors: Vec<SurfaceProbeDescriptor>,
 ) {
     let started = Instant::now();
-    if descriptors.is_empty()
-        && let Some(history) = &mut runtime.spatial_history
-    {
-        history.retire(page);
-    }
     // Worker scans include touching pages, even when their exposed topology
     // did not change. Preserve their allocations, indices and measurements
     // directly; global scene freshness and explicit edit requests still apply.
@@ -172,7 +171,6 @@ pub(super) fn publish_scene_page(
             stats,
             result,
             page,
-            field.probe_count(),
             HashSet::new(),
             Vec::new(),
             started,
@@ -308,6 +306,13 @@ fn reconcile_scene_page(
             face_topology_changed = true;
             invalidated.insert(descriptor.voxel);
         }
+        // New or newly exposed faces get resident GPU state soon, not only
+        // when first traced (see dispatch::ENSURE_PROBES_PER_BATCH).
+        if (descriptor.face_mask & !old_mask != 0 || added.last() == Some(&descriptor.voxel))
+            && runtime.slot_requested.insert(descriptor.voxel)
+        {
+            runtime.slot_requests.push_back(descriptor.voxel);
+        }
         let (faces, samples, covered, settled) = probe_metrics(&probe, field.transport_revision);
         runtime.active_faces += faces;
         runtime.completed_samples += samples;
@@ -326,7 +331,6 @@ fn reconcile_scene_page(
     let topology_changed =
         old_count != field.probes.len() || !old_affected.is_empty() || !added.is_empty();
     if topology_changed {
-        super::dispatch::invalidate_focus_page(runtime, page);
         runtime.gpu_removed.extend(old_affected.keys().copied());
         runtime.gpu_added.extend(added.iter().copied());
         field.update_indices(&added, &old_affected);
@@ -341,7 +345,6 @@ fn reconcile_scene_page(
         stats,
         result,
         page,
-        old_count,
         invalidated,
         added,
         publish_started,
@@ -354,20 +357,18 @@ fn finish_scene_page(
     stats: &mut VoxelGiStats,
     result: &mut SceneBuildResult,
     page: IVec3,
-    old_count: usize,
-    mut invalidated: HashSet<IVec3>,
+    invalidated: HashSet<IVec3>,
     added: Vec<IVec3>,
     publish_started: Instant,
 ) {
-    let mut urgent = HashSet::new();
+    // Sky corners near a player edit can change (shadows). The light itself
+    // is the GPU's: retention events wake the faces whose history it binds.
+    let mut near_edits = HashSet::new();
     for &voxel in &result.exact_edits {
-        let mut nearby = HashSet::new();
-        invalidate_near_voxel(runtime, field, voxel, EDIT_RELIGHT_RADIUS, &mut nearby);
-        urgent.extend(nearby.iter().copied());
-        invalidated.extend(nearby);
+        probes_near(field, voxel, EDIT_RELIGHT_RADIUS, &mut near_edits);
     }
     let relit_probes = invalidated.len();
-    let mut urgent: Vec<_> = urgent.into_iter().collect();
+    let mut urgent: Vec<_> = near_edits.into_iter().collect();
     urgent.sort_unstable_by_key(|voxel| {
         result
             .exact_edits
@@ -376,18 +377,22 @@ fn finish_scene_page(
             .min()
             .unwrap_or(0)
     });
-    enqueue_sky(runtime, urgent.iter().copied());
+    enqueue_sky(runtime, urgent);
     enqueue_sky(runtime, added.iter().copied());
-    enqueue_urgent(runtime, urgent);
+    // Existing probes whose revision changed here (material or exposed faces:
+    // relit, history capped) are event work: only a CPU job carries the new
+    // revision and its cap to the GPU, and until one does, the mirror rejects
+    // the GPU's picks of them. New probes need none (eager slots, coverage).
+    let added: HashSet<IVec3> = added.into_iter().collect();
+    let mut relit: Vec<_> = invalidated
+        .iter()
+        .copied()
+        .filter(|voxel| !added.contains(voxel))
+        .collect();
+    relit.sort_unstable_by_key(|voxel| voxel.to_array());
+    enqueue_urgent(runtime, relit);
     runtime.sky_remaining = field.order.len();
-    if old_count == 0 {
-        enqueue_many(runtime, field.order.iter().copied());
-    } else {
-        enqueue_many(runtime, invalidated);
-    }
-    if old_count > 0 {
-        request_global_refresh(runtime, field.order.len());
-    }
+    // New faces' coverage and the world sweep are the GPU's picks.
     result.exact_edits.clear();
     field.publishing_pages.remove(&page);
     update_stats_from_counters(runtime, field, stats);
@@ -410,43 +415,22 @@ fn finish_scene_page(
     }
 }
 
-pub(super) fn invalidate_near_voxel(
-    runtime: &mut VoxelGiRuntime,
-    field: &mut VoxelEnergyField,
-    center: IVec3,
-    radius: i32,
-    invalidated: &mut HashSet<IVec3>,
-) {
+/// Probes within `radius` of `center` (two pages each way at 48).
+fn probes_near(field: &VoxelEnergyField, center: IVec3, radius: i32, found: &mut HashSet<IVec3>) {
     let page_radius = (radius + PAGE_EDGE as i32 - 1) / PAGE_EDGE as i32;
     let center_page = page_of(center);
     let radius_squared = i64::from(radius) * i64::from(radius);
-    let mut candidates = Vec::new();
     for z in -page_radius..=page_radius {
         for y in -page_radius..=page_radius {
             for x in -page_radius..=page_radius {
-                if let Some(voxels) = field.pages.get(&(center_page + IVec3::new(x, y, z))) {
-                    candidates.extend(voxels.iter().copied());
+                for &voxel in field.pages.get(&(center_page + IVec3::new(x, y, z))).into_iter().flatten() {
+                    if (voxel.as_i64vec3() - center.as_i64vec3()).length_squared() <= radius_squared
+                        && field.probes.contains_key(&voxel)
+                    {
+                        found.insert(voxel);
+                    }
                 }
             }
-        }
-    }
-    for voxel in candidates {
-        let delta = voxel.as_i64vec3() - center.as_i64vec3();
-        if delta.length_squared() > radius_squared {
-            continue;
-        }
-        if let Some(probe) = field.probes.get_mut(&voxel) {
-            let (_, samples, covered, settled) = probe_metrics(probe, field.transport_revision);
-            probe.request_relight();
-            let (_, next_samples, next_covered, next_settled) =
-                probe_metrics(probe, field.transport_revision);
-            runtime.completed_samples =
-                runtime.completed_samples.saturating_sub(samples) + next_samples;
-            runtime.covered_faces = runtime.covered_faces.saturating_sub(covered) + next_covered;
-            runtime.settled_faces = runtime.settled_faces.saturating_sub(settled) + next_settled;
-            // Nothing visible changed yet: do not upload every receiver in the
-            // edit radius merely because its measurements now need refreshing.
-            invalidated.insert(voxel);
         }
     }
 }
@@ -454,6 +438,28 @@ pub(super) fn invalidate_near_voxel(
 #[cfg(test)]
 mod donor_tests {
     use super::*;
+
+    #[test]
+    fn edits_are_measured_on_the_gpu_within_the_scan_budget() {
+        use super::super::geometry::{Bounds, ChangeKind, ChangeWeight, GeometryChange};
+        let small = Bounds::point(IVec3::ZERO);
+        let huge = Bounds { min: IVec3::ZERO, max: IVec3::splat(40) };
+        let mut change = GeometryChange::default();
+        for b in [small, huge] {
+            change.weights.insert(
+                b,
+                ChangeWeight { kind: ChangeKind::Edit { voxels: 1, measure: false }, flux: 0.5 },
+            );
+        }
+        finalize_change_flux(&mut change, &Default::default());
+        // A 3x3x3 scan fits; 43^3 positions exceed the budget: unknown flux
+        // (the distance curve), never an underestimate.
+        assert_eq!(
+            change.weights[&small],
+            ChangeWeight { kind: ChangeKind::Edit { voxels: 1, measure: true }, flux: 0.5 }
+        );
+        assert_eq!(change.weights[&huge], ChangeWeight::UNKNOWN);
+    }
 
     fn unchanged_page_fixture() -> (
         VoxelGiRuntime,
@@ -567,11 +573,12 @@ mod donor_tests {
             pointer
         );
         assert_eq!(field.probes[&voxel].display[2].indirect, Vec3::splat(2.0));
-        assert!(runtime.urgent_queued.contains(&voxel));
-        assert_eq!(
-            field.probes[&voxel].samples[2],
-            super::super::geometry::NEAR_HISTORY
-        );
+        // Its sky is refreshed; whether its light is urgent is the GPU's
+        // decision (retention events), not a CPU wake.
+        assert!(runtime.sky_queued.contains(&voxel));
+        assert!(!runtime.urgent_queued.contains(&voxel));
+        // The count stays for measured retention to cap.
+        assert_eq!(field.probes[&voxel].samples[2], 64);
         assert!(!field.publishing_pages.contains(&IVec3::ZERO));
         assert_eq!(runtime.active_faces, 1024);
         assert_eq!(field.order.len(), 1024);
@@ -733,5 +740,51 @@ mod donor_tests {
             counts, times[0][16], times[1][16]
         );
         assert!(counts[1] * 4 < counts[0]);
+    }
+}
+
+fn luminance(value: Vec3) -> f32 {
+    0.2126 * value.x + 0.7152 * value.y + 0.0722 * value.z
+}
+
+/// GPU scan positions (each a voxel's six faces) per scene update. Edits past
+/// it get unknown flux, so their receivers use the distance curve instead.
+const FLUX_SCAN_BUDGET: usize = 16_384;
+
+/// Flux bounds for measured retention. Edits keep the changed voxels' own
+/// emission (scene worker) and are measured on the GPU (`measure_edits`: the
+/// brightest outgoing luminance within one voxel, from the GPU's statistics)
+/// while their one-voxel scans fit the budget; past it they are unknown (the
+/// distance curve). Loads get the brighter of sky radiance and reflected
+/// sunlight per unit of height above a receiver, times the region's width.
+/// Approximate bounds, not a certified dependency analysis.
+fn finalize_change_flux(
+    change: &mut super::geometry::GeometryChange,
+    sources: &super::sources::TransportSources,
+) {
+    use super::geometry::ChangeKind;
+    let sky = luminance(sources.environment.visible).max(
+        sources
+            .directional
+            .iter()
+            .map(|light| 0.5 * luminance(light.radiance.visible))
+            .fold(0.0, f32::max),
+    );
+    let mut budget = FLUX_SCAN_BUDGET as u64;
+    for (bounds, weight) in change.weights.iter_mut() {
+        match &mut weight.kind {
+            ChangeKind::Load { .. } => weight.flux = sky * super::world::REGION_EDGE as f32,
+            ChangeKind::Edit { measure, .. } => {
+                let size = (bounds.max - bounds.min + IVec3::splat(3)).max(IVec3::ONE).as_i64vec3();
+                let positions = (size.x * size.y * size.z) as u64;
+                if positions <= budget {
+                    budget -= positions;
+                    *measure = true;
+                } else {
+                    *weight = super::geometry::ChangeWeight::UNKNOWN;
+                }
+            }
+            ChangeKind::Unknown | ChangeKind::Unload | ChangeKind::Light => {}
+        }
     }
 }

@@ -24,7 +24,7 @@ control in the same frozen scene. Analyze it with `cave_sample_analysis.py
 RUN --perceptual --control`, and analyze the candidate without `--control`.
 Both require the independent reference's qualification and completed capture
 status; neither relaxes the user-calibrated RGB gates. The
-[resident/path-reuse results](resident-path-reuse.md) document exact commits,
+[resident/path-reuse results](history/resident-path-reuse.md) document exact commits,
 settings and evidence. These opt-in studies are not routine toggle stress.
 
 Current appearance acceptance is the user's [2,048-path cave target](cave-sampling.md#user-calibrated-visual-target),
@@ -34,28 +34,20 @@ outlier as a universal perceptual threshold, or waive temporal/FPS qualification
 Keep the original stricter engineering metrics alongside this human-calibrated
 target, and keep IR/ionizing tolerances independent.
 
-The [whole-range integration](whole-range-history.md#runtime-integration) records
-the current policy. The [earlier runtime qualification](runtime-retention.md)
+The [whole-range integration](history/whole-range-history.md#runtime-integration) records
+the current policy. The [earlier runtime qualification](history/runtime-retention.md)
 records the preceding calibration, independent references and windowed controls.
-Specify `VOXEL_GI_RETENTION=baseline` or `whole-range` in current A/B commands;
-`calibrated` is now an alias for whole-range, not the previous curve. Check the
-versioned `spatial_retention` value in the report: absence of the variable
-selected the legacy control in older commits. The separate `history_experiment`
-field describes the older retain-all ablation. Coverage and retained weight are
-still not convergence. Core integrations select the same policies with
-`VoxelGiStartup`; launch parsing belongs to the demo.
-
-For the [overflow compression experiment](distance-band-retention.md), keep
-`VOXEL_GI_RETENTION=calibrated` and select
-`VOXEL_GI_RETENTION_SUMMARY=floors|distance-bands`; verify `retention_summary` in
-the report. Distance bands are now the default; floors is the explicit control.
-Both arms use the same distance curve. The opt-in retention audit
-additionally rejects a compressed cap weaker than its complete shadow journal.
-`runtime_retention_analysis.py` can use the final frozen audit checkpoint for
-live error; `retention_attribution.py` checks target motion across all six.
+The legacy 16/256 control, the floor summary and the retention audit were
+removed on the surface-cache branch (last present at `8cab848`), as were the
+study harnesses the [historical records](history/README.md) use: near-history
+calibration, model comparison, footprint replay, the retain-all ablation and
+their Python analyses. Check out that commit to reproduce them. Check
+`spatial_retention` and `measured_retention` in the report;
+`config/gi-retention-curve.json` selects the whole-range curve without measured
+flux. Coverage and retained weight are still not convergence.
 The blocked windowed capture is not a frame-pacing qualification.
 
-For adaptive-history research, the [DDGI/A-SVGF qualification study](adaptive-history-qualification.md)
+For adaptive-history research, the [DDGI/A-SVGF qualification study](history/adaptive-history-qualification.md)
 records the opt-in matched native sample tapes, isolated branches, first-gate
 failures and required runtime gate. Neither detector is a gameplay default;
 do not add those studies to ordinary throughput testing.
@@ -84,7 +76,7 @@ or noisy. Retain logs and captures under ignored `target/`, not Git.
 ### Separate sampling accuracy from presentation
 
 Correctness precedes variance/quality tuning. The
-[independent estimator audit](hallway-path-outliers.md#independent-correctness-audit)
+[independent estimator audit](history/hallway-path-outliers.md#independent-correctness-audit)
 found a bias that CPU/GPU parity and shared-estimator references missed. For changes
 to sampling, MIS or termination, check distribution/PDF agreement and a known-answer
 integral first, then independent cosine-only means by depth at the actual suspect
@@ -143,16 +135,14 @@ localized regression. The provisional smooth-wall noise envelope complements,
 not replaces, the existing user-calibrated FLIP guard. Change a quality threshold
 only with new matched evidence and visual agreement, not to pass a candidate.
 
-For a matched 1536/2048 display-target study, add
-`VOXEL_GI_VALIDATE_EVIDENCE_TARGETS=1536,2048` to the headless reference command in
+For a display-target study on the surface cache, add
+`VOXEL_GI_VALIDATE_CACHE_SWEEP=1` and `VOXEL_GI_VALIDATE_EVIDENCE_TARGETS=256,512,1024`
+(any distinct targets) to the headless reference command in
 [the cave protocol](cave-reference.md), with `VOXEL_GI_REFERENCE_PATHS=131072`.
-`EVIDENCE_TARGETS=1` retains the historical 512/1024/2048/4096 sweep. The raw
-`samples-*` controls are always captured alongside presentation variants.
-Analyze a fresh qualified sweep with `tools/spatial_replay_quality.py RUN RUN
---fresh-reference --labels samples evidence1536 evidence2048 --counts 4 16 64
-128 256 512 1024 1280 1536 2048`. Fresh-reference mode does not assert equality
-to a deleted historical image: it records the new reference hash, and only
-normalizes against the old noise envelope if that hash matches exactly.
+The raw `samples-*` controls are always captured alongside presentation
+variants. `tools/cache_flip_gate.py RUN` applies the user-calibrated FLIP gate
+and `tools/cache_wall_noise.py RUN` the smooth-wall noise envelope, both against
+the run's own frozen reference ([surface cache](surface-cache.md)).
 
 | Change | First useful check |
 | --- | --- |
@@ -199,12 +189,12 @@ It checks retained-weight decay and monotonic display at fixed fresh path counts
 its virtual display cadence is not a gameplay latency measurement. Pair it with
 `response` and `VOXEL_GI_VALIDATE_BACKGROUND=1` when changing live removal policy.
 The response recorder observes every Update, including means/moments, display,
-sequence and revisions. Use the [temporal recorder](temporal-regressions.md) for
+sequence and revisions. Use the [temporal recorder](history/temporal-regressions.md) for
 the house-turn stability gate; keep background-loader and ordinary camera-only
 streaming results separate. A failed gate stays failed, even when a candidate
-improves relative to its control. See the [audit evidence](scene-history-audit.md).
+improves relative to its control. See the [audit evidence](history/scene-history-audit.md).
 
-The [completed policy controls](scene-history-audit.md#policy-closeout) cover
+The [completed policy controls](history/scene-history-audit.md#policy-closeout) cover
 material-ID null changes, moving analytic lights, rare portal discovery,
 repeated distant updates, and emission-cache rebuild cost. Run the relevant
 `policy_` test with `--ignored --nocapture` only when touching that policy;
@@ -223,9 +213,9 @@ use distribution/PDF checks and independent high-sample field references.
 archived `VOXEL_GI_BASELINE_SHADER`, checks CPU/GPU parity and measures interleaved
 fixed-work GPU time. Pair sampler changes with the ordinary independent area-
 quadrature test and the relevant all-band source response test; do not routinely
-repeat the full study. See the [cave accuracy evidence](cave-history-retention.md).
+repeat the full study. See the [cave accuracy evidence](history/cave-history-retention.md).
 The edit-difference, resident-ownership and control-variate studies live only on
-their [recorded experiment branches](research-2026-10-09.md), not in the default
+their [recorded experiment branches](history/research-2026-10-09.md), not in the default
 test suite. Check out a branch only after stopping the app: shader hot reload
 would otherwise contaminate a running comparison.
 
@@ -410,7 +400,7 @@ transition; it must not be mistaken for improved sampler accuracy.
   exposed wall faces and their 144 reconstructed corners, with `site_faces` in
   schema 2. Both the isolated chamber and composed normal-world structures are
   checked for exposure. Missing sites are failures, not stable black samples.
-  See the [streaming investigation](streaming-performance.md) for exact runs.
+  See the [streaming investigation](history/streaming-performance.md) for exact runs.
 - `VOXEL_GI_VALIDATE_REFERENCE=1` adds two offline 65,536-path references per
   fixed face on the frozen final scene, **after** timings/captures. It requires
   headless validation with exit enabled. Use `tools/reference_analysis.py` to
@@ -419,7 +409,7 @@ transition; it must not be mistaken for improved sampler accuracy.
   to 182 seconds; optional `VOXEL_GI_VALIDATE_PATH_DIAGNOSTIC=<receiver-index>`
   replays individual CPU/GPU paths to diagnose outliers. These are opt-in
   investigations, not a new routine validation requirement. Full protocol and
-  limitations: [history-retention study](cave-history-retention.md).
+  limitations: [history-retention study](history/cave-history-retention.md).
 - `VOXEL_GI_VALIDATE_REFERENCE_IMAGE=1` on headless `cave` freezes the final
   scene/publication and bakes all chamber surfaces into two reference images
   and their average, with independent CPU estimator checks. This is the
@@ -454,6 +444,25 @@ transition; it must not be mistaken for improved sampler accuracy.
   report latency and noise separately rather than naming one “convergence.”
 - Never count display priors, filtered colors or interpolated neighbors as new
   simulation samples. Include infrared and ionizing channels in estimator tests.
+
+## Profiling with Tracy
+
+Offscreen frame interval is pinned near 20 ms by the 60 Hz runner (it did not
+move with resolution, GI display or transport load on 2026-10-19), so it does
+not measure CPU or GPU cost. Use Tracy spans for CPU work:
+
+- Bevy 0.19 links Tracy 0.13.1 (protocol 76). Build `capture` and `csvexport`
+  from the Tracy 0.13.x source (`cmake -B build -S capture`, then
+  `cmake --build build`; the same for `csvexport`). Homebrew's 0.14 cannot connect.
+- Start `tracy-capture -o target/prof/run.tracy -f -s 80`, then run the profile
+  with `cargo run --features tracy` and `RUST_LOG=info` (`warn` hides the spans).
+- `tracy-csvexport -e -s '|' run.tracy` gives self time per span. Divide by
+  the frame count for ms per frame. Span names contain commas, hence `|`.
+- GI worker stages have their own spans (`gi_trace_worker`, `gi_prepare_inputs`,
+  `gi_evidence_gather`, `gi_face_index_upload`, `gi_submit`, `gi_readback`,
+  `gi_apply_retention`, `gi_scene_build`). Bevy systems get spans automatically.
+- On Metal, Bevy records no GPU pass timestamps. GI transport has its own
+  (`transport_execution_ms`); use Xcode's Metal debugger for render passes.
 
 ## Shared Cargo cache
 
@@ -548,6 +557,12 @@ settings changes. Missing/replaced faces and address-only changes are explicit.
 The mirror is the latest queued/completed CPU snapshot, which may differ from
 the currently rendered GPU frame; the pinned image is needed to correlate an
 actual visual failure. Pinning cannot recover events before the pin.
+
+The CPU statistics mirror is bounded: at most `statistics_mirror_per_batch`
+GPU-picked faces reach it per batch, so the watch and the validation recorders
+(live-site, house, response timing) can read lagging statistics. Run with
+`VOXEL_GI_SETTINGS=config/gi-mirror-full.json` when those numbers must be
+current, and judge default-setting runs by their rendered captures.
 
 This is a gameplay diagnostic, not a frozen reference or a quality/FPS pass.
 An automated smoke test can pin known coordinates using

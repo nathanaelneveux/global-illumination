@@ -100,18 +100,24 @@ pub(crate) fn position_tag(voxel: IVec3) -> u32 {
     p.x | (p.y << 6) | (p.z << 12)
 }
 
+/// The most walk sites (receiver included) any face may use.
+pub(crate) fn site_limit(max_donors: u32) -> u32 {
+    if max_donors == 0 {
+        MAX_FACES as u32
+    } else {
+        max_donors.min((MAX_FACES - 1) as u32) + 1
+    }
+}
+
 /// Candidate search has a hard radius/work bound. Allow extra sites for uneven
-/// weights and rejection; the GPU decides actual support using current history.
+/// weights and rejection; the GPU decides actual support using current history
+/// (`reconstruct_evidence` applies this same formula to its own count).
 pub(crate) fn candidate_limit(target: u32, history: u32, max_donors: u32) -> usize {
     if history >= target {
         return 1;
     }
-    let maximum = if max_donors == 0 {
-        MAX_FACES
-    } else {
-        (max_donors.min((MAX_FACES - 1) as u32) + 1) as usize
-    };
-    (2 * u64::from(target).div_ceil(u64::from(history.max(1)))).clamp(1, maximum as u64) as usize
+    (2 * u64::from(target).div_ceil(u64::from(history.max(1))))
+        .clamp(1, u64::from(site_limit(max_donors))) as usize
 }
 
 /// Reused worker scratch: a breadth-first surface walk, not a per-face hash set
