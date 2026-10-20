@@ -474,8 +474,12 @@ that job's merge. Retention events and source changes revoke stability on
 the GPU. Every face the GPU ranks is considered each batch, not a rotating
 window; the camera is a priority hint, never the extent of the lighting field.
 
-Picks return with the batch's readback (slot, revision tag, incarnation); the
-CPU uses them for evidence donor lists and rollback. A pick whose slot's
+Picks return with the batch's readback (slot, revision tag, merged count,
+incarnation); the CPU uses them for evidence donor lists and rollback. Donor
+planning follows GPU history: the merged count is after any retention cap, CPU
+jobs a cap left below the evidence target are re-listed from their readback,
+and faces near a player edit in the batch are planned as if they had no
+history (the GPU measures the cap; the CPU only walks the graph). A pick whose slot's
 revision tag is older than the probe's revision traced pre-change light: the
 CPU's next job for the probe undoes it, unless one is already in flight.
 

@@ -237,6 +237,9 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
         output[result + word] = state[base + word];
     }
     // A GPU pick's result is not read back: its CPU mirror is now stale.
+    // Its record reports the merged count instead (after any retention cap),
+    // so the CPU plans its donor list from the GPU's history.
+    if i >= settings.batch.x { inputs[i].z = count; }
     record_stability(inputs[i].x, previous_mean, bitcast<f32>(previous_ionizing), i >= settings.batch.x);
 }
 
@@ -858,7 +861,7 @@ fn select_emit(
     tasks[task * 2u] = vec4(identity.xyz, identity.w & 7u);
     begin_trace(base, task);
     // Read back: the slot's revision tag (stale picks are undone by the
-    // probe's next CPU job) and the count before this merge (donor lists).
-    // No pass reads y or z of a pick record.
+    // probe's next CPU job) and, once `accumulate` replaces it, the merged
+    // count (donor lists). No pass reads y or z of a pick record.
     inputs[task] = vec4(slot, slot_meta[slot * 3u + 1u].z, state[base + 1u].y & 0x3fffffffu, state[base + 7u].x);
 }

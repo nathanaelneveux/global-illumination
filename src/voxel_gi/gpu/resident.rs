@@ -598,10 +598,31 @@ impl ResidentAccumulator {
             // decide support. Caps are applied before rays. Faces the GPU
             // picked get their lists one batch late, for their next picks.
             let requests = std::mem::take(&mut self.list_requests);
+            // A player edit in this batch can cap a nearby face's history
+            // before it merges (the GPU measures how much; the CPU cannot):
+            // plan those faces as if they had none. Other caps reach the
+            // CPU with the merged count, for the face's next trace.
+            let edits: Vec<_> = self
+                .events
+                .iter()
+                .chain(&work.retention_events)
+                .flat_map(|event| {
+                    event.bounds.iter().zip(&event.urgent).filter(|(_, urgent)| **urgent)
+                })
+                .map(|(bounds, _)| *bounds)
+                .collect();
+            let reach = i64::from(super::super::geometry::MEASURED_RELIGHT_RADIUS).pow(2);
             let wanted = work
                 .faces
                 .iter()
-                .map(|face| (face.resident, face.samples.min(face.history_cap)))
+                .map(|face| {
+                    let near_edit = edits.iter().any(|bounds| {
+                        bounds.distance_squared(super::super::geometry::Bounds::point(face.voxel))
+                            <= reach
+                    });
+                    let count = face.samples.min(face.history_cap).min(face.revision_cap);
+                    (face.resident, if near_edit { 0 } else { count })
+                })
                 .chain(requests.into_iter().filter(|(address, _)| {
                     self.picked_face(address.x, address.y).is_some()
                 }));
@@ -919,8 +940,18 @@ impl ResidentAccumulator {
         (&self.selection.buffer, SEL_MIRRORS * 4, &self.mirror_out.buffer, self.mirror_budget)
     }
 
+    /// A face to (re)plan a donor list for in the next batch, from its merged
+    /// GPU count (the list is sized for the count after its next trace).
     pub(super) fn request_donor_list(&mut self, address: UVec2, count: u32) {
         self.list_requests.push((address, count));
+    }
+
+    /// A CPU job's face that a retention cap left below the evidence target:
+    /// its list was planned from the CPU's pre-cap count.
+    pub(super) fn request_capped_list(&mut self, address: UVec2, count: u32) {
+        if address.y != 0 && count < self.evidence_target {
+            self.list_requests.push((address, count));
+        }
     }
 
     /// The face a pick record names, if its slot still holds that allocation.
@@ -1763,6 +1794,66 @@ mod tests {
         work.probes[0].revision += 1;
         gpu.trace_compact(scene, &sources, &materials, &mut work, 16, &emitters, false).unwrap();
         assert!(work.faces[0].samples <= retained + 16, "{}", work.faces[0].samples);
+    }
+
+    /// Faces converged past the evidence target whose history a change caps:
+    /// returns (donors offered after the capping batch, after the next one,
+    /// samples after the cap). The next batch traces other faces only.
+    fn capped_face_donors(edit: bool) -> (u32, u32, u32) {
+        use crate::voxel_gi::geometry::{Bounds, ChangeKind, ChangeWeight};
+        use crate::voxel_gi::retention::RetentionEvent;
+        let mut gpu = super::super::tests::native_tracer();
+        gpu.enable_resident().unwrap();
+        let (scene, sources, probes) = super::super::tests::open_floor_fixture();
+        let materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        let spatial = |work: &mut TraceWork| {
+            work.spatial_reconstruction = 1.0;
+            work.spatial_evidence_target = 1024;
+            work.measured_retention = 1.0;
+        };
+        let mut work = TraceWork::from_probes(&probes[264..272], false);
+        for face in &mut work.faces {
+            face.samples = 2048;
+            face.radiance = EnergySpectrum::new(Vec3::splat(0.4), 0.0, 0.0);
+            face.second_moment = EnergySpectrum::new(Vec3::splat(0.17), 0.0, 0.0);
+        }
+        spatial(&mut work);
+        let mut event = RetentionEvent::single(
+            Bounds::point(work.faces[3].voxel + IVec3::Y),
+            ChangeWeight { kind: ChangeKind::Edit { voxels: 1, measure: false }, flux: 100.0 },
+        );
+        event.urgent = vec![edit];
+        work.retention_events.push(event);
+        gpu.trace_compact(scene.clone(), &sources, &materials, &mut work, 16, &emitters, false)
+            .unwrap();
+        let donors = |gpu: &GpuTracer, slot: u32| {
+            let resident = gpu.resident.as_ref().unwrap();
+            read_words(gpu, &resident.donor_table.buffer, resident.high_water as u64 * 8)
+                [slot as usize * 2 + 1]
+        };
+        let face = &work.faces[3];
+        let after_cap = donors(&gpu, face.resident.x);
+        let mut other = TraceWork::from_probes(&probes[..1], false);
+        spatial(&mut other);
+        gpu.trace_compact(scene, &sources, &materials, &mut other, 16, &emitters, false).unwrap();
+        (after_cap, donors(&gpu, face.resident.x), face.samples)
+    }
+
+    #[test]
+    #[ignore = "native: a player edit's capped faces get donors in the same batch"]
+    fn edit_capped_faces_keep_their_donors() {
+        let (donors, _, samples) = capped_face_donors(true);
+        assert!(samples < 1024, "{samples}");
+        assert!(donors > 0, "a capped face traced without donors (pre-cap CPU count)");
+    }
+
+    #[test]
+    #[ignore = "native: a face any change capped gets donors from the GPU's merged count"]
+    fn capped_faces_get_donors_for_their_next_trace() {
+        let (_, donors, samples) = capped_face_donors(false);
+        assert!(samples < 1024, "{samples}");
+        assert!(donors > 0, "the GPU's capped count never reached donor planning");
     }
 
     #[test]

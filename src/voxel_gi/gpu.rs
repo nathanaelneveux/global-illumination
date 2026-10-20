@@ -1082,7 +1082,11 @@ impl GpuTracer {
             } else {
                 (known as f32 / count as f32).min(1.0)
             };
-            if self.resident.is_some() {
+            if let Some(resident) = &mut self.resident {
+                // A retention cap can leave a CPU job's face short of the
+                // evidence target its list was planned without: list it
+                // for its next trace from the GPU's merged count.
+                resident.request_capped_list(face.resident, values[5].to_bits());
                 face.radiance = mean;
                 face.second_moment = second;
                 face.samples = values[5].to_bits();
@@ -1135,7 +1139,7 @@ impl GpuTracer {
             }
         }
         // Picked faces' donor lists build in the next batch, from the pick
-        // records (slot, count before the merge, incarnation).
+        // records (slot, merged count after any retention cap, incarnation).
         if picks > 0
             && let Some(resident) = &mut self.resident
         {
@@ -1150,7 +1154,7 @@ impl GpuTracer {
                 if let Some((voxel, face)) = resident.picked_face(slot, incarnation) {
                     work.pick_tags.push((voxel, face, tag));
                 }
-                resident.request_donor_list(UVec2::new(slot, incarnation), count.saturating_add(samples));
+                resident.request_donor_list(UVec2::new(slot, incarnation), count);
             }
         }
         for (position, bytes) in sky_pending
