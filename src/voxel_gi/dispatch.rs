@@ -65,8 +65,10 @@ pub(super) fn append_sky_work(
     count
 }
 
-/// Probes per batch whose untraced faces get a resident slot and seed.
-const ENSURE_PROBES_PER_BATCH: usize = 1024;
+/// Probes per batch whose untraced faces get a resident slot and seed. GPU
+/// coverage only reaches faces with a slot, so this bounds how fast newly
+/// streamed terrain is traced (1,024 left a growing backlog in the hallway).
+const ENSURE_PROBES_PER_BATCH: usize = 8192;
 
 pub(super) fn start_trace_task(
     mut runtime: ResMut<VoxelGiRuntime>,

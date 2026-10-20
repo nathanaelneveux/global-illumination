@@ -213,10 +213,13 @@ impl TraceWork {
                 let start = self.faces.len();
                 self.push_face(probe, face, false, u32::MAX, u32::MAX);
                 let face = self.faces.remove(start);
+                // The batch's source revision, not the probe's: an untraced
+                // probe still has 0, below any model reset, and its binding
+                // would be rejected (no address: the renderer falls back).
                 self.ensure.push(EnsureFace {
                     face,
                     revision: probe.revision,
-                    source_revision: probe.source_revision,
+                    source_revision: self.source_revision.max(probe.source_revision),
                 });
             }
         }

@@ -434,7 +434,21 @@ impl ResidentAccumulator {
                 && scene
                     .material_at(key.0 + FACE_OFFSETS[key.1])
                     .is_none_or(|m| m == AIR);
-            if !present || self.slots.contains_key(&key) {
+            if !present {
+                continue;
+            }
+            // Already resident (a probe recreated on the CPU, or traced
+            // first): the request still learns the slot's address.
+            if let Some(slot) = self.slots.get(&key) {
+                if slot.incarnation != 0 {
+                    self.bindings.push(ResidentBinding {
+                        voxel: key.0,
+                        face: key.1,
+                        revision: ensure.revision,
+                        source_revision: ensure.source_revision,
+                        address: UVec2::new(slot.index, slot.incarnation),
+                    });
+                }
                 continue;
             }
             let mut slot = self.allocate_slot(key, indexed_spatial, &mut walk_joined);
@@ -1542,6 +1556,10 @@ mod tests {
         }
         // Trace one probe; ensure eight others (and one face that does not exist).
         let mut work = TraceWork::from_probes(&probes[..1], false);
+        // A model reset has advanced the source revision past the untraced
+        // probes' own (0): bindings carry the batch's, or publication would
+        // reject them and the faces would never get an address.
+        work.source_revision = 3;
         for probe in &probes[1..9] {
             work.ensure_slots(probe);
         }
@@ -1561,6 +1579,7 @@ mod tests {
             .iter()
             .map(|b| ((b.voxel, b.face), b.address))
             .collect();
+        assert!(resident.bindings.iter().filter(|b| b.voxel != probes[0].voxel).all(|b| b.source_revision == 3));
         for key in ensured {
             let slot = resident.slots[&key];
             assert_eq!(resident.face_index.get(key.0, key.1), Some(slot.index));
