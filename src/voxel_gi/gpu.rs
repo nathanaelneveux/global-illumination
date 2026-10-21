@@ -23,9 +23,20 @@ use super::work::TraceWork;
 use super::world::SurfaceProbe;
 use super::world::{TransportScene, VoxelMaterialTransportTable};
 
-/// The transport shader with the shared voxel traversal included.
+/// The world-space consumer with the shared transport and traversal included.
 static SHADER: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| include_traversal(include_str!("../../assets/shaders/voxel_trace.wgsl")));
+    std::sync::LazyLock::new(|| include_paths(include_str!("../../assets/shaders/voxel_trace.wgsl")));
+
+/// Compose a transport consumer without duplicating the lighting estimator.
+pub(crate) fn include_paths(source: &str) -> String {
+    const MARKER: &str = "// #include voxel_path.wgsl\n";
+    assert_eq!(source.matches(MARKER).count(), 1, "shader needs one path include");
+    include_traversal(&source.replacen(
+        MARKER,
+        include_str!("../../assets/shaders/voxel_path.wgsl"),
+        1,
+    ))
+}
 
 /// Insert the shared traversal (`voxel_traversal.wgsl`) at its include marker.
 pub(crate) fn include_traversal(source: &str) -> String {
