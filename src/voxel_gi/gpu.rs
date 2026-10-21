@@ -50,6 +50,7 @@ const TASK_BYTES: usize = 32;
 
 mod face_index;
 mod geometry;
+pub(crate) mod view;
 mod readback;
 mod resident;
 pub(crate) use readback::Readback;
@@ -196,6 +197,14 @@ fn cached_bindings<'a, const N: usize>(
 }
 
 impl UploadBuffer {
+    /// Model buffers travel with their counts and sampling metadata. Publish a
+    /// fresh allocation on a model change so an extracted view cannot observe
+    /// a new table through an older descriptor. Ordinary frames share handles.
+    fn upload_generation(&mut self, device: &RenderDevice, queue: &RenderQueue, bytes: &[u8]) -> Result<(), String> {
+        self.capacity = 0;
+        self.upload(device, queue, bytes)
+    }
+
     fn new(device: &RenderDevice, label: &'static str, usage: BufferUsages) -> Self {
         let capacity = 256;
         let buffer = device.create_buffer(&BufferDescriptor {
@@ -302,6 +311,7 @@ pub(crate) struct GpuTracer {
     materials: UploadBuffer,
     material_table: Option<VoxelMaterialTransportTable>,
     material_importance: super::EnergySpectrum,
+    view_transport: super::TransportSettings,
     lights: UploadBuffer,
     sources: Option<TransportSources>,
     emitters: UploadBuffer,
@@ -510,6 +520,7 @@ impl GpuTracer {
             materials: UploadBuffer::new(device, "GI material transport", storage),
             material_table: None,
             material_importance: super::EnergySpectrum::ONE,
+            view_transport: default(),
             lights: UploadBuffer::new(device, "GI analytic sources", storage),
             sources: None,
             emitters: UploadBuffer::new(device, "GI emissive face distribution", storage),
@@ -661,30 +672,12 @@ impl GpuTracer {
             resident.set_materials(&self.context, materials)?;
             resident.prepare_inputs(&self.context, &scene, work, samples)?;
         }
-        // Geometry and ownership are now current. Cached sun-only work and
-        // maintenance need neither a ray dispatch nor a readback allocation.
-        if work.faces.is_empty() && work.picks == 0 && sky_pending.is_empty() {
-            if prepare_resident {
-                let mut encoder = self.context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("GI receiver maintenance"),
-                });
-                self.resident.as_mut().unwrap().dispatch_prepare(
-                    &self.context.device, &mut encoder, &self.tasks, 0, None,
-                );
-                self.context.queue.submit([encoder.finish()]);
-            }
-            self.last_dispatch_ms = 0.0;
-            self.last_gpu_ms = Some(0.0);
-            self.last_prepare_ms = work_started.elapsed().as_secs_f32() * 1000.0;
-            self.last_snapshot_latency_ms = 0.0;
-            self.last_decode_ms = 0.0;
-            self.sky_cache.apply(&mut work.probes);
-            return Ok(None);
-        }
+        // Model publication is independent of receiver work. Far views may
+        // have no near receivers, but still need the current optical scene.
+        self.view_transport = work.transport.normalized();
         let device = &self.context.device;
         let queue = &self.context.queue;
-        if !sky_only
-            && self
+        if self
                 .emission
                 .as_ref()
                 .is_none_or(|previous| !Arc::ptr_eq(previous, emitters))
@@ -713,12 +706,11 @@ impl GpuTracer {
                     .iter()
                     .flat_map(|node| node.words().into_iter().flat_map(u32::to_le_bytes)),
             );
-            self.emitters.upload(device, queue, &bytes)?;
+            self.emitters.upload_generation(device, queue, &bytes)?;
             self.emission = Some(Arc::clone(emitters));
         }
-        if !sky_only
-            && (self.material_table.as_ref() != Some(materials)
-                || self.material_importance != emitters.importance)
+        if self.material_table.as_ref() != Some(materials)
+                || self.material_importance != emitters.importance
         {
             let gpu_materials: Vec<_> = (0..=255)
                 .map(|i| {
@@ -736,7 +728,7 @@ impl GpuTracer {
                     }
                 })
                 .collect();
-            self.materials.upload(
+            self.materials.upload_generation(
                 device,
                 queue,
                 &ShaderBuffer::from(gpu_materials).data.unwrap(),
@@ -776,8 +768,28 @@ impl GpuTracer {
                 gpu_lights.push(GpuLight::default());
             }
             self.lights
-                .upload(device, queue, &ShaderBuffer::from(gpu_lights).data.unwrap())?;
-            self.sources = Some(sources.clone());
+                .upload_generation(device, queue, &ShaderBuffer::from(gpu_lights).data.unwrap())?;
+        }
+        self.sources = Some(sources.clone());
+        // Geometry, ownership and model are now current. Maintenance needs
+        // neither a ray dispatch nor a readback allocation.
+        if work.faces.is_empty() && work.picks == 0 && sky_pending.is_empty() {
+            if prepare_resident {
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("GI receiver maintenance"),
+                });
+                self.resident.as_mut().unwrap().dispatch_prepare(
+                    device, &mut encoder, &self.tasks, 0, None,
+                );
+                queue.submit([encoder.finish()]);
+            }
+            self.last_dispatch_ms = 0.0;
+            self.last_gpu_ms = Some(0.0);
+            self.last_prepare_ms = work_started.elapsed().as_secs_f32() * 1000.0;
+            self.last_snapshot_latency_ms = 0.0;
+            self.last_decode_ms = 0.0;
+            self.sky_cache.apply(&mut work.probes);
+            return Ok(None);
         }
         let picks = if self.resident.is_some() { work.picks } else { 0 };
         let face_count = work.faces.len() + picks as usize;
@@ -1398,8 +1410,8 @@ pub(super) mod tests {
         )
         .unwrap();
         assert_eq!(
-            gpu.materials.uploads, 0,
-            "sky-only work does not need optical materials"
+            gpu.materials.uploads, 1,
+            "sky-only work still publishes a complete optical scene for views"
         );
         let initial_sky = gpu.sky_bindings.as_ref().unwrap().group.id();
         gpu.trace(

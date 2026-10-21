@@ -38,6 +38,39 @@ fn run_worker(world: &mut World) -> gi::TraceBatchResult {
 }
 
 #[test]
+#[ignore = "native far-only scene publication regression"]
+fn far_only_model_changes_publish_without_near_receivers() {
+    let device = super::tests::native_tracer().context;
+    let (scene, sources, _) = super::tests::open_floor_fixture();
+    let runtime = gi::VoxelGiRuntime { scene, sources, ..default() };
+    let mut world = world(runtime, default(), device);
+    let first = run_worker(&mut world);
+    let held = first.gpu_tracer.as_ref().unwrap().view_scene().unwrap();
+    {
+        let mut runtime = world.resource_mut::<gi::VoxelGiRuntime>();
+        runtime.gpu_tracer = first.gpu_tracer;
+        runtime.emission_cache = first.emission_cache;
+        runtime.sources.environment.visible *= 0.5;
+        runtime.sources.directional.clear();
+        let mut materials = (*runtime.materials).clone();
+        let mut material = materials.get(2);
+        material.emission.visible = Vec3::splat(4.0);
+        materials.set(2, material);
+        runtime.materials = Arc::new(materials);
+    }
+    let next = run_worker(&mut world);
+    let current = next.gpu_tracer.as_ref().unwrap().view_scene().unwrap();
+    assert_eq!(current.params.environment, held.params.environment * Vec4::new(0.5, 0.5, 0.5, 1.0));
+    assert_eq!(current.params.maximum.w, 0);
+    for index in [3, 4, 5] {
+        assert_ne!(held.buffers[index].id(), current.buffers[index].id(),
+            "changed model allocation must not mutate a retained descriptor");
+    }
+    assert_eq!(held.buffers[0].id(), current.buffers[0].id(), "unchanged geometry shares storage");
+    assert!(current.params.extra.w > 0.0, "far-only emitters are built");
+}
+
+#[test]
 #[ignore = "native worker lifecycle regression"]
 fn retirements_survive_poll_only_and_empty_receiver_dispatch() {
     let device = super::tests::native_tracer().context;

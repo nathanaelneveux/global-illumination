@@ -623,9 +623,11 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
         ExtractResourcePlugin::<GpuProbePatchQueue>::default(),
         ExtractResourcePlugin::<ResidentDisplay>::default(),
         ExtractResourcePlugin::<GeometryDisplay>::default(),
+        ExtractResourcePlugin::<super::gpu::view::ViewTransport>::default(),
     ));
     app.init_resource::<ResidentDisplay>();
     app.init_resource::<GeometryDisplay>();
+    app.init_resource::<super::gpu::view::ViewTransport>();
     app.add_systems(
         Update,
         (

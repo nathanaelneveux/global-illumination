@@ -98,7 +98,9 @@ pub(super) fn start_trace_task(
     let maintenance = !runtime.slot_retirements.is_empty()
         || runtime.gpu_tracer.as_ref().map_or_else(
             || !runtime.scene.regions.is_empty(),
-            |tracer| tracer.needs_geometry(&runtime.scene),
+            |tracer| tracer.needs_geometry(&runtime.scene)
+                || tracer.needs_model(&runtime.sources, &runtime.materials,
+                    settings.sampling_importance(), runtime.transport),
         );
     if field.order.is_empty() && runtime.gpu_pending.is_empty() && !maintenance {
         return;
@@ -226,7 +228,7 @@ pub(super) fn start_trace_task(
         let started = Instant::now();
         let focus = batch.work.focus;
         let dispatched = !batch.work.probes.is_empty();
-        let emission_cache = if sky_only {
+        let emission_cache = if !batch_submits && !maintenance {
             emission_cache
         } else {
             Some(emission::EmissionCache::prepare_with_importance(
@@ -435,6 +437,7 @@ pub(super) fn apply_trace_task(
     mut timings: ResMut<GiWorkTimings>,
     resident_display: Option<ResMut<super::render::ResidentDisplay>>,
     geometry_display: Option<ResMut<super::render::GeometryDisplay>>,
+    view_transport: Option<ResMut<gpu::view::ViewTransport>>,
 ) {
     let mut timing = timings.main_scope(super::telemetry::MainStage::TracePublication);
     let Some(task) = runtime.trace_task.as_mut() else {
@@ -501,6 +504,9 @@ pub(super) fn apply_trace_task(
             .gpu_tracer
             .as_ref()
             .and_then(gpu::GpuTracer::resident_buffer);
+    }
+    if let Some(mut view) = view_transport {
+        view.0 = result.gpu_tracer.as_ref().and_then(gpu::GpuTracer::view_scene);
     }
     runtime.gpu_tracer = result.gpu_tracer;
     runtime.emission_cache = result.emission_cache;
