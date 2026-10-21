@@ -340,7 +340,9 @@ impl FromWorld for ViewRenderer {
 }
 
 fn grid_size(viewport: UVec2) -> UVec2 {
-    let mut grid = UVec2::new(viewport.x.div_ceil(8), viewport.y.div_ceil(8)).max(UVec2::ONE);
+    // Four-pixel cells preserve thin voxel sides at the normal 720p window.
+    // Larger viewports retain the same bounded storage/work ceiling.
+    let mut grid = UVec2::new(viewport.x.div_ceil(4), viewport.y.div_ceil(4)).max(UVec2::ONE);
     if grid.x * grid.y > MAX_PIXELS {
         let scale = (MAX_PIXELS as f32 / (grid.x * grid.y) as f32).sqrt();
         grid = (grid.as_vec2() * scale).floor().as_uvec2().max(UVec2::ONE);
