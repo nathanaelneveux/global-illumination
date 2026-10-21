@@ -72,6 +72,8 @@ mod upload_tests;
 mod geometry_tests;
 #[cfg(test)]
 mod maintenance_tests;
+#[cfg(test)]
+mod view_tests;
 
 #[derive(Resource, Clone)]
 pub(crate) struct GpuTransportDevice {

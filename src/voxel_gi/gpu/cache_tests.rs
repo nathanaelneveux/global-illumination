@@ -9,7 +9,7 @@ use super::*;
 use crate::voxel_gi::research::channels;
 use crate::voxel_gi::world::{AIR, FACE_OFFSETS, SurfaceProbe};
 
-fn all_interior_faces(fixture: &crate::voxel_gi::research::ResearchFixture) -> Vec<SurfaceProbe> {
+pub(super) fn all_interior_faces(fixture: &crate::voxel_gi::research::ResearchFixture) -> Vec<SurfaceProbe> {
     let mut probes = Vec::new();
     for z in 8..24 {
         for y in 8..24 {

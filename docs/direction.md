@@ -86,7 +86,16 @@ Staging:
      contracts. This per-fragment visibility pass is not yet charged against
      the shared compute budget; do not promote a smaller default radius on
      its strength alone.
-   - **F2, far bounce.** A screen-space compute pass after a depth/normal
+   - **F2, far bounce: transport consumer qualified, view integration pending.**
+     `voxel_path.wgsl` is the shared estimator; `voxel_view_trace.wgsl` writes
+     individual raw paths from explicit surface positions. Matched prefixes
+     pass against the near consumer in the hallway, skylight and cave, including
+     shortened reach and frozen near-cache termination. Each 128-byte diagnostic
+     record retains receiver identity, direction/PDF, first-hit geometry, RNG
+     replay key, separate emitter/continuation energy, direct energy and known
+     status. Black paths count; unknown and inactive paths do not. This is not
+     yet a reservoir, a compressed production layout or a rendered far solution.
+     The next integration is a screen-space compute pass after a depth/normal
      prepass (needs prepass vertex shaders for the voxel vertex layout),
      tracing the shared transport paths per pixel at reduced resolution,
      ending on near-cache faces where they reach them, with temporal
@@ -118,6 +127,9 @@ Build the next stage around these contracts:
 - Far tracing uses the same material/source/reach rules as near transport;
   it may terminate on valid near-cache measurements. It must not recursively
   treat a filtered screen result as an independent path measurement.
+  Matching a finite-path kernel is necessary but not sufficient: the near
+  cache's converged multi-bounce solution must also be matched when far paths
+  cannot reach a cached face. The analytic furnace is the gate for that tail.
 - Temporal path reuse needs origin, direction/hit geometry and proposal
   information, including correct accounting for dark samples. Color-only
   history cannot later be reinterpreted as a resampling reservoir.

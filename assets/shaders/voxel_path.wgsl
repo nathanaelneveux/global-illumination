@@ -355,6 +355,9 @@ struct PathEnergy {
     energy: Energy,
     // Reached an unloaded region: no information, excluded from the count.
     unknown: bool,
+    // Retained by the view consumer for reconnection/replay. World-space
+    // moment reduction does not consume this field (the compiler removes it).
+    first_hit: RayResult,
 }
 // Cosine-sampled continuation. A hit on a measured face ends the path with
 // that face's cached incident energy; otherwise up to DIFFUSE_HITS explicit
@@ -369,6 +372,7 @@ fn trace_path(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3
     var previous_position = start - initial_normal * 0.001;
     for (var bounce = 0u; bounce < DIFFUSE_HITS; bounce += 1u) {
         let hit = trace_diffuse(origin, direction);
+        if bounce == 0u { path.first_hit = hit; }
         if hit.status == 0u {
             let horizon = clamp(direction.y * 0.35 + 0.65, 0.15, 1.0);
             path.energy.value += throughput.value * params.environment * horizon;
@@ -430,15 +434,26 @@ fn trace_path(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3
 }
 
 struct ReceiverSample { energy: Energy, known: bool }
-fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32) -> ReceiverSample {
-    let direction = hemisphere(normal, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
-    var result = ReceiverSample(sample_emitter(surface, normal, stream, sequence, 0u), true);
+struct ReceiverPath {
+    emitter: Energy,
+    continuation: PathEnergy,
+    direction: vec3<f32>,
+}
+fn sample_receiver_path(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32) -> ReceiverPath {
+    var result: ReceiverPath;
+    result.direction = hemisphere(normal, sample_1d(stream, sequence, 0u), sample_1d(stream, sequence, 1u));
+    result.emitter = sample_emitter(surface, normal, stream, sequence, 0u);
     // Cosine sampling: cosine / pdf is exactly one for the continuation.
-    if dot(normal, direction) > 0.0 {
-        let path = trace_path(surface + normal * 0.001, direction, normal, stream, sequence);
-        result.known = !path.unknown;
-        result.energy.value += path.energy.value;
-        result.energy.radiation += path.energy.radiation;
+    if dot(normal, result.direction) > 0.0 {
+        result.continuation = trace_path(surface + normal * 0.001, result.direction, normal, stream, sequence);
     }
+    return result;
+}
+
+fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32) -> ReceiverSample {
+    let path = sample_receiver_path(surface, normal, stream, sequence);
+    var result = ReceiverSample(path.emitter, !path.continuation.unknown);
+    result.energy.value += path.continuation.energy.value;
+    result.energy.radiation += path.continuation.energy.radiation;
     return result;
 }
