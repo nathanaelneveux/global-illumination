@@ -46,12 +46,17 @@ fn far_only_model_changes_publish_without_near_receivers() {
     let mut world = world(runtime, default(), device);
     let first = run_worker(&mut world);
     let held = first.gpu_tracer.as_ref().unwrap().view_scene().unwrap();
+    assert_eq!(held.params.transport.y, 0.0);
     {
         let mut runtime = world.resource_mut::<gi::VoxelGiRuntime>();
         runtime.gpu_tracer = first.gpu_tracer;
         runtime.emission_cache = first.emission_cache;
         runtime.sources.environment.visible *= 0.5;
         runtime.sources.directional.clear();
+        runtime.sources.points.push(gi::sources::PointTransportLight {
+            position: Vec3::new(8.0, 8.0, 8.0), intensity: gi::EnergySpectrum::ZERO,
+            range: 32.0, custom_visible: Vec3::ONE,
+        });
         let mut materials = (*runtime.materials).clone();
         let mut material = materials.get(2);
         material.emission.visible = Vec3::splat(4.0);
@@ -62,6 +67,7 @@ fn far_only_model_changes_publish_without_near_receivers() {
     let current = next.gpu_tracer.as_ref().unwrap().view_scene().unwrap();
     assert_eq!(current.params.environment, held.params.environment * Vec4::new(0.5, 0.5, 0.5, 1.0));
     assert_eq!(current.params.maximum.w, 0);
+    assert_eq!(current.params.transport.y, 1.0, "custom direct RGB reaches far presentation");
     for index in [3, 4, 5] {
         assert_ne!(held.buffers[index].id(), current.buffers[index].id(),
             "changed model allocation must not mutate a retained descriptor");

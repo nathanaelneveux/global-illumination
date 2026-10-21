@@ -284,7 +284,14 @@ fn publish_view(@builtin(global_invocation_id) id: vec3<u32>) {
             output.surface = receiver.surface;
             output.face = receiver.face;
             output.irradiance = value.shown.rgb;
-            output.evidence = select(0.0, max(value.mean.w, 0.001), value.shown.w > 0.0);
+            // Custom direct RGB has no Bevy light. Keep it out of raw GI
+            // moments and evaluate the same direct term as near presentation.
+            // Ordinary raster lights and voxel emitters skip this work.
+            if params.transport.y > 0.0 {
+                output.irradiance += direct_at(receiver.surface, face_normal(receiver.face)).custom_visible;
+            }
+            output.evidence = select(0.0, max(value.mean.w, 0.001),
+                value.shown.w > 0.0 || any(output.irradiance > vec3(0.0)));
             for (var corner = 0u; corner < 4u; corner++) {
                 let byte = (value.identity.z >> (corner * 8u)) & 255u;
                 output.sky[corner] = (byte & 15u) | ((byte & 128u) << 24u);

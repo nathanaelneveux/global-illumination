@@ -328,7 +328,7 @@ impl FromWorld for ViewRenderer {
                 [&[6], &[0], &[0, 5, 7, 12, 13]],
             ),
             reconstruct: make("reconstruct_view", 0, false, [&[6], &[], &[0, 5, 7]]),
-            publish: make("publish_view", 0, false, [&[6], &[0], &[0, 5, 7, 10, 11]]),
+            publish: make("publish_view", 0, false, [&[0, 1, 2, 3, 5, 6], &[0], &[0, 5, 7, 10, 11]]),
             cameras: default(),
             frame: 0,
             at: Instant::now(),
