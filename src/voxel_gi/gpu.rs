@@ -1089,10 +1089,12 @@ impl GpuTracer {
                 // A retention cap can leave a CPU job's face short of the
                 // evidence target its list was planned without: list it
                 // for its next trace from the GPU's merged count.
-                resident.request_capped_list(face.resident, values[5].to_bits());
+                let count = values[5].to_bits() & 0x3fff_ffff;
+                resident.request_capped_list(face.resident, count);
                 face.radiance = mean;
                 face.second_moment = second;
-                face.samples = values[5].to_bits();
+                face.samples = count;
+                face.gpu_settled = Some(values[5].to_bits() & 0x8000_0000 != 0);
                 face.sequence = values[6].to_bits();
                 face.presentation = Vec4::new(values[7], values[13], values[14], values[15]);
             } else {
@@ -1122,6 +1124,7 @@ impl GpuTracer {
                 };
                 let values: [f32; 24] = std::array::from_fn(|i| f32::from_bits(word(4 + i)));
                 let mirrored = super::work::FaceWork {
+                    gpu_settled: Some(values[5].to_bits() & 0x8000_0000 != 0),
                     voxel,
                     face,
                     radiance: decode_spectrum(&values[0..4], values[4]),

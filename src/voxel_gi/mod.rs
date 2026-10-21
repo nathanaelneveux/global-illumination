@@ -462,8 +462,8 @@ fn probe_metrics(probe: &SurfaceProbe, transport_revision: u64) -> (u64, u64, u6
     for face in 0..6 {
         if probe.face_mask & (1 << face) != 0 {
             faces += 1;
-            samples += u64::from(probe.stats().samples[face].min(BOOTSTRAP_SAMPLES));
-            covered += u64::from(probe.stats().samples[face] > 0);
+            samples += u64::from(probe.bootstrap_samples(face));
+            covered += u64::from(probe.bootstrap_samples(face) > 0);
         }
     }
     let settled = u64::from(scheduling::settled_face_mask(probe, transport_revision).count_ones());

@@ -125,9 +125,13 @@ impl ProbeWork {
         probe.relit_mask &= !self.trace_mask;
         if !same_revision || self.restart {
             probe.fresh_mask = 0;
+            probe.progress.settled = 0;
             if let Some(stats) = probe.stats.as_mut() {
                 stats.stable_batches = [0; 6];
             }
+        }
+        if self.restart {
+            probe.progress.bootstrap = [0; 6];
         }
         if self.restart
             && let Some(stats) = probe.stats.as_mut()
@@ -191,6 +195,8 @@ pub(crate) struct EnsureFace {
 
 #[derive(Clone)]
 pub(crate) struct FaceWork {
+    /// GPU scheduling verdict, independent of optional CPU moments.
+    pub gpu_settled: Option<bool>,
     pub voxel: IVec3,
     pub face: usize,
     pub radiance: EnergySpectrum,
@@ -253,6 +259,7 @@ impl TraceWork {
         source_history_limit: u32,
     ) {
         self.faces.push(FaceWork {
+            gpu_settled: None,
             voxel: probe.voxel,
             face,
             radiance: if restart {
@@ -272,7 +279,7 @@ impl TraceWork {
             } else {
                 probe.stats().samples[face].min(stale_limit).min(source_history_limit)
             },
-            sequence: probe.stats().sequence[face],
+            sequence: probe.sequence(face),
             presentation: probe.display[face]
                 .indirect
                 .extend(probe.display[face].confidence),
@@ -394,13 +401,19 @@ impl FaceWork {
     /// advance; wrapping compare). A statistics-mirror record is classified
     /// before the batch traces, so a CPU job in the same batch is newer.
     pub fn predates(&self, probe: &SurfaceProbe) -> bool {
-        (probe.stats().sequence[self.face].wrapping_sub(self.sequence) as i32) > 0
+        (probe.sequence(self.face).wrapping_sub(self.sequence) as i32) > 0
     }
 
     /// Statistics only reach probes that keep them (`SurfaceProbe::stats`);
     /// the resident address and time always do.
     pub fn write(&self, probe: &mut SurfaceProbe) {
         let face = self.face;
+        probe.progress.sequence[face] = self.sequence;
+        probe.progress.bootstrap[face] = self.samples.min(super::tracer::BOOTSTRAP_SAMPLES) as u8;
+        probe.progress.settled &= !(1 << face);
+        if self.gpu_settled == Some(true) {
+            probe.progress.settled |= 1 << face;
+        }
         if let Some(stats) = probe.stats.as_mut() {
             stats.radiance[face] = self.radiance;
             stats.second_moment[face] = self.second_moment;
@@ -418,6 +431,33 @@ impl FaceWork {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slim_progress_reports_bootstrap_and_rejects_older_mirrors_without_allocating_statistics() {
+        assert_eq!(std::mem::size_of::<super::super::world::ProbeProgress>(), 32);
+        let mut full = SurfaceProbe::new(IVec3::ZERO, 4);
+        full.stats_mut().samples[2] = 2048;
+        full.stats_mut().sequence[2] = 4096;
+        let mut work = TraceWork::from_probes(&[full], false);
+        work.faces[0].resident = UVec2::new(0, 1);
+        work.faces[0].gpu_settled = Some(true);
+        let mut slim = SurfaceProbe::new_slim(IVec3::ZERO, 4);
+        work.probes[0].publish(&work.faces, &mut slim, Instant::now(), &default());
+        assert!(slim.stats.is_none());
+        assert_eq!(super::super::probe_metrics(&slim, 0), (1, 8, 1, 1));
+        assert!(!work.faces[0].predates(&slim));
+        work.faces[0].sequence -= 16;
+        assert!(work.faces[0].predates(&slim));
+        slim.request_refresh();
+        assert_eq!(super::super::probe_metrics(&slim, 0), (1, 8, 1, 0));
+        slim.update_face_mask(5);
+        assert_eq!(slim.bootstrap_samples(0), 0, "new exposure has no samples");
+        assert_eq!(slim.bootstrap_samples(2), 8, "unchanged face retains progress");
+        work.probes[0].restart = true;
+        work.probes[0].publish(&[], &mut slim, Instant::now(), &default());
+        assert_eq!(super::super::probe_metrics(&slim, 0), (2, 0, 0, 0));
+        assert!(slim.stats.is_none());
+    }
 
     #[test]
     fn retention_wake_publishes_the_selected_stamp_and_restarts_stability() {

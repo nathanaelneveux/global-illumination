@@ -2025,6 +2025,38 @@ mod tests {
         next.probes[0].publish(&next.faces, &mut published, Instant::now(), &settings);
         assert!(mirror.sequence < published.stats().sequence[face]);
         assert!(mirror.predates(&published), "dispatch would publish the older record");
+        let mut slim = SurfaceProbe::new_slim(probe.voxel, probe.face_mask);
+        next.probes[0].publish(&next.faces, &mut slim, Instant::now(), &settings);
+        assert!(slim.stats.is_none());
+        assert!(mirror.predates(&slim), "slim publication must also reject the older mirror");
+    }
+
+    #[test]
+    #[ignore = "native: slim HUD progress follows GPU counts and scheduling without full statistics"]
+    fn slim_progress_receives_gpu_stability_without_changing_sample_counts() {
+        let mut gpu = super::super::tests::native_tracer();
+        gpu.enable_resident().unwrap();
+        let (scene, _, probes) = super::super::tests::open_floor_fixture();
+        let sources = TransportSources::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        let settings = crate::voxel_gi::VoxelGiSettings::default();
+        let mut probe = SurfaceProbe::new_slim(probes[0].voxel, probes[0].face_mask);
+        let mut settled = false;
+        for batch in 1..=16 {
+            let mut work = TraceWork::from_probes(std::slice::from_ref(&probe), false);
+            work.stable_error = 0.12;
+            work.stable_samples = 32;
+            work.batch_id = batch;
+            gpu.trace_compact(scene.clone(), &sources, &default(), &mut work, 64, &emitters, false).unwrap();
+            assert_eq!(work.faces[0].samples, batch * 64, "readback flag must not alter counts");
+            settled |= work.faces[0].gpu_settled == Some(true);
+            work.probes[0].publish(&work.faces, &mut probe, Instant::now(), &settings);
+            assert!(probe.stats.is_none());
+            let (_, bootstrap, covered, stable) = crate::voxel_gi::probe_metrics(&probe, 0);
+            assert_eq!((bootstrap, covered), (8, 1));
+            assert_eq!(stable > 0, work.faces[0].gpu_settled.unwrap());
+        }
+        assert!(settled, "constant illumination must deliver a settled verdict");
     }
 
     #[test]

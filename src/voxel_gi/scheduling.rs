@@ -39,6 +39,9 @@ pub(crate) fn settled_face_mask(probe: &SurfaceProbe, revision: u64) -> u8 {
     if probe.transport_revision != revision {
         return 0;
     }
+    if probe.stats.is_none() {
+        return probe.progress.settled & probe.face_mask & probe.fresh_mask;
+    }
     let mut mask = 0;
     for face in 0..6 {
         if probe.face_mask & probe.fresh_mask & (1 << face) != 0

@@ -490,6 +490,8 @@ pub struct SurfaceProbe {
     /// diagnostics (`VoxelGiSettings::cpu_statistics`). The GPU state is the
     /// authority; by default probes carry none (~600 B each).
     pub(crate) stats: Option<Box<ProbeStatistics>>,
+    /// Small publication/diagnostic mirror, present without full moments.
+    pub(crate) progress: ProbeProgress,
     pub(crate) display: [super::history::FaceDisplay; 6],
     /// Optional resident slot and allocation incarnation. Zero incarnation is
     /// the CPU/display-prior fallback; recycled slots cannot alias old readers.
@@ -517,6 +519,15 @@ pub struct SurfaceProbe {
     pub revision: u64,
     pub source_revision: u64,
     pub updated_at: Option<Instant>,
+}
+
+/// Sequence ordering and HUD progress need no CPU radiance/moment copy.
+/// Counts saturate at bootstrap, not at a claimed convergence threshold.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ProbeProgress {
+    pub sequence: [u32; 6],
+    pub bootstrap: [u8; 6],
+    pub settled: u8,
 }
 
 /// A probe's measurement statistics on the CPU (the GPU state is the
@@ -577,6 +588,7 @@ impl SurfaceProbe {
             emission: EnergySpectrum::ZERO,
             face_mask,
             stats: None,
+            progress: default(),
             display: [super::history::FaceDisplay::default(); 6],
             resident: [UVec2::ZERO; 6],
             display_updated_at: None,
@@ -603,6 +615,16 @@ impl SurfaceProbe {
         self.stats.get_or_insert_with(Box::default)
     }
 
+    pub(crate) fn sequence(&self, face: usize) -> u32 {
+        self.stats.as_ref().map_or(self.progress.sequence[face], |stats| stats.sequence[face])
+    }
+
+    pub(crate) fn bootstrap_samples(&self, face: usize) -> u32 {
+        self.stats.as_ref().map_or(u32::from(self.progress.bootstrap[face]), |stats| {
+            stats.samples[face].min(super::tracer::BOOTSTRAP_SAMPLES)
+        })
+    }
+
     pub(crate) fn update_face_mask(&mut self, face_mask: u8) {
         if self.face_mask != face_mask {
             self.request_relight();
@@ -615,6 +637,8 @@ impl SurfaceProbe {
             }
             self.display[face] = default();
             self.resident[face] = UVec2::ZERO;
+            self.progress.bootstrap[face] = 0;
+            self.progress.settled &= !(1 << face);
             if let Some(stats) = self.stats.as_mut() {
                 stats.radiance[face] = EnergySpectrum::ZERO;
                 stats.second_moment[face] = EnergySpectrum::ZERO;
@@ -635,6 +659,7 @@ impl SurfaceProbe {
         self.request_refresh();
         self.relit_mask |= self.face_mask;
         let limit = super::geometry::NEAR_HISTORY;
+        self.progress.bootstrap = self.progress.bootstrap.map(|count| u32::from(count).min(limit) as u8);
         if let Some(stats) = self.stats.as_mut() {
             stats.samples = stats.samples.map(|count| count.min(limit));
         }
@@ -646,6 +671,7 @@ impl SurfaceProbe {
     pub(crate) fn request_refresh(&mut self) {
         self.revision = self.revision.wrapping_add(1);
         self.fresh_mask = 0;
+        self.progress.settled = 0;
         if let Some(stats) = self.stats.as_mut() {
             stats.stable_batches = [0; 6];
         }

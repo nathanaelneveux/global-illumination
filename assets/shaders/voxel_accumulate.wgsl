@@ -241,6 +241,13 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
     // so the CPU plans its donor list from the GPU's history.
     if i >= settings.batch.x { inputs[i].z = count; }
     record_stability(inputs[i].x, previous_mean, bitcast<f32>(previous_ionizing), i >= settings.batch.x);
+    // Readback-only flag: the resident count stays untouched. Slim CPU
+    // receivers need the GPU verdict, not a duplicate of all its moments.
+    output[result + 1u].y |= settled_flag(inputs[i].x);
+}
+
+fn settled_flag(slot: u32) -> u32 {
+    return select(0u, 0x80000000u, (slot_meta[slot * 3u + 1u].y & 15u) == 12u);
 }
 
 // Per-face stability after a merge (scheduling.rs record_face_batch): stable
@@ -723,6 +730,7 @@ fn select_classify(
     for (var word = 0u; word < 6u; word += 1u) {
         mirror_out[out + 1u + word] = state[base + word];
     }
+    mirror_out[out + 2u].y |= settled_flag(slot);
 }
 
 // Histograms of all keys build in workgroup memory, then only touched bins
