@@ -26,7 +26,7 @@ for label, r in runs.items():
                 sky = (x['sky_corners_traced'] - prev['sky_corners_traced']) / dt / 1e3
             else:
                 paths = sky = 0
-            print(f"  t={t:6.1f} angle={x['angle_deg']:5.1f} faces={x['faces']:7d} samples p10/p50/p90={x['samples_p10']}/{x['samples_p50']}/{x['samples_p90']} paths={paths:6.2f}M/s sky={sky:7.1f}k/s src_rev={x['source_revision']}")
+            print(f"  t={t:6.1f} angle={x['angle_deg']:5.1f} faces={x.get('sampled_faces', x.get('faces', 0)):7d} samples p10/p50/p90={x['samples_p10']}/{x['samples_p50']}/{x['samples_p90']} paths={paths:6.2f}M/s sky={sky:7.1f}k/s src_rev={x['source_revision']}")
             prev = x
     pairs = []
     for t in (30, 60, 90, 120, 150, 180):
