@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // Trusted integer lattice keys: use the engine's fast hasher on this hot path.
-use bevy::platform::collections::{HashMap, hash_map::Entry};
+use bevy::platform::collections::{HashMap, HashSet, hash_map::Entry};
 use bevy::prelude::*;
 
 use super::sky::corner_position;
@@ -150,6 +150,12 @@ pub(crate) struct SkyCache {
     /// Diffuse luminance per material: a flip's change is the light the
     /// corner's surfaces reflect, as edit flux measures it. Unset: 1.
     reflectance: Option<Box<[f32; 256]>>,
+    /// Corners whose lit bits flipped in this visibility generation: where
+    /// shadow borders were. A sun step moves borders by about a voxel, so the
+    /// next generation retraces these and their axis neighbours first.
+    flipped: Vec<IVec3>,
+    /// Voxels around that band, for the next sky requests.
+    band: Vec<IVec3>,
 }
 
 impl SkyCache {
@@ -288,6 +294,36 @@ impl SkyCache {
         reflectance
     }
 
+    /// The previous generation's flipped corners and their axis neighbours,
+    /// as the voxels whose faces touch them.
+    fn plan_band(&mut self) {
+        let mut voxels = HashSet::new();
+        for corner in std::mem::take(&mut self.flipped) {
+            for offset in [IVec3::ZERO, IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z] {
+                let corner = corner + offset;
+                if !self.corners.contains_key(&corner) {
+                    continue;
+                }
+                for z in 0..2 {
+                    for y in 0..2 {
+                        for x in 0..2 {
+                            voxels.insert(corner - IVec3::new(x, y, z));
+                        }
+                    }
+                }
+            }
+        }
+        self.band = voxels.into_iter().collect();
+    }
+
+    /// Voxels to request sky for before the world sweep, nearest the focus
+    /// first (pop from the end).
+    pub fn take_band(&mut self, focus: IVec3) -> Vec<IVec3> {
+        let mut band = std::mem::take(&mut self.band);
+        band.sort_unstable_by_key(|voxel| std::cmp::Reverse((*voxel - focus).length_squared()));
+        band
+    }
+
     pub fn store(&mut self, position: IVec3, value: u32) {
         let reflectance = if self.track_changes {
             self.corner_reflectance(position)
@@ -333,6 +369,9 @@ impl SkyCache {
                 })
                 .or_insert((super::geometry::Bounds::point(position), delta));
         }
+        if corner.value != 0 && value != 0 && corner.value != value && self.flipped.len() < 1 << 20 {
+            self.flipped.push(position);
+        }
         corner.value = value;
         corner.pending_batch = 0;
         // Traversal-budget exhaustion is not a valid forever-cached shadow.
@@ -370,6 +409,7 @@ impl SkyCache {
         if self.generation == 0 || key != self.key {
             if self.generation != 0 {
                 self.moved_at = Some(Instant::now());
+                self.plan_band();
             }
             self.generation = self.generation.wrapping_add(1).max(1);
             self.key = key;
@@ -552,6 +592,27 @@ mod tests {
         cache.store(position, KNOWN);
         cache.moved_at = Some(now - SUN_MOVING_WINDOW);
         assert!(cache.take_changes(&scene).is_some(), "the sun stopped moving");
+    }
+
+    #[test]
+    fn a_sun_step_requests_the_band_around_last_steps_flips_first() {
+        let scene = floor(&[IVec3::ZERO]);
+        let probes = square(IVec3::new(4, 4, 4), 4);
+        let mut sources = sun(Vec3::Y);
+        let mut cache = SkyCache::default();
+        let pending = cache.prepare(&scene, &sources, &probes);
+        finish(&mut cache, &scene, pending);
+        // A shadow border crossed this corner in the current generation.
+        let border = IVec3::new(5, 5, 5);
+        cache.store(border, KNOWN);
+        sources.directional[0].direction =
+            Quat::from_rotation_z(2.0_f32.to_radians()) * sources.directional[0].direction;
+        cache.prepare(&scene, &sources, &probes);
+        let band = cache.take_band(IVec3::new(5, 4, 5));
+        assert!(band.contains(&IVec3::new(5, 4, 5)) && band.contains(&IVec3::new(4, 4, 4)));
+        assert!(!band.contains(&IVec3::new(9, 4, 9)), "only the border's neighbourhood");
+        assert_eq!(band.last(), Some(&IVec3::new(5, 4, 5)), "nearest the focus first");
+        assert!(cache.take_band(IVec3::ZERO).is_empty());
     }
 
     fn sun(direction: Vec3) -> TransportSources {

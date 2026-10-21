@@ -274,6 +274,9 @@ struct VoxelGiRuntime {
     sky_queued: HashSet<IVec3>,
     sky_cursor: usize,
     sky_remaining: usize,
+    /// Sky requests along moving shadow borders, before the world sweep
+    /// (popped nearest the focus first).
+    sky_band: Vec<IVec3>,
     sky_revision: u64,
     sky_batch_size: usize,
     gpu_topology_dirty: bool,
@@ -336,6 +339,7 @@ impl Default for VoxelGiRuntime {
             sky_queued: default(),
             sky_cursor: 0,
             sky_remaining: 0,
+            sky_band: Vec::new(),
             sky_revision: 0,
             sky_batch_size: 512,
             gpu_topology_dirty: false,
@@ -373,6 +377,8 @@ struct TraceBatchResult {
     emission_cache: Option<emission::EmissionCache>,
     gpu_error: Option<String>,
     sunlight_change: Option<geometry::GeometryChange>,
+    /// Voxels around the shadow borders a sun step moved, nearest last.
+    sky_band: Vec<IVec3>,
 }
 
 struct PendingTransport {

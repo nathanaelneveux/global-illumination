@@ -28,6 +28,8 @@ pub(super) fn append_sky_work(
         let voxel = if let Some(voxel) = runtime.sky_pending.pop_front() {
             runtime.sky_queued.remove(&voxel);
             voxel
+        } else if let Some(voxel) = runtime.sky_band.pop() {
+            voxel
         } else if runtime.sky_remaining > 0 && !field.order.is_empty() {
             let voxel = field.order[runtime.sky_cursor % field.order.len()];
             runtime.sky_cursor = (runtime.sky_cursor + 1) % field.order.len();
@@ -192,6 +194,7 @@ pub(super) fn start_trace_task(
     runtime.trace_task = Some(AsyncComputeTaskPool::get().spawn(async move {
         let _span = info_span!("gi_trace_worker").entered();
         let started = Instant::now();
+        let focus = batch.work.focus;
         let dispatched = !batch.work.probes.is_empty();
         let emission_cache = if sky_only {
             emission_cache
@@ -276,6 +279,9 @@ pub(super) fn start_trace_task(
         let sunlight_change = gpu_tracer
             .as_mut()
             .and_then(|tracer| tracer.sky_cache.take_changes(&scene));
+        let sky_band = gpu_tracer
+            .as_mut()
+            .map_or_else(Vec::new, |tracer| tracer.sky_cache.take_band(focus));
         let bindings = gpu_tracer
             .as_mut()
             .map_or_else(Vec::new, gpu::GpuTracer::take_resident_bindings);
@@ -292,6 +298,7 @@ pub(super) fn start_trace_task(
             emission_cache,
             gpu_error,
             sunlight_change,
+            sky_band,
         }
     }));
 }
@@ -400,6 +407,10 @@ pub(super) fn apply_trace_task(
     // from a GPU validation, submission, or snapshot mapping failure.
     if let Some(error) = result.gpu_error {
         panic!("Voxel GI GPU transport failed: {error}");
+    }
+    if !result.sky_band.is_empty() {
+        // A newer sun step supersedes the previous band.
+        runtime.sky_band = std::mem::take(&mut result.sky_band);
     }
     if let Some(mut change) = result.sunlight_change.take() {
         // Even superseded results describe a possible change, so retain their

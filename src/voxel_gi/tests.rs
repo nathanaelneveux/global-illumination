@@ -43,6 +43,7 @@ fn transport_failure_worker_error_is_fatal_at_publication() {
             emission_cache: None,
             gpu_error: Some("injected readback failure".into()),
             sunlight_change: None,
+            sky_band: Vec::new(),
         }
     });
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -119,6 +120,7 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
                 emission_cache: None,
                 gpu_error: None,
                 sunlight_change: None,
+            sky_band: Vec::new(),
             }
         });
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -466,6 +468,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
                     emission_cache: None,
                     gpu_error: None,
                     sunlight_change: None,
+            sky_band: Vec::new(),
                 }
             });
             let deadline = Instant::now() + Duration::from_secs(5);
