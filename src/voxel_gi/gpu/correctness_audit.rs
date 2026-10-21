@@ -89,7 +89,7 @@ fn replace_once(source: &str, from: &str, to: &str) -> String {
 
 fn shader(iid: bool, roulette: bool, legacy_cutoff: bool) -> String {
     let mut shader = replace_once(
-        SHADER,
+        &SHADER,
         "fn sample_1d(stream: u32, sequence: u32, dimension: u32) -> f32 {",
         "fn production_sample_1d(stream: u32, sequence: u32, dimension: u32) -> f32 {",
     );
@@ -208,7 +208,7 @@ fn native_low_throughput_path_keeps_bright_suffix() {
     ));
     let native = tests::native_tracer();
     let mut source = replace_once(
-        SHADER,
+        &SHADER,
         "fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32) -> ReceiverSample {",
         "fn production_trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32) -> ReceiverSample {",
     );

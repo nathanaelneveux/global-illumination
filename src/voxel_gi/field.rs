@@ -135,6 +135,7 @@ impl ProbeStore {
     pub fn get_mut(&mut self, key: &IVec3) -> Option<&mut SurfaceProbe> {
         self.shards[probe_shard(key)].get_mut(key).map(Box::as_mut)
     }
+    #[cfg(test)]
     pub fn contains_key(&self, key: &IVec3) -> bool {
         self.shards[probe_shard(key)].contains_key(key)
     }

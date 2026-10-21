@@ -23,7 +23,16 @@ use super::work::TraceWork;
 use super::world::SurfaceProbe;
 use super::world::{TransportScene, VoxelMaterialTransportTable};
 
-const SHADER: &str = include_str!("../../assets/shaders/voxel_trace.wgsl");
+/// The transport shader with the shared voxel traversal included.
+static SHADER: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| include_traversal(include_str!("../../assets/shaders/voxel_trace.wgsl")));
+
+/// Insert the shared traversal (`voxel_traversal.wgsl`) at its include marker.
+pub(crate) fn include_traversal(source: &str) -> String {
+    const MARKER: &str = "// #include voxel_traversal.wgsl\n";
+    assert!(source.contains(MARKER), "shader lacks the traversal include marker");
+    source.replacen(MARKER, include_str!("../../assets/shaders/voxel_traversal.wgsl"), 1)
+}
 const RESULT_BYTES: usize = 96;
 const SKY_RESULT_BYTES: usize = 32;
 const TASK_BYTES: usize = 32;
@@ -359,7 +368,7 @@ impl GpuTracer {
     }
 
     fn with_kernel(context: GpuTransportDevice, cooperative: bool) -> Result<Self, String> {
-        Self::with_shader(context, cooperative, SHADER)
+        Self::with_shader(context, cooperative, &SHADER)
     }
 
     fn with_shader(
@@ -1269,8 +1278,8 @@ pub(super) mod tests {
 
     #[test]
     fn compute_shader_is_valid_wgsl() {
-        let module = naga::front::wgsl::parse_str(SHADER)
-            .unwrap_or_else(|error| panic!("{}", error.emit_to_string(SHADER)));
+        let module = naga::front::wgsl::parse_str(&SHADER)
+            .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&SHADER)));
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
