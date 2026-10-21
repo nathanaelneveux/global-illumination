@@ -78,6 +78,11 @@ pub struct VoxelGiSettings {
     /// default, since the GPU state is the authority and the renderer reads it
     /// directly; config/gi-mirror-full.json turns it on with the full mirror.
     pub cpu_statistics: bool,
+    /// World-space receivers (probes, display probes, resident slots, sun
+    /// corners) only for pages within this many voxels of a camera; 0 keeps
+    /// every loaded page (the default until a view-driven far tier exists).
+    /// Geometry stays every loaded page: rays traverse it regardless.
+    pub receiver_radius: f32,
 }
 
 impl Default for VoxelGiSettings {
@@ -103,6 +108,7 @@ impl Default for VoxelGiSettings {
             stable_relative_error: 0.12,
             statistics_mirror_per_batch: 1024,
             cpu_statistics: false,
+            receiver_radius: 0.0,
         }
     }
 }
@@ -153,6 +159,10 @@ impl VoxelGiSettings {
         } else {
             4.0
         }
+    }
+    /// None: receivers for every loaded page.
+    pub(super) fn receiver_radius(&self) -> Option<f32> {
+        (self.receiver_radius.is_finite() && self.receiver_radius > 0.0).then_some(self.receiver_radius)
     }
     pub(super) fn gpu_share(&self) -> f32 {
         if self.gpu_time_share.is_finite() {

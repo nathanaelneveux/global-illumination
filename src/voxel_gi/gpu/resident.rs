@@ -382,6 +382,35 @@ impl ResidentAccumulator {
                 }
             }
         }
+        // Pages whose receivers were retired (receiver radius): release every
+        // slot in them, as geometry removal does above.
+        let per_page = (super::super::world::PAGE_EDGE / REGION_EDGE) as i32;
+        for &page in &work.retire_pages {
+            for z in 0..per_page {
+                for y in 0..per_page {
+                    for x in 0..per_page {
+                        let region = page * per_page + IVec3::new(x, y, z);
+                        let Some(keys) = self.regions.remove(&region) else {
+                            continue;
+                        };
+                        walk_removed.insert(region);
+                        for key in keys {
+                            let Some(slot) = self.slots.remove(&key) else {
+                                continue;
+                            };
+                            self.face_index.remove(key.0, key.1);
+                            self.donor_cache.invalidate(slot.index);
+                            if let Some(graph) = &mut self.evidence_topology {
+                                graph.remove(slot.index);
+                            }
+                            self.free.push(slot.index);
+                            self.meta_writes.write(slot.index * META_WORDS + 3, 0);
+                            self.by_index[slot.index as usize] = None;
+                        }
+                    }
+                }
+            }
+        }
         self.scene = Some(Arc::clone(scene));
         self.input_bytes.clear();
         self.cap_bytes.clear();

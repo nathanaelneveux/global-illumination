@@ -96,6 +96,7 @@ impl Plugin for VoxelGiPlugin {
                 Update,
                 (
                     collect_chunk_changes,
+                    bvw::update_receiver_residency,
                     synchronize_transport_sources,
                     synchronize_material_table,
                     settings::synchronize_transport_settings,
@@ -279,6 +280,15 @@ struct VoxelGiRuntime {
     sky_band: Vec<IVec3>,
     sky_revision: u64,
     sky_batch_size: usize,
+    /// Pages allowed receivers under `receiver_radius` (None: all loaded).
+    receiver_pages: Option<HashSet<IVec3>>,
+    /// Pages entering or leaving it: rescanned for receivers, or retired,
+    /// without a geometry change.
+    receiver_dirty: HashSet<IVec3>,
+    receiver_retired: HashSet<IVec3>,
+    /// Pages whose receivers were retired: their resident slots are released
+    /// with the next submitted batch.
+    slot_retirements: Vec<IVec3>,
     /// GPU milliseconds transport may still spend under `gpu_time_share`:
     /// accrues with wall time, a batch reserves its budget at submission
     /// and is charged its measured time at completion.
@@ -347,6 +357,10 @@ impl Default for VoxelGiRuntime {
             sky_band: Vec::new(),
             sky_revision: 0,
             sky_batch_size: 512,
+            receiver_pages: None,
+            receiver_dirty: HashSet::new(),
+            receiver_retired: HashSet::new(),
+            slot_retirements: Vec::new(),
             gpu_allowance_ms: 0.0,
             gpu_allowance_at: None,
             gpu_topology_dirty: false,
@@ -370,6 +384,8 @@ struct SceneBuildResult {
     changed: bool,
     geometry_change: Option<geometry::GeometryChange>,
     pages: VecDeque<(IVec3, Vec<SurfaceProbeDescriptor>)>,
+    /// Pages rescanned or retired for the receiver radius alone.
+    receivers_changed: bool,
     exact_edits: Vec<IVec3>,
     build_time: Duration,
 }

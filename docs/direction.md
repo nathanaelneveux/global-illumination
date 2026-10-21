@@ -58,12 +58,17 @@ per-pixel memory at 4K.
 
 Staging:
 
-1. **Receiver radius.** Geometry (the transport scene) stays all loaded
-   pages, since rays and the far tier traverse it; receivers (CPU probes,
-   display probes, resident slots, sky corners) are published only for pages
-   within a radius of any local focus, with hysteresis. Pages crossing it are
-   published or retired through the existing page paths. Default unlimited
-   (today's behaviour) until a far tier exists.
+1. **Receiver radius: done** (`receiver_radius`, default 0 = unlimited).
+   Geometry (the transport scene) stays all loaded pages, since rays and the
+   far tier traverse it; receivers (CPU probes, display probes, resident
+   slots, sun corners) exist only for pages within the radius of any camera
+   (page nearest point), kept until 32 voxels beyond it. Pages crossing it are
+   rescanned or retired through the page publication path, without a
+   geometry rebuild, and retired pages release their resident slots and sun
+   corners. Measured (M4, headless gameplay): peak footprint 3.14 GB
+   unlimited, 1.17 GB at 128, 1.0 GB at 64; GI main-thread p99 6.4 -> 3.2 /
+   2.1 ms; more paths traced (fewer slots to rank). Faces beyond the radius
+   currently get only environment ambient: no sun, no shadows.
 2. **Far tier**, view driven, as above; then the radius shrinks.
 3. **Band removal and a slim CPU record**, with stability recalibrated.
 

@@ -73,7 +73,7 @@ pub(super) fn apply_scene_task(
         && let Some(mut result) = block_on(poll_once(task))
     {
         runtime.scene_task = None;
-        if !result.changed {
+        if !result.changed && !result.receivers_changed {
             stats.loaded_pages = runtime.loaded_pages.len();
             stats.last_scene_build_ms = result.build_time.as_secs_f32() * 1000.0;
             return;
@@ -81,8 +81,11 @@ pub(super) fn apply_scene_task(
         // Scene edits, including emitting voxels, share spatial history
         // retention. Source/model resets belong to changes of the global
         // material table or transport model, not residency of one source.
-        runtime.scene = result.scene.clone();
-        runtime.generation = runtime.generation.wrapping_add(1);
+        // A receiver-radius change alone publishes pages, not a new scene.
+        if result.changed {
+            runtime.scene = result.scene.clone();
+            runtime.generation = runtime.generation.wrapping_add(1);
+        }
         if let Some(mut change) = result.geometry_change.take() {
             advance_transport_revision(&mut runtime, &mut field);
             finalize_change_flux(&mut change, &runtime.sources);
@@ -331,6 +334,11 @@ fn reconcile_scene_page(
         }
         field.probes.insert_box(descriptor.voxel, probe);
     }
+    if !old_affected.is_empty() && field.pages.get(&page).is_none_or(|probes| probes.is_empty()) {
+        // The page's receivers are gone (retired by the receiver radius, or
+        // its surfaces removed): release its resident slots and sun corners.
+        runtime.slot_retirements.push(page);
+    }
     let topology_changed =
         old_count != field.probes.len() || !old_affected.is_empty() || !added.is_empty();
     if topology_changed {
@@ -476,6 +484,7 @@ mod donor_tests {
             changed: true,
             geometry_change: None,
             pages: default(),
+            receivers_changed: false,
             exact_edits: Vec::new(),
             build_time: Duration::ZERO,
         }

@@ -3,7 +3,9 @@
 This is the current design. Historical experiments are kept separately so the
 implementation can be understood without reconstructing its development history.
 The planned direction (near/far lighting, the simulation split) is in
-[direction](direction.md).
+[direction](direction.md). `receiver_radius` (default unlimited) limits
+world-space receivers to pages near the cameras; geometry stays every loaded
+page.
 The numerical model and the stable display policy are deliberately separate.
 
 ## Data flow and ownership

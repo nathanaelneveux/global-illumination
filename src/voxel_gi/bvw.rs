@@ -8,7 +8,7 @@ use super::world::{
 };
 use super::{SceneBuildResult, VoxelGiDirty, VoxelGiRuntime, naadf, page_of};
 use crate::terrain::PrototypeWorld;
-use bevy::platform::collections::HashMap;
+use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
 use bevy_voxel_world::prelude::*;
@@ -19,6 +19,87 @@ use std::time::{Duration, Instant};
 const STREAM_DEBOUNCE: Duration = Duration::from_millis(350);
 const EDIT_DEBOUNCE: Duration = Duration::from_millis(40);
 const MAX_REBUILD_LATENCY: Duration = Duration::from_secs(1);
+/// Receivers are kept until a page is this much farther than the radius, so a
+/// camera moving back and forth across it does not churn pages.
+const RECEIVER_HYSTERESIS: f32 = PAGE_EDGE as f32;
+
+/// Which loaded pages have world-space receivers: those within
+/// `receiver_radius` of any camera (distance to the page's nearest point),
+/// kept until beyond the radius plus a hysteresis. Geometry is unaffected.
+pub(super) fn update_receiver_residency(
+    mut runtime: ResMut<VoxelGiRuntime>,
+    settings: Res<super::VoxelGiSettings>,
+    cameras: Query<&GlobalTransform, With<Camera3d>>,
+) {
+    let Some(radius) = settings.receiver_radius() else {
+        // Unlimited again: every loaded page without receivers rescans.
+        if let Some(allowed) = runtime.receiver_pages.take() {
+            let missing: Vec<_> = runtime
+                .loaded_pages
+                .iter()
+                .filter(|page| !allowed.contains(*page))
+                .copied()
+                .collect();
+            mark_receivers(&mut runtime, missing, Vec::new());
+        }
+        return;
+    };
+    let foci: Vec<Vec3> = cameras.iter().map(|camera| camera.translation()).collect();
+    if foci.is_empty() {
+        return;
+    }
+    let distance = |page: IVec3| {
+        let minimum = (page * PAGE_EDGE as i32).as_vec3();
+        let maximum = minimum + Vec3::splat(PAGE_EDGE as f32);
+        foci.iter()
+            .map(|focus| focus.clamp(minimum, maximum).distance(*focus))
+            .fold(f32::INFINITY, f32::min)
+    };
+    let first = runtime.receiver_pages.is_none();
+    let mut allowed = runtime.receiver_pages.take().unwrap_or_default();
+    let (mut entered, mut left) = (Vec::new(), Vec::new());
+    for &page in &runtime.loaded_pages {
+        let d = distance(page);
+        if allowed.contains(&page) {
+            if d > radius + RECEIVER_HYSTERESIS {
+                left.push(page);
+            }
+        } else if d <= radius {
+            entered.push(page);
+        } else if first {
+            // Switching from unlimited: pages outside lose their receivers.
+            left.push(page);
+        }
+    }
+    allowed.retain(|page| runtime.loaded_pages.contains(page));
+    for page in &entered {
+        allowed.insert(*page);
+    }
+    for page in &left {
+        allowed.remove(page);
+    }
+    runtime.receiver_pages = Some(allowed);
+    if first {
+        // Pages already allowed keep their receivers; only changes rescan.
+        entered.clear();
+    }
+    mark_receivers(&mut runtime, entered, left);
+}
+
+fn mark_receivers(runtime: &mut VoxelGiRuntime, entered: Vec<IVec3>, left: Vec<IVec3>) {
+    if entered.is_empty() && left.is_empty() {
+        return;
+    }
+    for page in entered {
+        runtime.receiver_retired.remove(&page);
+        runtime.receiver_dirty.insert(page);
+    }
+    for page in left {
+        runtime.receiver_dirty.remove(&page);
+        runtime.receiver_retired.insert(page);
+    }
+    runtime.dirty_since.get_or_insert(Instant::now());
+}
 
 /// Sparse authoritative edits, grouped by page. Immutable worker views use
 /// copy-on-write only for pages edited again while a task holds a snapshot.
@@ -136,7 +217,10 @@ pub(super) fn start_scene_task(
     mut timings: ResMut<GiWorkTimings>,
 ) {
     let _timing = timings.main_scope(super::telemetry::MainStage::SceneDispatch);
-    let pending = !runtime.dirty_pages.is_empty() || !runtime.removed_pages.is_empty();
+    let pending = !runtime.dirty_pages.is_empty()
+        || !runtime.removed_pages.is_empty()
+        || !runtime.receiver_dirty.is_empty()
+        || !runtime.receiver_retired.is_empty();
     let debounce = if runtime.urgent_edit {
         EDIT_DEBOUNCE
     } else {
@@ -173,7 +257,15 @@ pub(super) fn start_scene_task(
     runtime.dirty_since = None;
     runtime.urgent_edit = false;
 
-    let affected_pages = affected_probe_pages(&dirty_pages, &removed_pages);
+    let mut affected_pages = affected_probe_pages(&dirty_pages, &removed_pages);
+    // Receiver radius: pages entering it are rescanned and pages leaving it
+    // publish no receivers, without a geometry change. Scanning is limited to
+    // allowed pages; every other affected page publishes none.
+    let mut receiver_pages = std::mem::take(&mut runtime.receiver_dirty);
+    receiver_pages.extend(runtime.receiver_retired.drain());
+    let receivers_changed = !receiver_pages.is_empty();
+    affected_pages.extend(receiver_pages);
+    let allowed = runtime.receiver_pages.clone();
     let previous_scene = Arc::clone(&runtime.scene);
     let retention_radius = super::retention::INFLUENCE_RADIUS;
     let voxel_lookup = (!full_resample.is_empty() || !input.complete_edit_tracking)
@@ -236,8 +328,12 @@ pub(super) fn start_scene_task(
             retention_radius,
             Some(&materials),
         );
-        let descriptors = if changes.changed {
-            scan_surface_probe_pages(&scene, &affected_pages, focus_page)
+        let descriptors = if changes.changed || receivers_changed {
+            let scanned: HashSet<_> = match &allowed {
+                Some(allowed) => affected_pages.intersection(allowed).copied().collect(),
+                None => affected_pages.clone(),
+            };
+            scan_surface_probe_pages(&scene, &scanned, focus_page)
         } else {
             Vec::new()
         };
@@ -266,6 +362,7 @@ pub(super) fn start_scene_task(
             changed: changes.changed,
             geometry_change: changes.transport,
             pages: pages.into(),
+            receivers_changed,
             exact_edits,
             build_time: started.elapsed(),
         }

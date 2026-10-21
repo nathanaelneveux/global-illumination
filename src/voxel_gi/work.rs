@@ -33,6 +33,9 @@ pub(crate) struct TraceWork {
     /// Changes published since the previous batch, applied on the GPU to
     /// every resident face in range before this batch's rays.
     pub retention_events: Vec<super::retention::RetentionEvent>,
+    /// Pages whose receivers were retired (receiver radius): release their
+    /// resident slots and sun corners.
+    pub retire_pages: Vec<IVec3>,
     /// GPU selection: a budget of faces the GPU picks itself after the CPU's
     /// traced faces, and what it ranks them by. Picks return in `picked`.
     pub picks: u32,
@@ -217,6 +220,7 @@ impl TraceWork {
         self.faces.clear();
         self.ensure.clear();
         self.retention_events.clear();
+        self.retire_pages.clear();
         self.picked.clear();
         self.pick_tags.clear();
     }

@@ -185,6 +185,7 @@ fn settled_counter_tracks_global_revisions_and_page_removal() {
         changed: true,
         geometry_change: Some(default()),
         pages: VecDeque::new(),
+        receivers_changed: false,
         exact_edits: vec![],
         build_time: Duration::ZERO,
     };
@@ -261,6 +262,7 @@ fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
                 }],
             ),
         ]),
+        receivers_changed: false,
         exact_edits: vec![],
         build_time: Duration::ZERO,
     };
@@ -327,6 +329,7 @@ fn new_receiver_display_clock_does_not_depend_on_material_id() {
             changed: true,
             geometry_change: None,
             pages: default(),
+            receivers_changed: false,
             exact_edits: vec![],
                 build_time: Duration::ZERO,
         };
@@ -409,6 +412,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
                 changed: true,
                 geometry_change: None,
                 pages: default(),
+                receivers_changed: false,
                 exact_edits: vec![],
                         build_time: Duration::ZERO,
             };
@@ -527,6 +531,7 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
             // No receiver topology changed. This exercises scene acceptance,
             // not the separate page-merge/seeding tests above.
             pages: default(),
+            receivers_changed: false,
             exact_edits: vec![],
                 build_time: Duration::ZERO,
         };
@@ -628,6 +633,7 @@ fn publication_batches_cheap_pages_without_unbounded_display_work() {
             changed: true,
             geometry_change: Some(default()),
             pages,
+            receivers_changed: false,
             exact_edits: vec![],
                 build_time: Duration::ZERO,
         }),
@@ -947,4 +953,47 @@ fn energy_field_uses_directional_ambient_cube_weights() {
     assert!(energy.visible.abs_diff_eq(Vec3::new(0.5, 0.5, 0.0), 1e-6));
     assert!((energy.infrared - 0.5).abs() < 1e-6);
     assert!((energy.ionizing - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn receiver_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
+    use bevy::ecs::system::RunSystemOnce;
+    let mut world = World::new();
+    let mut runtime = VoxelGiRuntime::default();
+    runtime
+        .loaded_pages
+        .extend([IVec3::ZERO, IVec3::new(2, 0, 0), IVec3::new(4, 0, 0), IVec3::new(9, 0, 0)]);
+    world.insert_resource(runtime);
+    world.insert_resource(VoxelGiSettings {
+        receiver_radius: 64.0,
+        ..default()
+    });
+    let camera = world
+        .spawn((Camera3d::default(), GlobalTransform::from_translation(Vec3::splat(16.0))))
+        .id();
+    world.run_system_once(bvw::update_receiver_residency).unwrap();
+    let runtime = world.resource::<VoxelGiRuntime>();
+    let allowed = runtime.receiver_pages.as_ref().unwrap();
+    // Page 2 starts 48 voxels away (within 64); page 4 is 112 away.
+    assert!(allowed.contains(&IVec3::ZERO) && allowed.contains(&IVec3::new(2, 0, 0)));
+    assert!(!allowed.contains(&IVec3::new(4, 0, 0)));
+    // Switching from unlimited retires the far pages' existing receivers.
+    assert!(runtime.receiver_retired.contains(&IVec3::new(9, 0, 0)));
+    assert!(runtime.receiver_dirty.is_empty());
+    // At 88 voxels page 0 stays (radius 64 + 32 hysteresis); at 108 it retires.
+    world.entity_mut(camera).insert(GlobalTransform::from_translation(Vec3::new(120.0, 16.0, 16.0)));
+    world.run_system_once(bvw::update_receiver_residency).unwrap();
+    assert!(world.resource::<VoxelGiRuntime>().receiver_pages.as_ref().unwrap().contains(&IVec3::ZERO));
+    world.entity_mut(camera).insert(GlobalTransform::from_translation(Vec3::new(140.0, 16.0, 16.0)));
+    world.resource_mut::<VoxelGiRuntime>().receiver_retired.clear();
+    world.run_system_once(bvw::update_receiver_residency).unwrap();
+    let runtime = world.resource::<VoxelGiRuntime>();
+    assert!(runtime.receiver_dirty.contains(&IVec3::new(4, 0, 0)), "entered");
+    assert!(runtime.receiver_retired.contains(&IVec3::ZERO), "beyond radius + hysteresis");
+    // Unlimited again: pages without receivers rescan.
+    world.resource_mut::<VoxelGiSettings>().receiver_radius = 0.0;
+    world.run_system_once(bvw::update_receiver_residency).unwrap();
+    let runtime = world.resource::<VoxelGiRuntime>();
+    assert!(runtime.receiver_pages.is_none());
+    assert!(runtime.receiver_dirty.contains(&IVec3::new(9, 0, 0)));
 }

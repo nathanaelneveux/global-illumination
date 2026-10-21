@@ -193,6 +193,7 @@ pub(super) fn start_trace_task(
     // Every published change rides with the next dispatched batch, whatever
     // it selected: the GPU applies each to all resident faces in range.
     selected.retention_events = runtime.spatial_history.take_events();
+    selected.retire_pages = std::mem::take(&mut runtime.slot_retirements);
     let paths = selected.faces.len() as u64 * u64::from(samples);
     stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
     let scene = Arc::clone(&runtime.scene);

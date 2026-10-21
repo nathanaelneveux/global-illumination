@@ -265,6 +265,26 @@ impl SkyCache {
         pending
     }
 
+    /// Forget the corners of pages whose receivers were retired. A corner
+    /// shared with a remaining page is simply traced again when requested.
+    pub fn retire_pages(&mut self, pages: &[IVec3]) {
+        let per_page = (super::world::PAGE_EDGE as i32) / BUCKET_EDGE;
+        for &page in pages {
+            for z in 0..per_page {
+                for y in 0..per_page {
+                    for x in 0..per_page {
+                        let bucket = page * per_page + IVec3::new(x, y, z);
+                        if let Some(positions) = self.buckets.remove(&bucket) {
+                            for position in positions {
+                                self.corners.remove(&position);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Material reflectance for change flux (`store`).
     pub fn set_materials(&mut self, materials: &super::world::VoxelMaterialTransportTable) {
         let weights = Vec3::new(0.2126, 0.7152, 0.0722);
