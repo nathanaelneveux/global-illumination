@@ -6,7 +6,6 @@ use crate::voxel_gi::research::channels;
 use crate::voxel_gi::{TransportSettings, validation::reference_oracle};
 
 mod field;
-mod sampler_dimensions;
 
 /// Raw block-averaged estimates. A duplicated receiver represents a disjoint
 /// sequence block, not borrowed evidence. Runtime history never exceeds 16384.

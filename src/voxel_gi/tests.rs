@@ -349,7 +349,6 @@ fn new_receiver_display_clock_does_not_depend_on_material_id() {
         assert!(probe.display_updated_at.is_some());
         assert!(probe.updated_at.is_none());
         assert_eq!(probe.stats().samples, [0; 6]);
-        assert!(field.estimate(IVec3::ZERO, Vec3::Y).is_none());
     }
 }
 
@@ -445,17 +444,9 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             assert_eq!(p.emission, runtime.materials.get(material).emission);
             assert_eq!(p.fresh_mask, 0);
             assert_eq!(p.stats().stable_batches, [0; 6]);
-            let estimate = field.estimate(voxel, Vec3::Y).unwrap();
-            assert!(!estimate.transport_current && !estimate.sources_current);
-            assert_eq!(
-                estimate.incident,
-                EnergySpectrum::ONE,
-                "self-emission is not incoming energy"
-            );
             if face_mask == 5 {
                 assert_eq!(p.stats().samples[0], 0);
                 assert_eq!(p.stats().radiance[0], EnergySpectrum::ZERO);
-                assert!(field.estimate(voxel, Vec3::X).is_none());
             }
             let task = pool.spawn(async move {
                 TraceBatchResult {
@@ -581,10 +572,10 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
             assert_eq!(runtime.model_reset_source_revision, 0);
             assert_eq!(field.transport_revision, 1);
             for voxel in [near, far] {
-                let estimate = field.estimate(voxel, Vec3::Y).unwrap();
-                assert!(estimate.sources_current);
-                assert!(!estimate.transport_current);
-                assert_eq!(estimate.effective_samples, 4096);
+                let probe = &field.probes[&voxel];
+                assert_eq!(probe.source_revision, field.source_revision);
+                assert_ne!(probe.transport_revision, field.transport_revision);
+                assert_eq!(probe.stats().samples[2], 4096);
             }
             // One GPU event for both. Whole-range curve: 4 voxels from the
             // edit keeps nothing; 128 voxels away the cap (12,971) exceeds
@@ -843,51 +834,6 @@ fn sky_comparison_is_display_only_and_independent_of_gi_toggle() {
 }
 
 #[test]
-fn simulation_rejects_unmeasured_or_buried_faces_and_reports_stale_sources() {
-    let voxel = IVec3::ZERO;
-    let mut field = VoxelEnergyField::default();
-    field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
-    assert!(field.estimate(voxel, Vec3::Y).is_none());
-    let probe = field.probes.get_mut(&voxel).unwrap();
-    probe.stats_mut().samples[2] = 8;
-    probe.updated_at = Some(Instant::now());
-    assert!(field.estimate(voxel, Vec3::Y).unwrap().sources_current);
-    assert!(field.estimate(voxel, Vec3::X).is_none());
-    field.source_revision += 1;
-    assert!(!field.estimate(voxel, Vec3::Y).unwrap().sources_current);
-    let probe = field.probes.get_mut(&voxel).unwrap();
-    probe.stats_mut().sequence[2] = 100;
-    probe.restart_measurements();
-    assert_eq!(probe.stats().sequence[2], 100);
-    assert!(field.estimate(voxel, Vec3::Y).is_none());
-}
-
-#[test]
-fn partial_face_queries_keep_independent_age_and_revision_freshness() {
-    let now = Instant::now();
-    let voxel = IVec3::ZERO;
-    let mut probe = SurfaceProbe::new(voxel, 5);
-    probe.stats_mut().samples = [64; 6];
-    probe.updated_at = Some(now);
-    probe.stats_mut().face_updated_at[0] = Some(now - Duration::from_secs(10));
-    probe.stats_mut().face_updated_at[2] = Some(now);
-    probe.fresh_mask = 4;
-    probe.transport_revision = 1;
-    let mut field = VoxelEnergyField {
-        transport_revision: 1,
-        ..default()
-    };
-    field.probes.insert(voxel, probe);
-    assert!(field.estimate(voxel, Vec3::Y).unwrap().transport_current);
-    let old = field.estimate(voxel, Vec3::X).unwrap();
-    assert!(!old.transport_current);
-    assert!(!old.sources_current);
-    assert!(old.age >= Duration::from_secs(10));
-    field.transport_revision += 1;
-    assert!(!field.estimate(voxel, Vec3::Y).unwrap().transport_current);
-}
-
-#[test]
 fn cpu_selects_only_event_work_and_sky_requests() {
     let now = Instant::now();
     let mut field = VoxelEnergyField::default();
@@ -922,37 +868,6 @@ fn cpu_selects_only_event_work_and_sky_requests() {
     assert_eq!(sky.probes.len(), 64);
     assert!(sky.faces.is_empty());
     assert!(field.probes.values().all(|probe| probe.stats().samples[2] == 256));
-}
-
-#[test]
-fn energy_field_uses_directional_ambient_cube_weights() {
-    let voxel = IVec3::new(2, 3, 4);
-    let mut field = VoxelEnergyField::default();
-    field.probes.insert(
-        voxel,
-        SurfaceProbe {
-            voxel,
-            face_mask: 0b11_1111,
-            stats: Some(Box::new(world::ProbeStatistics {
-                radiance: [
-                    EnergySpectrum::new(Vec3::X, 1.0, 0.0),
-                    EnergySpectrum::ZERO,
-                    EnergySpectrum::new(Vec3::Y, 0.0, 2.0),
-                    EnergySpectrum::ZERO,
-                    EnergySpectrum::new(Vec3::Z, 0.0, 0.0),
-                    EnergySpectrum::ZERO,
-                ],
-                samples: [1; 6],
-                ..world::ProbeStatistics::EMPTY
-            })),
-            updated_at: Some(Instant::now()),
-            ..SurfaceProbe::new(voxel, 0b11_1111)
-        },
-    );
-    let energy = field.sample(voxel, Vec3::new(1.0, 1.0, 0.0)).unwrap();
-    assert!(energy.visible.abs_diff_eq(Vec3::new(0.5, 0.5, 0.0), 1e-6));
-    assert!((energy.infrared - 0.5).abs() < 1e-6);
-    assert!((energy.ionizing - 1.0).abs() < 1e-6);
 }
 
 #[test]

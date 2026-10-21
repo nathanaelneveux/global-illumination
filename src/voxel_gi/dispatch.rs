@@ -80,7 +80,7 @@ const ENSURE_PROBES_PER_BATCH: usize = 8192;
 
 pub(super) fn start_trace_task(
     mut runtime: ResMut<VoxelGiRuntime>,
-    mut field: ResMut<VoxelEnergyField>,
+    field: ResMut<VoxelEnergyField>,
     mut stats: ResMut<VoxelGiStats>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
     gpu_device: Option<Res<gpu::GpuTransportDevice>>,
@@ -94,13 +94,6 @@ pub(super) fn start_trace_task(
     }
     let gpu_device = gpu_device.expect("Voxel GI requires a GPU transport device");
     let selection_started = Instant::now();
-    let requested = std::mem::take(&mut field.requested);
-    enqueue_urgent(
-        &mut runtime,
-        requested
-            .into_iter()
-            .filter(|voxel| field.probes.contains_key(voxel)),
-    );
     let focus = cameras
         .iter()
         .next()

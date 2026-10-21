@@ -721,25 +721,11 @@ patched; ordinary lighting updates do not rebuild geometry or the entire display
 hash. Display disabled with F4 is only an A/B presentation switch: simulation
 transport intentionally continues.
 
-## Simulation API
+## Simulation and sources
 
-Schedule readers after `VoxelGiSystems`. `VoxelEnergyField::estimate(voxel, normal)`
-returns raw direct plus indirect energy, variance, minimum effective samples,
-oldest contributing face age, and source/transport freshness. The query combines
-axis-aligned faces with squared normal weights. It returns `None` for unpublished,
-missing, buried or unmeasured required faces. Retained stale measurements can be
-returned with freshness false; they are not silently made current by display seeds.
-Check **both** `sources_current` and `transport_current`: voxel emission belongs
-to scene transport, not the analytic-source snapshot. Even when both are true,
-the estimate can contain bounded pre-change history. Fresh means refreshed, not
-unbiased after an edit or converged. An extinguished IR/radiation source can have
-a nonzero retained contribution; simulation must choose acceptable age/error and
-integrate exposure explicitly, not interpret these flags as a safety guarantee.
-
-Use `request_refresh(voxel)` for bounded asynchronous priority, then inspect the
-returned estimate later. `sample` is a convenience wrapper that discards metadata;
-simulation systems should prefer `estimate`. No refresh request promises a
-deadline. Variance is a second-moment diagnostic, not a calibrated error bound.
+GI offers no simulation queries: heat and radiation belong to a deterministic
+direct-transport field ([direction](direction.md)). The former
+`estimate`/`sample`/`request_refresh` API and its tests were removed.
 
 `EnergyEmitter` augments a Bevy directional/point light or acts as a transformed
 point source alone. `VoxelMaterialTransportTable` supplies per-band diffuse

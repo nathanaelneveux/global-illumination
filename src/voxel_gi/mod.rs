@@ -47,7 +47,7 @@ use std::time::{Duration, Instant};
 use bevy::prelude::*;
 use bevy::tasks::Task;
 
-pub use field::{EnergyEstimate, VoxelEnergyField};
+pub use field::VoxelEnergyField;
 pub use settings::{TransportSettings, VoxelGiSettings};
 pub use sources::VoxelGiEnvironment;
 pub use spectrum::{EnergyEmitter, EnergySpectrum};

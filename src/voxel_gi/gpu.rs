@@ -38,8 +38,6 @@ pub(crate) use readback::Readback;
 #[cfg(test)]
 mod cache_tests;
 #[cfg(test)]
-mod retention_study;
-#[cfg(test)]
 mod correctness_audit;
 #[cfg(test)]
 mod task_tests;

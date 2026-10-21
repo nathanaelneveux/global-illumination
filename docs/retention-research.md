@@ -69,8 +69,9 @@ here, so this is a gap in a limited search, not a novelty claim.
 
 ## Experiment
 
-`retention_curve_study` / `retention_curve_study_cave` (`gpu/retention_study.rs`)
-replay real edits on every exposed face of a sealed scene: 3,175 hallway faces
+`retention_curve_study` / `retention_curve_study_cave` (`gpu/retention_study.rs`,
+removed after measured retention became the default; see git history before
+the far-tier cleanup) replayed real edits on every exposed face of a sealed scene: 3,175 hallway faces
 and 15,047 cave faces. Each arm:
 
 1. Converge the pre-edit scene.

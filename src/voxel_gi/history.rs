@@ -220,7 +220,6 @@ fn temporal_blend(history: Vec3, measured: Vec3, alpha: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::super::{
-        field::VoxelEnergyField,
         naadf::{linear_index, volume_len},
         sources::TransportSources,
         tracer::trace_probe_batch,
@@ -343,22 +342,6 @@ mod tests {
         assert_eq!(probe.stats().radiance, [EnergySpectrum::ZERO; 6]);
         assert_eq!(probe.stats().second_moment, [EnergySpectrum::ZERO; 6]);
         assert_eq!(probe.stats().sequence, sequence);
-        let mut field = VoxelEnergyField::default();
-        field.probes.insert(voxel, probe);
-        assert!(field.estimate(voxel, Vec3::Y).is_none());
-        let probe = field.probes.get_mut(&voxel).unwrap();
-        probe.stats_mut().samples[2] = 4;
-        probe.stats_mut().radiance[2] = EnergySpectrum::new(Vec3::ZERO, 10.0, 20.0);
-        probe.updated_at = Some(now);
-        let estimate = field.estimate(voxel, Vec3::Y).unwrap();
-        assert_eq!(
-            estimate.incident,
-            EnergySpectrum::new(Vec3::ZERO, 10.0, 20.0)
-        );
-        assert!(field.request_refresh(voxel));
-        assert!(field.request_refresh(voxel));
-        assert_eq!(field.requested.len(), 1);
-        assert!(!field.request_refresh(IVec3::splat(1000)));
     }
 
     #[test]
@@ -600,17 +583,10 @@ mod tests {
         );
         assert_eq!(probe.stats().samples[2], 16);
         assert_eq!(probe.display[2].indirect, Vec3::ONE);
-        let mut field = VoxelEnergyField::default();
-        field.probes.insert(voxel, probe);
-        let estimate = field.estimate(voxel, Vec3::Y).unwrap();
-        assert!(!estimate.transport_current && !estimate.sources_current);
-        assert_eq!(estimate.incident.infrared, 10.0);
-        let probe = field.probes.get_mut(&voxel).unwrap();
         probe.update_face_mask(5);
         assert_eq!(probe.stats().samples[2], 16, "unchanged face retains its history");
         assert_eq!(probe.stats().samples[0], 0, "new face is genuinely unmeasured");
         assert_eq!(probe.stats().radiance[0], EnergySpectrum::ZERO);
-        assert!(field.estimate(voxel, Vec3::X).is_none());
     }
 
     #[test]

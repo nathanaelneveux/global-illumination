@@ -311,43 +311,6 @@ pub(super) fn hallway() -> ResearchFixture {
     }
 }
 
-/// The same sealed transport fixture with the normal world's nearby cave
-/// emitters loaded. They cannot illuminate through its opaque surroundings,
-/// but they compete in the global light hierarchy just as they do in gameplay.
-pub(super) fn hallway_loaded() -> ResearchFixture {
-    use crate::structures::{VoxelOp, showcase};
-    let mut fixture = hallway();
-    let layer = showcase::world_structures();
-    let mut pages = Vec::new();
-    for px in 1..=3 {
-        for py in -2..=0 {
-            for pz in -2..0 {
-                let coordinate = IVec3::new(px, py, pz);
-                let mut page = vec![5; volume_len(PAGE_SIZE)];
-                for z in 0..32 {
-                    for y in 0..32 {
-                        for x in 0..32 {
-                            let local = UVec3::new(x, y, z);
-                            page[linear_index(local, PAGE_SIZE)] =
-                                match layer.sample(coordinate * 32 + local.as_ivec3()) {
-                                    VoxelOp::Solid(id) => u16::from(id),
-                                    VoxelOp::Air => AIR,
-                                    VoxelOp::Keep => 5,
-                                };
-                        }
-                    }
-                }
-                pages.push((coordinate, page));
-            }
-        }
-    }
-    fixture.scene = Arc::new(TransportScene::with_page_delta(&fixture.scene, pages, &[]));
-    let cave = crate::cave_scene::materials();
-    for (local, global) in showcase::CAVE_PALETTE {
-        fixture.materials.set(global.index(), cave.get(local));
-    }
-    fixture
-}
 
 /// A 56×40×56 enclosed cavity: extensive lava, a blue-lit central spire,
 /// green ceiling crystals, wall torches and a small far-side skylight.

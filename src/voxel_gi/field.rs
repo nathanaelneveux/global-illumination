@@ -1,8 +1,6 @@
-use super::spectrum::EnergySpectrum;
 use super::world::SurfaceProbe;
 use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
-use std::time::Duration;
 
 const PROBE_SHARDS: usize = 64;
 
@@ -205,90 +203,13 @@ pub struct VoxelEnergyField {
     pub(super) pages: HashMap<IVec3, Vec<IVec3>>,
     pub(super) source_revision: u64,
     pub(super) transport_revision: u64,
-    pub(super) requested: HashSet<IVec3>,
     /// Geometry is ready but these receiver pages have not been published yet.
     pub(super) publishing_pages: HashSet<IVec3>,
     /// Probes keep CPU statistics (`VoxelGiSettings::cpu_statistics`).
     pub(super) cpu_statistics: bool,
 }
 
-/// An unfiltered surface measurement, never the spatially smoothed display
-/// value. Bands currently use normalized transport units, not watts or dose.
-#[derive(Clone, Copy, Debug)]
-pub struct EnergyEstimate {
-    pub incident: EnergySpectrum,
-    pub variance: EnergySpectrum,
-    pub effective_samples: u32,
-    pub age: Duration,
-    /// Analytic-source/material-table snapshot is current. Scene-bound emission
-    /// changes are tracked by `transport_current`; consumers must check both.
-    pub sources_current: bool,
-    /// Includes scene geometry, voxel material and emission changes, even for
-    /// distant receivers. Current means refreshed, not converged: bounded
-    /// pre-change statistical weight can remain in a fresh estimate.
-    pub transport_current: bool,
-}
-
 impl VoxelEnergyField {
-    /// Ask for fresher measurements for a loaded voxel (all its exposed faces).
-    /// Requests are deduplicated and serviced by the bounded urgent queue, not
-    /// synchronously. They cannot starve the all-loaded-world sweep. A caller
-    /// must still inspect `estimate` freshness; this does not promise completion.
-    pub fn request_refresh(&mut self, voxel: IVec3) -> bool {
-        if !self.probes.contains_key(&voxel) {
-            return false;
-        }
-        self.requested.insert(voxel);
-        true
-    }
-
-    /// Compatibility helper. Simulation code should use `estimate` to enforce
-    /// its own age, confidence and source-revision requirements.
-    pub fn sample(&self, voxel: IVec3, normal: Vec3) -> Option<EnergySpectrum> {
-        self.estimate(voxel, normal).map(|sample| sample.incident)
-    }
-
-    pub fn estimate(&self, voxel: IVec3, normal: Vec3) -> Option<EnergyEstimate> {
-        if self.publishing_pages.contains(&super::page_of(voxel)) {
-            return None;
-        }
-        let probe = self.probes.get(&voxel)?;
-        let normal = normal.normalize_or_zero();
-        if normal == Vec3::ZERO {
-            return None;
-        }
-        let weights = normal * normal;
-        let mut incident = EnergySpectrum::ZERO;
-        let mut variance = EnergySpectrum::ZERO;
-        let mut samples = u32::MAX;
-        let mut oldest = probe.updated_at?;
-        let mut fresh = true;
-        for axis in 0..3 {
-            if weights[axis] < 1e-6 {
-                continue;
-            }
-            let face = axis * 2 + usize::from(normal[axis] < 0.0);
-            if probe.face_mask & (1 << face) == 0 || probe.stats().samples[face] == 0 {
-                return None;
-            }
-            incident += (probe.stats().radiance[face] + probe.stats().direct[face]) * weights[axis];
-            variance += (probe.stats().second_moment[face] - probe.stats().radiance[face] * probe.stats().radiance[face])
-                .finite_or_zero()
-                * (weights[axis] * weights[axis]);
-            samples = samples.min(probe.stats().samples[face]);
-            oldest = oldest.min(probe.stats().face_updated_at[face].unwrap_or(oldest));
-            fresh &= probe.fresh_mask & (1 << face) != 0;
-        }
-        Some(EnergyEstimate {
-            incident,
-            variance,
-            effective_samples: samples,
-            age: oldest.elapsed(),
-            sources_current: probe.source_revision == self.source_revision && fresh,
-            transport_current: fresh && probe.transport_revision == self.transport_revision,
-        })
-    }
-
     pub fn probe_count(&self) -> usize {
         self.probes.len()
     }
