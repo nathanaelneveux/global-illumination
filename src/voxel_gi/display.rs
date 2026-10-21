@@ -27,6 +27,11 @@ const CATCHUP_BUDGET: Duration = Duration::from_micros(1500);
 // compact records to a worker; neither route increases the capture time slice.
 const CATCHUP_WORKER_THRESHOLD: usize = 8192;
 const LIVE_VALUE_BUDGET: Duration = Duration::from_micros(1500);
+/// Display probes newly added per frame beyond those replacing a removed
+/// probe (~1 ms at ~0.55 us each). A streamed page of 5-8k probes publishes
+/// over a few frames instead of one 3-4 ms transaction; its faces render
+/// unlit until then, as any streamed face does before its first trace.
+const TOPOLOGY_ADDITIONS_PER_FRAME: usize = 2048;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DisplayBuildRequest {
@@ -145,6 +150,28 @@ impl VoxelGiRuntime {
             self.gpu_catchup_dirty.extend([voxel]);
         }
     }
+}
+
+/// Keep every addition that replaces a removed probe (one atomic swap) and at
+/// most `limit` others; return the rest, in order, for later frames.
+fn defer_fresh_additions(added: &mut Vec<IVec3>, removed: &[IVec3], limit: usize) -> Vec<IVec3> {
+    if added.len() <= limit {
+        return Vec::new();
+    }
+    let removed: HashSet<IVec3> = removed.iter().copied().collect();
+    let mut fresh = 0;
+    let mut deferred = Vec::new();
+    added.retain(|voxel| {
+        if removed.contains(voxel) {
+            return true;
+        }
+        fresh += 1;
+        if fresh > limit {
+            deferred.push(*voxel);
+        }
+        fresh <= limit
+    });
+    deferred
 }
 
 fn preparing(runtime: &VoxelGiRuntime) -> bool {
@@ -317,8 +344,9 @@ pub(super) fn upload_transport_cache(
         && !preparing(&runtime)
         && !runtime.gpu_rebuild_required
     {
-        let added = std::mem::take(&mut runtime.gpu_added);
+        let mut added = std::mem::take(&mut runtime.gpu_added);
         let removed = std::mem::take(&mut runtime.gpu_removed);
+        let deferred = defer_fresh_additions(&mut added, &removed, TOPOLOGY_ADDITIONS_PER_FRAME);
         let changed = std::mem::take(&mut runtime.gpu_topology_values);
         match patch_gpu_topology(
             &mut cache,
@@ -329,7 +357,9 @@ pub(super) fn upload_transport_cache(
             &changed,
         ) {
             Ok(()) => {
-                runtime.gpu_topology_dirty = false;
+                // Deferred additions are encoded whole when inserted.
+                runtime.gpu_topology_dirty = !deferred.is_empty();
+                runtime.gpu_added = deferred;
                 // Only this transaction's values have been encoded. Unrelated
                 // radiance remains queued for the ordinary time-sliced path.
                 for voxel in changed.iter().chain(&added).chain(&removed) {
@@ -337,6 +367,7 @@ pub(super) fn upload_transport_cache(
                 }
             }
             Err(TopologyPatchError::Busy) => {
+                added.extend(deferred);
                 runtime.gpu_added = added;
                 runtime.gpu_removed = removed;
                 runtime.gpu_topology_values = changed;
@@ -447,6 +478,17 @@ pub(super) fn upload_transport_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_additions_defer_fresh_probes_but_keep_replacements_atomic() {
+        let voxel = |x| IVec3::new(x, 0, 0);
+        let mut added: Vec<_> = (0..10).map(voxel).collect();
+        assert!(defer_fresh_additions(&mut added.clone(), &[], 10).is_empty());
+        // Voxels 7 and 9 replace removed probes: they stay with the removal.
+        let deferred = defer_fresh_additions(&mut added, &[voxel(7), voxel(9)], 3);
+        assert_eq!(added, [0, 1, 2, 7, 9].map(voxel));
+        assert_eq!(deferred, [3, 4, 5, 6, 8].map(voxel));
+    }
 
     #[test]
     #[should_panic(expected = "Voxel GI display capacity exceeded for 11 receivers")]
@@ -565,3 +607,4 @@ mod tests {
         assert!(runtime.gpu_catchup_dirty.contains(&IVec3::ZERO));
     }
 }
+
