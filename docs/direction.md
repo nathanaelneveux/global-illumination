@@ -69,7 +69,24 @@ Staging:
    unlimited, 1.17 GB at 128, 1.0 GB at 64; GI main-thread p99 6.4 -> 3.2 /
    2.1 ms; more paths traced (fewer slots to rank). Faces beyond the radius
    currently get only environment ambient: no sun, no shadows.
-2. **Far tier**, view driven, as above; then the radius shrinks.
+2. **Far tier**, view driven, as above; then the radius shrinks. In stages:
+   - **F0, shared traversal.** `trace_domain` and its helpers move to
+     `voxel_traversal.wgsl`, included textually by the transport compute
+     shader and the terrain material (globals `params`, `directory`,
+     `regions`, `cells` declared by each), so near and far traverse the same
+     geometry with the same code.
+   - **F1, far sun in the material.** The GI worker publishes its geometry
+     buffers to the terrain material (as it publishes the resident buffer).
+     Faces with no display probe trace one visibility ray per fragment to
+     each sun: direct light and hard voxel shadows beyond the radius, same
+     sun direction and colour as the near corner cache. No prepass needed.
+   - **F2, far bounce.** A screen-space compute pass after a depth/normal
+     prepass (needs prepass vertex shaders for the voxel vertex layout),
+     tracing the shared transport paths per pixel at reduced resolution,
+     ending on near-cache faces where they reach them, with temporal
+     reprojection and spatial reuse; the material reads its result for
+     faces without probes.
+   - **F3, shrink the radius** to about the simulation distance.
 3. **Band removal and a slim CPU record**, with stability recalibrated.
 
 Until stage 2, faces beyond the radius have no display probe and the
