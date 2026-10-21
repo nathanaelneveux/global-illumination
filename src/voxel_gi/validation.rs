@@ -5,6 +5,7 @@ mod cave;
 mod day;
 mod host_timing;
 mod house;
+mod memory;
 mod metrics;
 mod profiles;
 mod reference;
@@ -125,6 +126,7 @@ pub(super) struct ValidationRun {
     background: background::BackgroundRun,
     cave: cave::CaveObservations,
     day: day::DayRun,
+    memory: memory::MemorySampler,
     max_pages: usize,
     capture_pause_until: f32,
     done: bool,
@@ -238,6 +240,7 @@ pub(super) fn run_validation(
         }
         info!(profile = profile.name(), output = %output.display(), "GI validation initialized");
         evidence.output = Some(output);
+        run.memory.start();
         run.startup = Some(Instant::now());
     }
     if run.started.is_none() {
@@ -620,6 +623,11 @@ pub(super) fn run_validation(
             commands.write_message(AppExit::error());
             return;
     }
+    let (memory, footprint) = run.memory.finish();
+    if let Some(text) = footprint {
+        // Category breakdown at the end of the workload (IOAccelerator is GPU).
+        let _ = std::fs::write(evidence.output.as_ref().unwrap().join("footprint.txt"), text);
+    }
     let report = json!({
         "schema_version": 3, "status": "completed", "profile": profile.name(),
         "capture_mode": if evidence.render_target.is_some() { "offscreen" } else { "window" },
@@ -663,6 +671,7 @@ pub(super) fn run_validation(
         "traced_paths": stats.traced_paths, "packed_geometry_bytes": stats.packed_geometry_bytes,
         "last_selection_ms": stats.last_selection_ms, "last_merge_ms": stats.last_merge_ms,
         "measurements": run.metrics.report(),
+        "memory": memory,
         "measurement_notes": "Field observations sample at most 1024 voxels every 250 ms; repeated observations are not independent. Display steps are not image-space noise or error. Edit latency is first fresh measurement of selected adjacent receivers, not visual convergence. Capture/readback plus 250 ms cooldown frames are excluded. Offscreen timings are not windowed gameplay FPS and must not be compared against a windowed baseline. Completed is workload integrity, not a quality/performance pass."
     });
     let output = evidence.output.as_ref().unwrap();

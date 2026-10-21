@@ -292,6 +292,16 @@ Durations start after required assets are ready and exclude process compilation.
 | `compare` | 29 | Controlled display-mode visual comparison |
 | `stress` | 72 | Optional toggle/buffer lifetime stress |
 
+Every run records the process physical footprint (`footprint -p`, which
+includes Metal/GPU allocations on Apple silicon) every 2 s on its own thread:
+`report.json` `memory` has the peak, last value and series, and `footprint.txt`
+the final category breakdown (IOAccelerator/graphics vs heap). It is the whole
+process, not GI's share. `tools/base_spec_suite.sh <label>` runs the base-spec
+suite on a target machine (windowed gameplay and day-cycle for frame pacing;
+headless response, house-edits and day-cycle with fixed-sun references for
+lighting and memory) and archives the results to copy back; `BASE_SPEC_ONLY`
+selects runs by name.
+
 For unattended lighting/capture checks, use Bevy's offscreen target:
 
 ```sh
