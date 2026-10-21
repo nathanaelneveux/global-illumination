@@ -8,7 +8,8 @@ Baseline: `9e52b7a` on `gi-far-view-transport`, preserved in the managed
 Visible receiver ownership and persistent bounce-cache residency are separate
 decisions. Both view candidates use the same face-identified view frontend,
 shared path estimator, geometry, materials, corner sunlight and display target.
-Only cache residency and the division of the existing transport allowance differ:
+Only cache residency and the division of the existing transport allowance differ
+between the two view-first candidates:
 
 | Configuration | Visible owner | World cache radius | World / view budget |
 | --- | --- | ---: | ---: |
@@ -34,6 +35,15 @@ This is not spatial path reuse, a new sampler or a new calibrated accuracy
 threshold. View histories remain visibility-dependent, and reconstruction remains
 the existing bounded coplanar view filter. CPU world-display diagnostics do not
 measure view-first presentation; use actual captures and view GPU counters.
+
+View-first can spend its allowance on repeated sequential visits to a visible
+face (up to 32 three-hit waves per owner per dispatch, at most 65,536 visits
+overall). The feedback target is its frame's transport share, capped at 4 ms;
+actual asynchronous GPU receipts repay the same allowance. Hybrid retains its
+one-visit policy. A native furnace test compares 128 one-visit dispatches with
+16 eight-visit and four 32-visit dispatches: receiver sequence, last path, pending
+tail and raw moments are bit-identical. There is no display filtering in this
+check. This removes an incidental one-path-per-frame limit, not path termination.
 
 ## Qualification
 

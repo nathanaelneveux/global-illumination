@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 /// Use the same bounded feedback controller as near transport. Dividing a
 /// small wave's whole-pass cost by its path count mistakes dispatch overhead
 /// for marginal path cost, eventually underfilling or starving every wave.
-fn next_wave(current: u32, attempted: u32, milliseconds: f32) -> u32 {
+fn next_wave(current: u32, attempted: u32, milliseconds: f32, target_ms: f32, limit: usize) -> u32 {
     crate::voxel_gi::scheduling::next_budget(
-        current as usize, attempted as usize, milliseconds, 1.0, 8192,
+        current as usize, attempted as usize, milliseconds, target_ms, limit,
     ).div_ceil(64) as u32 * 64
 }
 
@@ -17,23 +17,30 @@ mod tests {
     use super::next_wave;
     #[test]
     fn costly_minimum_wave_cannot_starve_forever() {
-        let mut size = next_wave(128, 128, 8.0);
+        let mut size = next_wave(128, 128, 8.0, 1.0, 8192);
         assert_eq!(size, 64);
         // A 0.7ms fixed dispatch cost must not trap a 64-path wave at 64.
         for _ in 0..16 {
-            size = next_wave(size, size, 0.7);
+            size = next_wave(size, size, 0.7, 1.0, 8192);
             assert!((64..=8192).contains(&size));
             assert_eq!(size % 64, 0);
         }
         assert!(size >= 2048);
-        assert_eq!(next_wave(4096, 32, 0.5), 4096, "small views do not shrink capacity");
+        assert_eq!(next_wave(4096, 32, 0.5, 1.0, 8192), 4096, "small views do not shrink capacity");
+    }
+
+    #[test]
+    fn view_first_can_spend_its_share_beyond_one_visit_per_owner() {
+        let mut size = 8192;
+        for _ in 0..16 { size = next_wave(size, size, 1.0, 3.0, 65536); }
+        assert_eq!(size, 65536);
+        assert!(next_wave(size, size, 9.0, 3.0, 65536) < size);
     }
 }
 
 pub(super) struct Ticket {
     buffer: Buffer,
     ready: Arc<AtomicU8>,
-    work: u32,
     reserved: f32,
     stages: u32,
 }
@@ -111,7 +118,7 @@ impl Budget {
         }
     }
 
-    pub fn begin_frame(&mut self, device: &RenderDevice, elapsed: f32, share: f32) {
+    pub fn begin_frame(&mut self, device: &RenderDevice, elapsed: f32, share: f32, view_first: bool) {
         assert!(
             self.queries.is_some(),
             "Far view GI requires TIMESTAMP_QUERY to enforce its transport budget"
@@ -160,9 +167,14 @@ impl Budget {
             self.paused = counter(8);
             self.trace_ms = trace;
             self.presentation_ms = total - trace;
-            let attempted = ticket.work.min(active);
+            let attempted = counter(9);
             if attempted > 0 {
-                self.wave_size = next_wave(self.wave_size, attempted, trace);
+                // View-first owns the primary lighting budget, not just a
+                // distant supplement. Keep the wave bounded while allowing
+                // several sequential visits to a small visible working set.
+                let target = if view_first { (elapsed * 1000.0 * share).clamp(0.25, 4.0) } else { 1.0 };
+                let limit = if view_first { 65536 } else { 8192 };
+                self.wave_size = next_wave(self.wave_size, attempted, trace, target, limit);
                 self.wave_cost = trace.max(0.01);
             }
             self.allowance += ticket.reserved - trace;
@@ -187,7 +199,6 @@ impl Budget {
             Some(Ticket {
                 buffer,
                 ready: Arc::new(AtomicU8::new(0)),
-                work,
                 reserved,
                 stages: 0,
             }),

@@ -186,29 +186,39 @@ fn trace_visible_paths(@builtin(global_invocation_id) id: vec3<u32>) {
     let count = atomicLoad(&queue[0]);
     if id.x >= min(count, wave.range.y) || wave.range.z == 0u { return; }
     let index = atomicLoad(&queue[12u + (wave.range.x + id.x) % count]);
-    advance_view_path(index);
-    let state = continuations[index];
-    if state.status != 2u && state.status != 3u { return; }
-    atomicAdd(&queue[2], 1u);
-    var estimate = estimates[index];
-    // Unknown is not black. Every attempted sequence advances, including a
-    // rejected path, so geometry gaps cannot lock a face to one direction.
-    estimate.identity.x += 1u;
-    if paths[index].known != 0u {
-        atomicAdd(&queue[3], 1u);
-        let value = paths[index].emitter + paths[index].continuation;
-        if estimate.moment.w > 0.0 {
-            let change = estimate.moment.w;
-            let variance = max(estimate.moment.rgb - estimate.mean.rgb * estimate.mean.rgb, vec3(0.0));
-            let keep = view.display.w * dot(variance, vec3(0.2126, 0.7152, 0.0722)) / (change * change);
-            estimate.mean.w = min(estimate.mean.w, floor(keep));
-            estimate.moment.w = 0.0;
+    // One invocation exclusively owns this receiver, including sequential
+    // visits. Extra allowance can advance several three-hit waves without
+    // concurrent writes to a face or a permanent one-path-per-frame ceiling.
+    // Hybrid keeps its existing one-visit policy. Neither policy truncates a
+    // path or publishes its partial energy as a complete measurement.
+    let visits = min(select(1u, 32u, view.history.w != 0u), (wave.range.y - id.x + count - 1u) / count);
+    for (var visit = 0u; visit < visits; visit++) {
+        atomicAdd(&queue[9], 1u);
+        advance_view_path(index);
+        let state = continuations[index];
+        if state.status != 2u && state.status != 3u { continue; }
+        atomicAdd(&queue[2], 1u);
+        var estimate = estimates[index];
+        // Unknown is not black. Advance every attempted sequence, including
+        // rejected paths; the next visit may begin immediately in this pass.
+        estimate.identity.x += 1u;
+        receivers[index].sequence = estimate.identity.x;
+        if paths[index].known != 0u {
+            atomicAdd(&queue[3], 1u);
+            let value = paths[index].emitter + paths[index].continuation;
+            if estimate.moment.w > 0.0 {
+                let change = estimate.moment.w;
+                let variance = max(estimate.moment.rgb - estimate.mean.rgb * estimate.mean.rgb, vec3(0.0));
+                let keep = view.display.w * dot(variance, vec3(0.2126, 0.7152, 0.0722)) / (change * change);
+                estimate.mean.w = min(estimate.mean.w, floor(keep));
+                estimate.moment.w = 0.0;
+            }
+            let count = min(estimate.mean.w + 1.0, 65536.0);
+            estimate.mean = vec4(mix(estimate.mean.rgb, value, 1.0 / count), count);
+            estimate.moment = vec4(mix(estimate.moment.rgb, value * value, 1.0 / count), estimate.moment.w);
         }
-        let count = min(estimate.mean.w + 1.0, 65536.0);
-        estimate.mean = vec4(mix(estimate.mean.rgb, value, 1.0 / count), count);
-        estimate.moment = vec4(mix(estimate.moment.rgb, value * value, 1.0 / count), estimate.moment.w);
+        estimates[index] = estimate;
     }
-    estimates[index] = estimate;
 }
 
 @compute @workgroup_size(64)

@@ -353,6 +353,10 @@ fn grid_size(viewport: UVec2) -> UVec2 {
 }
 
 #[cfg(test)]
+#[path = "batch_tests.rs"]
+mod batch_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -434,7 +438,7 @@ fn render_view(
         renderer.frame_seconds = elapsed;
         renderer
             .budget
-            .begin_frame(&device, elapsed, settings.share);
+            .begin_frame(&device, elapsed, settings.share, settings.view_first);
         if frame.0 % 120 == 0 {
             info!(
                 far_active = renderer.budget.active,
