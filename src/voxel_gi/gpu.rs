@@ -567,6 +567,7 @@ impl GpuTracer {
         if !sky_only {
             self.select_quality_pipeline(work.transport.normalized(), samples)?;
         }
+        self.sky_cache.set_materials(materials);
         let sky_pending = self.sky_cache.prepare(&scene, sources, &work.probes);
         #[cfg(test)]
         let sky_pending = if self.duplicate_sky_for_benchmark {

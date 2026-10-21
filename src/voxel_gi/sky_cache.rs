@@ -4,6 +4,7 @@
 //! shadow-swept spatial buckets, not the world; a sun moving within one
 //! quantization step changes nothing here.
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 // Trusted integer lattice keys: use the engine's fast hasher on this hot path.
 use bevy::platform::collections::{HashMap, hash_map::Entry};
@@ -97,6 +98,14 @@ pub(crate) fn visibility_key(lights: &[SkyLight]) -> Vec<IVec3> {
 /// Shadow borders move in steps of about this angle.
 pub(crate) const SUN_STEP_DEGREES: f32 = 0.5;
 
+/// While the sun moves, each visibility generation flips corners along every
+/// shadow border. Publishing those changes with every batch made each resident
+/// face test them all on the GPU (half the moving-sun path throughput), so
+/// they publish at most this often; edits under a still sun publish at once.
+const SUN_CHANGE_INTERVAL: Duration = Duration::from_millis(250);
+/// The sun counts as moving for this long after its last visibility step.
+const SUN_MOVING_WINDOW: Duration = Duration::from_secs(10);
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct SkyCacheStats {
     pub requested: usize,
@@ -135,6 +144,12 @@ pub(crate) struct SkyCache {
     /// already have a still-valid pending measurement.
     pub deferred_results: bool,
     changes: HashMap<IVec3, (super::geometry::Bounds, f32)>,
+    /// Last visibility step caused by sun motion, and last published changes.
+    moved_at: Option<Instant>,
+    published_at: Option<Instant>,
+    /// Diffuse luminance per material: a flip's change is the light the
+    /// corner's surfaces reflect, as edit flux measures it. Unset: 1.
+    reflectance: Option<Box<[f32; 256]>>,
 }
 
 impl SkyCache {
@@ -164,6 +179,13 @@ impl SkyCache {
         if self.changes.is_empty() {
             return None;
         }
+        let now = Instant::now();
+        let moving = self.moved_at.is_some_and(|at| now - at < SUN_MOVING_WINDOW);
+        if moving && self.published_at.is_some_and(|at| now - at < SUN_CHANGE_INTERVAL) {
+            // Buckets keep merging bounds and flux until the next publication.
+            return None;
+        }
+        self.published_at = Some(now);
         let changes: Vec<_> = self.changes.drain().map(|(_, change)| change).collect();
         let bounds: Vec<_> = changes.iter().map(|(bounds, _)| *bounds).collect();
         let mut change = super::geometry::GeometryChange::from_bounds(
@@ -236,15 +258,51 @@ impl SkyCache {
         pending
     }
 
+    /// Material reflectance for change flux (`store`).
+    pub fn set_materials(&mut self, materials: &super::world::VoxelMaterialTransportTable) {
+        let weights = Vec3::new(0.2126, 0.7152, 0.0722);
+        let table = self.reflectance.get_or_insert_with(|| Box::new([1.0; 256]));
+        for (material, value) in table.iter_mut().enumerate() {
+            *value = materials.get(material as u8).diffuse.visible.dot(weights).clamp(0.0, 1.0);
+        }
+    }
+
+    /// The most reflective solid voxel touching a corner (1 if unknown).
+    fn corner_reflectance(&self, corner: IVec3) -> f32 {
+        let (Some(table), Some(scene)) = (&self.reflectance, &self.scene) else {
+            return 1.0;
+        };
+        let mut reflectance = 0.0_f32;
+        for z in 0..2 {
+            for y in 0..2 {
+                for x in 0..2 {
+                    if let Some(material) = scene.material_at(corner - IVec3::new(x, y, z))
+                        && material != AIR
+                    {
+                        let value = table.get(material as usize).copied().unwrap_or(1.0);
+                        reflectance = reflectance.max(value);
+                    }
+                }
+            }
+        }
+        reflectance
+    }
+
     pub fn store(&mut self, position: IVec3, value: u32) {
+        let reflectance = if self.track_changes {
+            self.corner_reflectance(position)
+        } else {
+            1.0
+        };
         let corner = self.corners.get_mut(&position).expect("planned sky corner");
         if self.track_changes && (corner.value != value || value == 0) {
             // Unknown is not black or unchanged. New/unknown corners contribute
             // conservative evidence; known equal values contribute none. Bounds
             // coalesce existing ray results, with no extra transport sampling.
-            // Luminance change of the corner's sunlight, the largest over its
-            // faces at the current sun (reflectance <= 1 bounds the reflected
-            // change). A first or unknown measurement belongs to new terrain,
+            // Reflected luminance change at the corner: the sunlight change,
+            // the largest over its faces at the current sun, times the most
+            // reflective adjacent material (edit flux is measured the same
+            // way). A first or unknown measurement belongs to new terrain,
             // whose load event already accounts for it.
             let delta = if corner.value == 0 || value == 0 {
                 0.0
@@ -262,7 +320,8 @@ impl SkyCache {
                             .fold(0.0_f32, f32::max);
                         light.color.dot(Vec3::new(0.2126, 0.7152, 0.0722)) * cosine
                     })
-                    .sum()
+                    .sum::<f32>()
+                    * reflectance
             };
             let bucket = position.div_euclid(IVec3::splat(BUCKET_EDGE));
             self.changes
@@ -309,6 +368,9 @@ impl SkyCache {
         let lights = sky_lights(sources);
         let key = visibility_key(&lights);
         if self.generation == 0 || key != self.key {
+            if self.generation != 0 {
+                self.moved_at = Some(Instant::now());
+            }
             self.generation = self.generation.wrapping_add(1).max(1);
             self.key = key;
         }
@@ -464,6 +526,32 @@ mod tests {
             cache.take_changes(&scene).is_some(),
             "traversal uncertainty must not mean unchanged"
         );
+    }
+
+    #[test]
+    fn moving_sun_changes_publish_a_few_times_per_second_and_edits_at_once() {
+        let scene = floor(&[IVec3::ZERO]);
+        let position = IVec3::new(4, 5, 4);
+        let mut cache = SkyCache {
+            track_changes: true,
+            ..default()
+        };
+        cache.corners.insert(position, Corner::default());
+        cache.store(position, KNOWN);
+        assert!(cache.take_changes(&scene).is_some(), "a still sun publishes at once");
+        cache.store(position, KNOWN | 1);
+        assert!(cache.take_changes(&scene).is_some());
+        // The sun just stepped: further flips merge until the interval passes.
+        let now = Instant::now();
+        cache.moved_at = Some(now);
+        cache.store(position, KNOWN);
+        assert!(cache.take_changes(&scene).is_none());
+        cache.store(position, KNOWN | 1);
+        cache.published_at = Some(now - SUN_CHANGE_INTERVAL);
+        assert!(cache.take_changes(&scene).is_some());
+        cache.store(position, KNOWN);
+        cache.moved_at = Some(now - SUN_MOVING_WINDOW);
+        assert!(cache.take_changes(&scene).is_some(), "the sun stopped moving");
     }
 
     fn sun(direction: Vec3) -> TransportSources {
