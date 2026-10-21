@@ -5,11 +5,10 @@ implementation can be understood without reconstructing its development history.
 The planned direction (near/far lighting, the simulation split) is in
 [direction](direction.md). `receiver_radius` (default unlimited) limits
 world-space receivers to pages near the cameras; geometry stays every loaded
-page. The experimental far tier currently traces direct sun in the material;
-view-driven indirect transport is not connected to gameplay yet. Its shared
-estimator, retained path layout and resumable uncached tails are native-qualified
-in `gpu/view_tests.rs`; view scheduling, reuse and presentation remain in
-[the staged plan](direction.md#f2-design-constraints-from-naadf).
+page. A positive radius enables live view-owned far transport, using the same
+estimator and corner sunlight as the near tier. Its native transport contracts
+are qualified in `gpu/view_tests.rs`; integration evidence and remaining limits
+are in [the runtime checkpoint](history/far-view-runtime.md).
 The numerical model and the stable display policy are deliberately separate.
 
 ## Data flow and ownership
@@ -47,6 +46,7 @@ accumulation. The default resident path does not wait for CPU delivery to render
 | Source model and Bevy light adaptation | `sources.rs` |
 | Sampling, emitters and transport | `sampling.rs`, `emission.rs`, `tracer.rs`, `gpu.rs`, shared `voxel_path.wgsl`, face consumer `voxel_trace.wgsl` |
 | Surface-cache face lookup | `gpu/face_index.rs` |
+| View-owned far receivers, scheduling and asynchronous timing | `gpu/view/runtime.rs`, `gpu/view/timing.rs`, `voxel_view_runtime.wgsl` |
 | Stable GPU ownership, accumulation and bounded snapshots | `gpu/resident.rs`, `gpu/readback.rs`, `voxel_accumulate.wgsl` |
 | Shared uncertainty heuristic | `statistics.rs` |
 | Direct-sun visibility cache | `sky.rs`, `sky_cache.rs` |
@@ -57,6 +57,46 @@ accumulation. The default resident path does not wait for CPU delivery to render
 Shader paths are under `assets/shaders/`; Rust paths above are under
 `src/voxel_gi/`. `reconstruction.rs` is an independent CPU test oracle for shader
 interpolation, not a second production reconstruction path.
+
+### View-owned far lighting
+
+After Bevy's depth/normal prepass and before opaque rendering, each active view
+discovers voxel-face identities on a reduced grid (one sample per 8x8 pixels,
+at most 65,536 entries). Quantized normals select their dominant axis; depth is
+snapped to the voxel plane before the geometry identity check. Duplicate pixels
+share one face owner. A ping-pong hash reprojects the exact same face, its raw
+mean/second moment, sequence, retained path and any unfinished continuation.
+No filtered image is ever treated as a new transport measurement.
+
+Each owner advances one path at a time, at most three intersections per wave.
+Long paths remain pending; their partial energy is not published. Finishing
+black paths count; unknown paths advance the sequence without adding a sample.
+There is no fixed bounce cutoff. Exact-identity reuse needs no shifted-path
+Jacobian; cross-face path reconnection remains a separate, unimplemented idea.
+
+Shared retention packets are copied GPU-to-GPU after change measurement and
+consumed by every active view. They preserve means, cap weights through the same
+distance/uncertainty rule as near receivers, and discard affected unfinished
+attempts. A view absent for more than a frame loses its history rather than
+silently missing events. Near residency is driven only by active cameras;
+inactive terrain-loading cameras do not allocate lighting receivers.
+
+Display reconstruction borrows unique coplanar owners within a bounded screen
+and world radius; it does not alter raw moments. This is presentation smoothing,
+not NAADF-style spatial path resampling. Sun visibility is evaluated at the
+same four canonical voxel corners as the near cache. Unrepresented coverage
+holes use those same corner rays, not a different shadow model. Emission is
+looked up per fragment so a subpixel emitter does not disappear.
+
+Per-camera state stays on the GPU. The material reads a shared output scratch
+buffer overwritten in camera encoder order, with validity cleared before each
+camera. Immutable optical-table generations and coherent geometry/cache buffer
+pairs are shared with the worker. Only 160-byte asynchronous timestamp/counter
+receipts return to the CPU; callbacks are polled without waiting. Far receives
+25% of the existing transport time share and near the rest. Prepass, discovery,
+corner sunlight and reconstruction are separately measured presentation costs,
+not hidden in the transport quota. Current view state is about 48.5 MiB at
+2560x1440; it is bounded by viewport capacity, not loaded world size.
 
 ## Geometry and traversal
 

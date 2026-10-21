@@ -151,7 +151,14 @@ The uncapped-tail furnace test aggregates only after each cohort finishes;
 partial or early-completed samples must not establish a false convergence claim.
 These test readbacks are intentionally synchronous; gameplay must keep the queue
 and records on the GPU. The record layout is uncompressed qualification data,
-not the final per-pixel memory budget. No far indirect gameplay image is claimed.
+not a compressed reservoir layout. Live integration now has valid offscreen
+cave captures; see [far-view runtime evidence](history/far-view-runtime.md).
+`native_view_runtime_pipelines` and `view_runtime_shader_is_valid` cover the
+runtime entry points and both single/multisample prepasses. Use the same
+`gameplay` profile in a baseline worktree and a positive-radius candidate for
+movement/edit qualification. CPU field diagnostics cover near receivers only;
+they cannot establish far-image stability. Far timing logs report raw owners,
+known completions, history, pending tails and display coverage separately.
 
 For shared-kernel refactors, `shader_candidate_benchmark` accepts a fully
 composed baseline WGSL via `VOXEL_GI_BASELINE_SHADER`. It checks five-band moment
@@ -181,7 +188,8 @@ recovered captures were also visually inspected. Clean render log, 80 scripted
 edits and five moves completed, slim coverage/bootstrap reported 75.21%/75.20%
 under continued background loading. This establishes runtime/capture integrity,
 not convergence or a frame-pacing improvement. The far indirect contribution
-is still absent, with visibly darker distant shaded faces at this small radius.
+was still absent at that historical checkpoint, with visibly darker distant
+shaded faces at this small radius. It is present in the subsequent live runtime.
 The full-statistics-only edit-freshness metric is unavailable in this slim run;
 do not interpret its zero observations as instantaneous response. No matched
 baseline or windowed performance claim is attached to this smoke check.

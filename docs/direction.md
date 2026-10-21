@@ -68,25 +68,25 @@ Staging:
    corners. Measured (M4, headless gameplay): peak footprint 3.14 GB
    unlimited, 1.17 GB at 128, 1.0 GB at 64; GI main-thread p99 6.4 -> 3.2 /
    2.1 ms; more paths traced (fewer slots to rank). Faces beyond the radius
-   now get experimental ray-traced direct sunlight (F1 below), but still lack
-   the far indirect solution. The radius remains opt-in.
+   now get view-owned indirect transport and shared-corner sunlight (F2 below).
+   The radius remains opt-in while gameplay qualification is completed.
 2. **Far tier**, view driven, as above; then the radius shrinks. In stages:
    - **F0, shared traversal: done.** `trace_domain` and its helpers moved to
      `voxel_traversal.wgsl`, included textually by the transport compute
      shader and the terrain material (globals `params`, `directory`,
      `regions`, `cells` declared by each), so near and far traverse the same
      geometry with the same code.
-   - **F1, far sun in the material: implemented, experimental.** The GI worker publishes its geometry
+   - **F1, far sun in the material: superseded by shared-corner visibility.** The GI worker publishes its geometry
      buffers to the terrain material as coherent allocation generations.
-     Faces with no display probe trace one visibility ray per fragment to
-     each sun: direct light and hard voxel shadows beyond the radius, same
-     sun direction and colour as the near corner cache. No prepass needed.
+     Far view owners trace the same four voxel-corner visibility rays as near
+     receivers. The material interpolates these corners; view coverage holes
+     evaluate the same corners directly, rather than changing to hard shadows.
      Geometry transactions and receiver retirement also run without near
      receivers or ray allowance. Native lifetime/maintenance tests cover these
      contracts. This per-fragment visibility pass is not yet charged against
      the shared compute budget; do not promote a smaller default radius on
      its strength alone.
-   - **F2, far bounce: transport consumer qualified, view integration pending.**
+   - **F2, far bounce: live integration implemented.**
      `voxel_path.wgsl` is the shared estimator; `voxel_view_trace.wgsl` writes
      individual raw paths from explicit surface positions. Matched prefixes
      pass against the near consumer in the hallway, skylight and cave, including
@@ -94,26 +94,27 @@ Staging:
      record retains receiver identity, direction/PDF, first-hit geometry, RNG
      replay key, separate emitter/continuation energy, direct energy and known
      status. Black paths count; unknown and inactive paths do not. This is not
-     yet a reservoir, a compressed production layout or a rendered far solution.
+     a reservoir or compressed production layout. Live view state retains these
+     records alongside raw moments and unfinished continuations.
      A second entry point advances uncached tails by at most eight hits per
      dispatch, saving throughput, accumulated energy, ray, MIS state and bounce
      index in 128 bytes of **in-flight scratch**. Paused energy is not published
      as a sample. Without the qualification-only depth limit, paths finish by
      cache hit, escape, roulette, zero throughput, reach, or explicit unknown.
      One/three/eight-hit partitions match the unsplit estimator; generation and
-     receiver changes restart incompatible continuations. The per-view queue,
-     scratch compaction and shared GPU-time arbitration are not wired yet.
-     The next integration is a screen-space compute pass after a depth/normal
-     prepass (needs prepass vertex shaders for the voxel vertex layout),
-     tracing the shared transport paths per pixel at reduced resolution,
-     ending on near-cache faces where they reach them, with temporal
-     reprojection and spatial reuse; the material reads its result for
-     faces without probes.
+     receiver changes restart incompatible continuations. The live per-view
+     queue uses three-hit waves, exact voxel-face deduplication/reprojection,
+     shared change retention and a 25% partition of the existing ray budget.
+     Depth/normal prepasses discover receivers at reduced resolution; the
+     material reads geometry-aware reconstructed results. Spatial filtering is
+     presentation only: shifted path reconnection/resampling remains future
+     work, not something implemented implicitly by the filter. See the
+     [runtime evidence](history/far-view-runtime.md).
    - **F3, shrink the radius** to about the simulation distance.
 3. **Band removal and a slim CPU record**, with stability recalibrated.
 
-Until F2, missing indirect light can still show a change of look at the radius.
-F1 is a staged implementation, not a replacement lighting model to conceal that.
+F2 supplies indirect light beyond the radius. Camera movement, handoff and
+frame pacing determine default-radius promotion, not kernel correctness alone.
 
 ### F2 design constraints from NAADF
 
@@ -182,9 +183,9 @@ five-band mean/moment and exact count/direct/sky parity. GPU p50/p95 ms:
 | 1,024 open-floor faces × 4 paths | 0.053 / 0.059 | 0.053 / 0.058 |
 | 8,100 faces in nine emissive rooms × 4 paths | 1.798 / 3.484 | 1.798 / 3.498 |
 
-No near-kernel performance change is claimed. The new view entry points are not
-dispatched by gameplay; visual handoff, live frame pacing and reuse remain to
-qualify. Gameplay defaults and the receiver radius are unchanged.
+No near-kernel performance change is claimed by that historical checkpoint.
+The subsequent live integration is documented above; gameplay evidence must be
+associated with its own commit and settings, not this isolated kernel timing.
 
 ## Simulation: deterministic direct transport, not GI
 
