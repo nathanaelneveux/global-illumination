@@ -48,12 +48,6 @@ struct Energy {
 const CACHE_MIN_SAMPLES: u32 = 16u;
 
 struct CachedEnergy { found: bool, value: vec4<f32>, radiation: f32 }
-fn face_index_of(normal: vec3<f32>) -> u32 {
-    if normal.x != 0.0 { return select(0u, 1u, normal.x < 0.0); }
-    if normal.y != 0.0 { return select(2u, 3u, normal.y < 0.0); }
-    if normal.z != 0.0 { return select(4u, 5u, normal.z < 0.0); }
-    return 6u;
-}
 fn cached_energy(voxel: vec3<i32>, face: u32) -> CachedEnergy {
     var cached: CachedEnergy;
     if face > 5u { return cached; }

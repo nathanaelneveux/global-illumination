@@ -475,9 +475,16 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
     var indirect = probe_irradiance(in.world_position.xyz, normalize(in.world_normal), false);
     let voxel = vec3<i32>(floor(in.world_position.xyz - in.world_normal * 0.01));
     let index = lookup_probe(voxel);
-    if index >= transport_settings.probe_capacity && transport_settings.enabled != 0u {
-        let far = far_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal), false);
-        if far.w > 0.0 { indirect = far.rgb * transport_settings.intensity; }
+    // A slot is not a published face. During residency/mesh handoff, keep
+    // using the view result until this particular near face has valid data.
+    if far_view.shape.z != 0u && transport_settings.enabled != 0u {
+        let face = face_index_of(normalize(in.world_normal));
+        var near_valid = false;
+        if index < transport_settings.probe_capacity { near_valid = resolved_face(index, face).w > 0.0; }
+        if !near_valid {
+            let far = far_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal), false);
+            if far.w > 0.0 { indirect = far.rgb * transport_settings.intensity; }
+        }
     }
     var emission = vec3(0.0);
     if index < transport_settings.probe_capacity { emission = transport_probes[index].emission.rgb; }

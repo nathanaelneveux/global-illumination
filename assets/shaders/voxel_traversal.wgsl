@@ -12,6 +12,15 @@ struct RayResult {
     normal: vec3<f32>,
 }
 
+// Exact voxel-axis normals. Quantized prepass normals must first select their
+// dominant axis; a miss has no normal and returns the inactive face sentinel.
+fn face_index_of(normal: vec3<f32>) -> u32 {
+    if normal.x != 0.0 { return select(0u, 1u, normal.x < 0.0); }
+    if normal.y != 0.0 { return select(2u, 3u, normal.y < 0.0); }
+    if normal.z != 0.0 { return select(4u, 5u, normal.z < 0.0); }
+    return 6u;
+}
+
 fn pcg(value: u32) -> u32 {
     let state = value * 747796405u + 2891336453u;
     let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
