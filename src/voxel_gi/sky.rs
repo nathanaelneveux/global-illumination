@@ -1,31 +1,21 @@
-//! Deterministic direct-sun samples at virtual unit-face corners, independent
-//! of greedy mesh vertices. RGBE storage keeps the existing GPU probe stride.
+//! Deterministic direct-sun visibility at virtual unit-face corners,
+//! independent of greedy mesh vertices. A corner stores which directional
+//! lights it sees, not their energy: the display applies each light's current
+//! direction and color, so a moving or recolored sun changes only shadow
+//! borders in this cache.
 use bevy::prelude::*;
 
 use super::world::FACE_OFFSETS;
 
-/// Zero means unknown/unmeasured, ONE means measured black. RGB mantissas
-/// occupy the low 24 bits and the shared IEEE exponent occupies the high byte.
-/// This is presentation-only quantization; simulation energy stays full f32.
-pub(crate) fn pack(value: Vec3) -> u32 {
-    let value = value.max(Vec3::ZERO);
-    let maximum = value.max_element();
-    if !maximum.is_finite() || maximum < 1e-30 {
-        return 1;
-    }
-    let exponent = (maximum.to_bits() >> 23) & 255;
-    let quantum = 2.0_f32.powi(exponent as i32 - 127 - 7);
-    let mantissa = (value / quantum).round().min(Vec3::splat(255.0)).as_uvec3();
-    mantissa.x | (mantissa.y << 8) | (mantissa.z << 16) | (exponent << 24)
-}
+/// A measured corner word. Zero is unknown/unmeasured; a known word has this
+/// bit plus one lit bit per directional light (source order).
+pub(crate) const KNOWN: u32 = 1 << 31;
+/// Directional lights the corner cache and display carry.
+pub(crate) const MAX_SKY_LIGHTS: usize = 4;
 
-/// Decode a packed corner value (zero and measured-black decode to zero).
-pub(crate) fn unpack(value: u32) -> Vec3 {
-    if value >> 24 == 0 {
-        return Vec3::ZERO;
-    }
-    UVec3::new(value & 255, (value >> 8) & 255, (value >> 16) & 255).as_vec3()
-        * 2.0_f32.powi((value >> 24) as i32 - 127 - 7)
+/// Is `light` visible from a known corner word?
+pub(crate) fn lit(word: u32, light: usize) -> bool {
+    word & KNOWN != 0 && word & (1 << light) != 0
 }
 
 pub(crate) fn face_axes(face: usize) -> (IVec3, IVec3) {
@@ -85,13 +75,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn packed_sky_preserves_black_validity_and_hdr_without_growing_probe_storage() {
-        assert_ne!(pack(Vec3::ZERO), 0);
-        assert_eq!(unpack(pack(Vec3::ZERO)), Vec3::ZERO);
-        for magnitude in [0.001, 0.1, 1.0, 1.99, 10.0, 1e6, 1e12] {
-            let color = Vec3::new(1.0, 0.7, 0.2) * magnitude;
-            assert!((unpack(pack(color)) - color).abs().max_element() <= magnitude / 128.0);
-        }
+    fn visibility_words_distinguish_unknown_shadowed_and_each_light() {
+        assert!(!lit(0, 0));
+        assert!(!lit(KNOWN, 0));
+        let word = KNOWN | 0b101;
+        assert!(lit(word, 0) && !lit(word, 1) && lit(word, 2));
+        assert_ne!(KNOWN, 0);
     }
 
     #[test]

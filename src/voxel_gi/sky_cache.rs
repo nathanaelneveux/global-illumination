@@ -1,6 +1,8 @@
-//! Persistent world-space corner lighting. Visibility is traced once per
-//! lattice position and sun, then projected onto the six receiving normals.
-//! Geometry changes invalidate shadow-swept spatial buckets, not the world.
+//! Persistent world-space corner sun visibility. Visibility is traced once per
+//! lattice position and quantized sun direction; the display applies each
+//! light's current direction and color. Geometry changes invalidate
+//! shadow-swept spatial buckets, not the world; a sun moving within one
+//! quantization step changes nothing here.
 use std::sync::Arc;
 
 // Trusted integer lattice keys: use the engine's fast hasher on this hot path.
@@ -59,6 +61,9 @@ pub(crate) struct SkyLight {
     pub color: Vec3,
 }
 
+/// The directional lights the corner cache traces: those with visible color,
+/// in source order, at most `MAX_SKY_LIGHTS` (a corner's lit bit `i` is light
+/// `i` of this list; the GPU kernel counts the same way).
 pub(crate) fn sky_lights(sources: &TransportSources) -> Vec<SkyLight> {
     sources
         .directional
@@ -70,8 +75,27 @@ pub(crate) fn sky_lights(sources: &TransportSources) -> Vec<SkyLight> {
                 color,
             })
         })
+        .take(super::sky::MAX_SKY_LIGHTS)
         .collect()
 }
+
+/// Sun directions per visibility generation: a cube-projected grid with about
+/// `SUN_STEP_DEGREES` cells. Cached visibility is reused until a light leaves
+/// its cell; the display's lighting follows the exact direction meanwhile.
+pub(crate) fn visibility_key(lights: &[SkyLight]) -> Vec<IVec3> {
+    let cells = 1.0 / SUN_STEP_DEGREES.to_radians();
+    lights
+        .iter()
+        .map(|light| {
+            let direction = light.direction;
+            let extent = direction.abs().max_element().max(1e-6);
+            (direction / extent * cells).round().as_ivec3()
+        })
+        .collect()
+}
+
+/// Shadow borders move in steps of about this angle.
+pub(crate) const SUN_STEP_DEGREES: f32 = 0.5;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct SkyCacheStats {
@@ -83,7 +107,7 @@ pub(crate) struct SkyCacheStats {
 
 #[derive(Default)]
 struct Corner {
-    value: [u32; 6],
+    value: u32,
     generation: u64,
     pending_batch: u64,
     pending_generation: u64,
@@ -101,6 +125,7 @@ pub(crate) struct SkyCache {
     buckets: HashMap<IVec3, Vec<IVec3>>,
     scene: Option<Arc<TransportScene>>,
     pub lights: Vec<SkyLight>,
+    key: Vec<IVec3>,
     generation: u64,
     batch: u64,
     lit_faces: u8,
@@ -120,7 +145,7 @@ impl SkyCache {
         }
     }
 
-    pub fn store_ticket(&mut self, ticket: SkyTicket, position: IVec3, value: [u32; 6]) {
+    pub fn store_ticket(&mut self, ticket: SkyTicket, position: IVec3, value: u32) {
         if ticket.generation == self.generation
             && self
                 .corners
@@ -211,26 +236,33 @@ impl SkyCache {
         pending
     }
 
-    pub fn store(&mut self, position: IVec3, value: [u32; 6]) {
+    pub fn store(&mut self, position: IVec3, value: u32) {
         let corner = self.corners.get_mut(&position).expect("planned sky corner");
-        if self.track_changes && (corner.value != value || value.contains(&0)) {
+        if self.track_changes && (corner.value != value || value == 0) {
             // Unknown is not black or unchanged. New/unknown corners contribute
             // conservative evidence; known equal values contribute none. Bounds
             // coalesce existing ray results, with no extra transport sampling.
             // Luminance change of the corner's sunlight, the largest over its
-            // faces (reflectance <= 1 bounds the reflected change). A first or
-            // unknown measurement belongs to new terrain, whose load event
-            // already accounts for it.
-            let delta = if corner.value.contains(&0) || value.contains(&0) {
+            // faces at the current sun (reflectance <= 1 bounds the reflected
+            // change). A first or unknown measurement belongs to new terrain,
+            // whose load event already accounts for it.
+            let delta = if corner.value == 0 || value == 0 {
                 0.0
             } else {
-                (0..6)
-                    .map(|face| {
-                        let d = super::sky::unpack(value[face])
-                            - super::sky::unpack(corner.value[face]);
-                        (0.2126_f32 * d.x + 0.7152 * d.y + 0.0722 * d.z).abs()
+                self.lights
+                    .iter()
+                    .enumerate()
+                    .filter(|(light, _)| {
+                        super::sky::lit(value, *light) != super::sky::lit(corner.value, *light)
                     })
-                    .fold(0.0, f32::max)
+                    .map(|(_, light)| {
+                        let cosine = FACE_OFFSETS
+                            .iter()
+                            .map(|normal| normal.as_vec3().dot(light.direction))
+                            .fold(0.0_f32, f32::max);
+                        light.color.dot(Vec3::new(0.2126, 0.7152, 0.0722)) * cosine
+                    })
+                    .sum()
             };
             let bucket = position.div_euclid(IVec3::splat(BUCKET_EDGE));
             self.changes
@@ -245,7 +277,7 @@ impl SkyCache {
         corner.value = value;
         corner.pending_batch = 0;
         // Traversal-budget exhaustion is not a valid forever-cached shadow.
-        corner.generation = if value.contains(&0) {
+        corner.generation = if value == 0 {
             0
         } else {
             self.generation
@@ -259,12 +291,12 @@ impl SkyCache {
                     continue;
                 }
                 let value = if self.lit_faces & (1 << face) == 0 {
-                    [1; 4]
+                    [super::sky::KNOWN; 4]
                 } else {
                     std::array::from_fn(|corner| {
                         self.corners
                             .get(&corner_position(probe.voxel(), face, corner))
-                            .map_or(0, |value| value.value[face])
+                            .map_or(0, |value| value.value)
                     })
                 };
                 probe.set_sky(face, value);
@@ -273,20 +305,23 @@ impl SkyCache {
     }
 
     fn synchronize(&mut self, scene: &Arc<TransportScene>, sources: &TransportSources) {
+        // Colors and sub-step motion only change the display's lighting.
         let lights = sky_lights(sources);
-        if self.generation == 0 || lights != self.lights {
+        let key = visibility_key(&lights);
+        if self.generation == 0 || key != self.key {
             self.generation = self.generation.wrapping_add(1).max(1);
-            self.lit_faces = 0;
-            for (face, normal) in FACE_OFFSETS.iter().enumerate() {
-                if lights
-                    .iter()
-                    .any(|light| normal.as_vec3().dot(light.direction) > 0.0)
-                {
-                    self.lit_faces |= 1 << face;
-                }
-            }
-            self.lights = lights;
+            self.key = key;
         }
+        self.lit_faces = 0;
+        for (face, normal) in FACE_OFFSETS.iter().enumerate() {
+            if lights
+                .iter()
+                .any(|light| normal.as_vec3().dot(light.direction) > 0.0)
+            {
+                self.lit_faces |= 1 << face;
+            }
+        }
+        self.lights = lights;
         if self
             .scene
             .as_ref()
@@ -390,7 +425,7 @@ fn ray_intersects_box(origin: Vec3, direction: Vec3, minimum: Vec3, maximum: Vec
 mod tests {
     use super::super::{
         naadf::{linear_index, volume_len},
-        sky::{pack, unpack},
+        sky::KNOWN,
         sources::{DirectionalTransportLight, PointTransportLight},
         spectrum::EnergySpectrum,
         tracer::sample_sky_corner,
@@ -407,24 +442,24 @@ mod tests {
             ..default()
         };
         cache.corners.insert(position, Corner::default());
-        cache.store(position, [1; 6]);
+        cache.store(position, KNOWN);
         assert!(
             cache.take_changes(&scene).is_some(),
             "unknown to black needs conservative evidence"
         );
-        cache.store(position, [1; 6]);
+        cache.store(position, KNOWN);
         assert!(
             cache.take_changes(&scene).is_none(),
             "known black is unchanged"
         );
-        cache.store(position, [2; 6]);
+        cache.store(position, KNOWN | 1);
         assert!(cache.take_changes(&scene).is_some(), "becoming lit counts");
-        cache.store(position, [1; 6]);
+        cache.store(position, KNOWN);
         assert!(
             cache.take_changes(&scene).is_some(),
             "becoming shadowed counts"
         );
-        cache.store(position, [0; 6]);
+        cache.store(position, 0);
         assert!(
             cache.take_changes(&scene).is_some(),
             "traversal uncertainty must not mean unchanged"
@@ -502,12 +537,12 @@ mod tests {
         assert!(
             probes
                 .iter()
-                .all(|probe| probe.display[2].sky == [pack(Vec3::ONE); 4])
+                .all(|probe| probe.display[2].sky == [KNOWN | 1; 4])
         );
     }
 
     #[test]
-    fn creases_share_visibility_but_project_each_receiving_normal_separately() {
+    fn creases_share_one_visibility_word_across_receiving_normals() {
         let mut page = vec![AIR; volume_len(PAGE_SIZE)];
         page[linear_index(UVec3::splat(8), PAGE_SIZE)] = 2;
         let scene = Arc::new(TransportScene::with_page_delta(
@@ -523,15 +558,11 @@ mod tests {
         assert_eq!(pending.len(), 7);
         finish(&mut cache, &scene, pending);
         cache.apply(&mut probes);
+        // The display projects each normal (its cosine); corners carry only
+        // visibility, shared by every face that meets there.
         for face in [0, 2, 4] {
-            let expected = pack(Vec3::splat(
-                FACE_OFFSETS[face]
-                    .as_vec3()
-                    .dot(sources.directional[0].direction),
-            ));
-            assert_eq!(probes[0].display[face].sky, [expected; 4]);
+            assert_eq!(probes[0].display[face].sky, [KNOWN | 1; 4]);
         }
-        assert!(unpack(probes[0].display[0].sky[0]).x < unpack(probes[0].display[4].sky[0]).x);
     }
 
     #[test]
@@ -561,13 +592,16 @@ mod tests {
         let pending = cache.prepare(&scene, &sources, &probes);
         assert_eq!(pending.len(), 9);
         finish(&mut cache, &scene, pending);
+        // Color and sub-step motion are the display's: no retrace.
         sources.directional[0].radiance.visible *= 2.0;
-        assert_eq!(cache.prepare(&scene, &sources, &probes).len(), 9);
+        sources.directional[0].direction =
+            Quat::from_rotation_z(0.1_f32.to_radians()) * sources.directional[0].direction;
+        assert!(cache.prepare(&scene, &sources, &probes).is_empty());
         sources.directional.clear();
         assert!(cache.prepare(&scene, &sources, &probes).is_empty());
         let mut probes = probes;
         cache.apply(&mut probes);
-        assert!(probes.iter().all(|probe| probe.display[2].sky == [1; 4]));
+        assert!(probes.iter().all(|probe| probe.display[2].sky == [KNOWN; 4]));
     }
 
     #[test]
@@ -584,18 +618,20 @@ mod tests {
         assert!(!pending.is_empty());
         assert!(cache.prepare(&scene, &sources, &probes).is_empty());
         let position = pending[0];
-        cache.store_ticket(first, position, [2; 6]);
-        assert_eq!(cache.corners[&position].value, [2; 6]);
-        sources.directional[0].radiance.visible *= 2.0;
+        cache.store_ticket(first, position, KNOWN | 1);
+        assert_eq!(cache.corners[&position].value, KNOWN | 1);
+        // A new visibility generation: the sun leaves its quantization cell.
+        sources.directional[0].direction =
+            Quat::from_rotation_z(2.0_f32.to_radians()) * sources.directional[0].direction;
         assert!(!cache.prepare(&scene, &sources, &probes).is_empty());
         let second = cache.ticket();
-        cache.store_ticket(first, position, [3; 6]);
-        assert_eq!(cache.corners[&position].value, [2; 6]);
-        cache.store_ticket(second, position, [4; 6]);
-        assert_eq!(cache.corners[&position].value, [4; 6]);
+        cache.store_ticket(first, position, KNOWN | 2);
+        assert_eq!(cache.corners[&position].value, KNOWN | 1);
+        cache.store_ticket(second, position, KNOWN | 3);
+        assert_eq!(cache.corners[&position].value, KNOWN | 3);
         let retired = Arc::new(TransportScene::default());
         cache.prepare(&retired, &sources, &[] as &[SurfaceProbe]);
-        cache.store_ticket(second, position, [5; 6]);
+        cache.store_ticket(second, position, KNOWN | 4);
         assert!(!cache.corners.contains_key(&position));
         cache.apply(&mut probes);
         assert_eq!(probes[0].display[2].sky, [0; 4]);
@@ -633,12 +669,12 @@ mod tests {
         assert!(
             probes[..4]
                 .iter()
-                .all(|probe| probe.display[2].sky == [1; 4])
+                .all(|probe| probe.display[2].sky == [KNOWN; 4])
         );
         assert!(
             probes[4..]
                 .iter()
-                .all(|probe| probe.display[2].sky == [pack(Vec3::ONE); 4])
+                .all(|probe| probe.display[2].sky == [KNOWN | 1; 4])
         );
         let unblocked = Arc::new(TransportScene::with_page_delta(
             &blocked,
@@ -652,7 +688,7 @@ mod tests {
         assert!(
             probes
                 .iter()
-                .all(|probe| probe.display[2].sky == [pack(Vec3::ONE); 4])
+                .all(|probe| probe.display[2].sky == [KNOWN | 1; 4])
         );
         let distant = Arc::new(TransportScene::with_page_delta(
             &unblocked,
@@ -728,7 +764,7 @@ mod tests {
         let pending = cache.prepare(&scene, &sources, &probes);
         let unknown = pending[0];
         finish(&mut cache, &scene, pending);
-        cache.store(unknown, [0; 6]);
+        cache.store(unknown, 0);
         assert_eq!(cache.prepare(&scene, &sources, &probes), vec![unknown]);
     }
 

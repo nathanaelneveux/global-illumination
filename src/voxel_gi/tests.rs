@@ -731,12 +731,12 @@ fn indirect_work_requests_only_unknown_sky_without_the_explicit_queue() {
         work
     };
     assert!(push(&probe).probes[0].sky_requested);
-    probe.display[2].sky = [1; 4]; // measured black is valid, not missing
+    probe.display[2].sky = [sky::KNOWN; 4]; // measured black is valid, not missing
     assert!(!push(&probe).probes[0].sky_requested);
     let work = push(&probe);
     work.copy_measurements(std::slice::from_mut(&mut probe));
     assert_eq!(
-        probe.display[2].sky, [1; 4],
+        probe.display[2].sky, [sky::KNOWN; 4],
         "unrequested zero output must never replace valid sky"
     );
     probe.display[2].sky[3] = 0; // incomplete/unknown ray must retry

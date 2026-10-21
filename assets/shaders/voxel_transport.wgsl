@@ -33,7 +33,7 @@ struct GpuHashEntry {
 struct GpuProbe {
     faces: array<vec4<f32>, 6>,
     emission: vec4<f32>,
-    direct_sky: array<vec4<u32>, 6>, // four packed RGBE corners per face
+    direct_sky: array<vec4<u32>, 6>, // four corner visibility words per face
     resident: array<vec2<u32>, 6>, // slot + allocation incarnation
 }
 
@@ -45,6 +45,9 @@ struct GpuTransportSettings {
     intensity: f32,
     debug_irradiance: u32,
     voxel_sky: u32,
+    sun_count: u32,
+    sun_direction: array<vec4<f32>, 4>,
+    sun_color: array<vec4<f32>, 4>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(102)
@@ -184,17 +187,17 @@ fn unpublished_face_prior(voxel: vec3<i32>, receiver_face: u32) -> vec4<f32> {
     return vec4(sum.rgb / max(sum.w, 0.000001), select(0.0, 0.125, sum.w > 0.0));
 }
 
-fn unpack_sky(value: u32) -> vec3<f32> {
-    let exponent = value >> 24u;
-    if exponent == 0u { return vec3(0.0); }
-    return vec3<f32>(f32(value & 255u), f32((value >> 8u) & 255u), f32((value >> 16u) & 255u))
-        * exp2(f32(exponent) - 134.0);
+fn corner_lit(word: u32, bit: u32) -> f32 {
+    return select(0.0, 1.0, (word & bit) != 0u);
 }
 
 // These are ray measurements AT the virtual corners, not an average of nearby
 // face-center rays. The four values naturally retain contact shadows at walls.
-// Unknown corners contribute no direct sunlight yet; available corners remain
-// usable. Readiness must NEVER switch a face to another shadow algorithm.
+// Corners store which suns they see; each sun's current direction and color
+// light the face here, so a moving sun brightens or dims every frame while
+// cached shadows change only when its quantized direction does. Unknown
+// corners contribute no direct sunlight yet; available corners remain usable.
+// Readiness must NEVER switch a face to another shadow algorithm.
 fn sky_irradiance(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     let voxel = vec3<i32>(floor(position - normal * 0.01));
     let index = lookup_probe(voxel);
@@ -208,18 +211,29 @@ fn sky_irradiance(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
         face = 4u;
         uv = position.xy - vec2<f32>(voxel.xy);
     }
-    face += select(0u, 1u, normal[face / 2u] < 0.0);
+    let negative = normal[face / 2u] < 0.0;
+    face += select(0u, 1u, negative);
+    var axis = vec3(0.0);
+    axis[face / 2u] = select(1.0, -1.0, negative);
     let corners = transport_probes[index].direct_sky[face];
     let ready = select(0.0, 1.0, all(corners != vec4(0u)));
-    let c00 = unpack_sky(corners.x);
-    let c10 = unpack_sky(corners.y);
-    let c01 = unpack_sky(corners.z);
-    let c11 = unpack_sky(corners.w);
-    if transport_settings.reconstruction == 0u {
-        return vec4((c00 + c10 + c01 + c11) * 0.25, ready);
-    }
     uv = clamp(uv, vec2(0.0), vec2(1.0));
-    return vec4(mix(mix(c00, c10, uv.x), mix(c01, c11, uv.x), uv.y), ready);
+    var sum = vec3(0.0);
+    for (var light = 0u; light < min(transport_settings.sun_count, 4u); light += 1u) {
+        let cosine = max(dot(axis, transport_settings.sun_direction[light].xyz), 0.0);
+        if cosine <= 0.0 { continue; }
+        let bit = 1u << light;
+        let c00 = corner_lit(corners.x, bit);
+        let c10 = corner_lit(corners.y, bit);
+        let c01 = corner_lit(corners.z, bit);
+        let c11 = corner_lit(corners.w, bit);
+        var visible = (c00 + c10 + c01 + c11) * 0.25;
+        if transport_settings.reconstruction != 0u {
+            visible = mix(mix(c00, c10, uv.x), mix(c01, c11, uv.x), uv.y);
+        }
+        sum += transport_settings.sun_color[light].rgb * (cosine * visible);
+    }
+    return vec4(sum, ready);
 }
 
 // Four coplanar faces meet at a virtual voxel corner. Only the connected

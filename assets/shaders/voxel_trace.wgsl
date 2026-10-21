@@ -440,26 +440,20 @@ fn direct_at(position: vec3<f32>, normal: vec3<f32>) -> Energy {
     return energy;
 }
 
-fn pack_sky(value: vec3<f32>) -> u32 {
-    let maximum = max(value.x, max(value.y, value.z));
-    if maximum < 1e-30 { return 1u; } // measured black, not unknown
-    let exponent = (bitcast<u32>(maximum) >> 23u) & 255u;
-    let quantum = exp2(f32(exponent) - 134.0);
-    let mantissa = vec3<u32>(min(round(max(value, vec3(0.0)) / quantum), vec3(255.0)));
-    return mantissa.x | (mantissa.y << 8u) | (mantissa.z << 16u) | (exponent << 24u);
-}
-
+// One word per corner: 0 unknown, else bit 31 plus a lit bit per directional
+// light (source order, at most four). Energy and the receiving normal are the
+// display's: a recolored or slightly moved sun needs no retrace.
 @compute @workgroup_size(64)
 fn trace_sky_corners(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= u32(params.minimum.w) { return; }
     let position = vec3<f32>(tasks[params.counts.x + id.x].voxel);
-    var values: array<vec3<f32>, 6>;
-    var valid = true;
-    for (var i = 0u; i < u32(params.maximum.w); i += 1u) {
+    var word = 0x80000000u;
+    // Lit bits count lights with visible color, as `sky_lights` does on CPU.
+    var bit = 0u;
+    for (var i = 0u; i < u32(params.maximum.w) && bit < 4u; i += 1u) {
         let light = lights[i];
+        if all(max(light.energy.rgb - light.extra.yzw, vec3(0.0)) == vec3(0.0)) { continue; }
         let direction = normalize(light.position_range.xyz);
-        let energy = max(light.energy.rgb - light.extra.yzw, vec3(0.0));
-        if all(energy == vec3(0.0)) { continue; }
         // A canonical light-directed origin makes visibility independent of
         // the receiving face. Axis ties use the same positive grid cell as CPU.
         let origin = position + direction * 0.002;
@@ -467,16 +461,13 @@ fn trace_sky_corners(@builtin(global_invocation_id) id: vec3<u32>) {
         // the streaming directory into opaque slabs; continue to real occluders.
         // Path transport and simulation direct energy still use strict trace().
         let visibility = trace_domain(origin, direction, params.extra.y, true).status;
-        if visibility == 2u { valid = false; break; }
-        if visibility == 0u {
-            for (var face = 0u; face < 6u; face += 1u) {
-                values[face] += energy * max(dot(face_normal(face), direction), 0.0);
-            }
-        }
+        if visibility == 2u { word = 0u; break; }
+        if visibility == 0u { word |= 1u << bit; }
+        bit += 1u;
     }
     let offset = params.counts.x * 6u + id.x * 2u;
-    results[offset] = select(vec4(0u), vec4(pack_sky(values[0]), pack_sky(values[1]), pack_sky(values[2]), pack_sky(values[3])), valid);
-    results[offset + 1u] = select(vec4(0u), vec4(pack_sky(values[4]), pack_sky(values[5]), 0u, 0u), valid);
+    results[offset] = vec4(word, 0u, 0u, 0u);
+    results[offset + 1u] = vec4(0u);
 }
 fn choose_emitter(position: vec3<f32>, normal: vec3<f32>, choice: f32) -> EmissiveFace {
     let count = u32(params.extra.w);

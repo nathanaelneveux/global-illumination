@@ -170,7 +170,10 @@ pub(super) fn synchronize_transport_sources(
         return;
     }
     let change = next.change_from(&runtime.sources);
-    if sky_cache::sky_lights(&next) != sky_cache::sky_lights(&runtime.sources) {
+    // Corner visibility depends only on quantized sun directions.
+    if sky_cache::visibility_key(&sky_cache::sky_lights(&next))
+        != sky_cache::visibility_key(&sky_cache::sky_lights(&runtime.sources))
+    {
         runtime.sky_revision = runtime.sky_revision.wrapping_add(1);
         runtime.sky_remaining = field.order.len();
     }

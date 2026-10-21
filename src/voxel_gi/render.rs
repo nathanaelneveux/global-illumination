@@ -78,6 +78,11 @@ pub struct GpuTransportSettings {
     pub debug_irradiance: u32,
     /// 0: Bevy per-pixel direct sun; 1: cached diffuse direct sun.
     pub voxel_sky: u32,
+    /// Directional lights the cached corner visibility refers to (source
+    /// order): current direction and transport color, applied per pixel.
+    pub sun_count: u32,
+    pub sun_direction: [Vec4; super::sky::MAX_SKY_LIGHTS],
+    pub sun_color: [Vec4; super::sky::MAX_SKY_LIGHTS],
 }
 
 impl Default for GpuTransportSettings {
@@ -90,6 +95,9 @@ impl Default for GpuTransportSettings {
             intensity: 1.0,
             debug_irradiance: 0,
             voxel_sky: 1,
+            sun_count: 0,
+            sun_direction: [Vec4::ZERO; super::sky::MAX_SKY_LIGHTS],
+            sun_color: [Vec4::ZERO; super::sky::MAX_SKY_LIGHTS],
         }
     }
 }
@@ -101,6 +109,9 @@ impl GpuTransportSettings {
         *self = Self {
             hash_mask: self.hash_mask,
             probe_capacity: self.probe_capacity,
+            sun_count: self.sun_count,
+            sun_direction: self.sun_direction,
+            sun_color: self.sun_color,
             ..default()
         };
     }
@@ -461,6 +472,41 @@ impl ProbePatchState {
 #[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]
 struct DisplayBuffersPrepared;
 
+/// The display applies each cached sun's current direction and transport
+/// color per pixel; corner visibility comes from its quantized direction.
+fn synchronize_sun_display(
+    runtime: Option<Res<super::VoxelGiRuntime>>,
+    handle: Option<Res<bevy_voxel_world::rendering::VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
+    mut materials: ResMut<Assets<VoxelTransportMaterial>>,
+) {
+    let (Some(runtime), Some(handle)) = (runtime, handle) else {
+        return;
+    };
+    let lights = super::sky_cache::sky_lights(&runtime.sources);
+    let mut direction = [Vec4::ZERO; super::sky::MAX_SKY_LIGHTS];
+    let mut color = [Vec4::ZERO; super::sky::MAX_SKY_LIGHTS];
+    for (index, light) in lights.iter().enumerate() {
+        direction[index] = light.direction.extend(0.0);
+        color[index] = light.color.extend(0.0);
+    }
+    let Some(material) = materials.get(&handle.handle) else {
+        return;
+    };
+    let current = &material.extension.settings;
+    if current.sun_count == lights.len() as u32
+        && current.sun_direction == direction
+        && current.sun_color == color
+    {
+        return;
+    }
+    if let Some(mut material) = materials.get_mut(&handle.handle) {
+        let settings = &mut material.extension.settings;
+        settings.sun_count = lights.len() as u32;
+        settings.sun_direction = direction;
+        settings.sun_color = color;
+    }
+}
+
 pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
     app.add_plugins((
         MaterialPlugin::<VoxelTransportMaterial>::default(),
@@ -470,7 +516,10 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
     app.init_resource::<ResidentDisplay>();
     app.add_systems(
         Update,
-        publish_resident_buffer.after(super::dispatch::apply_trace_task),
+        (
+            publish_resident_buffer.after(super::dispatch::apply_trace_task),
+            synchronize_sun_display.after(super::sources::synchronize_transport_sources),
+        ),
     );
     let hash_entries = app
         .world_mut()
@@ -1951,7 +2000,7 @@ mod tests {
         probe.custom_direct[2] = Vec3::Y;
         probe.display[2] = super::super::history::FaceDisplay {
             indirect: Vec3::X,
-            sky: [super::super::sky::pack(Vec3::splat(10.0)); 4],
+            sky: [super::super::sky::KNOWN | 1; 4],
             confidence: 0.5,
         };
         let encoded = gpu_probe(&probe);
@@ -1983,9 +2032,13 @@ mod tests {
             debug_irradiance: 1,
             voxel_sky: 0,
             intensity: 0.5,
+            sun_count: 1,
+            sun_direction: [Vec4::Y; 4],
+            sun_color: [Vec4::ONE; 4],
         };
         settings.reset_display();
         assert_eq!((settings.hash_mask, settings.probe_capacity), (1023, 700));
+        assert_eq!((settings.sun_count, settings.sun_direction[0]), (1, Vec4::Y));
         assert_eq!(
             (
                 settings.enabled,
@@ -2552,7 +2605,7 @@ mod tests {
             .get_mut(&voxel)
             .unwrap()
             .display[2]
-            .sky = [super::super::sky::pack(Vec3::ONE); 4];
+            .sky = [super::super::sky::KNOWN | 1; 4];
         let expected_sky = ShaderBuffer::from(vec![gpu_probe(
             &world.resource::<VoxelEnergyField>().probes[&voxel],
         )])

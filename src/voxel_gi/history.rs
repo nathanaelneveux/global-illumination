@@ -244,7 +244,7 @@ mod tests {
         probe.display_updated_at = Some(now);
         probe.display[2] = FaceDisplay {
             indirect: Vec3::splat(energy),
-            sky: [super::super::sky::pack(Vec3::splat(energy)); 4],
+            sky: [super::super::sky::KNOWN | u32::from(energy > 0.0); 4],
             confidence: 0.9,
         };
         probe
@@ -381,7 +381,7 @@ mod tests {
         let floor = IVec3::splat(8);
         let placed = floor + IVec3::Y;
         let mut donor = measured(floor, 2.0, now);
-        donor.display[2].sky = [super::super::sky::pack(Vec3::ONE); 4];
+        donor.display[2].sky = [super::super::sky::KNOWN | 1; 4];
         let scene = scene_with(&[floor, placed]);
         let prior = seed_face(&scene, placed, 2, 0, now, |v| {
             (v == floor).then_some(&donor)

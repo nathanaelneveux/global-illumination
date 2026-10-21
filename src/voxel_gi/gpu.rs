@@ -1161,12 +1161,11 @@ impl GpuTracer {
             .into_iter()
             .zip(view[face_bytes..mirror_offset].chunks_exact(SKY_RESULT_BYTES))
         {
+            // The first word is the corner's visibility; the rest is padding.
             self.sky_cache.store_ticket(
                 sky_ticket,
                 position,
-                std::array::from_fn(|face| {
-                    u32::from_le_bytes(bytes[face * 4..face * 4 + 4].try_into().unwrap())
-                }),
+                u32::from_le_bytes(bytes[..4].try_into().unwrap()),
             );
         }
         drop(view);
@@ -1429,6 +1428,10 @@ pub(super) mod tests {
         assert_eq!(gpu.bindings.as_ref().unwrap().group.id(), grown_faces);
 
         sources.directional[0].radiance *= 2.0;
+        // Color alone keeps cached visibility; leaving the sun's quantization
+        // cell makes the sky cold again.
+        sources.directional[0].direction =
+            Quat::from_rotation_z(2.0_f32.to_radians()) * sources.directional[0].direction;
         let mut optical = materials.get(2);
         optical.diffuse = EnergySpectrum::ONE * 0.2;
         materials.set(2, optical);
@@ -1800,7 +1803,7 @@ pub(super) mod tests {
             gpu.last_decode_ms
         );
         for (probe, old) in probes.iter().zip(&before) {
-            assert_eq!(probe.display[2].sky, [1; 4]);
+            assert_eq!(probe.display[2].sky, [super::super::sky::KNOWN; 4]);
             assert_eq!(probe.samples, old.samples);
             assert_eq!(probe.radiance, old.radiance);
             assert_eq!(probe.face_updated_at, old.face_updated_at);
@@ -2422,8 +2425,8 @@ pub(super) mod tests {
         .unwrap();
         for (expected, actual) in expected.iter().zip(&contact) {
             assert_eq!(expected.display[2].sky, actual.display[2].sky);
-            assert_eq!(actual.display[2].sky[0], 1);
-            assert!(super::super::sky::unpack(actual.display[2].sky[1]).x > 0.9);
+            assert_eq!(actual.display[2].sky[0], super::super::sky::KNOWN);
+            assert!(super::super::sky::lit(actual.display[2].sky[1], 0));
         }
 
         // Shared crease corners, all six normals, negative coordinates, and
@@ -2528,7 +2531,7 @@ pub(super) mod tests {
             &emitters,
         )
         .unwrap();
-        assert_eq!(receiver[0].display[2].sky, [1; 4]);
+        assert_eq!(receiver[0].display[2].sky, [super::super::sky::KNOWN; 4]);
         assert_eq!(receiver[0].display[2].sky, reference[0].display[2].sky);
         assert!(
             (receiver[0].radiance[2].visible - reference[0].radiance[2].visible).length() < 0.002
@@ -2570,7 +2573,7 @@ pub(super) mod tests {
         .unwrap();
         assert_eq!(
             boundary[0].display[0].sky,
-            [super::super::sky::pack(Vec3::ONE); 4]
+            [super::super::sky::KNOWN | 1; 4]
         );
         assert_eq!(boundary[0].direct[0], EnergySpectrum::ZERO);
         let filled = Arc::new(TransportScene::with_page_delta(
@@ -2589,7 +2592,7 @@ pub(super) mod tests {
         .unwrap();
         assert_eq!(
             boundary[0].display[0].sky,
-            [super::super::sky::pack(Vec3::ONE); 4]
+            [super::super::sky::KNOWN | 1; 4]
         );
         let blocked = Arc::new(TransportScene::with_page_delta(
             &filled,
@@ -2606,7 +2609,7 @@ pub(super) mod tests {
         )
         .unwrap();
         assert_eq!(
-            boundary[0].display[0].sky, [1; 4],
+            boundary[0].display[0].sky, [super::super::sky::KNOWN; 4],
             "do not skip loaded occluders beyond streaming gaps"
         );
 

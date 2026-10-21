@@ -752,16 +752,17 @@ fn sky_at_corner(
         scene,
         &super::sky_cache::sky_lights(sources),
         super::sky::corner_position(voxel, face, corner),
-    )[face]
+    )
 }
 
+/// Which lights a corner sees: unknown (0) if any ray reaches unloaded space.
 pub(crate) fn sample_sky_corner(
     scene: &TransportScene,
     lights: &[super::sky_cache::SkyLight],
     position: IVec3,
-) -> [u32; 6] {
-    let mut value = [Vec3::ZERO; 6];
-    for light in lights {
+) -> u32 {
+    let mut word = super::sky::KNOWN;
+    for (index, light) in lights.iter().enumerate() {
         let direction = light.direction;
         // One canonical ray origin for every receiver sharing this vertex.
         // Offset toward the light, not along a receiving face's normal. Exact
@@ -773,16 +774,12 @@ pub(crate) fn sample_sky_corner(
             MAX_PATH_DISTANCE,
             UnloadedPolicy::VisibleGeometry,
         ) {
-            TraceResult::Escaped => {
-                for (face, normal) in FACE_OFFSETS.iter().enumerate() {
-                    value[face] += light.color * normal.as_vec3().dot(direction).max(0.0);
-                }
-            }
+            TraceResult::Escaped => word |= 1 << index,
             TraceResult::Hit(_) => (),
-            TraceResult::Unknown => return [0; 6],
+            TraceResult::Unknown => return 0,
         }
     }
-    value.map(super::sky::pack)
+    word
 }
 
 fn advance_empty_box(
@@ -1085,10 +1082,10 @@ mod tests {
                 "face center misses the small shadow"
             );
             let corners = probe.display[2].sky;
-            assert_eq!(corners[0], 1, "near-left corner must be measured shadow");
-            assert_eq!(corners[2], 1, "near-right corner must be measured shadow");
-            assert!(super::super::sky::unpack(corners[1]).x > 0.9);
-            assert!(super::super::sky::unpack(corners[3]).x > 0.9);
+            assert_eq!(corners[0], super::super::sky::KNOWN, "near-left corner must be measured shadow");
+            assert_eq!(corners[2], super::super::sky::KNOWN, "near-right corner must be measured shadow");
+            assert!(super::super::sky::lit(corners[1], 0));
+            assert!(super::super::sky::lit(corners[3], 0));
         }
         assert_eq!(values[0].display[2].sky[2..], values[1].display[2].sky[..2]);
     }
@@ -1118,13 +1115,12 @@ mod tests {
             "air-only frontiers do not bound the transport domain"
         );
         let before = sky_at_corner(&scene, &sources, IVec3::new(31, 8, 8), 0, 0);
-        assert!(super::super::sky::unpack(before).x > 0.99);
+        assert!(super::super::sky::lit(before, 0));
         let filled = TransportScene::with_page_delta(&scene, vec![(IVec3::X, empty)], &[]);
-        assert!(
-            super::super::sky::unpack(sky_at_corner(&filled, &sources, IVec3::new(31, 8, 8), 0, 0))
-                .x
-                > 0.99
-        );
+        assert!(super::super::sky::lit(
+            sky_at_corner(&filled, &sources, IVec3::new(31, 8, 8), 0, 0),
+            0
+        ));
         let blocked = TransportScene::with_page_delta(
             &filled,
             vec![(IVec3::new(2, 0, 0), vec![2; volume_len(PAGE_SIZE)])],
@@ -1137,7 +1133,7 @@ mod tests {
         );
         assert_eq!(
             sky_at_corner(&blocked, &sources, IVec3::new(31, 8, 8), 0, 0),
-            1,
+            super::super::sky::KNOWN,
             "loaded occluders beyond a gap must still cast shadows"
         );
     }
