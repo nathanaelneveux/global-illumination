@@ -301,6 +301,9 @@ pub(super) fn start_trace_task(
         let sky_band = gpu_tracer
             .as_mut()
             .map_or_else(Vec::new, |tracer| tracer.sky_cache.take_band(focus));
+        let geometry = gpu_tracer
+            .as_ref()
+            .and_then(gpu::GpuTracer::geometry_display);
         let bindings = gpu_tracer
             .as_mut()
             .map_or_else(Vec::new, gpu::GpuTracer::take_resident_bindings);
@@ -318,6 +321,7 @@ pub(super) fn start_trace_task(
             gpu_error,
             sunlight_change,
             sky_band,
+            geometry,
         }
     }));
 }
@@ -413,6 +417,7 @@ pub(super) fn apply_trace_task(
     settings: Res<VoxelGiSettings>,
     mut timings: ResMut<GiWorkTimings>,
     resident_display: Option<ResMut<super::render::ResidentDisplay>>,
+    geometry_display: Option<ResMut<super::render::GeometryDisplay>>,
 ) {
     let mut timing = timings.main_scope(super::telemetry::MainStage::TracePublication);
     let Some(task) = runtime.trace_task.as_mut() else {
@@ -468,6 +473,11 @@ pub(super) fn apply_trace_task(
         stats.last_snapshot_latency_ms = tracer.last_snapshot_latency_ms;
         stats.last_decode_ms = tracer.last_decode_ms;
         stats.packed_geometry_bytes = tracer.geometry_storage_bytes();
+    }
+    if let (Some((buffers, params)), Some(mut display)) = (result.geometry.take(), geometry_display)
+    {
+        display.buffers = Some(buffers);
+        display.params = params;
     }
     if let Some(mut display) = resident_display {
         display.buffer = result

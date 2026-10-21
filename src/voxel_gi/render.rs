@@ -26,6 +26,10 @@ use bevy_voxel_world::rendering::vertex_layout;
 use super::world::SurfaceProbe;
 
 pub const VOXEL_TRANSPORT_SHADER: &str = "shaders/voxel_transport.wgsl";
+/// The terrain material shader with the shared voxel traversal included
+/// (inserted by `install_render_assets`).
+pub const VOXEL_TRANSPORT_SHADER_HANDLE: Handle<Shader> =
+    bevy::asset::uuid_handle!("2ae5baf3-fcaf-4036-8021-b3296b833947");
 const MAX_SHADER_HASH_PROBES: usize = 32;
 const GPU_PROBE_BYTES: usize = 256;
 
@@ -44,15 +48,45 @@ pub struct VoxelTransportExtension {
     pub settings: GpuTransportSettings,
     #[storage(105, read_only)]
     pub resident: Handle<ShaderBuffer>,
+    /// Transport geometry (region directory, headers, cells) and its bounds:
+    /// faces without a display probe trace sun visibility through it.
+    #[storage(106, read_only)]
+    pub directory: Handle<ShaderBuffer>,
+    #[storage(107, read_only)]
+    pub regions: Handle<ShaderBuffer>,
+    #[storage(108, read_only)]
+    pub cells: Handle<ShaderBuffer>,
+    #[uniform(109)]
+    pub traversal: GpuTraversalParams,
+}
+
+/// `voxel_traversal.wgsl`'s `params`: the sun visibility distance
+/// (`counts.x`, 0 before the first scene), directory mask (`counts.z`) and
+/// region bounds. The default has empty bounds, so nothing is traversed.
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
+pub struct GpuTraversalParams {
+    pub counts: UVec4,
+    pub minimum: IVec4,
+    pub maximum: IVec4,
+}
+
+impl Default for GpuTraversalParams {
+    fn default() -> Self {
+        Self {
+            counts: UVec4::ZERO,
+            minimum: IVec4::ONE,
+            maximum: IVec4::ZERO,
+        }
+    }
 }
 
 impl MaterialExtension for VoxelTransportExtension {
     fn fragment_shader() -> ShaderRef {
-        VOXEL_TRANSPORT_SHADER.into()
+        VOXEL_TRANSPORT_SHADER_HANDLE.into()
     }
 
     fn vertex_shader() -> ShaderRef {
-        VOXEL_TRANSPORT_SHADER.into()
+        VOXEL_TRANSPORT_SHADER_HANDLE.into()
     }
 
     fn specialize(
@@ -153,6 +187,82 @@ pub struct VoxelTransportAssets {
     pub hash_entries: Handle<ShaderBuffer>,
     pub probes: Handle<ShaderBuffer>,
     pub resident: Handle<ShaderBuffer>,
+    /// Placeholder geometry until the GI worker publishes its own.
+    pub geometry: Handle<ShaderBuffer>,
+}
+
+/// The GI worker's geometry buffers, shared with the terrain material like
+/// the resident buffer (each new allocation gets a new asset identity).
+#[derive(Resource, Default, Clone, ExtractResource)]
+pub(crate) struct GeometryDisplay {
+    pub buffers: Option<[Buffer; 3]>,
+    pub params: GpuTraversalParams,
+    installed: Option<[(Buffer, Handle<ShaderBuffer>); 3]>,
+    installed_params: GpuTraversalParams,
+}
+
+fn publish_geometry_buffers(
+    mut geometry: ResMut<GeometryDisplay>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
+    mut materials: ResMut<Assets<VoxelTransportMaterial>>,
+) {
+    let unchanged_buffers = match (&geometry.buffers, &geometry.installed) {
+        (Some(current), Some(installed)) => current
+            .iter()
+            .zip(installed)
+            .all(|(a, (b, _))| a.id() == b.id()),
+        (None, None) => true,
+        _ => false,
+    };
+    if unchanged_buffers && geometry.params == geometry.installed_params {
+        return;
+    }
+    if !unchanged_buffers {
+        geometry.installed = geometry.buffers.as_ref().map(|current| {
+            current.clone().map(|buffer| {
+                let mut asset = ShaderBuffer::default();
+                asset.buffer_description.label = Some("Voxel GI shared geometry");
+                asset.buffer_description.size = buffer.size();
+                asset.buffer_description.usage = buffer.usage();
+                (buffer.clone(), buffers.add(asset))
+            })
+        });
+    }
+    geometry.installed_params = geometry.params;
+    let Some(installed) = geometry.installed.clone() else {
+        return;
+    };
+    for (_, material) in materials.iter_mut() {
+        let extension = &mut material.extension;
+        extension.directory = installed[0].1.clone();
+        extension.regions = installed[1].1.clone();
+        extension.cells = installed[2].1.clone();
+        extension.traversal = geometry.params;
+    }
+}
+
+fn install_geometry_buffers(
+    geometry: Res<GeometryDisplay>,
+    mut assets: ResMut<RenderAssets<GpuShaderBuffer>>,
+) {
+    for (buffer, handle) in geometry.installed.iter().flatten() {
+        if assets.get(handle).is_some() {
+            continue;
+        }
+        assets.insert(
+            handle.id(),
+            GpuShaderBuffer {
+                buffer: buffer.clone(),
+                buffer_descriptor: wgpu::BufferDescriptor {
+                    label: Some("Voxel GI shared geometry"),
+                    size: buffer.size(),
+                    usage: buffer.usage(),
+                    ..ShaderBuffer::default().buffer_description
+                },
+                had_data: false,
+            },
+        );
+    }
 }
 
 /// A native allocation is shared, not copied, across the compute/render
@@ -512,12 +622,15 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
         MaterialPlugin::<VoxelTransportMaterial>::default(),
         ExtractResourcePlugin::<GpuProbePatchQueue>::default(),
         ExtractResourcePlugin::<ResidentDisplay>::default(),
+        ExtractResourcePlugin::<GeometryDisplay>::default(),
     ));
     app.init_resource::<ResidentDisplay>();
+    app.init_resource::<GeometryDisplay>();
     app.add_systems(
         Update,
         (
             publish_resident_buffer.after(super::dispatch::apply_trace_task),
+            publish_geometry_buffers.after(super::dispatch::apply_trace_task),
             synchronize_sun_display.after(super::sources::synchronize_transport_sources),
         ),
     );
@@ -534,11 +647,25 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
         .world_mut()
         .resource_mut::<Assets<ShaderBuffer>>()
         .add(ShaderBuffer::from(vec![UVec4::ZERO; 8]));
+    let geometry = app
+        .world_mut()
+        .resource_mut::<Assets<ShaderBuffer>>()
+        .add(ShaderBuffer::from(vec![UVec4::ZERO; 4]));
+    let _ = app.world_mut().resource_mut::<Assets<Shader>>().insert(
+        VOXEL_TRANSPORT_SHADER_HANDLE.id(),
+        Shader::from_wgsl(
+            super::gpu::include_traversal(include_str!(
+                "../../assets/shaders/voxel_transport.wgsl"
+            )),
+            VOXEL_TRANSPORT_SHADER,
+        ),
+    );
     app.insert_resource(VoxelTransportAssets {
         texture,
         hash_entries: hash_entries.clone(),
         probes: probes.clone(),
         resident,
+        geometry,
     });
     app.insert_resource(GpuProbePatchQueue {
         probe_buffer: probes,
@@ -566,6 +693,9 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
                 install_resident_buffer
                     .in_set(RenderSystems::PrepareAssets)
                     .before(prepare_assets::<GpuShaderBuffer>),
+                install_geometry_buffers
+                    .in_set(RenderSystems::PrepareAssets)
+                    .before(prepare_assets::<GpuShaderBuffer>),
                 apply_probe_patches.in_set(RenderSystems::PrepareBindGroups),
             ),
         );
@@ -585,7 +715,11 @@ pub fn material_template(assets: &VoxelTransportAssets) -> VoxelTransportMateria
             hash_entries: assets.hash_entries.clone(),
             probes: assets.probes.clone(),
             resident: assets.resident.clone(),
+            directory: assets.geometry.clone(),
+            regions: assets.geometry.clone(),
+            cells: assets.geometry.clone(),
             settings: GpuTransportSettings::default(),
+            traversal: GpuTraversalParams::default(),
         },
     }
 }
@@ -1551,6 +1685,7 @@ mod tests {
         )));
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
+            geometry: default(),
             resident: default(),
             texture: default(),
             probes: default(),
@@ -1771,7 +1906,9 @@ mod tests {
             .world_mut()
             .resource_mut::<Assets<Shader>>()
             .add(Shader::from_wgsl(
-                include_str!("../../assets/shaders/voxel_transport.wgsl"),
+                crate::voxel_gi::gpu::include_traversal(include_str!(
+                    "../../assets/shaders/voxel_transport.wgsl"
+                )),
                 VOXEL_TRANSPORT_SHADER,
             ));
         let mut defs: Vec<ShaderDefVal> = [
@@ -2021,6 +2158,7 @@ mod tests {
         );
         assert_eq!(encoded.direct_sky[0], UVec4::ZERO);
         let material = material_template(&VoxelTransportAssets {
+            geometry: default(),
             resident: default(),
             texture: default(),
             hash_entries: default(),
@@ -2307,6 +2445,7 @@ mod tests {
         let build = build_gpu_cache(snapshot);
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
+            geometry: default(),
             resident: default(),
             texture: Handle::default(),
             hash_entries: buffers.add(ShaderBuffer::from(vec![GpuHashEntry::EMPTY])),
@@ -2377,6 +2516,7 @@ mod tests {
         )));
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
+            geometry: default(),
             resident: default(),
             texture: default(),
             probes: default(),
@@ -2521,6 +2661,7 @@ mod tests {
         let snapshot = snapshot_gpu_probes(&field.probes, &field.order);
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
+            geometry: default(),
             resident: default(),
             texture: default(),
             probes: default(),
@@ -2748,6 +2889,7 @@ mod tests {
     fn extracted_generations_survive_growth_shrink_and_equal_size_rebuilds() {
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
+            geometry: default(),
             resident: default(),
             texture: default(),
             hash_entries: buffers.add(ShaderBuffer::from(vec![GpuHashEntry::EMPTY])),

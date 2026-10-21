@@ -34,6 +34,7 @@ fn transport_failure_worker_error_is_fatal_at_publication() {
     let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(1).build();
     let task = pool.spawn(async {
         TraceBatchResult {
+            geometry: None,
             batch: None,
             pending: default(),
             bindings: default(),
@@ -105,6 +106,7 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
         }
         let task = pool.spawn(async move {
             TraceBatchResult {
+                geometry: None,
                 batch: Some(TransportBatch {
                     work: TraceWork::from_probes(&[probe], case == 1),
                     paths: 4,
@@ -450,6 +452,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             }
             let task = pool.spawn(async move {
                 TraceBatchResult {
+                    geometry: None,
                     batch: Some(TransportBatch {
                         work: TraceWork::from_probes(&[late], false),
                         paths: 4,
@@ -777,6 +780,7 @@ fn sky_comparison_is_display_only_and_independent_of_gi_toggle() {
     let mut app = App::new();
     let mut materials = Assets::<VoxelTransportMaterial>::default();
     let handle = materials.add(render::material_template(&VoxelTransportAssets {
+        geometry: default(),
         resident: default(),
         texture: default(),
         hash_entries: default(),

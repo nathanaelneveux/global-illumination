@@ -327,6 +327,30 @@ impl GpuTracer {
     pub(super) fn snapshot_ready(&self, snapshot: &mut Readback) -> Result<bool, String> {
         snapshot.poll(&self.context.device)
     }
+    /// The geometry buffers and traversal bounds the terrain material shares
+    /// (far sun); None before the first scene upload.
+    pub(crate) fn geometry_display(
+        &self,
+    ) -> Option<([Buffer; 3], super::render::GpuTraversalParams)> {
+        let scene = self.scene.as_ref()?;
+        Some((
+            [
+                self.directory.buffer.clone(),
+                self.regions.buffer.clone(),
+                self.cells.buffer.clone(),
+            ],
+            super::render::GpuTraversalParams {
+                counts: UVec4::new(
+                    super::tracer::MAX_PATH_DISTANCE as u32,
+                    0,
+                    self.packed.directory.len() as u32 - 1,
+                    0,
+                ),
+                minimum: scene.top_level.minimum.extend(0),
+                maximum: scene.top_level.maximum.extend(0),
+            },
+        ))
+    }
     pub(crate) fn resident_buffer(&self) -> Option<Buffer> {
         self.resident.as_ref().map(|state| state.buffer())
     }
@@ -1245,6 +1269,9 @@ impl GpuTracer {
         self.pipeline = pipeline;
         self.pipeline_key = key;
         self.faces_per_workgroup = 64 / lanes;
+
+
+
         // Auto-layout bind groups belong to their pipeline, even when every
         // buffer ID and binding type is unchanged. Sky has its own pipeline.
         self.bindings = None;
@@ -1268,9 +1295,6 @@ fn decode_spectrum(value: &[f32], radiation: f32) -> EnergySpectrum {
 fn encode_words(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|word| word.to_le_bytes()).collect()
 }
-
-
-
 
 #[cfg(test)]
 pub(super) mod tests {
@@ -2655,6 +2679,7 @@ pub(super) mod tests {
             .flat_map(|z| (8..16).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
             .collect();
         let expected = trace_probe_batch(
+
             Arc::clone(&scene),
             sources.clone(),
             Arc::clone(&materials),
@@ -2679,4 +2704,3 @@ pub(super) mod tests {
         );
     }
 }
-

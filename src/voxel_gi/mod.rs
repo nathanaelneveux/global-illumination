@@ -402,6 +402,11 @@ struct TraceBatchResult {
     sunlight_change: Option<geometry::GeometryChange>,
     /// Voxels around the shadow borders a sun step moved, nearest last.
     sky_band: Vec<IVec3>,
+    /// Geometry buffers and bounds for the terrain material (far sun).
+    geometry: Option<(
+        [bevy::render::render_resource::Buffer; 3],
+        render::GpuTraversalParams,
+    )>,
 }
 
 struct PendingTransport {

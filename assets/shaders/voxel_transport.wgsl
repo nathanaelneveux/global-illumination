@@ -98,17 +98,22 @@ struct CustomVertexOutput {
     @location(8) tex_idx: vec3<u32>,
 }
 
-fn pcg(value: u32) -> u32 {
-    let state = value * 747796405u + 2891336453u;
-    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
+// The GI worker's transport geometry, for faces without a display probe.
+struct TraversalParams {
+    counts: vec4<u32>, // sun visibility distance (0 before the first scene), unused, directory mask, unused
+    minimum: vec4<i32>,
+    maximum: vec4<i32>,
 }
+@group(#{MATERIAL_BIND_GROUP}) @binding(106)
+var<storage, read> directory: array<vec4<i32>>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(107)
+var<storage, read> regions: array<vec4<u32>>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(108)
+var<storage, read> cells: array<u32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(109)
+var<uniform> params: TraversalParams;
 
-fn hash_voxel(voxel: vec3<i32>) -> u32 {
-    var hash = pcg(bitcast<u32>(voxel.x));
-    hash = pcg(hash ^ bitcast<u32>(voxel.y));
-    return pcg(hash ^ bitcast<u32>(voxel.z));
-}
+// #include voxel_traversal.wgsl
 
 fn lookup_probe(voxel: vec3<i32>) -> u32 {
     var slot = hash_voxel(voxel) & transport_settings.hash_mask;
@@ -201,7 +206,7 @@ fn corner_lit(word: u32, bit: u32) -> f32 {
 fn sky_irradiance(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     let voxel = vec3<i32>(floor(position - normal * 0.01));
     let index = lookup_probe(voxel);
-    if index >= transport_settings.probe_capacity { return vec4(0.0); }
+    if index >= transport_settings.probe_capacity { return far_sun(position, normal); }
     var face = 0u;
     var uv = position.yz - vec2<f32>(voxel.yz);
     if abs(normal.y) > 0.5 {
@@ -234,6 +239,29 @@ fn sky_irradiance(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
         sum += transport_settings.sun_color[light].rgb * (cosine * visible);
     }
     return vec4(sum, ready);
+}
+
+// Faces with no display probe (beyond the receiver radius, or not published
+// yet) trace their own sun visibility per fragment through the GI geometry:
+// the same suns, colors and visibility rule as the corner kernel
+// (`trace_sky_corners`), as hard per-pixel shadows instead of reconstructed
+// corners.
+fn far_sun(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
+    let reach = f32(params.counts.x);
+    if reach == 0.0 { return vec4(0.0); }
+    let dominant = max(abs(normal.x), max(abs(normal.y), abs(normal.z)));
+    let axis = select(vec3(0.0), sign(normal), abs(normal) == vec3(dominant));
+    var sum = vec3(0.0);
+    for (var light = 0u; light < min(transport_settings.sun_count, 4u); light += 1u) {
+        let direction = transport_settings.sun_direction[light].xyz;
+        let cosine = max(dot(axis, direction), 0.0);
+        if cosine <= 0.0 { continue; }
+        let origin = position + axis * 0.002 + direction * 0.002;
+        if trace_domain(origin, direction, reach, true).status == 0u {
+            sum += transport_settings.sun_color[light].rgb * cosine;
+        }
+    }
+    return vec4(sum, 1.0);
 }
 
 // Four coplanar faces meet at a virtual voxel corner. Only the connected
