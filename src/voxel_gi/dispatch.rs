@@ -89,7 +89,18 @@ pub(super) fn start_trace_task(
     mut timings: ResMut<GiWorkTimings>,
 ) {
     let _timing = timings.main_scope(super::telemetry::MainStage::TraceDispatch);
-    if runtime.trace_task.is_some() || (field.order.is_empty() && runtime.gpu_pending.is_empty()) {
+    if runtime.trace_task.is_some() {
+        return;
+    }
+    // Far geometry and receiver retirement are lifecycle work, not sampling.
+    // A camera above the terrain can have no near receivers at all. Likewise,
+    // exhausted ray allowance must not drop retirements during readback polls.
+    let maintenance = !runtime.slot_retirements.is_empty()
+        || runtime.gpu_tracer.as_ref().map_or_else(
+            || !runtime.scene.regions.is_empty(),
+            |tracer| tracer.needs_geometry(&runtime.scene),
+        );
+    if field.order.is_empty() && runtime.gpu_pending.is_empty() && !maintenance {
         return;
     }
     let gpu_device = gpu_device.expect("Voxel GI requires a GPU transport device");
@@ -173,7 +184,7 @@ pub(super) fn start_trace_task(
         runtime.batch_counter = (runtime.batch_counter % 0x0fff_ffff) + 1;
         selected.batch_id = runtime.batch_counter;
     }
-    if selected.probes.is_empty() && selected.picks == 0 && runtime.gpu_pending.is_empty() {
+    if selected.probes.is_empty() && selected.picks == 0 && runtime.gpu_pending.is_empty() && !maintenance {
         runtime.trace_scratch = selected;
         stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
         stats.idle_scheduler_frames += 1;
@@ -270,7 +281,7 @@ pub(super) fn start_trace_task(
                         }
                         completed = Some(oldest.batch);
                     }
-                    if !batch.work.probes.is_empty() || batch.work.picks > 0 {
+                    if batch_submits || maintenance {
                         let _submit = info_span!("gi_submit").entered();
                         let snapshot = tracer.submit_compact(
                             Arc::clone(&scene),
@@ -281,10 +292,16 @@ pub(super) fn start_trace_task(
                             &emitters,
                             sky_only,
                         )?;
-                        pending.push_back(super::PendingTransport {
-                            snapshot,
-                            batch: std::mem::take(&mut batch),
-                        });
+                        if batch_submits {
+                            pending.push_back(super::PendingTransport {
+                                snapshot,
+                                batch: std::mem::take(&mut batch),
+                            });
+                        } else {
+                            // Maintenance has no rays or readback, so it does
+                            // not occupy a staging slot or advance batch IDs.
+                            debug_assert!(snapshot.is_none());
+                        }
                     }
                 }
                 Ok(())

@@ -287,7 +287,7 @@ struct VoxelGiRuntime {
     receiver_dirty: HashSet<IVec3>,
     receiver_retired: HashSet<IVec3>,
     /// Pages whose receivers were retired: their resident slots are released
-    /// with the next submitted batch.
+    /// by the next worker, even when no sampling batch can run.
     slot_retirements: Vec<IVec3>,
     /// GPU milliseconds transport may still spend under `gpu_time_share`:
     /// accrues with wall time, a batch reserves its budget at submission

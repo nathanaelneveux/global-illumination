@@ -59,6 +59,8 @@ mod tuning_tests;
 mod upload_tests;
 #[cfg(test)]
 mod geometry_tests;
+#[cfg(test)]
+mod maintenance_tests;
 
 #[derive(Resource, Clone)]
 pub(crate) struct GpuTransportDevice {
@@ -604,6 +606,8 @@ impl GpuTracer {
         sky_only: bool,
     ) -> Result<Option<readback::Readback>, String> {
         let work_started = Instant::now();
+        let geometry_changed = self.needs_geometry(&scene);
+        self.synchronize_geometry(&scene)?;
         if !sky_only {
             self.select_quality_pipeline(work.transport.normalized(), samples)?;
         }
@@ -635,9 +639,27 @@ impl GpuTracer {
         } else {
             sky_pending
         };
-        // Reusing measured corners needs no queue writes, geometry upload, or
-        // GPU submission. Leave geometry synchronization until rays need it.
+        // Reconcile ownership even without rays. A retirement must remove the
+        // GPU face index and live metadata, not merely the CPU slot map.
+        let prepare_resident = self.resident.is_some()
+            && (!work.faces.is_empty() || work.picks > 0
+                || geometry_changed || !work.retire_pages.is_empty());
+        if prepare_resident && let Some(resident) = &mut self.resident {
+            resident.set_materials(&self.context, materials)?;
+            resident.prepare_inputs(&self.context, &scene, work, samples)?;
+        }
+        // Geometry and ownership are now current. Cached sun-only work and
+        // maintenance need neither a ray dispatch nor a readback allocation.
         if work.faces.is_empty() && work.picks == 0 && sky_pending.is_empty() {
+            if prepare_resident {
+                let mut encoder = self.context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("GI receiver maintenance"),
+                });
+                self.resident.as_mut().unwrap().dispatch_prepare(
+                    &self.context.device, &mut encoder, &self.tasks, 0, None,
+                );
+                self.context.queue.submit([encoder.finish()]);
+            }
             self.last_dispatch_ms = 0.0;
             self.last_gpu_ms = Some(0.0);
             self.last_prepare_ms = work_started.elapsed().as_secs_f32() * 1000.0;
@@ -646,13 +668,6 @@ impl GpuTracer {
             self.sky_cache.apply(&mut work.probes);
             return Ok(None);
         }
-        if (!work.faces.is_empty() || work.picks > 0)
-            && let Some(resident) = &mut self.resident
-        {
-            resident.set_materials(&self.context, materials)?;
-            resident.prepare_inputs(&self.context, &scene, work, samples)?;
-        }
-        self.synchronize_geometry(&scene)?;
         let device = &self.context.device;
         let queue = &self.context.queue;
         if !sky_only
@@ -879,7 +894,7 @@ impl GpuTracer {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("GI bounded transport batch"),
         });
-        if face_count > 0
+        if prepare_resident
             && let Some(resident) = &mut self.resident
         {
             resident.dispatch_prepare(
@@ -887,7 +902,7 @@ impl GpuTracer {
                 &mut encoder,
                 &self.tasks,
                 face_count,
-                self.timestamps.as_ref(),
+                self.timestamps.as_ref().filter(|_| face_count > 0),
             );
         }
         {

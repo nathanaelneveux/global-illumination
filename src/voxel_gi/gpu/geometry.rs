@@ -10,7 +10,7 @@
 use super::*;
 
 impl GpuTracer {
-    pub(super) fn needs_geometry(&self, scene: &Arc<TransportScene>) -> bool {
+    pub(in crate::voxel_gi) fn needs_geometry(&self, scene: &Arc<TransportScene>) -> bool {
         self.scene
             .as_ref()
             .is_none_or(|old| !Arc::ptr_eq(old, scene))
