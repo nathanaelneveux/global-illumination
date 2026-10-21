@@ -1,14 +1,15 @@
 # Voxel GI Lab
 
-Persistent, world-space diffuse lighting for the complete loaded voxel world,
+Hybrid near/far diffuse lighting for the complete loaded voxel world,
 forked from `prototype_voxel_template`. Bevy 0.19.1 and ordinary GPU compute;
 hardware ray-query support is not required. BVW supplies terrain and meshes, while
 GI owns an independent sparse voxel acceleration structure and energy field.
 
 The preferred look is shared-corner direct sunlight, corner-reconstructed
 indirect lighting, textures on, and baked AO off. Indirect transport still starts
-at exposed voxel-face centers. Neither transport nor virtual voxel corners
-depends on greedy-mesh vertices or screen resolution.
+at exposed voxel-face centers. Transport and virtual voxel corners do not
+depend on greedy-mesh vertices. Near histories live in world space; far face
+identities and paths live in a bounded view cache, discovered from depth/normals.
 
 ## Start here
 
@@ -43,13 +44,20 @@ depends on greedy-mesh vertices or screen resolution.
 cargo run --locked
 ```
 
+The playable near/far default keeps world-space receivers within **64 voxels**
+of active cameras (page bounds, with 32-voxel retirement hysteresis). Far faces
+use the same transport and corner sunlight, with exact-face reprojection and
+resumable paths. Geometry remains available across all loaded terrain. Use
+`VOXEL_GI_SETTINGS=config/gi-all-near.json cargo run --locked` for the former
+all-near control. See [runtime evidence](docs/history/far-view-runtime.md).
+
 The default uses GPU-resident accumulation with asynchronous simulation snapshots
 and RGB-prioritized emitter sampling (RGB importance 1, IR/radiation 0.125).
-All five bands keep receiving unfiltered physical estimates; simulation bands
+Near receivers keep all five unfiltered physical estimates; simulation bands
 may be noisier. `config/gi-equal-band.json` selects equal-band importance.
 Explicit values in settings files remain respected.
 
-On the `gi-surface-cache` branch, a path that hits a measured face ends there
+With surface-cache transport, a path that hits a measured face ends there
 with that face's cached energy, which gives infinite bounces. See
 [surface cache](docs/surface-cache.md). Path reuse and source guiding were
 removed on this branch: neither was qualified with the cache. Their history
@@ -91,7 +99,8 @@ thermal/radiation simulation or a finished art scene. E places a torch and right
 click places rock in this isolated palette. Omit the variable to explore the
 regular world, with both the house and nearby cave.
 
-The top-right HUD reports FPS, Coverage, Bootstrap, Settled, and GI CPU/GPU cost.
+The top-right HUD reports FPS and near-cache Coverage, Bootstrap, Settled, and
+worker GI CPU/GPU cost. Far view costs are measured separately in runtime logs.
 Coverage means at least one sample; Bootstrap means progress toward eight samples;
 Settled means passing a revisitable stability heuristic. None means convergence.
 CPU and GPU work overlap, so their displayed costs must not be added.

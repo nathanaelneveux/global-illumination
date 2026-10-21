@@ -3,7 +3,7 @@
 This is the current design. Historical experiments are kept separately so the
 implementation can be understood without reconstructing its development history.
 The planned direction (near/far lighting, the simulation split) is in
-[direction](direction.md). `receiver_radius` (default unlimited) limits
+[direction](direction.md). `receiver_radius` (default 64 voxels; 0 is the all-near control) limits
 world-space receivers to pages near the cameras; geometry stays every loaded
 page. A positive radius enables live view-owned far transport, using the same
 estimator and corner sunlight as the near tier. Its native transport contracts
@@ -61,7 +61,7 @@ interpolation, not a second production reconstruction path.
 ### View-owned far lighting
 
 After Bevy's depth/normal prepass and before opaque rendering, each active view
-discovers voxel-face identities on a reduced grid (one sample per 8x8 pixels,
+discovers voxel-face identities on a reduced grid (one sample per 4x4 pixels,
 at most 65,536 entries). Quantized normals select their dominant axis; depth is
 snapped to the voxel plane before the geometry identity check. Duplicate pixels
 share one face owner. A ping-pong hash reprojects the exact same face, its raw

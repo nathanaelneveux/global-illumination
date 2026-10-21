@@ -58,7 +58,7 @@ per-pixel memory at 4K.
 
 Staging:
 
-1. **Receiver radius: done** (`receiver_radius`, default 0 = unlimited).
+1. **Receiver radius: done** (`receiver_radius`, default 64; 0 = all-near control).
    Geometry (the transport scene) stays all loaded pages, since rays and the
    far tier traverse it; receivers (CPU probes, display probes, resident
    slots, sun corners) exist only for pages within the radius of any camera
@@ -69,7 +69,7 @@ Staging:
    unlimited, 1.17 GB at 128, 1.0 GB at 64; GI main-thread p99 6.4 -> 3.2 /
    2.1 ms; more paths traced (fewer slots to rank). Faces beyond the radius
    now get view-owned indirect transport and shared-corner sunlight (F2 below).
-   The radius remains opt-in while gameplay qualification is completed.
+   The radius is now the playable default; the all-near control remains available.
 2. **Far tier**, view driven, as above; then the radius shrinks. In stages:
    - **F0, shared traversal: done.** `trace_domain` and its helpers moved to
      `voxel_traversal.wgsl`, included textually by the transport compute

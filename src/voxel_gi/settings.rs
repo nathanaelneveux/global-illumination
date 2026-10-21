@@ -79,8 +79,8 @@ pub struct VoxelGiSettings {
     /// directly; config/gi-mirror-full.json turns it on with the full mirror.
     pub cpu_statistics: bool,
     /// World-space receivers (probes, display probes, resident slots, sun
-    /// corners) only for pages within this many voxels of a camera; 0 keeps
-    /// every loaded page (the default until a view-driven far tier exists).
+    /// corners) only for pages within this many voxels of an active camera.
+    /// Far receivers are view-owned; 0 selects the all-near control.
     /// Geometry stays every loaded page: rays traverse it regardless.
     pub receiver_radius: f32,
 }
@@ -108,7 +108,7 @@ impl Default for VoxelGiSettings {
             stable_relative_error: 0.12,
             statistics_mirror_per_batch: 1024,
             cpu_statistics: false,
-            receiver_radius: 0.0,
+            receiver_radius: 64.0,
         }
     }
 }
