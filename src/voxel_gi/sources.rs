@@ -26,7 +26,16 @@ impl Default for VoxelGiEnvironment {
 pub(super) enum SourceChange {
     Global,
     Local(Vec<(Vec3, f32)>),
+    /// Directional lights moved or recolored a little (a day cycle). History
+    /// stays: new paths use the new sun, shadow borders that move report
+    /// their own light changes, and the display relights every frame.
+    Sun,
 }
+
+/// A directional light that turns further than this in one update, or whose
+/// energy changes by more than a tenth, is a new lighting state (a time skip),
+/// not a moving sun.
+const SUN_STEP_LIMIT_DEGREES: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DirectionalTransportLight {
@@ -178,7 +187,27 @@ pub(super) fn synchronize_transport_sources(
         runtime.sky_remaining = field.order.len();
     }
     std::mem::swap(&mut runtime.sources, &mut *next);
-    invalidate_source_change(&mut runtime, &mut field, &mut stats, change);
+    if !matches!(change, SourceChange::Sun) {
+        invalidate_source_change(&mut runtime, &mut field, &mut stats, change);
+    }
+}
+
+/// Every directional light kept its place in the canonical order and moved or
+/// changed energy by a small step.
+fn gradual_sun(next: &[DirectionalTransportLight], previous: &[DirectionalTransportLight]) -> bool {
+    let limit = SUN_STEP_LIMIT_DEGREES.to_radians().cos();
+    let small = |a: EnergySpectrum, b: EnergySpectrum| {
+        let d = a - b;
+        let change = d.visible.abs().max_element().max(d.infrared.abs()).max(d.ionizing.abs());
+        change <= 0.1 * a.max_component().max(b.max_component()) || change < 0.05
+    };
+    next.len() == previous.len()
+        && next.iter().zip(previous).all(|(a, b)| {
+            a.direction.normalize().dot(b.direction.normalize()) >= limit
+                && small(a.radiance, b.radiance)
+                && (a.custom_visible - b.custom_visible).abs().max_element()
+                    <= 0.1 * a.custom_visible.max(b.custom_visible).max_element().max(0.5)
+        })
 }
 
 fn contributes(energy: EnergySpectrum, custom_visible: Vec3) -> bool {
@@ -198,7 +227,10 @@ impl TransportSources {
     /// Both ends of a moved/removed light matter. Merge the canonical multisets
     /// so unchanged lights do not repeatedly invalidate their neighbors.
     fn change_from(&self, previous: &Self) -> SourceChange {
-        if self.directional != previous.directional || self.environment != previous.environment {
+        if self.environment != previous.environment
+            || (self.directional != previous.directional
+                && !gradual_sun(&self.directional, &previous.directional))
+        {
             return SourceChange::Global;
         }
         let mut old = previous.points.iter().peekable();
@@ -225,7 +257,12 @@ impl TransportSources {
                 volumes.push((light.position, light.range + 16.0));
             }
         }
-        SourceChange::Local(volumes)
+        if volumes.is_empty() && self.directional != previous.directional {
+            // Only the directional lights changed, gradually.
+            SourceChange::Sun
+        } else {
+            SourceChange::Local(volumes)
+        }
     }
 }
 
@@ -291,6 +328,7 @@ pub(super) fn invalidate_source_change(
     match change {
         SourceChange::Global => runtime.spatial_history.record_source(4, &[]),
         SourceChange::Local(volumes) => runtime.spatial_history.record_source(64, &volumes),
+        SourceChange::Sun => {}
     }
     field.source_revision = runtime.source_revision;
     advance_transport_revision(runtime, field);
@@ -588,6 +626,33 @@ mod tests {
         sun.canonicalize();
         reverse.canonicalize();
         assert_eq!(sun, reverse);
+    }
+
+    #[test]
+    fn a_moving_sun_keeps_history_but_a_jump_resets_it() {
+        let sun = |degrees: f32, power: f32| TransportSources {
+            directional: vec![DirectionalTransportLight {
+                direction: Quat::from_rotation_z(degrees.to_radians()) * Vec3::Y,
+                radiance: EnergySpectrum::new(Vec3::splat(power), 0.1, 0.0),
+                custom_visible: Vec3::ZERO,
+            }],
+            ..default()
+        };
+        let base = sun(0.0, 2.0);
+        for (next, gradual) in [
+            (sun(0.3, 2.0), true),
+            (sun(1.5, 2.1), true),
+            (sun(0.0, 1.9), true),
+            (sun(5.0, 2.0), false),
+            (sun(0.0, 3.0), false),
+        ] {
+            let change = next.change_from(&base);
+            assert_eq!(matches!(change, SourceChange::Sun), gradual);
+            assert_eq!(matches!(change, SourceChange::Global), !gradual);
+        }
+        let mut with_point = sun(0.3, 2.0);
+        with_point.points.push(point(0.0, 1.0));
+        assert!(matches!(with_point.change_from(&base), SourceChange::Local(_)));
     }
 
     #[test]
