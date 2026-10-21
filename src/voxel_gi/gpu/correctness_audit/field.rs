@@ -343,9 +343,13 @@ fn transport_field_correctness_gate() {
 /// CPU/GPU traversal differences. It deliberately uses no light distribution,
 /// MIS, roulette, cache, or history policy.
 fn cosine_shader() -> String {
-    let source = shader(true, false, false);
-    let start = source.find("fn trace_receiver(").unwrap();
-    let end = source[start..].find("fn write_result(").unwrap() + start;
+    // Replace just the entry function, not everything between unrelated
+    // estimator and consumer functions (their declarations live in includes).
+    let source = replace_once(
+        &shader(true, false, false),
+        "fn trace_receiver(",
+        "fn production_trace_receiver(",
+    );
     let replacement = r#"
 fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32) -> ReceiverSample {
     var result: Energy;
@@ -388,7 +392,20 @@ fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: 
     return ReceiverSample(result, true);
 }
 "#;
-    format!("{}{}{}", &source[..start], replacement, &source[end..])
+    format!("{source}\n{replacement}")
+}
+
+#[test]
+fn cosine_audit_shader_validates_after_composition() {
+    let source = cosine_shader();
+    let module = naga::front::wgsl::parse_str(&source)
+        .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .unwrap();
 }
 
 #[test]
