@@ -1227,7 +1227,9 @@ pub(crate) fn patch_gpu_topology(
             write_hash_entry(&mut state.hash_mirror, hash_slot, GpuHashEntry::TOMBSTONE);
         }
     }
+    let mut inserted = HashSet::with_capacity(planned.len());
     for (entry, hash_slot, gpu_probe) in planned {
+        inserted.insert(entry.voxel);
         let probe_slot = entry.probe_index as usize;
         if let Some(slot) = cache.free_probe_slots.pop() {
             debug_assert_eq!(slot, probe_slot);
@@ -1244,7 +1246,14 @@ pub(crate) fn patch_gpu_topology(
     }
     // Retire old donors and publish newly exposed faces on EXISTING probes in
     // one transaction. The ordinary value-upload timer must not split these.
-    patch_values_locked(&mut state, cache, probes, changed);
+    // Probes inserted above were just encoded whole; do not encode them twice
+    // (a streamed page's additions are also its changed values).
+    for voxel in changed.iter().filter(|voxel| !inserted.contains(*voxel)) {
+        let (Some(slot), Some(probe)) = (cache.slots.get(voxel), probes.lookup(voxel)) else {
+            continue;
+        };
+        state.patch_probe(*slot, gpu_probe(probe));
+    }
     // Addressing is generation-stable: an extracted material must already
     // accept a freshly allocated slot before its new hash entry becomes live.
     Ok(())
@@ -1290,6 +1299,7 @@ pub(crate) fn try_patch_probe_values(
     }
 }
 
+#[cfg(test)]
 fn patch_values_locked(
     state: &mut ProbePatchState,
     cache: &GpuTransportCache,
