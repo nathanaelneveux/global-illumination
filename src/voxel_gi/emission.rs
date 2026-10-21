@@ -113,10 +113,12 @@ impl EmissionDistribution {
         materials: &VoxelMaterialTransportTable,
         importance: super::EnergySpectrum,
     ) -> Self {
+        // Visible emitters always keep light-sampling support. Zero nonvisual
+        // importance leaves IR/ionizing-only sources to paths that hit them.
         assert!(
             importance.visible.min_element() > 0.0
-                && importance.infrared > 0.0
-                && importance.ionizing > 0.0
+                && importance.infrared >= 0.0
+                && importance.ionizing >= 0.0
         );
         let weights: [f32; 256] = std::array::from_fn(|material| {
             (materials.get(material as u8).emission * importance).max_component()

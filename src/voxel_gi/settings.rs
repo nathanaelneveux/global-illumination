@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use std::time::Duration;
 
-const DEFAULT_SIMULATION_SAMPLING_IMPORTANCE: f32 = 0.125;
+const DEFAULT_SIMULATION_SAMPLING_IMPORTANCE: f32 = 0.0;
 
 /// Quality and work limits. All loaded pages remain eligible.
 /// Insert before `VoxelGiPlugin` or change this resource at runtime.
@@ -14,10 +14,10 @@ pub struct VoxelGiSettings {
     pub samples_per_dispatch: u32,
     /// Relative importance of IR/ionizing emission when choosing light samples.
     /// Changes variance, not physical energy, history validity or band delivery.
-    /// RGB always has importance one; nonvisual importance stays nonzero so all
-    /// sources retain support. Simulation need not meet the RGB visual threshold.
-    /// Defaults to 0.125 on every backend, independently of path reuse; use one
-    /// for equal-band sampling. This is not a fixed ratio of sample counts.
+    /// RGB always has importance one. Defaults to zero: GI serves the display,
+    /// and simulation bands are not its responsibility (docs/direction.md);
+    /// sources with only nonvisual emission are then found by paths alone. Use
+    /// one for equal-band sampling. This is not a fixed ratio of sample counts.
     pub simulation_sampling_importance: f32,
     /// Measured retention constant c (default 1); zero restores the whole-range
     /// distance curve.
@@ -104,7 +104,7 @@ impl Default for VoxelGiSettings {
 impl VoxelGiSettings {
     pub(super) fn sampling_importance(&self) -> super::EnergySpectrum {
         let weight = if self.simulation_sampling_importance.is_finite() {
-            self.simulation_sampling_importance.clamp(0.01, 1.0)
+            self.simulation_sampling_importance.clamp(0.0, 1.0)
         } else {
             DEFAULT_SIMULATION_SAMPLING_IMPORTANCE
         };
@@ -275,18 +275,21 @@ mod tests {
     }
 
     #[test]
-    fn rgb_priority_is_the_default_with_an_explicit_equal_band_control() {
+    fn visible_only_is_the_default_with_rgb_priority_and_equal_band_controls() {
         let settings = VoxelGiSettings::default();
-        let expected = super::super::EnergySpectrum::new(Vec3::ONE, 0.125, 0.125);
+        let expected = super::super::EnergySpectrum::new(Vec3::ONE, 0.0, 0.0);
         assert_eq!(settings.sampling_importance(), expected);
-        for json in ["{}", include_str!("../../config/gi-rgb-priority.json")] {
-            assert_eq!(
-                serde_json::from_str::<VoxelGiSettings>(json)
-                    .unwrap()
-                    .sampling_importance(),
-                expected
-            );
-        }
+        assert_eq!(
+            serde_json::from_str::<VoxelGiSettings>("{}").unwrap().sampling_importance(),
+            expected
+        );
+        // The previous default (simulation bands at one eighth).
+        assert_eq!(
+            serde_json::from_str::<VoxelGiSettings>(include_str!("../../config/gi-rgb-priority.json"))
+                .unwrap()
+                .sampling_importance(),
+            super::super::EnergySpectrum::new(Vec3::ONE, 0.125, 0.125)
+        );
         let control: VoxelGiSettings =
             serde_json::from_str(include_str!("../../config/gi-equal-band.json")).unwrap();
         assert_eq!(
@@ -303,7 +306,7 @@ mod tests {
                 expected
             );
         }
-        for (input, normalized) in [(0.0, 0.01), (2.0, 1.0)] {
+        for (input, normalized) in [(-1.0, 0.0), (2.0, 1.0)] {
             assert_eq!(
                 VoxelGiSettings {
                     simulation_sampling_importance: input,
