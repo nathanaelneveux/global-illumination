@@ -38,6 +38,7 @@ const SKY_RESULT_BYTES: usize = 32;
 const TASK_BYTES: usize = 32;
 
 mod face_index;
+mod geometry;
 mod readback;
 mod resident;
 pub(crate) use readback::Readback;
@@ -56,6 +57,8 @@ mod traversal_tests;
 mod tuning_tests;
 #[cfg(test)]
 mod upload_tests;
+#[cfg(test)]
+mod geometry_tests;
 
 #[derive(Resource, Clone)]
 pub(crate) struct GpuTransportDevice {
@@ -280,6 +283,7 @@ pub(crate) struct GpuTracer {
     directory: UploadBuffer,
     regions: UploadBuffer,
     cells: UploadBuffer,
+    geometry_staging: UploadBuffer,
     materials: UploadBuffer,
     material_table: Option<VoxelMaterialTransportTable>,
     material_importance: super::EnergySpectrum,
@@ -480,9 +484,14 @@ impl GpuTracer {
                 "GI uniforms",
                 BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             ),
-            directory: UploadBuffer::new(device, "GI sparse directory", storage),
-            regions: UploadBuffer::new(device, "GI region headers", storage),
-            cells: UploadBuffer::new(device, "GI packed NAADF cells", storage),
+            directory: UploadBuffer::new(device, "GI sparse directory", storage | BufferUsages::COPY_SRC),
+            regions: UploadBuffer::new(device, "GI region headers", storage | BufferUsages::COPY_SRC),
+            cells: UploadBuffer::new(device, "GI packed NAADF cells", storage | BufferUsages::COPY_SRC),
+            geometry_staging: UploadBuffer::new(
+                device,
+                "GI geometry transaction",
+                BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+            ),
             materials: UploadBuffer::new(device, "GI material transport", storage),
             material_table: None,
             material_importance: super::EnergySpectrum::ONE,
@@ -643,6 +652,7 @@ impl GpuTracer {
             resident.set_materials(&self.context, materials)?;
             resident.prepare_inputs(&self.context, &scene, work, samples)?;
         }
+        self.synchronize_geometry(&scene)?;
         let device = &self.context.device;
         let queue = &self.context.queue;
         if !sky_only
@@ -677,61 +687,6 @@ impl GpuTracer {
             );
             self.emitters.upload(device, queue, &bytes)?;
             self.emission = Some(Arc::clone(emitters));
-        }
-        if self
-            .scene
-            .as_ref()
-            .is_none_or(|previous| !Arc::ptr_eq(previous, &scene))
-        {
-            let delta = self.packed.update(&scene);
-            #[cfg(test)]
-            let delta = if self.full_geometry_uploads_for_benchmark {
-                self.packed.rebuild_directory();
-                super::gpu_scene::SceneDelta {
-                    directory_changed: true,
-                    headers: std::iter::once(0..self.packed.headers.len()).collect(),
-                    ..delta
-                }
-            } else {
-                delta
-            };
-            if delta.directory_changed {
-                let directory = ShaderBuffer::from(self.packed.directory.clone())
-                    .data
-                    .unwrap();
-                self.directory.upload(device, queue, &directory)?;
-                self.uploaded_geometry_bytes += directory.len() as u64;
-            }
-            if self
-                .regions
-                .ensure(device, self.packed.headers.len() * 16)?
-            {
-                let headers = ShaderBuffer::from(self.packed.headers.clone())
-                    .data
-                    .unwrap();
-                queue.write_buffer(&self.regions.buffer, 0, &headers);
-                self.uploaded_geometry_bytes += headers.len() as u64;
-            } else {
-                for range in delta.headers {
-                    let bytes = ShaderBuffer::from(self.packed.headers[range.clone()].to_vec())
-                        .data
-                        .unwrap();
-                    queue.write_buffer(&self.regions.buffer, (range.start * 16) as u64, &bytes);
-                    self.uploaded_geometry_bytes += bytes.len() as u64;
-                }
-            }
-            if self.cells.ensure(device, self.packed.cells.len() * 4)? {
-                let bytes = encode_words(&self.packed.cells);
-                queue.write_buffer(&self.cells.buffer, 0, &bytes);
-                self.uploaded_geometry_bytes += bytes.len() as u64;
-            } else {
-                for range in delta.cells {
-                    let bytes = encode_words(&self.packed.cells[range.clone()]);
-                    queue.write_buffer(&self.cells.buffer, (range.start * 4) as u64, &bytes);
-                    self.uploaded_geometry_bytes += bytes.len() as u64;
-                }
-            }
-            self.scene = Some(Arc::clone(&scene));
         }
         if !sky_only
             && (self.material_table.as_ref() != Some(materials)
