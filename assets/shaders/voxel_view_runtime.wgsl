@@ -8,7 +8,7 @@ struct ViewControl {
     camera: vec4<f32>, // xyz camera, w inner overlap distance
     viewport: vec4<u32>, // xy origin, zw full-resolution dimensions
     grid: vec4<u32>, // xy reduced dimensions, z count, w hash mask
-    history: vec4<u32>, // previous grid count, previous hash mask, frame, event count
+    history: vec4<u32>, // previous grid count, previous hash mask, frame, view-first
     display: vec4<f32>, // evidence goal, strength, temporal blend, measured retention
 }
 struct ViewEstimate {
@@ -272,7 +272,7 @@ fn publish_view(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= view.grid.z { return; }
     if id.x == 0u {
         far_output.viewport = view.viewport;
-        far_output.shape = vec4(view.grid.xy, 1u, atomicLoad(&queue[1]));
+        far_output.shape = vec4(view.grid.xy, 1u | (view.history.w << 1u), atomicLoad(&queue[1]));
     }
     let receiver = receivers[id.x];
     var output: FarPixel;

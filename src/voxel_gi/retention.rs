@@ -155,6 +155,10 @@ impl SpatialHistory {
     }
 
     /// Events for the next GPU batch.
+    pub fn has_events(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     pub fn take_events(&mut self) -> Vec<RetentionEvent> {
         std::mem::take(&mut self.pending)
     }

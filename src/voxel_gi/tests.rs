@@ -975,3 +975,22 @@ fn receiver_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
     assert!(runtime.receiver_pages.is_none());
     assert!(runtime.receiver_dirty.contains(&IVec3::new(9, 0, 0)));
 }
+
+#[test]
+fn cacheless_residency_retires_every_page_without_a_camera_or_geometry_changes() {
+    use bevy::ecs::system::RunSystemOnce;
+    let mut world = World::new();
+    let mut runtime = VoxelGiRuntime::default();
+    runtime.loaded_pages.extend([IVec3::ZERO, IVec3::new(1, 0, 0)]);
+    world.insert_resource(runtime);
+    world.insert_resource(VoxelGiSettings {
+        receiver_strategy: ReceiverStrategy::View { cache_radius: 0.0, cache_share: 0.0 },
+        ..default()
+    });
+    world.run_system_once(bvw::update_receiver_residency).unwrap();
+    let runtime = world.resource::<VoxelGiRuntime>();
+    assert!(runtime.receiver_pages.as_ref().unwrap().is_empty());
+    assert_eq!(runtime.receiver_retired, runtime.loaded_pages);
+    assert!(runtime.dirty_pages.is_empty());
+    assert_eq!(runtime.loaded_pages.len(), 2);
+}

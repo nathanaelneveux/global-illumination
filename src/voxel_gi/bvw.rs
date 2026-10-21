@@ -31,7 +31,14 @@ pub(super) fn update_receiver_residency(
     settings: Res<super::VoxelGiSettings>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
 ) {
-    let Some(radius) = settings.receiver_radius() else {
+    let policy = settings.receiver_residency();
+    if policy == super::settings::ReceiverResidency::Disabled {
+        let left = runtime.receiver_pages.take().unwrap_or_else(|| runtime.loaded_pages.clone());
+        runtime.receiver_pages = Some(HashSet::new());
+        mark_receivers(&mut runtime, Vec::new(), left.into_iter().collect());
+        return;
+    }
+    let super::settings::ReceiverResidency::Radius(radius) = policy else {
         // Unlimited again: every loaded page without receivers rescans.
         if let Some(allowed) = runtime.receiver_pages.take() {
             let missing: Vec<_> = runtime

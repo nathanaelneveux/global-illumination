@@ -48,7 +48,7 @@ use bevy::prelude::*;
 use bevy::tasks::Task;
 
 pub use field::VoxelEnergyField;
-pub use settings::{TransportSettings, VoxelGiSettings};
+pub use settings::{ReceiverStrategy, TransportSettings, VoxelGiSettings};
 pub use sources::VoxelGiEnvironment;
 pub use spectrum::{EnergyEmitter, EnergySpectrum};
 pub use world::{MaterialTransport, VoxelMaterialTransportTable};

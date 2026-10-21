@@ -7,7 +7,6 @@ use bevy::render::extract_resource::ExtractResource;
 use std::sync::Mutex;
 mod runtime;
 mod timing;
-pub(in crate::voxel_gi) use runtime::FAR_SHARE;
 pub(crate) use runtime::install;
 
 #[derive(Resource, Clone, Default, ExtractResource)]

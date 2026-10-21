@@ -24,14 +24,12 @@ use bevy::{
 
 const MAX_PIXELS: u32 = 65536;
 const DISPLAY_BYTES: u64 = 32 + 16384 + MAX_PIXELS as u64 * 48;
-/// A partition of the existing time share, not a second GI budget. Near gets
-/// the remainder whenever far transport is active.
-pub(in crate::voxel_gi) const FAR_SHARE: f32 = 0.25;
-
 #[derive(Resource, Clone, ExtractResource)]
 struct ViewSettings {
     output: Handle<ShaderBuffer>,
-    radius: f32,
+    enabled: bool,
+    inner_radius: f32,
+    view_first: bool,
     share: f32,
     evidence: u32,
     spatial: f32,
@@ -49,7 +47,9 @@ pub(crate) fn install(app: &mut App, output: Handle<ShaderBuffer>) {
     app.init_resource::<VoxelGiSettings>();
     app.insert_resource(ViewSettings {
         output,
-        radius: 0.0,
+        enabled: false,
+        inner_radius: 0.0,
+        view_first: false,
         share: 0.0,
         evidence: 1024,
         spatial: 1.0,
@@ -95,10 +95,10 @@ fn configure_views(
     >,
     mut commands: Commands,
 ) {
-    let radius = settings.receiver_radius().unwrap_or(0.0);
-    if (radius > 0.0) != (view.radius > 0.0) {
+    let enabled = settings.view_enabled();
+    if enabled != view.enabled {
         let mut asset = ShaderBuffer::default();
-        asset.buffer_description.size = if radius > 0.0 { DISPLAY_BYTES } else { 16464 };
+        asset.buffer_description.size = if enabled { DISPLAY_BYTES } else { 16464 };
         asset.buffer_description.usage =
             BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
         view.output = buffers.add(asset);
@@ -108,7 +108,7 @@ fn configure_views(
         }
     }
     for (entity, depth, normal, added) in &cameras {
-        if radius > 0.0 && added.is_none() {
+        if enabled && added.is_none() {
             let mut entity = commands.entity(entity);
             entity.insert(AddedPrepasses {
                 depth: !depth,
@@ -120,7 +120,7 @@ fn configure_views(
             if !normal {
                 entity.insert(NormalPrepass);
             }
-        } else if radius == 0.0
+        } else if !enabled
             && let Some(added) = added
         {
             let mut entity = commands.entity(entity);
@@ -133,8 +133,10 @@ fn configure_views(
             entity.remove::<AddedPrepasses>();
         }
     }
-    view.radius = radius;
-    view.share = settings.gpu_share() * FAR_SHARE;
+    view.enabled = enabled;
+    view.inner_radius = settings.view_inner_radius();
+    view.view_first = settings.view_first();
+    view.share = settings.gpu_share() * (1.0 - settings.world_budget_fraction());
     view.evidence = settings.spatial_evidence_target;
     view.spatial = settings.spatial_reconstruction.clamp(0.0, 1.0);
     view.response = settings.display_response_seconds();
@@ -404,7 +406,7 @@ fn render_view(
     // camera without prepasses clears validity before its opaque draws.
     ctx.command_encoder()
         .clear_buffer(&output.buffer, 0, Some(32));
-    if settings.radius <= 0.0 {
+    if !settings.enabled {
         renderer.cameras.clear();
         scene.1.lock().unwrap().clear();
         return;
@@ -473,10 +475,10 @@ fn render_view(
         camera: view
             .world_from_view
             .translation()
-            .extend((settings.radius - 48.0).max(0.0)),
+            .extend(settings.inner_radius),
         viewport: view.viewport,
         grid: UVec4::new(grid.x, grid.y, count, hash_mask),
-        history: UVec4::new(if camera.valid { count } else { 0 }, hash_mask, frame.0, 0),
+        history: UVec4::new(if camera.valid { count } else { 0 }, hash_mask, frame.0, u32::from(settings.view_first)),
         display: Vec4::new(
             settings.evidence as f32,
             settings.spatial,

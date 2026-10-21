@@ -77,6 +77,49 @@ fn far_only_model_changes_publish_without_near_receivers() {
 }
 
 #[test]
+#[ignore = "native cacheless retention lifecycle regression"]
+fn cacheless_retention_publishes_even_when_geometry_and_sources_are_unchanged() {
+    let device = super::tests::native_tracer().context;
+    let (scene, sources, _) = super::tests::open_floor_fixture();
+    let mut world = world(gi::VoxelGiRuntime { scene, sources, ..default() }, default(), device);
+    world.resource_mut::<gi::VoxelGiSettings>().receiver_strategy =
+        gi::ReceiverStrategy::View { cache_radius: 0.0, cache_share: 0.0 };
+    let first = run_worker(&mut world);
+    {
+        let mut runtime = world.resource_mut::<gi::VoxelGiRuntime>();
+        runtime.gpu_tracer = first.gpu_tracer;
+        runtime.emission_cache = first.emission_cache;
+        runtime.spatial_history.record_source(256, &[]);
+    }
+    let mut second = run_worker(&mut world);
+    let tracer = second.gpu_tracer.as_mut().unwrap();
+    let packets = tracer.take_view_changes();
+    assert_eq!(packets.len(), 1, "zero world faces must not drop view edits");
+    let words = read_words(&tracer.context, &packets[0].events, packets[0].events.size());
+    assert_eq!(words[3], 2, "source-change flag");
+    assert_eq!(words[8], 256, "same history cap as resident consumers");
+    let resident = tracer.resident.as_ref().unwrap();
+    assert!(resident.cache_buffers().0.capacity <= 256, "no per-face state allocation");
+    assert!(second.bindings.is_empty());
+    assert!(tracer.take_view_changes().is_empty(), "deliver once");
+
+    use gi::geometry::{Bounds, ChangeKind, ChangeWeight};
+    let mut events = vec![gi::retention::RetentionEvent::single(
+        Bounds::point(IVec3::ONE),
+        ChangeWeight { kind: ChangeKind::Edit { voxels: 1, measure: true }, flux: 0.0 },
+    )];
+    tracer.queue_retention(&mut events);
+    let (scene, sources, _) = super::tests::open_floor_fixture();
+    let mut work = TraceWork { view_transport: true, ..default() };
+    assert!(tracer.submit_compact(scene, &sources, &default(), &mut work, 0,
+        &Arc::new(EmissionDistribution::default()), true).unwrap().is_none());
+    let packets = tracer.take_view_changes();
+    assert_eq!(packets.len(), 1);
+    let words = read_words(&tracer.context, &packets[0].events, packets[0].events.size());
+    assert_eq!(words[19] & 7, 0, "unobserved outgoing flux is unknown, not measured darkness");
+}
+
+#[test]
 #[ignore = "native worker lifecycle regression"]
 fn retirements_survive_poll_only_and_empty_receiver_dispatch() {
     let device = super::tests::native_tracer().context;

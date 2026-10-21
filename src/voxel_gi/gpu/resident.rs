@@ -740,9 +740,20 @@ impl ResidentAccumulator {
         self.events.append(&mut work.retention_events);
         self.publish_view_changes = work.view_transport;
         let encoded = encode_events(&mut self.event_bytes, &mut self.measure_bytes, &self.events);
+        if self.high_water == 0 {
+            // With no world receivers there is no outgoing-light measurement.
+            // Zero observations are not evidence of a dark edit: advertise
+            // unknown flux so all consumers use the shared distance rule.
+            for bound in self.event_bytes[encoded.events as usize * 48..].chunks_exact_mut(32) {
+                let kind = u32::from_le_bytes(bound[28..32].try_into().unwrap());
+                if kind & 7 == 6 {
+                    bound[28..32].copy_from_slice(&(kind & !7).to_le_bytes());
+                }
+            }
+        }
         self.event_count = encoded.events;
-        self.measure_entries = encoded.entries;
-        self.measure_positions = encoded.positions;
+        self.measure_entries = if self.high_water == 0 { 0 } else { encoded.entries };
+        self.measure_positions = if self.high_water == 0 { 0 } else { encoded.positions };
         if self.event_count > 0 {
             self.events_buffer
                 .upload(device, queue, &self.event_bytes)?;
@@ -1207,7 +1218,7 @@ impl ResidentAccumulator {
             let events = device.create_buffer(&BufferDescriptor {
                 label: Some("GI immutable measured view changes"),
                 size: self.event_bytes.len() as u64,
-                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             });
             encoder.copy_buffer_to_buffer(

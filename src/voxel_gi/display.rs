@@ -272,8 +272,31 @@ pub(super) fn upload_transport_cache(
     mut timings: ResMut<GiWorkTimings>,
     device: Option<Res<super::gpu::GpuTransportDevice>>,
     limits: Option<Res<DisplayBufferLimits>>,
+    mut view_only: Local<bool>,
 ) {
     let mut timing = timings.main_scope(MainStage::DisplayPublication);
+    if settings.view_first() {
+        if !*view_only {
+            super::render::clear_world_display(&mut cache, &mut patch_queue, &mut assets, &mut buffers, &mut materials);
+            *view_only = true;
+        }
+        // The raw world cache is still maintained by transport, but it needs
+        // neither a material directory nor CPU->GPU presentation updates.
+        runtime.gpu_task = None;
+        runtime.gpu_prepared = None;
+        runtime.gpu_snapshot = None;
+        runtime.gpu_catchup_dirty.clear();
+        runtime.gpu_value_dirty.clear();
+        runtime.gpu_added.clear();
+        runtime.gpu_removed.clear();
+        runtime.gpu_topology_values.clear();
+        runtime.sky_upload_pending = false;
+        // Returning to hybrid builds a complete directory from current probes.
+        runtime.gpu_topology_dirty = true;
+        runtime.gpu_rebuild_required = true;
+        return;
+    }
+    *view_only = false;
     let Some(material_handle) = material_handle else {
         return;
     };

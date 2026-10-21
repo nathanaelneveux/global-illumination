@@ -259,6 +259,7 @@ fn corner_lit(word: u32, bit: u32) -> f32 {
 // corners contribute no direct sunlight yet; available corners remain usable.
 // Readiness must NEVER switch a face to another shadow algorithm.
 fn sky_irradiance(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
+    if (far_view.shape.z & 2u) != 0u { return far_sun(position, normal); }
     let voxel = vec3<i32>(floor(position - normal * 0.01));
     let index = lookup_probe(voxel);
     if index >= transport_settings.probe_capacity { return far_sun(position, normal); }
@@ -351,10 +352,10 @@ fn corner_value(center: vec4<f32>, edge_u: vec4<f32>, edge_v: vec4<f32>, diagona
 }
 
 fn probe_irradiance(position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec3<f32> {
-    if (!sky && transport_settings.enabled == 0u) || transport_settings.probe_capacity == 0u {
+    if sky { return sky_irradiance(position, normal).rgb; }
+    if transport_settings.enabled == 0u || transport_settings.probe_capacity == 0u {
         return vec3(0.0);
     }
-    if sky { return sky_irradiance(position, normal).rgb; }
     let voxel = vec3<i32>(floor(position - normal * 0.01));
     var face = 0u;
     var u = vec3<i32>(0, 1, 0);
@@ -472,7 +473,9 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
 #else
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);
-    var indirect = probe_irradiance(in.world_position.xyz, normalize(in.world_normal), false);
+    let view_first = (far_view.shape.z & 2u) != 0u;
+    var indirect = vec3(0.0);
+    if !view_first { indirect = probe_irradiance(in.world_position.xyz, normalize(in.world_normal), false); }
     let voxel = vec3<i32>(floor(in.world_position.xyz - in.world_normal * 0.01));
     let index = lookup_probe(voxel);
     // A slot is not a published face. During residency/mesh handoff, keep
@@ -480,7 +483,7 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
     if far_view.shape.z != 0u && transport_settings.enabled != 0u {
         let face = face_index_of(normalize(in.world_normal));
         var near_valid = false;
-        if index < transport_settings.probe_capacity { near_valid = resolved_face(index, face).w > 0.0; }
+        if !view_first && index < transport_settings.probe_capacity { near_valid = resolved_face(index, face).w > 0.0; }
         if !near_valid {
             let far = far_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal), false);
             if far.w > 0.0 { indirect = far.rgb * transport_settings.intensity; }

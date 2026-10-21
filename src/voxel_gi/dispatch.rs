@@ -94,6 +94,7 @@ pub(super) fn start_trace_task(
     // A camera above the terrain can have no near receivers at all. Likewise,
     // exhausted ray allowance must not drop retirements during readback polls.
     let maintenance = !runtime.slot_retirements.is_empty()
+        || runtime.spatial_history.has_events()
         || runtime.gpu_tracer.as_ref().map_or_else(
             || !runtime.scene.regions.is_empty(),
             |tracer| {
@@ -128,28 +129,26 @@ pub(super) fn start_trace_task(
     runtime.gpu_allowance_ms = accrue_gpu_allowance(
         runtime.gpu_allowance_ms,
         elapsed_ms,
-        settings.gpu_share()
-            * if settings.receiver_radius().is_some() {
-                1.0 - gpu::view::FAR_SHARE
-            } else {
-                1.0
-            },
+        settings.gpu_share() * settings.world_budget_fraction(),
         settings.budget_ms(),
     );
     let can_submit =
-        !field.order.is_empty() && runtime.gpu_pending.len() < 3 && runtime.gpu_allowance_ms > 0.0;
+        settings.world_budget_fraction() > 0.0
+            && !field.order.is_empty() && runtime.gpu_pending.len() < 3 && runtime.gpu_allowance_ms > 0.0;
     let mut selected = if can_submit {
         info_span!("gi_select").in_scope(|| select_transport(&mut runtime, &field, &settings))
     } else {
         TraceWork::default()
     };
     selected.transport = runtime.transport;
-    selected.view_transport = settings.receiver_radius().is_some();
+    selected.view_transport = settings.view_enabled();
     selected.response_seconds = settings.display_response_seconds();
     selected.measured_retention = settings.measured_retention();
     selected.display_frame = frame.as_ref().map_or(0, |frame| frame.0);
     selected.display_transition_frames = settings.display_transition_frames.min(32);
-    selected.spatial_reconstruction = settings.spatial_reconstruction;
+    // A bounce-only cache never builds presentation donor lists. Its raw
+    // estimator, sunlight and edit-flux measurements remain unchanged.
+    selected.spatial_reconstruction = if settings.view_first() { 0.0 } else { settings.spatial_reconstruction };
     selected.spatial_evidence_target = settings.spatial_evidence_target.min(4096);
     selected.spatial_max_donors = settings.spatial_max_donors;
     // The rest of the face budget is the GPU's to pick.

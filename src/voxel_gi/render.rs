@@ -358,6 +358,33 @@ pub struct GpuTransportCache {
     pub ready: bool,
 }
 
+/// Release the world-space presentation directory when the view owns all
+/// visible lighting. Binding-sized empty buffers keep material layouts stable;
+/// no cache receiver is uploaded or displayed through this directory.
+pub(super) fn clear_world_display(
+    cache: &mut GpuTransportCache,
+    patches: &mut GpuProbePatchQueue,
+    assets: &mut VoxelTransportAssets,
+    buffers: &mut Assets<ShaderBuffer>,
+    materials: &mut Assets<VoxelTransportMaterial>,
+) {
+    *cache = default();
+    assets.hash_entries = buffers.add(ShaderBuffer::from(vec![GpuHashEntry::EMPTY]));
+    assets.probes = buffers.add(ShaderBuffer::from(vec![GpuProbe::default()]));
+    *patches = GpuProbePatchQueue {
+        probe_buffer: assets.probes.clone(),
+        hash_buffer: assets.hash_entries.clone(),
+        prepared: None,
+        state: Arc::default(),
+    };
+    for (_, material) in materials.iter_mut() {
+        material.extension.hash_entries = assets.hash_entries.clone();
+        material.extension.probes = assets.probes.clone();
+        material.extension.settings.hash_mask = 0;
+        material.extension.settings.probe_capacity = 0;
+    }
+}
+
 #[cfg(debug_assertions)]
 impl GpuTransportCache {
     /// Bounded diagnostics snapshot. CPU mode reads queued publication bytes;
