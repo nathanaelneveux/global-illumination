@@ -409,8 +409,12 @@ pub(super) fn apply_trace_task(
         panic!("Voxel GI GPU transport failed: {error}");
     }
     if !result.sky_band.is_empty() {
-        // A newer sun step supersedes the previous band.
-        runtime.sky_band = std::mem::take(&mut result.sky_band);
+        // Newer requests pop first (each band is sorted nearest last). Bound
+        // leftovers: the world sweep still reaches anything dropped.
+        if runtime.sky_band.len() > 1 << 20 {
+            runtime.sky_band.clear();
+        }
+        runtime.sky_band.append(&mut result.sky_band);
     }
     if let Some(mut change) = result.sunlight_change.take() {
         // Even superseded results describe a possible change, so retain their

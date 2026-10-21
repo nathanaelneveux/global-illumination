@@ -15,7 +15,6 @@ use bevy::{
 };
 use std::time::{Duration, Instant};
 
-const EDIT_RELIGHT_RADIUS: i32 = super::geometry::RELIGHT_RADIUS;
 
 /// Page-level conservative donor availability. New streamed page interiors
 /// cannot inherit from another page three or more cells away; skip their empty
@@ -361,23 +360,12 @@ fn finish_scene_page(
     added: Vec<IVec3>,
     publish_started: Instant,
 ) {
-    // Sky corners near a player edit can change (shadows). The light itself
-    // is the GPU's: retention events wake the faces whose history it binds.
-    let mut near_edits = HashSet::new();
-    for &voxel in &result.exact_edits {
-        probes_near(field, voxel, EDIT_RELIGHT_RADIUS, &mut near_edits);
-    }
+    // Shadows near an edit are the sky cache's: it invalidates the corners
+    // the changed geometry can shade and requests them first (the band). The
+    // light itself is the GPU's: retention events wake the faces whose
+    // history it binds. Enumerating every probe within the relight radius
+    // here cost ~3 ms of main thread per edited page.
     let relit_probes = invalidated.len();
-    let mut urgent: Vec<_> = near_edits.into_iter().collect();
-    urgent.sort_unstable_by_key(|voxel| {
-        result
-            .exact_edits
-            .iter()
-            .map(|edit| (voxel.as_i64vec3() - edit.as_i64vec3()).length_squared())
-            .min()
-            .unwrap_or(0)
-    });
-    enqueue_sky(runtime, urgent);
     enqueue_sky(runtime, added.iter().copied());
     // Existing probes whose revision changed here (material or exposed faces:
     // relit, history capped) are event work: only a CPU job carries the new
@@ -412,26 +400,6 @@ fn finish_scene_page(
             publish_ms = format_args!("{:.1}", publish_started.elapsed().as_secs_f64() * 1000.0),
             "incremental world-space voxel transport scene rebuilt"
         );
-    }
-}
-
-/// Probes within `radius` of `center` (two pages each way at 48).
-fn probes_near(field: &VoxelEnergyField, center: IVec3, radius: i32, found: &mut HashSet<IVec3>) {
-    let page_radius = (radius + PAGE_EDGE as i32 - 1) / PAGE_EDGE as i32;
-    let center_page = page_of(center);
-    let radius_squared = i64::from(radius) * i64::from(radius);
-    for z in -page_radius..=page_radius {
-        for y in -page_radius..=page_radius {
-            for x in -page_radius..=page_radius {
-                for &voxel in field.pages.get(&(center_page + IVec3::new(x, y, z))).into_iter().flatten() {
-                    if (voxel.as_i64vec3() - center.as_i64vec3()).length_squared() <= radius_squared
-                        && field.probes.contains_key(&voxel)
-                    {
-                        found.insert(voxel);
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -573,9 +541,10 @@ mod donor_tests {
             pointer
         );
         assert_eq!(field.probes[&voxel].display[2].indirect, Vec3::splat(2.0));
-        // Its sky is refreshed; whether its light is urgent is the GPU's
-        // decision (retention events), not a CPU wake.
-        assert!(runtime.sky_queued.contains(&voxel));
+        // Its shadows refresh through the sky cache's invalidated corners
+        // (the band), and whether its light is urgent is the GPU's decision
+        // (retention events): no CPU enumeration of the edit's neighbourhood.
+        assert!(!runtime.sky_queued.contains(&voxel));
         assert!(!runtime.urgent_queued.contains(&voxel));
         // The count stays for measured retention to cap.
         assert_eq!(field.probes[&voxel].samples[2], 64);

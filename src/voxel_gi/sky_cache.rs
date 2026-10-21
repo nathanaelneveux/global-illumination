@@ -154,7 +154,8 @@ pub(crate) struct SkyCache {
     /// shadow borders were. A sun step moves borders by about a voxel, so the
     /// next generation retraces these and their axis neighbours first.
     flipped: Vec<IVec3>,
-    /// Voxels around that band, for the next sky requests.
+    /// Voxels around that band and around corners geometry changes
+    /// invalidated, for the next sky requests.
     band: Vec<IVec3>,
 }
 
@@ -313,7 +314,7 @@ impl SkyCache {
                 }
             }
         }
-        self.band = voxels.into_iter().collect();
+        self.band.extend(voxels);
     }
 
     /// Voxels to request sky for before the world sweep, nearest the focus
@@ -435,6 +436,7 @@ impl SkyCache {
             // Region identity is stable across unchanged page notifications.
             // Air-only streaming changes cannot change display visibility.
             let changed = scene.changed_regions(old);
+            let mut invalidated = HashSet::new();
             let mut blockers = Vec::new();
             for &key in &changed {
                 if old.regions.get(&key).is_some_and(|r| r.any_solid)
@@ -461,6 +463,15 @@ impl SkyCache {
                         let corner = self.corners.get_mut(position).unwrap();
                         corner.generation = 0;
                         corner.pending_batch = 0;
+                        // Shadows near an edit (or under new terrain) refresh
+                        // ahead of the world sweep, nearest the focus first.
+                        for z in 0..2 {
+                            for y in 0..2 {
+                                for x in 0..2 {
+                                    invalidated.insert(*position - IVec3::new(x, y, z));
+                                }
+                            }
+                        }
                     }
                 }
                 // Remove retired receivers after edits/unloading. Inspect only
@@ -479,6 +490,7 @@ impl SkyCache {
                 }
             }
             self.buckets.retain(|_, positions| !positions.is_empty());
+            self.band.extend(invalidated);
         }
         self.scene = Some(Arc::clone(scene));
     }
@@ -813,6 +825,10 @@ mod tests {
             "remote shadow receivers must update, unrelated terrain must not"
         );
         assert!(pending.iter().all(|position| position.x < 32));
+        // The shaded receivers are requested ahead of the world sweep.
+        let band = cache.take_band(IVec3::ZERO);
+        assert!(band.contains(&IVec3::new(4, 4, 4)));
+        assert!(band.iter().all(|voxel| voxel.x < 32), "only the shadow sweep");
         finish(&mut cache, &blocked, pending);
         cache.apply(&mut probes);
         assert!(
