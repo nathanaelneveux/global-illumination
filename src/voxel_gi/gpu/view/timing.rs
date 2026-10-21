@@ -3,6 +3,33 @@
 use super::*;
 use std::sync::atomic::{AtomicU8, Ordering};
 
+/// Use the same bounded feedback controller as near transport. Dividing a
+/// small wave's whole-pass cost by its path count mistakes dispatch overhead
+/// for marginal path cost, eventually underfilling or starving every wave.
+fn next_wave(current: u32, attempted: u32, milliseconds: f32) -> u32 {
+    crate::voxel_gi::scheduling::next_budget(
+        current as usize, attempted as usize, milliseconds, 1.0, 8192,
+    ).div_ceil(64) as u32 * 64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_wave;
+    #[test]
+    fn costly_minimum_wave_cannot_starve_forever() {
+        let mut size = next_wave(128, 128, 8.0);
+        assert_eq!(size, 64);
+        // A 0.7ms fixed dispatch cost must not trap a 64-path wave at 64.
+        for _ in 0..16 {
+            size = next_wave(size, size, 0.7);
+            assert!((64..=8192).contains(&size));
+            assert_eq!(size % 64, 0);
+        }
+        assert!(size >= 2048);
+        assert_eq!(next_wave(4096, 32, 0.5), 4096, "small views do not shrink capacity");
+    }
+}
+
 pub(super) struct Ticket {
     buffer: Buffer,
     ready: Arc<AtomicU8>,
@@ -17,7 +44,8 @@ pub(super) struct Budget {
     free: Vec<Buffer>,
     pending: Vec<Ticket>,
     allowance: f32,
-    cost_per_path: f32,
+    wave_size: u32,
+    wave_cost: f32,
     pub presentation_ms: f32,
     pub trace_ms: f32,
     pub active: u32,
@@ -67,7 +95,8 @@ impl Budget {
             free,
             pending: Vec::new(),
             allowance: 0.0,
-            cost_per_path: 0.001,
+            wave_size: 1024,
+            wave_cost: 1.0,
             presentation_ms: 0.0,
             trace_ms: 0.0,
             active: 0,
@@ -133,8 +162,8 @@ impl Budget {
             self.presentation_ms = total - trace;
             let attempted = ticket.work.min(active);
             if attempted > 0 {
-                let measured = (trace / attempted as f32).max(1e-5);
-                self.cost_per_path = self.cost_per_path * 0.75 + measured * 0.25;
+                self.wave_size = next_wave(self.wave_size, attempted, trace);
+                self.wave_cost = trace.max(0.01);
             }
             self.allowance += ticket.reserved - trace;
             drop(bytes);
@@ -148,9 +177,10 @@ impl Budget {
         let Some(buffer) = self.free.pop() else {
             return (0, None);
         };
-        let paths = (self.allowance.clamp(0.0, 1.0) / self.cost_per_path) as u32;
-        let work = (paths / 64 * 64).min(8192);
-        let reserved = work as f32 * self.cost_per_path;
+        // Bank/repay milliseconds, not fractional workgroups. One bounded
+        // wave may overdraw credit; the receipt charges its actual cost.
+        let work = if self.allowance > 0.0 { self.wave_size } else { 0 };
+        let reserved = if work > 0 { self.wave_cost } else { 0.0 };
         self.allowance -= reserved;
         (
             work,
