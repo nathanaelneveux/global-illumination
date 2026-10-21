@@ -11,11 +11,21 @@ GI today keeps a world-space lighting cache for every exposed face in the
 loaded world. Memory and the fixed per-batch GPU cost (ranking ~800k slots,
 applying events) scale with world size, not with what is on screen.
 
-Rough sizes (canyon, ~570k faces; struct sizes, not a profile): ~240 B of GPU
-state per face (state 144 + metadata 48 + rollback checkpoint 48), a 936 B CPU
-`SurfaceProbe` per probe and a 256 B display probe. GI is very roughly
-0.4-0.5 GB of the 2.6 GB process footprint measured on the response profile
-(M4, dev build); the rest is world data, meshes, textures and the engine.
+Per-face sizes: ~240 B of GPU state (state 144 + metadata 48 + rollback
+checkpoint 48), a 936 B CPU `SurfaceProbe` and a 256 B display probe per
+probe, and probes are almost one per face. Tracked faces at the end of each
+profile (M4, 2026-10-21) and the share within a radius of the player:
+
+| Profile | Faces | Probes | <=64 | <=128 | <=192 | <=256 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| gameplay | 791k | 732k | 4% | 14% | 25% | 41% |
+| live-hallway | 1.19M | 1.10M | 2.5% | 9% | 20% | 36% |
+| day-cycle (canyon) | 528k | 437k | 7% | 22% | 41% | 67% |
+| cave | 1.05M | 980k | 4.5% | 15% | 30% | 55% |
+
+So GI's per-face state is roughly 0.6-1.5 GB (CPU probe records alone
+0.4-1 GB, likely most of the 831 MB MALLOC_SMALL measured on the response
+profile), and a 128-voxel world-space radius keeps 9-22% of it.
 
 NAADF's renderer reaches long draw distances because its lighting is view
 driven: it stores path samples per pixel with temporal and spatial reuse, so
@@ -45,6 +55,21 @@ near the player, but it pays for every loaded face.
 Open questions: blending across the radius (dithered handoff or a band where
 both run); disocclusion and ghosting in the far tier when turning; its
 per-pixel memory at 4K.
+
+Staging:
+
+1. **Receiver radius.** Geometry (the transport scene) stays all loaded
+   pages, since rays and the far tier traverse it; receivers (CPU probes,
+   display probes, resident slots, sky corners) are published only for pages
+   within a radius of any local focus, with hysteresis. Pages crossing it are
+   published or retired through the existing page paths. Default unlimited
+   (today's behaviour) until a far tier exists.
+2. **Far tier**, view driven, as above; then the radius shrinks.
+3. **Band removal and a slim CPU record**, with stability recalibrated.
+
+Until stage 2, faces beyond the radius have no display probe and the
+material shader needs an interim fallback (e.g. Bevy's shadow-mapped sun
+plus a flat sky ambient), which would show a change of look at the radius.
 
 ## Simulation: deterministic direct transport, not GI
 
