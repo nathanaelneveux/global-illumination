@@ -56,7 +56,13 @@ GI should not be the source of truth for these:
 
 - **Authority.** A block melting is a world edit the server must decide. GI
   runs on each client's GPU, is randomly sampled, and depends on that client's
-  camera and residency; a dedicated server may have no GPU.
+  camera and residency; a dedicated server may have no GPU. StarWrought will
+  support all three multiplayer models (each client authoritative for its own
+  area, a player hosting, dedicated servers), so simulation cannot depend on
+  any one machine running GI near every player. Within a single player's
+  64-128 voxels, GI-carried bands would cost little (a few percent of compute,
+  ~15% of face state) and include bounce; the deciding factor is authority,
+  not resources.
 - **Value.** Melting is driven by direct exposure (the star, a nearby hot
   source). Bounce light is a small, costly, client-specific correction.
 
