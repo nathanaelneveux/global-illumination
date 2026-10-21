@@ -2,6 +2,8 @@
 
 This is the current design. Historical experiments are kept separately so the
 implementation can be understood without reconstructing its development history.
+The planned direction (near/far lighting, the simulation split) is in
+[direction](direction.md).
 The numerical model and the stable display policy are deliberately separate.
 
 ## Data flow and ownership
