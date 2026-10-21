@@ -66,8 +66,8 @@ mod store_tests {
         for key in keys {
             assert!(store.contains_key(&key));
             assert_eq!(store.get(&key).unwrap().voxel, key);
-            store.get_mut(&key).unwrap().samples[0] = 19;
-            assert_eq!(store.remove(&key).unwrap().samples[0], 19);
+            store.get_mut(&key).unwrap().stats_mut().samples[0] = 19;
+            assert_eq!(store.remove(&key).unwrap().stats().samples[0], 19);
         }
         assert_eq!(store.len(), 0);
         assert_eq!(store.values().count(), 0);
@@ -208,6 +208,8 @@ pub struct VoxelEnergyField {
     pub(super) requested: HashSet<IVec3>,
     /// Geometry is ready but these receiver pages have not been published yet.
     pub(super) publishing_pages: HashSet<IVec3>,
+    /// Probes keep CPU statistics (`VoxelGiSettings::cpu_statistics`).
+    pub(super) cpu_statistics: bool,
 }
 
 /// An unfiltered surface measurement, never the spatially smoothed display
@@ -266,15 +268,15 @@ impl VoxelEnergyField {
                 continue;
             }
             let face = axis * 2 + usize::from(normal[axis] < 0.0);
-            if probe.face_mask & (1 << face) == 0 || probe.samples[face] == 0 {
+            if probe.face_mask & (1 << face) == 0 || probe.stats().samples[face] == 0 {
                 return None;
             }
-            incident += (probe.radiance[face] + probe.direct[face]) * weights[axis];
-            variance += (probe.second_moment[face] - probe.radiance[face] * probe.radiance[face])
+            incident += (probe.stats().radiance[face] + probe.stats().direct[face]) * weights[axis];
+            variance += (probe.stats().second_moment[face] - probe.stats().radiance[face] * probe.stats().radiance[face])
                 .finite_or_zero()
                 * (weights[axis] * weights[axis]);
-            samples = samples.min(probe.samples[face]);
-            oldest = oldest.min(probe.face_updated_at[face].unwrap_or(oldest));
+            samples = samples.min(probe.stats().samples[face]);
+            oldest = oldest.min(probe.stats().face_updated_at[face].unwrap_or(oldest));
             fresh &= probe.fresh_mask & (1 << face) != 0;
         }
         Some(EnergyEstimate {

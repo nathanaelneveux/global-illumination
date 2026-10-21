@@ -190,10 +190,10 @@ impl TemporalRun {
                 .map(|p| State {
                     material: p.material,
                     face_mask: p.face_mask,
-                    samples: p.samples[face],
-                    sequence: p.sequence[face],
-                    measured: p.radiance[face].visible.to_array(),
-                    second_moment: p.second_moment[face].visible.to_array(),
+                    samples: p.stats().samples[face],
+                    sequence: p.stats().sequence[face],
+                    measured: p.stats().radiance[face].visible.to_array(),
+                    second_moment: p.stats().second_moment[face].visible.to_array(),
                     display: p.display[face].indirect.to_array(),
                     confidence: p.display[face].confidence,
                     sky: p.display[face].sky,
@@ -201,7 +201,7 @@ impl TemporalRun {
                     retention_revision: p.retention_revision,
                     resident: p.resident[face].to_array(),
                     fresh_mask: p.fresh_mask,
-                    stable_batches: p.stable_batches[face],
+                    stable_batches: p.stats().stable_batches[face],
                     mirror: (patch[4][3] != 0.0).then_some(patch[4]),
                     corners: corners(patch),
                     corner_inputs: patch.try_into().expect("nine-candidate corner patch"),
@@ -261,8 +261,8 @@ mod tests {
         let queue = GpuProbePatchQueue::unpublished_test_queue();
         run.record_pinned(0.0, &field, &runtime, &cache, &queue);
         let mut probe = SurfaceProbe::new(voxel, 4);
-        probe.samples[2] = 2048;
-        probe.sequence[2] = 8192;
+        probe.stats_mut().samples[2] = 2048;
+        probe.stats_mut().sequence[2] = 8192;
         probe.resident[2] = UVec2::new(12, 1);
         field.probes.insert(voxel, probe);
         run.record_pinned(1.0, &field, &runtime, &cache, &queue);
@@ -272,8 +272,8 @@ mod tests {
         run.record_pinned(2.0, &field, &runtime, &cache, &queue);
         let probe = field.probes.get_mut(&voxel).unwrap();
         probe.revision += 1;
-        probe.samples[2] = 0;
-        probe.sequence[2] = 0;
+        probe.stats_mut().samples[2] = 0;
+        probe.stats_mut().sequence[2] = 0;
         run.record_pinned(3.0, &field, &runtime, &cache, &queue);
         field.probes.remove(&voxel);
         run.record_pinned(4.0, &field, &runtime, &cache, &queue);

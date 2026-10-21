@@ -112,7 +112,7 @@ impl ProbeWork {
     ) {
         let same_revision =
             probe.transport_revision == self.transport_revision && self.retention.is_none();
-        let previous_stable = probe.stable_batches;
+        let previous_stable = probe.stats().stable_batches;
         let previous_display_time = probe.display_updated_at;
         if let Some(revision) = self.retention {
             probe.retention_revision = revision;
@@ -122,15 +122,19 @@ impl ProbeWork {
         probe.relit_mask &= !self.trace_mask;
         if !same_revision || self.restart {
             probe.fresh_mask = 0;
-            probe.stable_batches = [0; 6];
+            if let Some(stats) = probe.stats.as_mut() {
+                stats.stable_batches = [0; 6];
+            }
         }
-        if self.restart {
+        if self.restart
+            && let Some(stats) = probe.stats.as_mut()
+        {
             for face in 0..6 {
                 if self.trace_mask & (1 << face) == 0 {
-                    probe.samples[face] = 0;
-                    probe.radiance[face] = EnergySpectrum::ZERO;
-                    probe.second_moment[face] = EnergySpectrum::ZERO;
-                    probe.face_updated_at[face] = None;
+                    stats.samples[face] = 0;
+                    stats.radiance[face] = EnergySpectrum::ZERO;
+                    stats.second_moment[face] = EnergySpectrum::ZERO;
+                    stats.face_updated_at[face] = None;
                 }
             }
         }
@@ -142,8 +146,8 @@ impl ProbeWork {
         probe.transport_revision = self.transport_revision;
         for measurement in faces {
             let face = measurement.face;
-            let previous_time = probe.face_updated_at[face].or(previous_display_time);
-            let before = probe.radiance[face];
+            let previous_time = probe.stats().face_updated_at[face].or(previous_display_time);
+            let before = probe.stats().radiance[face];
             measurement.write(probe);
             if measurement.resident.y == 0 {
                 probe.resolve_face(
@@ -250,21 +254,21 @@ impl TraceWork {
             radiance: if restart {
                 EnergySpectrum::ZERO
             } else {
-                probe.radiance[face]
+                probe.stats().radiance[face]
             },
             second_moment: if restart {
                 EnergySpectrum::ZERO
             } else {
-                probe.second_moment[face]
+                probe.stats().second_moment[face]
             },
-            direct: probe.direct[face],
-            custom_direct: probe.custom_direct[face],
+            direct: probe.stats().direct[face],
+            custom_direct: probe.stats().custom_direct[face],
             samples: if restart {
                 0
             } else {
-                probe.samples[face].min(stale_limit).min(source_history_limit)
+                probe.stats().samples[face].min(stale_limit).min(source_history_limit)
             },
-            sequence: probe.sequence[face],
+            sequence: probe.stats().sequence[face],
             presentation: probe.display[face]
                 .indirect
                 .extend(probe.display[face].confidence),
@@ -289,7 +293,7 @@ impl TraceWork {
             updated_at: if restart {
                 None
             } else {
-                probe.face_updated_at[face]
+                probe.stats().face_updated_at[face]
             },
         });
     }
@@ -358,7 +362,7 @@ impl TraceWork {
             header.sky_requested = true;
             header.sky = probe.display.map(|face| face.sky);
             for face in &mut work.faces[header.faces()] {
-                face.samples = probe.samples[face.face];
+                face.samples = probe.stats().samples[face.face];
                 face.history_cap = u32::MAX;
             }
         }
@@ -386,18 +390,22 @@ impl FaceWork {
     /// advance; wrapping compare). A statistics-mirror record is classified
     /// before the batch traces, so a CPU job in the same batch is newer.
     pub fn predates(&self, probe: &SurfaceProbe) -> bool {
-        (probe.sequence[self.face].wrapping_sub(self.sequence) as i32) > 0
+        (probe.stats().sequence[self.face].wrapping_sub(self.sequence) as i32) > 0
     }
 
+    /// Statistics only reach probes that keep them (`SurfaceProbe::stats`);
+    /// the resident address and time always do.
     pub fn write(&self, probe: &mut SurfaceProbe) {
         let face = self.face;
-        probe.radiance[face] = self.radiance;
-        probe.second_moment[face] = self.second_moment;
-        probe.direct[face] = self.direct;
-        probe.custom_direct[face] = self.custom_direct;
-        probe.samples[face] = self.samples;
-        probe.sequence[face] = self.sequence;
-        probe.face_updated_at[face] = self.updated_at;
+        if let Some(stats) = probe.stats.as_mut() {
+            stats.radiance[face] = self.radiance;
+            stats.second_moment[face] = self.second_moment;
+            stats.direct[face] = self.direct;
+            stats.custom_direct[face] = self.custom_direct;
+            stats.samples[face] = self.samples;
+            stats.sequence[face] = self.sequence;
+            stats.face_updated_at[face] = self.updated_at;
+        }
         probe.resident[face] = self.resident;
         probe.updated_at = self.updated_at;
     }
@@ -410,10 +418,10 @@ mod tests {
     #[test]
     fn retention_wake_publishes_the_selected_stamp_and_restarts_stability() {
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 63);
-        probe.samples = [4096; 6];
-        probe.radiance = [EnergySpectrum::ONE; 6];
-        probe.second_moment = [EnergySpectrum::ONE * 2.0; 6];
-        probe.sequence = [9000; 6];
+        probe.stats_mut().samples = [4096; 6];
+        probe.stats_mut().radiance = [EnergySpectrum::ONE; 6];
+        probe.stats_mut().second_moment = [EnergySpectrum::ONE * 2.0; 6];
+        probe.stats_mut().sequence = [9000; 6];
         let mut work = TraceWork::default();
         work.push(&probe, 1, 1, 0, false, 256, u32::MAX);
         work.probes[0].retention = Some(7);
@@ -421,15 +429,15 @@ mod tests {
         work.faces[0].sequence += 16;
         work.probes[0].publish(&work.faces, &mut probe, Instant::now(), &default());
         // Counts come from the GPU, which already applied the change.
-        assert_eq!(probe.samples, [272, 4096, 4096, 4096, 4096, 4096]);
-        assert_eq!(probe.sequence, [9016, 9000, 9000, 9000, 9000, 9000]);
+        assert_eq!(probe.stats().samples, [272, 4096, 4096, 4096, 4096, 4096]);
+        assert_eq!(probe.stats().sequence, [9016, 9000, 9000, 9000, 9000, 9000]);
         assert_eq!(
             probe.retention_revision, 7,
             "publication must retain selection's stamp, not a later worker-result stamp"
         );
         assert_eq!(probe.fresh_mask, 1);
-        assert_eq!(probe.radiance, [EnergySpectrum::ONE; 6]);
-        assert_eq!(probe.second_moment, [EnergySpectrum::ONE * 2.0; 6]);
+        assert_eq!(probe.stats().radiance, [EnergySpectrum::ONE; 6]);
+        assert_eq!(probe.stats().second_moment, [EnergySpectrum::ONE * 2.0; 6]);
     }
 
     #[test]
@@ -439,13 +447,13 @@ mod tests {
         for mask in 1..64 {
             for mode in 0..3 {
                 let mut previous = SurfaceProbe::new(IVec3::new(8, 2, 6), 63);
-                previous.samples = [128; 6];
-                previous.sequence = [1050; 6];
-                previous.radiance = [EnergySpectrum::ONE; 6];
-                previous.second_moment = [EnergySpectrum::ONE; 6];
-                previous.stable_batches = [4; 6];
-                previous.face_updated_at = [Some(now - std::time::Duration::from_millis(40)); 6];
-                previous.updated_at = previous.face_updated_at[0];
+                previous.stats_mut().samples = [128; 6];
+                previous.stats_mut().sequence = [1050; 6];
+                previous.stats_mut().radiance = [EnergySpectrum::ONE; 6];
+                previous.stats_mut().second_moment = [EnergySpectrum::ONE; 6];
+                previous.stats_mut().stable_batches = [4; 6];
+                previous.stats_mut().face_updated_at = [Some(now - std::time::Duration::from_millis(40)); 6];
+                previous.updated_at = previous.stats().face_updated_at[0];
                 previous.order_index = 123;
                 for display in &mut previous.display {
                     display.indirect = Vec3::splat(0.7);
@@ -461,10 +469,10 @@ mod tests {
                 if revision != 0 {
                     reference.transport_revision = revision;
                     reference.fresh_mask = 0;
-                    reference.stable_batches = [0; 6];
+                    reference.stats_mut().stable_batches = [0; 6];
                     for face in 0..6 {
                         if mask & (1 << face) != 0 {
-                            reference.samples[face] = 64;
+                            reference.stats_mut().samples[face] = 64;
                         }
                     }
                 }
@@ -474,8 +482,8 @@ mod tests {
                 reference.source_revision = revision;
                 for face in &mut work.faces {
                     let index = face.face;
-                    assert_eq!(face.samples, reference.samples[index]);
-                    assert_eq!(face.radiance, reference.radiance[index]);
+                    assert_eq!(face.samples, reference.stats().samples[index]);
+                    assert_eq!(face.radiance, reference.stats().radiance[index]);
                     for sample in 0..4 {
                         super::super::tracer::accumulate_sample(
                             &mut reference,
@@ -483,12 +491,12 @@ mod tests {
                             EnergySpectrum::new(Vec3::splat(sample as f32 * 0.2), 0.3, 0.6),
                         );
                     }
-                    face.radiance = reference.radiance[index];
-                    face.second_moment = reference.second_moment[index];
-                    face.samples = reference.samples[index];
-                    face.sequence = reference.sequence[index];
+                    face.radiance = reference.stats().radiance[index];
+                    face.second_moment = reference.stats().second_moment[index];
+                    face.samples = reference.stats().samples[index];
+                    face.sequence = reference.stats().sequence[index];
                     face.updated_at = Some(now);
-                    reference.face_updated_at[index] = Some(now);
+                    reference.stats_mut().face_updated_at[index] = Some(now);
                 }
                 reference.updated_at = Some(now);
                 reference.resolve_display(&previous, now, settings.display_response_seconds());
@@ -499,15 +507,15 @@ mod tests {
                 actual.order_index = 999;
                 work.probes[0].publish(&work.faces, &mut actual, now, &settings);
                 assert_eq!(actual.order_index, 999);
-                assert_eq!(actual.samples, reference.samples);
-                assert_eq!(actual.sequence, reference.sequence);
-                assert_eq!(actual.radiance, reference.radiance);
-                assert_eq!(actual.second_moment, reference.second_moment);
-                assert_eq!(actual.direct, reference.direct);
-                assert_eq!(actual.custom_direct, reference.custom_direct);
-                assert_eq!(actual.stable_batches, reference.stable_batches);
+                assert_eq!(actual.stats().samples, reference.stats().samples);
+                assert_eq!(actual.stats().sequence, reference.stats().sequence);
+                assert_eq!(actual.stats().radiance, reference.stats().radiance);
+                assert_eq!(actual.stats().second_moment, reference.stats().second_moment);
+                assert_eq!(actual.stats().direct, reference.stats().direct);
+                assert_eq!(actual.stats().custom_direct, reference.stats().custom_direct);
+                assert_eq!(actual.stats().stable_batches, reference.stats().stable_batches);
                 assert_eq!(actual.fresh_mask, reference.fresh_mask);
-                assert_eq!(actual.face_updated_at, reference.face_updated_at);
+                assert_eq!(actual.stats().face_updated_at, reference.stats().face_updated_at);
                 assert_eq!(actual.updated_at, reference.updated_at);
                 for face in 0..6 {
                     assert_eq!(
@@ -527,9 +535,9 @@ mod tests {
     #[test]
     fn long_refinement_history_obeys_geometry_and_source_caps() {
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
-        probe.samples[2] = super::super::tracer::HISTORY_LIMIT;
-        probe.sequence[2] = 100_000;
-        probe.radiance[2] = EnergySpectrum::ONE;
+        probe.stats_mut().samples[2] = super::super::tracer::HISTORY_LIMIT;
+        probe.stats_mut().sequence[2] = 100_000;
+        probe.stats_mut().radiance[2] = EnergySpectrum::ONE;
         let mut work = TraceWork::default();
         for (revision, geometry_limit, source_limit, restart, expected) in [
             (0, 64, u32::MAX, false, super::super::tracer::HISTORY_LIMIT),
@@ -570,7 +578,7 @@ mod tests {
     fn relit_faces_carry_an_explicit_cap_never_the_mirrored_count() {
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 5);
         // The CPU never merged this face: its count reads 0.
-        probe.samples = [0; 6];
+        probe.stats_mut().samples = [0; 6];
         probe.request_relight();
         let mut work = TraceWork::default();
         work.push(&probe, 5, 0, 0, false, u32::MAX, u32::MAX);
@@ -590,10 +598,10 @@ mod tests {
     #[test]
     fn retaining_history_still_publishes_freshness_and_wakes_stable_faces() {
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 5);
-        probe.samples = [4096; 6];
-        probe.sequence = [8000; 6];
-        probe.radiance = [EnergySpectrum::ONE; 6];
-        probe.stable_batches = [4; 6];
+        probe.stats_mut().samples = [4096; 6];
+        probe.stats_mut().sequence = [8000; 6];
+        probe.stats_mut().radiance = [EnergySpectrum::ONE; 6];
+        probe.stats_mut().stable_batches = [4; 6];
         let mut work = TraceWork::default();
         work.push(&probe, 4, 1, 1, false, u32::MAX, u32::MAX);
         assert_eq!(work.faces[0].samples, 4096);
@@ -602,18 +610,22 @@ mod tests {
         assert_eq!(probe.transport_revision, 1);
         assert_eq!(probe.source_revision, 1);
         assert_eq!(probe.fresh_mask, 4);
-        assert_eq!(probe.stable_batches[0], 0);
-        assert_eq!(probe.samples[0], 4096);
-        assert_eq!(probe.samples[2], 4096);
+        assert_eq!(probe.stats().stable_batches[0], 0);
+        assert_eq!(probe.stats().samples[0], 4096);
+        assert_eq!(probe.stats().samples[2], 4096);
     }
 
     #[test]
     fn single_face_work_is_less_than_half_a_full_probe_and_sky_copies_no_history() {
         let bytes = size_of::<ProbeWork>() + size_of::<FaceWork>();
-        assert!(bytes < size_of::<SurfaceProbe>() / 2);
+        let full = size_of::<SurfaceProbe>() + size_of::<super::super::world::ProbeStatistics>();
+        assert!(bytes < full / 2);
+        // A probe without CPU statistics keeps the core: topology, display,
+        // revisions and resident addresses.
+        assert!(size_of::<SurfaceProbe>() < 400, "{}", size_of::<SurfaceProbe>());
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 63);
-        probe.samples = [128; 6];
-        probe.sequence = [901; 6];
+        probe.stats_mut().samples = [128; 6];
+        probe.stats_mut().sequence = [901; 6];
         let mut work = TraceWork::default();
         work.push(&probe, 4, 1, 0, false, 64, u32::MAX);
         work.push(&probe, 0, 0, 0, false, 64, u32::MAX);

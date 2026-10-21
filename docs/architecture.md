@@ -517,8 +517,12 @@ history (the GPU measures the cap; the CPU only walks the graph). A pick whose s
 revision tag is older than the probe's revision traced pre-change light: the
 CPU's next job for the probe undoes it, unless one is already in flight.
 
-The GPU state is the statistics authority; the CPU keeps a bounded mirror for
-diagnostics, validation recorders and the CPU fallback display. A pick marks
+The GPU state is the statistics authority. Probes keep no CPU statistics by
+default (`ProbeStatistics`, ~600 B per probe, is attached only with
+`cpu_statistics`, by the CPU reference tracer and in tests); the core record
+keeps topology, display and sun-corner words, revision flags and resident
+addresses. With statistics on, the CPU keeps a bounded mirror for diagnostics,
+validation recorders and the CPU fallback display. A pick marks
 its face's mirror stale, and selection emits at most
 `statistics_mirror_per_batch` (default 1,024) stale faces' full state per
 batch; the CPU merges those records unless the probe changed since. The

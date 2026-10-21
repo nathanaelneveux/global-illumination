@@ -359,7 +359,7 @@ impl ReferenceImage {
                     let mut work = TraceWork { transport, ..default() };
                     for &(voxel, face) in chunk {
                         let mut probe = SurfaceProbe::new(voxel, 1 << face);
-                        probe.sequence[face] = 4_194_304 + replica * 2_097_152;
+                        probe.stats_mut().sequence[face] = 4_194_304 + replica * 2_097_152;
                         work.push(&probe, 1 << face, 0, 0, false, u32::MAX, u32::MAX);
                     }
                     for _ in 0..paths / BLOCK_PATHS {
@@ -385,8 +385,8 @@ impl ReferenceImage {
                     // through the same path as normal display publication.
                     for (job, face) in work.probes.iter().zip(&work.faces) {
                         let probe = base.get_mut(&face.voxel).unwrap();
-                        probe.direct[face.face] = face.direct;
-                        probe.custom_direct[face.face] = face.custom_direct;
+                        probe.stats_mut().direct[face.face] = face.direct;
+                        probe.stats_mut().custom_direct[face.face] = face.custom_direct;
                         probe.display[face.face].sky = job.sky[face.face];
                     }
                 }
@@ -431,8 +431,8 @@ impl ReferenceImage {
                 json!({"voxel":voxel.to_array(),"face":face,
                     "material":p.material,"source_revision":p.source_revision,
                     "transport_revision":p.transport_revision,
-                    "live_display":live[i],"live_history":p.samples[face],
-                    "live_measured":super::reference_oracle::channels(p.radiance[face]),
+                    "live_display":live[i],"live_history":p.stats().samples[face],
+                    "live_measured":super::reference_oracle::channels(p.stats().radiance[face]),
                     "replicas":[replicas[0][i],replicas[1][i]],"mean":mean[i],
                     "replica_relative_rgb_difference":discrepancy[i]})
             }).collect();

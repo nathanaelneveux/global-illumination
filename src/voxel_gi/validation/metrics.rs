@@ -153,10 +153,10 @@ impl Metrics {
             && watch.targets.iter().all(|(voxel, face)| {
                 field.probes.get(voxel).is_some_and(|probe| {
                     probe.face_mask & (1 << face) != 0
-                        && probe.samples[*face] > 0
+                        && probe.stats().samples[*face] > 0
                         && probe.fresh_mask & (1 << face) != 0
                         && probe.transport_revision == field.transport_revision
-                        && probe.face_updated_at[*face].is_some_and(|at| at >= watch.at)
+                        && probe.stats().face_updated_at[*face].is_some_and(|at| at >= watch.at)
                 })
             })
         {
@@ -198,11 +198,11 @@ impl Metrics {
                 if probe.display[face].sky.contains(&0) {
                     stats.unknown_sky_faces += 1;
                 }
-                if probe.samples[face] == 0 || probe.face_updated_at[face].is_none() {
+                if probe.stats().samples[face] == 0 || probe.stats().face_updated_at[face].is_none() {
                     stats.unmeasured_faces += 1;
                 } else {
                     let age = now
-                        .saturating_duration_since(probe.face_updated_at[face].unwrap())
+                        .saturating_duration_since(probe.stats().face_updated_at[face].unwrap())
                         .as_secs_f32()
                         * 1000.0;
                     if near {
@@ -342,8 +342,8 @@ mod tests {
         let mut field = VoxelEnergyField::default();
         metrics.edit(&field, vec![(IVec3::ZERO, 2)]);
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
-        probe.samples[2] = 4;
-        probe.face_updated_at[2] = Some(Instant::now());
+        probe.stats_mut().samples[2] = 4;
+        probe.stats_mut().face_updated_at[2] = Some(Instant::now());
         field.probes.insert(IVec3::ZERO, probe);
         metrics.poll_edit(&field);
         assert!(metrics.edit_latency_ms.is_empty());
@@ -362,8 +362,8 @@ mod tests {
     fn unknown_and_stale_faces_are_reported_not_hidden_by_fast_frames() {
         let mut field = VoxelEnergyField::default();
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 5);
-        probe.samples[2] = 4;
-        probe.face_updated_at[2] = Some(Instant::now());
+        probe.stats_mut().samples[2] = 4;
+        probe.stats_mut().face_updated_at[2] = Some(Instant::now());
         field.transport_revision = 1;
         field.order.push(IVec3::ZERO);
         field.probes.insert(IVec3::ZERO, probe);

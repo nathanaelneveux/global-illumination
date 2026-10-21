@@ -152,7 +152,7 @@ pub(super) fn run(
             };
             for &(voxel, face) in chunk {
                 let mut probe = SurfaceProbe::new(voxel, 1 << face);
-                probe.sequence[face] = sequence_start;
+                probe.stats_mut().sequence[face] = sequence_start;
                 work.push(&probe, 1 << face, 0, 0, false, u32::MAX, u32::MAX);
                 work.probes.last_mut().unwrap().sky_requested = false;
                 work.probes.last_mut().unwrap().revision = u64::from(sequence_start) + 1;

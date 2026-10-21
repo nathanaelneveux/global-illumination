@@ -1,1 +1,1 @@
-{"statistics_mirror_per_batch": 65536}
+{"statistics_mirror_per_batch": 65536, "cpu_statistics": true}

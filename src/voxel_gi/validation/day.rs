@@ -73,7 +73,7 @@ impl DayRun {
             .flat_map(|probe| {
                 (0..6)
                     .filter(|face| probe.face_mask & (1 << face) != 0)
-                    .map(|face| probe.samples[face])
+                    .map(|face| probe.stats().samples[face])
             })
             .collect();
         let mut at = |q: f32| {

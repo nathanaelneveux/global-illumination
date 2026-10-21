@@ -164,7 +164,7 @@ impl ReferenceRun {
                 let mut cpu = TraceWork { transport, ..default() };
                 for sequence in 0..2048 {
                     let mut probe = SurfaceProbe::new(voxel, 1 << face);
-                    probe.sequence[face] = sequence;
+                    probe.stats_mut().sequence[face] = sequence;
                     work.push(&probe, 1 << face, 0, 0, false, u32::MAX, u32::MAX);
                     work.probes.last_mut().unwrap().sky_requested = false;
                     cpu.push(&probe, 1 << face, 0, 0, false, u32::MAX, u32::MAX);
@@ -193,7 +193,7 @@ impl ReferenceRun {
                         return Err(format!("Reference receiver is not exposed: {voxel:?}/{face}"));
                     }
                     let mut probe = SurfaceProbe::new(voxel, 1 << face);
-                    probe.sequence[face] = REFERENCE_SEQUENCE_START + replicate * stride;
+                    probe.stats_mut().sequence[face] = REFERENCE_SEQUENCE_START + replicate * stride;
                     work.push(&probe, 1 << face, 0, 0, false, u32::MAX, u32::MAX);
                     work.probes.last_mut().unwrap().sky_requested = false;
                 }

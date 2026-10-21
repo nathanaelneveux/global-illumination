@@ -316,9 +316,9 @@ fn sampled_field_history(field: &VoxelEnergyField, now: Instant) -> (f32, Durati
         };
         for face in 0..6 {
             if probe.face_mask & (1 << face) != 0 {
-                samples += u64::from(probe.samples[face]);
+                samples += u64::from(probe.stats().samples[face]);
                 faces += 1;
-                if let Some(updated) = probe.face_updated_at[face].or(probe.updated_at) {
+                if let Some(updated) = probe.stats().face_updated_at[face].or(probe.updated_at) {
                     oldest = oldest.max(now.saturating_duration_since(updated));
                 }
             }
@@ -380,8 +380,8 @@ mod tests {
         for x in 0..2048 {
             let voxel = IVec3::new(x, 0, 0);
             let mut probe = super::super::world::SurfaceProbe::new(voxel, 4);
-            probe.samples[2] = if x % 2 == 0 { 32 } else { 500 };
-            probe.face_updated_at[2] =
+            probe.stats_mut().samples[2] = if x % 2 == 0 { 32 } else { 500 };
+            probe.stats_mut().face_updated_at[2] =
                 Some(now - Duration::from_secs(if x % 2 == 0 { 1 } else { 10 }));
             field.probes.insert(voxel, probe);
             field.order.push(voxel);

@@ -66,8 +66,8 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
     use bevy::ecs::system::RunSystemOnce;
     let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(1).build();
     let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
-    probe.samples = [256; 6];
-    probe.stable_batches = [3; 6];
+    probe.stats_mut().samples = [256; 6];
+    probe.stats_mut().stable_batches = [3; 6];
     let mut field = VoxelEnergyField::default();
     field.probes.insert(IVec3::ZERO, probe);
     field.update_indices(&[IVec3::ZERO], &HashMap::new());
@@ -87,13 +87,13 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
         probe.trace_mask = 4;
         if case == 1 {
             probe.trace_mask = 0;
-            probe.stable_batches = [0; 6];
+            probe.stats_mut().stable_batches = [0; 6];
         } else if case == 2 {
             probe.revision += 1;
-            probe.stable_batches = [0; 6];
+            probe.stats_mut().stable_batches = [0; 6];
         } else if case == 3 {
-            probe.radiance[2] = EnergySpectrum::ONE;
-            probe.second_moment[2] = EnergySpectrum::ONE;
+            probe.stats_mut().radiance[2] = EnergySpectrum::ONE;
+            probe.stats_mut().second_moment[2] = EnergySpectrum::ONE;
         } else if case == 4 {
             // A batch dispatched before a tuning change must not publish into
             // the new model. Geometry and the last display remain usable.
@@ -101,7 +101,7 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
             world
                 .run_system_once(settings::synchronize_transport_settings)
                 .unwrap();
-            probe.radiance[2] = EnergySpectrum::ONE * 100.0;
+            probe.stats_mut().radiance[2] = EnergySpectrum::ONE * 100.0;
         }
         let task = pool.spawn(async move {
             TraceBatchResult {
@@ -137,7 +137,7 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
         );
         if case == 4 {
             assert_eq!(
-                world.resource::<VoxelEnergyField>().probes[&IVec3::ZERO].radiance[2],
+                world.resource::<VoxelEnergyField>().probes[&IVec3::ZERO].stats().radiance[2],
                 EnergySpectrum::ONE
             );
         }
@@ -152,8 +152,8 @@ fn settled_counter_tracks_global_revisions_and_page_removal() {
     let far = IVec3::new(128, 0, 0);
     for voxel in [IVec3::ZERO, far] {
         let mut probe = SurfaceProbe::new(voxel, 5);
-        probe.samples = [128; 6];
-        probe.stable_batches = [4; 6];
+        probe.stats_mut().samples = [128; 6];
+        probe.stats_mut().stable_batches = [4; 6];
         let (faces, samples, covered, settled) = probe_metrics(&probe, 0);
         runtime.active_faces += faces;
         runtime.completed_samples += samples;
@@ -169,16 +169,16 @@ fn settled_counter_tracks_global_revisions_and_page_removal() {
     // longer count, including late worker results from that old revision.
     invalidate_source_change(&mut runtime, &mut field, &mut stats, SourceChange::Global);
     assert_eq!(stats.settled_coverage, 0.0);
-    assert_eq!(field.probes[&far].samples[0], 128);
+    assert_eq!(field.probes[&far].stats().samples[0], 128);
     assert_eq!(
         probe_metrics(&field.probes[&far], field.transport_revision).3,
         0
     );
     let current = field.probes.get_mut(&IVec3::ZERO).unwrap();
     current.transport_revision = field.transport_revision;
-    current.samples = [128; 6];
+    current.stats_mut().samples = [128; 6];
     current.fresh_mask = current.face_mask;
-    current.stable_batches = [4; 6];
+    current.stats_mut().stable_batches = [4; 6];
     runtime.settled_faces = probe_metrics(current, field.transport_revision).3;
     let mut result = SceneBuildResult {
         scene: runtime.scene.clone(),
@@ -345,7 +345,7 @@ fn new_receiver_display_clock_does_not_depend_on_material_id() {
         let probe = &field.probes[&IVec3::ZERO];
         assert!(probe.display_updated_at.is_some());
         assert!(probe.updated_at.is_none());
-        assert_eq!(probe.samples, [0; 6]);
+        assert_eq!(probe.stats().samples, [0; 6]);
         assert!(field.estimate(IVec3::ZERO, Vec3::Y).is_none());
     }
 }
@@ -361,19 +361,19 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             let now = Instant::now();
             let mut probe = SurfaceProbe::new(voxel, 4);
             probe.material = 3;
-            probe.samples = [1024; 6];
-            probe.sequence = [2048; 6];
-            probe.radiance = [EnergySpectrum::ONE; 6];
-            probe.second_moment = [EnergySpectrum::ONE * 2.0; 6];
+            probe.stats_mut().samples = [1024; 6];
+            probe.stats_mut().sequence = [2048; 6];
+            probe.stats_mut().radiance = [EnergySpectrum::ONE; 6];
+            probe.stats_mut().second_moment = [EnergySpectrum::ONE * 2.0; 6];
             probe.display[2].indirect = Vec3::splat(0.5);
             probe.display[2].confidence = 0.75;
             probe.updated_at = Some(now);
-            probe.face_updated_at = [Some(now); 6];
+            probe.stats_mut().face_updated_at = [Some(now); 6];
             probe.display_updated_at = Some(now);
             probe.revision = 7;
-            probe.stable_batches = [4; 6];
+            probe.stats_mut().stable_batches = [4; 6];
             let mut late = probe.clone();
-            late.radiance = [EnergySpectrum::ONE * 100.0; 6];
+            late.stats_mut().radiance = [EnergySpectrum::ONE * 100.0; 6];
             let mut field = VoxelEnergyField::default();
             field.probes.insert(voxel, probe);
             field.pages.insert(IVec3::ZERO, vec![voxel]);
@@ -430,17 +430,17 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
                 runtime.urgent_queued.contains(&voxel),
                 "a relit probe is CPU event work: only its job carries the cap"
             );
-            assert_eq!(p.samples[2], geometry::NEAR_HISTORY);
-            assert_eq!(p.sequence[2], 2048);
-            assert_eq!(p.radiance[2], EnergySpectrum::ONE);
-            assert_eq!(p.second_moment[2], EnergySpectrum::ONE * 2.0);
-            assert_eq!(p.face_updated_at[2], Some(now));
+            assert_eq!(p.stats().samples[2], geometry::NEAR_HISTORY);
+            assert_eq!(p.stats().sequence[2], 2048);
+            assert_eq!(p.stats().radiance[2], EnergySpectrum::ONE);
+            assert_eq!(p.stats().second_moment[2], EnergySpectrum::ONE * 2.0);
+            assert_eq!(p.stats().face_updated_at[2], Some(now));
             assert_eq!(p.display_updated_at, Some(now));
             assert_eq!(p.display[2].indirect, Vec3::splat(0.5));
             assert_eq!(p.display[2].confidence, 0.75);
             assert_eq!(p.emission, runtime.materials.get(material).emission);
             assert_eq!(p.fresh_mask, 0);
-            assert_eq!(p.stable_batches, [0; 6]);
+            assert_eq!(p.stats().stable_batches, [0; 6]);
             let estimate = field.estimate(voxel, Vec3::Y).unwrap();
             assert!(!estimate.transport_current && !estimate.sources_current);
             assert_eq!(
@@ -449,8 +449,8 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
                 "self-emission is not incoming energy"
             );
             if face_mask == 5 {
-                assert_eq!(p.samples[0], 0);
-                assert_eq!(p.radiance[0], EnergySpectrum::ZERO);
+                assert_eq!(p.stats().samples[0], 0);
+                assert_eq!(p.stats().radiance[0], EnergySpectrum::ZERO);
                 assert!(field.estimate(voxel, Vec3::X).is_none());
             }
             let task = pool.spawn(async move {
@@ -485,7 +485,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             world.init_resource::<GiWorkTimings>();
             world.run_system_once(apply_trace_task).unwrap();
             assert_eq!(
-                world.resource::<VoxelEnergyField>().probes[&voxel].radiance[2],
+                world.resource::<VoxelEnergyField>().probes[&voxel].stats().radiance[2],
                 EnergySpectrum::ONE,
                 "pre-replacement jobs must not overwrite retained incident energy"
             );
@@ -539,13 +539,13 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
         let mut field = VoxelEnergyField::default();
         for voxel in [near, far] {
             let mut probe = SurfaceProbe::new(voxel, 4);
-            probe.samples = [4096; 6];
-            probe.radiance = [EnergySpectrum::ONE; 6];
-            probe.second_moment = [EnergySpectrum::ONE; 6];
-            probe.sequence = [4096; 6];
+            probe.stats_mut().samples = [4096; 6];
+            probe.stats_mut().radiance = [EnergySpectrum::ONE; 6];
+            probe.stats_mut().second_moment = [EnergySpectrum::ONE; 6];
+            probe.stats_mut().sequence = [4096; 6];
             probe.display[2].indirect = Vec3::ONE;
             probe.updated_at = Some(Instant::now());
-            probe.face_updated_at[2] = probe.updated_at;
+            probe.stats_mut().face_updated_at[2] = probe.updated_at;
             field.probes.insert(voxel, probe);
             field.pages.insert(page_of(voxel), vec![voxel]);
         }
@@ -591,9 +591,9 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
                 let (cap, _) = retention::resolve(&events, voxel);
                 assert_eq!(cap.min(4096), retained, "material {material}");
                 let probe = &field.probes[&voxel];
-                assert_eq!(probe.samples[2], 4096);
-                assert_eq!(probe.radiance[2], EnergySpectrum::ONE);
-                assert_eq!(probe.sequence[2], 4096);
+                assert_eq!(probe.stats().samples[2], 4096);
+                assert_eq!(probe.stats().radiance[2], EnergySpectrum::ONE);
+                assert_eq!(probe.stats().sequence[2], 4096);
                 assert_eq!(probe.display[2].indirect, Vec3::ONE);
             }
         });
@@ -697,8 +697,8 @@ fn sky_queue_piggybacks_without_duplicating_rays_or_changing_history() {
     let mut transport = TraceWork::from_probes(std::slice::from_ref(&initial), false);
     transport.probes[0].sky_requested = false;
     let mut sky_only = SurfaceProbe::new(IVec3::X, 5);
-    sky_only.samples = [128; 6];
-    sky_only.sequence = [1000; 6];
+    sky_only.stats_mut().samples = [128; 6];
+    sky_only.stats_mut().sequence = [1000; 6];
     let duplicate = initial;
     let mut field = VoxelEnergyField::default();
     for probe in [duplicate, sky_only] {
@@ -721,8 +721,8 @@ fn sky_queue_piggybacks_without_duplicating_rays_or_changing_history() {
         1,
         "sky-only work carries no transport history"
     );
-    assert_eq!(field.probes[&IVec3::X].samples, [128; 6]);
-    assert_eq!(field.probes[&IVec3::X].sequence, [1000; 6]);
+    assert_eq!(field.probes[&IVec3::X].stats().samples, [128; 6]);
+    assert_eq!(field.probes[&IVec3::X].stats().sequence, [1000; 6]);
 }
 
 #[test]
@@ -843,16 +843,16 @@ fn simulation_rejects_unmeasured_or_buried_faces_and_reports_stale_sources() {
     field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
     assert!(field.estimate(voxel, Vec3::Y).is_none());
     let probe = field.probes.get_mut(&voxel).unwrap();
-    probe.samples[2] = 8;
+    probe.stats_mut().samples[2] = 8;
     probe.updated_at = Some(Instant::now());
     assert!(field.estimate(voxel, Vec3::Y).unwrap().sources_current);
     assert!(field.estimate(voxel, Vec3::X).is_none());
     field.source_revision += 1;
     assert!(!field.estimate(voxel, Vec3::Y).unwrap().sources_current);
     let probe = field.probes.get_mut(&voxel).unwrap();
-    probe.sequence[2] = 100;
+    probe.stats_mut().sequence[2] = 100;
     probe.restart_measurements();
-    assert_eq!(probe.sequence[2], 100);
+    assert_eq!(probe.stats().sequence[2], 100);
     assert!(field.estimate(voxel, Vec3::Y).is_none());
 }
 
@@ -861,10 +861,10 @@ fn partial_face_queries_keep_independent_age_and_revision_freshness() {
     let now = Instant::now();
     let voxel = IVec3::ZERO;
     let mut probe = SurfaceProbe::new(voxel, 5);
-    probe.samples = [64; 6];
+    probe.stats_mut().samples = [64; 6];
     probe.updated_at = Some(now);
-    probe.face_updated_at[0] = Some(now - Duration::from_secs(10));
-    probe.face_updated_at[2] = Some(now);
+    probe.stats_mut().face_updated_at[0] = Some(now - Duration::from_secs(10));
+    probe.stats_mut().face_updated_at[2] = Some(now);
     probe.fresh_mask = 4;
     probe.transport_revision = 1;
     let mut field = VoxelEnergyField {
@@ -888,10 +888,10 @@ fn cpu_selects_only_event_work_and_sky_requests() {
     for x in 0..64 {
         let voxel = IVec3::new(10_000 + x, 0, 0);
         let mut probe = SurfaceProbe::new(voxel, 5);
-        probe.samples = [256; 6];
-        probe.stable_batches = [4; 6];
+        probe.stats_mut().samples = [256; 6];
+        probe.stats_mut().stable_batches = [4; 6];
         probe.updated_at = Some(now);
-        probe.face_updated_at = [Some(now); 6];
+        probe.stats_mut().face_updated_at = [Some(now); 6];
         field.order.push(voxel);
         field.probes.insert(voxel, probe);
     }
@@ -907,7 +907,7 @@ fn cpu_selects_only_event_work_and_sky_requests() {
     field.transport_revision += 1;
     assert!(select_probes(&mut runtime, &field).is_empty());
     assert!(
-        field.probes.values().all(|probe| probe.samples[2] == 256),
+        field.probes.values().all(|probe| probe.stats().samples[2] == 256),
         "scheduling must not mutate published histories"
     );
     enqueue_sky(&mut runtime, field.order.iter().copied());
@@ -915,7 +915,7 @@ fn cpu_selects_only_event_work_and_sky_requests() {
     append_sky_work(&mut runtime, &field, &mut sky);
     assert_eq!(sky.probes.len(), 64);
     assert!(sky.faces.is_empty());
-    assert!(field.probes.values().all(|probe| probe.samples[2] == 256));
+    assert!(field.probes.values().all(|probe| probe.stats().samples[2] == 256));
 }
 
 #[test]
@@ -927,16 +927,18 @@ fn energy_field_uses_directional_ambient_cube_weights() {
         SurfaceProbe {
             voxel,
             face_mask: 0b11_1111,
-            radiance: [
-                EnergySpectrum::new(Vec3::X, 1.0, 0.0),
-                EnergySpectrum::ZERO,
-                EnergySpectrum::new(Vec3::Y, 0.0, 2.0),
-                EnergySpectrum::ZERO,
-                EnergySpectrum::new(Vec3::Z, 0.0, 0.0),
-                EnergySpectrum::ZERO,
-            ],
-            direct: [EnergySpectrum::ZERO; 6],
-            samples: [1; 6],
+            stats: Some(Box::new(world::ProbeStatistics {
+                radiance: [
+                    EnergySpectrum::new(Vec3::X, 1.0, 0.0),
+                    EnergySpectrum::ZERO,
+                    EnergySpectrum::new(Vec3::Y, 0.0, 2.0),
+                    EnergySpectrum::ZERO,
+                    EnergySpectrum::new(Vec3::Z, 0.0, 0.0),
+                    EnergySpectrum::ZERO,
+                ],
+                samples: [1; 6],
+                ..world::ProbeStatistics::EMPTY
+            })),
             updated_at: Some(Instant::now()),
             ..SurfaceProbe::new(voxel, 0b11_1111)
         },

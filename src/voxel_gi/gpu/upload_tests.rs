@@ -9,12 +9,12 @@ use crate::voxel_gi::{
 
 pub(super) fn compare_probes(a: &[SurfaceProbe], b: &[SurfaceProbe]) {
     for (a, b) in a.iter().zip(b) {
-        assert_eq!(a.radiance, b.radiance);
-        assert_eq!(a.second_moment, b.second_moment);
-        assert_eq!(a.direct, b.direct);
-        assert_eq!(a.custom_direct, b.custom_direct);
-        assert_eq!(a.samples, b.samples);
-        assert_eq!(a.sequence, b.sequence);
+        assert_eq!(a.stats().radiance, b.stats().radiance);
+        assert_eq!(a.stats().second_moment, b.stats().second_moment);
+        assert_eq!(a.stats().direct, b.stats().direct);
+        assert_eq!(a.stats().custom_direct, b.stats().custom_direct);
+        assert_eq!(a.stats().samples, b.stats().samples);
+        assert_eq!(a.stats().sequence, b.stats().sequence);
         for face in 0..6 {
             assert_eq!(a.display[face].sky, b.display[face].sky);
         }

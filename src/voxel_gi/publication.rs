@@ -272,7 +272,11 @@ fn reconcile_scene_page(
         let mut probe = old_affected.remove(&descriptor.voxel).unwrap_or_else(|| {
             invalidated.insert(descriptor.voxel);
             added.push(descriptor.voxel);
-            let mut probe = SurfaceProbe::new(descriptor.voxel, descriptor.face_mask);
+            let mut probe = if field.cpu_statistics {
+                SurfaceProbe::new(descriptor.voxel, descriptor.face_mask)
+            } else {
+                SurfaceProbe::new_slim(descriptor.voxel, descriptor.face_mask)
+            };
             probe.revision = runtime.generation << 32;
             // Timestamp the new display prior independently of material ID.
             // This is not measurement evidence or a transport freshness stamp.
@@ -447,7 +451,7 @@ mod donor_tests {
         for d in &descriptors {
             let mut probe = SurfaceProbe::new(d.voxel, d.face_mask);
             probe.material = d.material;
-            probe.samples[2] = 64;
+            probe.stats_mut().samples[2] = 64;
             probe.display[2].indirect = Vec3::splat(2.0);
             field.probes.insert(d.voxel, probe);
         }
@@ -547,7 +551,7 @@ mod donor_tests {
         assert!(!runtime.sky_queued.contains(&voxel));
         assert!(!runtime.urgent_queued.contains(&voxel));
         // The count stays for measured retention to cap.
-        assert_eq!(field.probes[&voxel].samples[2], 64);
+        assert_eq!(field.probes[&voxel].stats().samples[2], 64);
         assert!(!field.publishing_pages.contains(&IVec3::ZERO));
         assert_eq!(runtime.active_faces, 1024);
         assert_eq!(field.order.len(), 1024);
@@ -653,8 +657,8 @@ mod donor_tests {
             for x in -32..0 {
                 let p = IVec3::new(x, 0, z);
                 let mut probe = SurfaceProbe::new(p, 4);
-                probe.samples[2] = 64;
-                probe.face_updated_at[2] = Some(now);
+                probe.stats_mut().samples[2] = 64;
+                probe.stats_mut().face_updated_at[2] = Some(now);
                 probe.display[2].indirect = Vec3::new(1.0, z as f32 / 32.0, 0.25);
                 probe.display[2].confidence = 0.9;
                 measured.insert(p, probe);

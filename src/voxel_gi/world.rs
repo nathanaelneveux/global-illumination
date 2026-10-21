@@ -485,19 +485,16 @@ pub struct SurfaceProbe {
     pub order_index: usize,
     pub emission: EnergySpectrum,
     pub face_mask: u8,
-    /// Unfiltered indirect transport measurements. Presentation history is
-    /// separate; simulations never receive spatial or temporal display filters.
-    pub radiance: [EnergySpectrum; 6],
-    /// Direct incident energy, retained for gameplay queries in every band.
-    pub direct: [EnergySpectrum; 6],
-    /// Visible analytic contributions not already rendered by Bevy PBR.
-    pub custom_direct: [Vec3; 6],
+    /// The CPU copy of this probe's measurement statistics, when something
+    /// needs it: the CPU reference tracer, tests, and validation recorders or
+    /// diagnostics (`VoxelGiSettings::cpu_statistics`). The GPU state is the
+    /// authority; by default probes carry none (~600 B each).
+    pub(crate) stats: Option<Box<ProbeStatistics>>,
     pub(crate) display: [super::history::FaceDisplay; 6],
     /// Optional resident slot and allocation incarnation. Zero incarnation is
     /// the CPU/display-prior fallback; recycled slots cannot alias old readers.
     pub(crate) resident: [UVec2; 6],
     pub(crate) display_updated_at: Option<Instant>,
-    pub samples: [u32; 6],
     /// Selection in the full-probe test oracle. Production selection belongs
     /// only to the compact `ProbeWork`, never the persistent receiver.
     #[cfg(test)]
@@ -516,33 +513,73 @@ pub struct SurfaceProbe {
     /// Independent spatial evidence consumed by statistical retention.
     /// Sunlight changes can arrive after transport refreshed in the same scene.
     pub(crate) retention_revision: u64,
-    pub(crate) stable_batches: [u8; 6],
-    pub(crate) face_updated_at: [Option<Instant>; 6],
-    /// Sampling sequence is independent of history length and invalidation.
-    pub sequence: [u32; 6],
-    /// Per-band second raw moment, used to expose uncertainty to simulations.
-    pub second_moment: [EnergySpectrum; 6],
     /// Changes only when this probe's geometry/history is invalidated.
     pub revision: u64,
     pub source_revision: u64,
     pub updated_at: Option<Instant>,
 }
 
+/// A probe's measurement statistics on the CPU (the GPU state is the
+/// authority). Present only where something reads them; see
+/// `SurfaceProbe::stats`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProbeStatistics {
+    /// Unfiltered indirect transport measurements. Presentation history is
+    /// separate; simulations never receive spatial or temporal display filters.
+    pub radiance: [EnergySpectrum; 6],
+    /// Direct incident energy in every band.
+    pub direct: [EnergySpectrum; 6],
+    /// Visible analytic contributions not already rendered by Bevy PBR.
+    pub custom_direct: [Vec3; 6],
+    pub samples: [u32; 6],
+    pub(crate) stable_batches: [u8; 6],
+    pub(crate) face_updated_at: [Option<Instant>; 6],
+    /// Sampling sequence is independent of history length and invalidation.
+    pub sequence: [u32; 6],
+    /// Per-band second raw moment.
+    pub second_moment: [EnergySpectrum; 6],
+}
+
+impl ProbeStatistics {
+    pub(crate) const EMPTY: Self = Self {
+        radiance: [EnergySpectrum::ZERO; 6],
+        direct: [EnergySpectrum::ZERO; 6],
+        custom_direct: [Vec3::ZERO; 6],
+        samples: [0; 6],
+        stable_batches: [0; 6],
+        face_updated_at: [None; 6],
+        sequence: [0; 6],
+        second_moment: [EnergySpectrum::ZERO; 6],
+    };
+}
+
+impl Default for ProbeStatistics {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
 impl SurfaceProbe {
+    /// A probe with CPU statistics (the reference tracer, tests, recorders).
     pub(crate) fn new(voxel: IVec3, face_mask: u8) -> Self {
+        Self {
+            stats: Some(Box::default()),
+            ..Self::new_slim(voxel, face_mask)
+        }
+    }
+
+    /// A probe without CPU statistics: production GPU transport.
+    pub(crate) fn new_slim(voxel: IVec3, face_mask: u8) -> Self {
         Self {
             voxel,
             material: 0,
             order_index: 0,
             emission: EnergySpectrum::ZERO,
             face_mask,
-            radiance: [EnergySpectrum::ZERO; 6],
-            direct: [EnergySpectrum::ZERO; 6],
-            custom_direct: [Vec3::ZERO; 6],
+            stats: None,
             display: [super::history::FaceDisplay::default(); 6],
             resident: [UVec2::ZERO; 6],
             display_updated_at: None,
-            samples: [0; 6],
             #[cfg(test)]
             trace_mask: 63,
             fresh_mask: 63,
@@ -550,14 +587,20 @@ impl SurfaceProbe {
             relit_mask: 0,
             transport_revision: 0,
             retention_revision: 0,
-            stable_batches: [0; 6],
-            face_updated_at: [None; 6],
-            sequence: [0; 6],
-            second_moment: [EnergySpectrum::ZERO; 6],
             revision: 0,
             source_revision: 0,
             updated_at: None,
         }
+    }
+
+    /// CPU statistics, or empty ones when this probe keeps none.
+    pub(crate) fn stats(&self) -> &ProbeStatistics {
+        self.stats.as_deref().unwrap_or(&ProbeStatistics::EMPTY)
+    }
+
+    /// CPU statistics, allocated on first write.
+    pub(crate) fn stats_mut(&mut self) -> &mut ProbeStatistics {
+        self.stats.get_or_insert_with(Box::default)
     }
 
     pub(crate) fn update_face_mask(&mut self, face_mask: u8) {
@@ -570,14 +613,16 @@ impl SurfaceProbe {
             if newly_exposed & (1 << face) == 0 {
                 continue;
             }
-            self.radiance[face] = EnergySpectrum::ZERO;
-            self.second_moment[face] = EnergySpectrum::ZERO;
             self.display[face] = default();
             self.resident[face] = UVec2::ZERO;
-            self.direct[face] = EnergySpectrum::ZERO;
-            self.custom_direct[face] = Vec3::ZERO;
-            self.samples[face] = 0;
-            self.face_updated_at[face] = None;
+            if let Some(stats) = self.stats.as_mut() {
+                stats.radiance[face] = EnergySpectrum::ZERO;
+                stats.second_moment[face] = EnergySpectrum::ZERO;
+                stats.direct[face] = EnergySpectrum::ZERO;
+                stats.custom_direct[face] = Vec3::ZERO;
+                stats.samples[face] = 0;
+                stats.face_updated_at[face] = None;
+            }
         }
     }
 
@@ -590,7 +635,9 @@ impl SurfaceProbe {
         self.request_refresh();
         self.relit_mask |= self.face_mask;
         let limit = super::geometry::NEAR_HISTORY;
-        self.samples = self.samples.map(|count| count.min(limit));
+        if let Some(stats) = self.stats.as_mut() {
+            stats.samples = stats.samples.map(|count| count.min(limit));
+        }
     }
 
     /// A nearby edit: reject in-flight pre-edit results and stop treating the
@@ -599,19 +646,22 @@ impl SurfaceProbe {
     pub(crate) fn request_refresh(&mut self) {
         self.revision = self.revision.wrapping_add(1);
         self.fresh_mask = 0;
-        self.stable_batches = [0; 6];
+        if let Some(stats) = self.stats.as_mut() {
+            stats.stable_batches = [0; 6];
+        }
     }
 
     /// Full-probe reference for test fixtures. Production model replacement uses
     /// compact `TraceWork`; keep the same measurement/display separation here.
     #[cfg(test)]
     pub(crate) fn restart_measurements(&mut self) {
-        self.samples = [0; 6];
         self.fresh_mask = 0;
-        self.stable_batches = [0; 6];
-        self.face_updated_at = [None; 6];
-        self.radiance = [EnergySpectrum::ZERO; 6];
-        self.second_moment = [EnergySpectrum::ZERO; 6];
+        let stats = self.stats_mut();
+        stats.samples = [0; 6];
+        stats.stable_batches = [0; 6];
+        stats.face_updated_at = [None; 6];
+        stats.radiance = [EnergySpectrum::ZERO; 6];
+        stats.second_moment = [EnergySpectrum::ZERO; 6];
         // Presentation weights belong to the retained display, not the reset
         // transport statistics. Changing only weights would visibly relight
         // unchanged shared corners on every edit.
@@ -712,7 +762,7 @@ pub fn rebuild_surface_probes(
         probe.face_mask = face_mask;
         // Preserve the last stable value on screen while forcing fresh samples
         // after any geometry change.
-        probe.samples = [0; 6];
+        probe.stats_mut().samples = [0; 6];
         probes.insert(voxel, probe);
     }
 

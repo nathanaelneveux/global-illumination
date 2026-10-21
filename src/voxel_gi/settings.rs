@@ -73,6 +73,11 @@ pub struct VoxelGiSettings {
     /// refinement). Bounds the main-thread merge. Validation of display
     /// quality from CPU recorders raises it (config/gi-mirror-full.json).
     pub statistics_mirror_per_batch: u32,
+    /// Keep a CPU copy of every probe's statistics (~600 B each): validation
+    /// recorders, diagnostics and simulation-style queries read it. Off by
+    /// default, since the GPU state is the authority and the renderer reads it
+    /// directly; config/gi-mirror-full.json turns it on with the full mirror.
+    pub cpu_statistics: bool,
 }
 
 impl Default for VoxelGiSettings {
@@ -97,6 +102,7 @@ impl Default for VoxelGiSettings {
             stable_min_samples: 64,
             stable_relative_error: 0.12,
             statistics_mirror_per_batch: 1024,
+            cpu_statistics: false,
         }
     }
 }
@@ -207,6 +213,22 @@ pub(super) fn synchronize_transport_settings(
     mut field: ResMut<super::VoxelEnergyField>,
     mut stats: ResMut<super::VoxelGiStats>,
 ) {
+    if field.cpu_statistics != settings.cpu_statistics {
+        // Attach empty statistics (they fill as faces are traced or mirrored)
+        // or free them all.
+        field.cpu_statistics = settings.cpu_statistics;
+        let keep = settings.cpu_statistics;
+        let order = field.order.clone();
+        for voxel in order {
+            if let Some(probe) = field.probes.get_mut(&voxel) {
+                if keep {
+                    probe.stats_mut();
+                } else {
+                    probe.stats = None;
+                }
+            }
+        }
+    }
     let transport = settings.transport.normalized();
     if runtime.transport == transport {
         return;

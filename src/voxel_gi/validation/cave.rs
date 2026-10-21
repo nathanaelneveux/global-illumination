@@ -44,11 +44,11 @@ impl CaveObservations {
                         .get(&voxel)
                         .filter(|p| p.face_mask & (1 << face) != 0);
                     faces.push(json!({"voxel": voxel.to_array(), "face": face,
-                        "samples": p.map(|p| p.samples[face]), "sequence": p.map(|p| p.sequence[face]),
-                        "energy": p.map(|p| channels(p.radiance[face])),
-                        "second_moment": p.map(|p| channels(p.second_moment[face])),
+                        "samples": p.map(|p| p.stats().samples[face]), "sequence": p.map(|p| p.stats().sequence[face]),
+                        "energy": p.map(|p| channels(p.stats().radiance[face])),
+                        "second_moment": p.map(|p| channels(p.stats().second_moment[face])),
                         "display": p.map(|p| p.display[face].indirect.to_array()),
-                        "age_ms": p.and_then(|p| p.face_updated_at[face]).map(|at| at.elapsed().as_secs_f32() * 1000.0),
+                        "age_ms": p.and_then(|p| p.stats().face_updated_at[face]).map(|at| at.elapsed().as_secs_f32() * 1000.0),
                         "transport_revision": p.map(|p| p.transport_revision)}));
                 }
             }

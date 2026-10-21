@@ -1357,9 +1357,9 @@ pub(super) mod tests {
             .unwrap();
         gpu.trace(extended, &sources, &materials, &mut after, 256, &emitters)
             .unwrap();
-        assert_eq!(before[0].radiance[0], after[0].radiance[0]);
-        assert_eq!(before[0].second_moment[0], after[0].second_moment[0]);
-        assert!(before[0].radiance[0].visible.max_element() > 0.1);
+        assert_eq!(before[0].stats().radiance[0], after[0].stats().radiance[0]);
+        assert_eq!(before[0].stats().second_moment[0], after[0].stats().second_moment[0]);
+        assert!(before[0].stats().radiance[0].visible.max_element() > 0.1);
     }
 
     #[test]
@@ -1455,8 +1455,8 @@ pub(super) mod tests {
         );
         for (actual, expected) in fresh.iter().zip(expected) {
             assert_eq!(actual.display[2].sky, expected.display[2].sky);
-            assert!((actual.direct[2].visible - expected.direct[2].visible).length() < 0.002);
-            assert!((actual.radiance[2].visible - expected.radiance[2].visible).length() < 0.002);
+            assert!((actual.stats().direct[2].visible - expected.stats().direct[2].visible).length() < 0.002);
+            assert!((actual.stats().radiance[2].visible - expected.stats().radiance[2].visible).length() < 0.002);
         }
     }
 
@@ -1508,14 +1508,14 @@ pub(super) mod tests {
             .unwrap();
         let mut history = probes.remove(0);
         assert!(
-            history.radiance[2].visible.x > 0.01
-                && history.radiance[2].infrared > 0.0
-                && history.radiance[2].ionizing > 0.0
+            history.stats().radiance[2].visible.x > 0.01
+                && history.stats().radiance[2].infrared > 0.0
+                && history.stats().radiance[2].ionizing > 0.0
         );
-        history.display[2].indirect = history.radiance[2].visible;
+        history.display[2].indirect = history.stats().radiance[2].visible;
         let original = history.display[2].indirect;
         let now = Instant::now();
-        history.face_updated_at[2] = Some(now);
+        history.stats_mut().face_updated_at[2] = Some(now);
         let mut next = history.clone();
         next.restart_measurements();
         let emitters = Arc::new(EmissionDistribution::build(&dark, &materials));
@@ -1540,12 +1540,12 @@ pub(super) mod tests {
             .unwrap();
             next = probes.remove(0);
             assert_eq!(
-                next.radiance[2],
+                next.stats().radiance[2],
                 EnergySpectrum::ZERO,
                 "no retained RGB/IR/radiation after removal"
             );
             if batch == 1 {
-                assert_eq!(next.radiance[2], expected.radiance[2]);
+                assert_eq!(next.stats().radiance[2], expected.stats().radiance[2]);
             }
             let at = now + std::time::Duration::from_millis(batch * 50);
             next.resolve_display(&history, at, 0.075);
@@ -1567,7 +1567,7 @@ pub(super) mod tests {
                     "less than 10% ghost after 32 fresh paths"
                 );
             }
-            next.face_updated_at[2] = Some(at);
+            next.stats_mut().face_updated_at[2] = Some(at);
             history = next.clone();
         }
         assert!(next.display[2].indirect.x < original.x * 0.01);
@@ -1603,11 +1603,11 @@ pub(super) mod tests {
         .unwrap();
         for (actual, expected) in probes.iter().zip(&reference) {
             assert_eq!(actual.display[2].sky, expected.display[2].sky);
-            assert_eq!(actual.samples, [0; 6]);
-            assert_eq!(actual.sequence, [0; 6]);
-            assert_eq!(actual.direct, [EnergySpectrum::ZERO; 6]);
+            assert_eq!(actual.stats().samples, [0; 6]);
+            assert_eq!(actual.stats().sequence, [0; 6]);
+            assert_eq!(actual.stats().direct, [EnergySpectrum::ZERO; 6]);
             assert!(actual.updated_at.is_none());
-            assert!(actual.face_updated_at.iter().all(Option::is_none));
+            assert!(actual.stats().face_updated_at.iter().all(Option::is_none));
         }
         gpu.trace_work(
             Arc::clone(&scene),
@@ -1626,12 +1626,12 @@ pub(super) mod tests {
         );
         probes[0].face_mask = 5;
         probes[0].trace_mask = 4;
-        probes[0].samples[0] = 32;
-        probes[0].radiance[0] = EnergySpectrum::ONE;
+        probes[0].stats_mut().samples[0] = 32;
+        probes[0].stats_mut().radiance[0] = EnergySpectrum::ONE;
         let untouched = probes[0].clone();
         probes[1].trace_mask = 0;
-        probes[1].samples[2] = 128;
-        probes[1].sequence[2] = 1000;
+        probes[1].stats_mut().samples[2] = 128;
+        probes[1].stats_mut().sequence[2] = 1000;
         let sky_receiver = probes[1].clone();
         let reference = trace_probe_batch(
             Arc::clone(&scene),
@@ -1649,22 +1649,22 @@ pub(super) mod tests {
             &emitters,
         )
         .unwrap();
-        assert_eq!(probes[0].samples[0], untouched.samples[0]);
-        assert_eq!(probes[0].radiance[0], untouched.radiance[0]);
-        assert_eq!(probes[0].sequence[0], untouched.sequence[0]);
+        assert_eq!(probes[0].stats().samples[0], untouched.stats().samples[0]);
+        assert_eq!(probes[0].stats().radiance[0], untouched.stats().radiance[0]);
+        assert_eq!(probes[0].stats().sequence[0], untouched.stats().sequence[0]);
         assert_eq!(probes[0].face_mask, 5);
-        assert_eq!(probes[0].samples[2], 4);
+        assert_eq!(probes[0].stats().samples[2], 4);
         assert!(
-            (reference[0].radiance[2].visible - probes[0].radiance[2].visible).length() < 0.002
+            (reference[0].stats().radiance[2].visible - probes[0].stats().radiance[2].visible).length() < 0.002
         );
         assert_eq!(reference[0].display[2].sky, probes[0].display[2].sky);
         for actual in [&probes[1], &reference[1]] {
-            assert_eq!(actual.samples, sky_receiver.samples);
-            assert_eq!(actual.sequence, sky_receiver.sequence);
-            assert_eq!(actual.radiance, sky_receiver.radiance);
-            assert_eq!(actual.direct, sky_receiver.direct);
+            assert_eq!(actual.stats().samples, sky_receiver.stats().samples);
+            assert_eq!(actual.stats().sequence, sky_receiver.stats().sequence);
+            assert_eq!(actual.stats().radiance, sky_receiver.stats().radiance);
+            assert_eq!(actual.stats().direct, sky_receiver.stats().direct);
             assert_eq!(actual.updated_at, sky_receiver.updated_at);
-            assert_eq!(actual.face_updated_at, sky_receiver.face_updated_at);
+            assert_eq!(actual.stats().face_updated_at, sky_receiver.stats().face_updated_at);
         }
     }
 
@@ -1753,13 +1753,13 @@ pub(super) mod tests {
         let expected = sources.environment.visible * (0.65 + 0.35 * 2.0 / 3.0);
         let rms = (probes
             .iter()
-            .map(|probe| (probe.radiance[2].visible - expected).length_squared())
+            .map(|probe| (probe.stats().radiance[2].visible - expected).length_squared())
             .sum::<f32>()
             / (probes.len() * 3) as f32)
             .sqrt();
         let max_error = probes
             .iter()
-            .map(|probe| (probe.radiance[2].visible - expected).abs().max_element())
+            .map(|probe| (probe.stats().radiance[2].visible - expected).abs().max_element())
             .fold(0.0, f32::max);
         eprintln!("Analytic open-sky fixture error: RMS={rms:.6}, max channel={max_error:.6}");
         // This policy trades sampling for bounded observed fixture error, not
@@ -1805,9 +1805,9 @@ pub(super) mod tests {
         );
         for (probe, old) in probes.iter().zip(&before) {
             assert_eq!(probe.display[2].sky, [super::super::sky::KNOWN; 4]);
-            assert_eq!(probe.samples, old.samples);
-            assert_eq!(probe.radiance, old.radiance);
-            assert_eq!(probe.face_updated_at, old.face_updated_at);
+            assert_eq!(probe.stats().samples, old.stats().samples);
+            assert_eq!(probe.stats().radiance, old.stats().radiance);
+            assert_eq!(probe.stats().face_updated_at, old.stats().face_updated_at);
             assert_eq!(
                 due_faces(probe, 1, start + Duration::from_secs(10), &settings, false),
                 4
@@ -1941,7 +1941,7 @@ pub(super) mod tests {
                     };
                     let mut actual = receivers.to_vec();
                     for probe in &mut actual {
-                        probe.sequence = [(round * 4) as u32; 6];
+                        probe.stats_mut().sequence = [(round * 4) as u32; 6];
                     }
                     let started = Instant::now();
                     tracer
@@ -1961,16 +1961,16 @@ pub(super) mod tests {
                     outputs[mode] = actual;
                 }
                 for (a, b) in outputs[0].iter().zip(&outputs[1]) {
-                    assert_eq!(a.samples, b.samples);
-                    assert_eq!(a.sequence, b.sequence);
-                    assert_eq!(a.direct, b.direct);
-                    assert_eq!(a.custom_direct, b.custom_direct);
+                    assert_eq!(a.stats().samples, b.stats().samples);
+                    assert_eq!(a.stats().sequence, b.stats().sequence);
+                    assert_eq!(a.stats().direct, b.stats().direct);
+                    assert_eq!(a.stats().custom_direct, b.stats().custom_direct);
                     assert_eq!(a.display[2].sky, b.display[2].sky);
                     for (a, b) in a
-                        .radiance
+                        .stats().radiance
                         .iter()
-                        .chain(&a.second_moment)
-                        .zip(b.radiance.iter().chain(&b.second_moment))
+                        .chain(&a.stats().second_moment)
+                        .zip(b.stats().radiance.iter().chain(&b.stats().second_moment))
                     {
                         let delta = *a - *b;
                         let error = delta
@@ -2061,11 +2061,11 @@ pub(super) mod tests {
                 assert_eq!(rays, 1089);
                 if let Some(expected) = &expected {
                     for (a, b) in actual.iter().zip(expected) {
-                        assert_eq!(a.samples, b.samples);
-                        assert_eq!(a.sequence, b.sequence);
-                        assert_eq!(a.radiance, b.radiance);
-                        assert_eq!(a.second_moment, b.second_moment);
-                        assert_eq!(a.direct, b.direct);
+                        assert_eq!(a.stats().samples, b.stats().samples);
+                        assert_eq!(a.stats().sequence, b.stats().sequence);
+                        assert_eq!(a.stats().radiance, b.stats().radiance);
+                        assert_eq!(a.stats().second_moment, b.stats().second_moment);
+                        assert_eq!(a.stats().direct, b.stats().direct);
                         assert_eq!(a.display[2].sky, b.display[2].sky);
                     }
                 } else {
@@ -2125,7 +2125,7 @@ pub(super) mod tests {
             for mode in (0..2).map(|offset| (offset + round) % 2) {
                 let mut probes = warm.clone();
                 for p in &mut probes {
-                    p.sequence[2] = (round * 4) as u32;
+                    p.stats_mut().sequence[2] = (round * 4) as u32;
                 }
                 let mut work = TraceWork::from_probes(&probes, false);
                 for job in &mut work.probes {
@@ -2160,11 +2160,11 @@ pub(super) mod tests {
                 results[mode] = probes;
             }
             for (a, b) in results[0].iter().zip(&results[1]) {
-                assert_eq!(a.radiance, b.radiance);
-                assert_eq!(a.second_moment, b.second_moment);
-                assert_eq!(a.direct, b.direct);
+                assert_eq!(a.stats().radiance, b.stats().radiance);
+                assert_eq!(a.stats().second_moment, b.stats().second_moment);
+                assert_eq!(a.stats().direct, b.stats().direct);
                 assert_eq!(a.display[2].sky, b.display[2].sky);
-                assert_eq!(a.sequence, b.sequence);
+                assert_eq!(a.stats().sequence, b.stats().sequence);
             }
         }
         for mode in 0..2 {
@@ -2331,11 +2331,11 @@ pub(super) mod tests {
         .unwrap();
         let mut squared = 0.0;
         for (expected, actual) in cpu.iter().zip(&actual) {
-            squared += (expected.radiance[2].visible - actual.radiance[2].visible).length_squared();
-            assert!((expected.direct[2].infrared - actual.direct[2].infrared).abs() < 0.002);
-            assert!((expected.direct[2].ionizing - actual.direct[2].ionizing).abs() < 0.002);
-            assert!((expected.direct[2].visible - actual.direct[2].visible).length() < 0.002);
-            assert!((expected.custom_direct[2] - actual.custom_direct[2]).length() < 0.002);
+            squared += (expected.stats().radiance[2].visible - actual.stats().radiance[2].visible).length_squared();
+            assert!((expected.stats().direct[2].infrared - actual.stats().direct[2].infrared).abs() < 0.002);
+            assert!((expected.stats().direct[2].ionizing - actual.stats().direct[2].ionizing).abs() < 0.002);
+            assert!((expected.stats().direct[2].visible - actual.stats().direct[2].visible).length() < 0.002);
+            assert!((expected.stats().custom_direct[2] - actual.stats().custom_direct[2]).length() < 0.002);
             assert_eq!(
                 expected.display[2].sky, actual.display[2].sky,
                 "packed CPU/GPU sky corners at {:?}",
@@ -2346,7 +2346,7 @@ pub(super) mod tests {
         assert!(
             actual
                 .iter()
-                .any(|probe| probe.radiance[2].visible.max_element() > 0.05)
+                .any(|probe| probe.stats().radiance[2].visible.max_element() > 0.05)
         );
         eprintln!(
             "GPU reference RMS={rms:.6}, {} faces × 64 paths in {:.3} ms",
@@ -2535,7 +2535,7 @@ pub(super) mod tests {
         assert_eq!(receiver[0].display[2].sky, [super::super::sky::KNOWN; 4]);
         assert_eq!(receiver[0].display[2].sky, reference[0].display[2].sky);
         assert!(
-            (receiver[0].radiance[2].visible - reference[0].radiance[2].visible).length() < 0.002
+            (receiver[0].stats().radiance[2].visible - reference[0].stats().radiance[2].visible).length() < 0.002
         );
 
         // Display shadows cross streamed gaps; simulation energy stays strict.
@@ -2576,7 +2576,7 @@ pub(super) mod tests {
             boundary[0].display[0].sky,
             [super::super::sky::KNOWN | 1; 4]
         );
-        assert_eq!(boundary[0].direct[0], EnergySpectrum::ZERO);
+        assert_eq!(boundary[0].stats().direct[0], EnergySpectrum::ZERO);
         let filled = Arc::new(TransportScene::with_page_delta(
             &sparse,
             vec![(IVec3::X, empty)],
@@ -2659,7 +2659,7 @@ pub(super) mod tests {
         let squared = expected
             .iter()
             .zip(&actual)
-            .map(|(a, b)| (a.radiance[2].visible - b.radiance[2].visible).length_squared())
+            .map(|(a, b)| (a.stats().radiance[2].visible - b.stats().radiance[2].visible).length_squared())
             .sum::<f32>();
         let rms = (squared / (actual.len() * 3) as f32).sqrt();
         eprintln!("Emissive enclosed-room GPU/CPU RMS={rms:.6}");
@@ -2667,7 +2667,7 @@ pub(super) mod tests {
         assert!(
             actual
                 .iter()
-                .all(|probe| probe.radiance[2].visible.x > 0.01)
+                .all(|probe| probe.stats().radiance[2].visible.x > 0.01)
         );
     }
 }

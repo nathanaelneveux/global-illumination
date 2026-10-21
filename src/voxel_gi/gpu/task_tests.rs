@@ -23,7 +23,7 @@ pub(super) fn legacy_task_bytes(work: &TraceWork, sky: &[IVec3]) -> Vec<u8> {
 #[test]
 fn task_encoding_matches_shader_layout_and_clears_reused_tails() {
     let mut probes = vec![SurfaceProbe::new(IVec3::new(i32::MIN, -17, i32::MAX), 63)];
-    probes[0].sequence = [0, 1, u32::MAX, 65536, 0x8000_0000, 12345];
+    probes[0].stats_mut().sequence = [0, 1, u32::MAX, 65536, 0x8000_0000, 12345];
     let work = TraceWork::from_probes(&probes, false);
     let sky = [IVec3::new(-16, 0, 32), IVec3::splat(i32::MIN)];
     let mut bytes = Vec::new();
@@ -83,7 +83,7 @@ fn task_encoding_benchmark() {
                     &mut candidate
                 };
                 for p in &mut outputs[mode] {
-                    p.sequence = [(pair * 4) as u32; 6];
+                    p.stats_mut().sequence = [(pair * 4) as u32; 6];
                 }
                 let mut work = TraceWork::from_probes(&outputs[mode], false);
                 // Include cold mixed sky+GI work in correctness checks, then

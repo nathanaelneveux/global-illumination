@@ -1994,7 +1994,7 @@ mod tests {
         let mut published = probe.clone();
         let settings = crate::voxel_gi::VoxelGiSettings::default();
         next.probes[0].publish(&next.faces, &mut published, Instant::now(), &settings);
-        assert!(mirror.sequence < published.sequence[face]);
+        assert!(mirror.sequence < published.stats().sequence[face]);
         assert!(mirror.predates(&published), "dispatch would publish the older record");
     }
 
@@ -2530,7 +2530,7 @@ mod tests {
             for (resident, work, probes) in [(false, &a, &mut expected), (true, &b, &mut actual)] {
                 for (job, &i) in work.probes.iter().zip(&indices) {
                     for face in &work.faces[job.faces()] {
-                        let previous_time = probes[i].face_updated_at[face.face];
+                        let previous_time = probes[i].stats().face_updated_at[face.face];
                         face.write(&mut probes[i]);
                         if resident {
                             probes[i].display[face.face].indirect = face.presentation.truncate();
@@ -2606,15 +2606,15 @@ mod tests {
                 // copies, so the next trace of that face checks the GPU.
                 for face in 0..6 {
                     if mask & (1 << face) == 0 {
-                        probe.samples[face] = probe.samples[face].min(cap);
+                        probe.stats_mut().samples[face] = probe.stats().samples[face].min(cap);
                     }
                 }
             }
-            assert_eq!(a.samples, b.samples, "partial cap step={step}");
-            assert_eq!(a.sequence, b.sequence);
+            assert_eq!(a.stats().samples, b.stats().samples, "partial cap step={step}");
+            assert_eq!(a.stats().sequence, b.stats().sequence);
             for face in [2, 3] {
                 assert!(
-                    (a.radiance[face] - b.radiance[face])
+                    (a.stats().radiance[face] - b.stats().radiance[face])
                         .visible
                         .abs()
                         .max_element()
@@ -2622,7 +2622,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(b.samples[3], 16);
+        assert_eq!(b.stats().samples[3], 16);
     }
 
     #[test]
@@ -2709,7 +2709,7 @@ mod tests {
             let mut probes = initial[..count].to_vec();
             for (probe, traced) in probes.iter_mut().zip(&mut traced) {
                 probe.revision = step as u64;
-                probe.sequence = [*traced * 16; 6];
+                probe.stats_mut().sequence = [*traced * 16; 6];
                 *traced += 1;
             }
             let mut expected = TraceWork::from_probes(&probes, false);

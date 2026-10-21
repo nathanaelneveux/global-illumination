@@ -346,7 +346,9 @@ pub(super) fn select_probes(
             if probe.transport_revision != job.transport_revision {
                 probe.transport_revision = job.transport_revision;
                 probe.fresh_mask = 0;
-                probe.stable_batches = [0; 6];
+                if let Some(stats) = probe.stats.as_mut() {
+                    stats.stable_batches = [0; 6];
+                }
             }
             if job.restart {
                 probe.restart_measurements();

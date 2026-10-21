@@ -425,12 +425,13 @@ fn trace_face(
 #[cfg(test)]
 pub(crate) fn accumulate_sample(probe: &mut SurfaceProbe, face: usize, sample: EnergySpectrum) {
     let sample = sample.finite_or_zero();
-    let count = (probe.samples[face] + 1).min(HISTORY_LIMIT);
+    let count = (probe.stats().samples[face] + 1).min(HISTORY_LIMIT);
     let alpha = 1.0 / count as f32;
-    probe.radiance[face] += (sample - probe.radiance[face]) * alpha;
-    probe.second_moment[face] += (sample * sample - probe.second_moment[face]) * alpha;
-    probe.samples[face] = count;
-    probe.sequence[face] = probe.sequence[face].wrapping_add(1);
+    let stats = probe.stats_mut();
+    stats.radiance[face] += (sample - stats.radiance[face]) * alpha;
+    stats.second_moment[face] += (sample * sample - stats.second_moment[face]) * alpha;
+    probe.stats_mut().samples[face] = count;
+    probe.stats_mut().sequence[face] = probe.stats().sequence[face].wrapping_add(1);
 }
 
 fn trace_path(
@@ -1053,17 +1054,17 @@ mod tests {
         for _ in 0..1024 {
             accumulate_sample(&mut probe, 2, EnergySpectrum::ZERO);
         }
-        assert_eq!(probe.samples[2], 2048);
-        assert_eq!(probe.sequence[2], 2048);
+        assert_eq!(probe.stats().samples[2], 2048);
+        assert_eq!(probe.stats().sequence[2], 2048);
         assert!(
-            (probe.radiance[2] - EnergySpectrum::ONE * 0.5)
+            (probe.stats().radiance[2] - EnergySpectrum::ONE * 0.5)
                 .visible
                 .length()
                 < 1e-5
         );
-        assert!((probe.radiance[2].infrared - 0.5).abs() < 1e-5);
-        assert!((probe.radiance[2].ionizing - 0.5).abs() < 1e-5);
-        assert_eq!(probe.radiance[2], probe.second_moment[2]);
+        assert!((probe.stats().radiance[2].infrared - 0.5).abs() < 1e-5);
+        assert!((probe.stats().radiance[2].ionizing - 0.5).abs() < 1e-5);
+        assert_eq!(probe.stats().radiance[2], probe.stats().second_moment[2]);
     }
 
     #[test]
@@ -1078,7 +1079,7 @@ mod tests {
         );
         for probe in &values {
             assert!(
-                probe.direct[2].visible.x > 0.9,
+                probe.stats().direct[2].visible.x > 0.9,
                 "face center misses the small shadow"
             );
             let corners = probe.display[2].sky;
@@ -1164,7 +1165,7 @@ mod tests {
             64,
         );
         assert_eq!(
-            dark[0].radiance[2],
+            dark[0].stats().radiance[2],
             EnergySpectrum::ZERO,
             "sky must not leak through a one-voxel wall"
         );
@@ -1189,9 +1190,9 @@ mod tests {
             vec![probe],
             64,
         );
-        assert!(lit[0].radiance[2].visible.x > 0.01);
-        assert!(lit[0].radiance[2].infrared > 0.005);
-        assert!(lit[0].radiance[2].ionizing > 0.001);
+        assert!(lit[0].stats().radiance[2].visible.x > 0.01);
+        assert!(lit[0].stats().radiance[2].infrared > 0.005);
+        assert!(lit[0].stats().radiance[2].ionizing > 0.001);
     }
 
     #[test]
@@ -1206,7 +1207,7 @@ mod tests {
             vec![probe],
             256,
         );
-        assert!((result[0].radiance[2] - expected).visible.length() < 0.001);
+        assert!((result[0].stats().radiance[2] - expected).visible.length() < 0.001);
     }
 
     #[test]
@@ -1295,9 +1296,6 @@ mod tests {
         let probe = SurfaceProbe {
             voxel,
             face_mask: 1 << 2,
-            radiance: [EnergySpectrum::ZERO; 6],
-            direct: [EnergySpectrum::ZERO; 6],
-            samples: [0; 6],
             ..SurfaceProbe::new(voxel, 1 << 2)
         };
         let sources = TransportSources {
@@ -1316,8 +1314,8 @@ mod tests {
             vec![probe],
             1,
         );
-        assert_eq!(result[0].direct[2].infrared, 3.0);
-        assert_eq!(result[0].direct[2].ionizing, 5.0);
+        assert_eq!(result[0].stats().direct[2].infrared, 3.0);
+        assert_eq!(result[0].stats().direct[2].ionizing, 5.0);
     }
 
     #[test]

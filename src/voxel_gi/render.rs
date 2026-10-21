@@ -1414,7 +1414,7 @@ fn write_hash_entry(mirror: &mut [u8], slot: usize, entry: GpuHashEntry) {
 pub(crate) fn gpu_probe(probe: &SurfaceProbe) -> GpuProbe {
     let face = |i: usize| {
         if probe.face_mask & (1 << i) != 0 {
-            (probe.display[i].indirect + probe.custom_direct[i])
+            (probe.display[i].indirect + probe.stats().custom_direct[i])
                 .extend(probe.display[i].confidence.max(0.03125))
         } else {
             Vec4::ZERO
@@ -2006,8 +2006,8 @@ mod tests {
     #[test]
     fn direct_sky_is_separate_from_gi_and_preserves_exposed_face_mask() {
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
-        probe.radiance[2] = EnergySpectrum::new(Vec3::X, 3.0, 4.0);
-        probe.custom_direct[2] = Vec3::Y;
+        probe.stats_mut().radiance[2] = EnergySpectrum::new(Vec3::X, 3.0, 4.0);
+        probe.stats_mut().custom_direct[2] = Vec3::Y;
         probe.display[2] = super::super::history::FaceDisplay {
             indirect: Vec3::X,
             sky: [super::super::sky::KNOWN | 1; 4],
@@ -2248,9 +2248,6 @@ mod tests {
                     SurfaceProbe {
                         voxel,
                         face_mask: 4,
-                        radiance: [EnergySpectrum::ZERO; 6],
-                        direct: [EnergySpectrum::ZERO; 6],
-                        samples: [0; 6],
                         ..SurfaceProbe::new(voxel, 4)
                     },
                 );
@@ -2299,7 +2296,7 @@ mod tests {
         probes.remove(&a);
         probes.insert(c, SurfaceProbe::new(c, 4));
         let updated = probes.get_mut(&b).unwrap();
-        updated.radiance[2] = EnergySpectrum::ONE * 3.0;
+        updated.stats_mut().radiance[2] = EnergySpectrum::ONE * 3.0;
         updated.display[2].indirect = Vec3::splat(2.0);
         updated.display[2].confidence = 0.75;
         assert_ne!(

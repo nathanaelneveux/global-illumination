@@ -141,7 +141,8 @@ tree disabled at equal GPU time (FLIP and settle time).
 3. Separate emitter reach (short) from bounce/sky reach (~128).
 4. Storage precision: half-precision or shared-exponent moments would roughly
    halve GPU face state.
-5. A slimmer CPU statistics mirror (the GPU is authoritative).
+5. A slimmer CPU record: done (CPU statistics optional, off by default;
+   0.4-0.9 GB less footprint per profile on the M4).
 6. A lower display evidence target (donor lists cost ~1.35 ms/frame of worker
    time) and fewer explicit bounces (the cache ends most paths at the first hit).
 
