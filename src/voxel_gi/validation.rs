@@ -322,7 +322,7 @@ pub(super) fn run_validation(
         run.cave.record(elapsed, &field);
     }
     if profile == Profile::DayCycle {
-        run.day.tick(elapsed, &mut commands, &field, &stats);
+        run.day.tick(elapsed, &mut commands, &field, &stats, &runtime);
     }
     if matches!(
         profile,

@@ -49,6 +49,7 @@ impl DayRun {
         commands: &mut Commands,
         field: &VoxelEnergyField,
         stats: &VoxelGiStats,
+        runtime: &super::super::VoxelGiRuntime,
     ) {
         let mut angle = self.offset + self.rate * elapsed;
         if self.step > 0.0 {
@@ -84,6 +85,10 @@ impl DayRun {
         self.samples.push(json!({"at_s": elapsed, "angle_deg": angle, "sampled_faces": counts.len(),
             "samples_p10": p10, "samples_p50": p50, "samples_p90": p90,
             "traced_paths": stats.traced_paths, "sky_corners_traced": stats.sky_corners_traced,
+            "sky_corner_requests": stats.sky_corner_requests, "sky_rays": stats.sky_rays_scheduled,
+            "transport_batches": stats.transport_batches, "sky_only_batches": stats.sky_only_batches,
+            "batch_size": runtime.batch_size, "sky_batch_size": runtime.sky_batch_size,
+            "gpu_ms_per_frame": stats.gpu_ms_per_frame, "trace_batch_ms": stats.last_trace_batch_ms,
             "source_revision": field.source_revision, "transport_revision": field.transport_revision}));
     }
 }
