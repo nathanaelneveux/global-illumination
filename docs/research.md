@@ -87,12 +87,14 @@ builder/cache, not copied shader implementations.
 
 **Implications for this engine:** exact uniform-field construction and topology-keyed
 top-level reuse are now measured wins in [the experiment record](history/experiments.md#naadf-construction-experiments).
-The largest unimplemented GI opportunity from this source is world-space reuse
-of individual samples. A receiver-owned design must retain path geometry, proposal
-density and all five energy bands; reconnect with current visibility; invalidate
-source/geometry dependencies; and preserve unbiased zero-sample accounting before
-adding any deliberate display-only bias. Screen buckets, RGB compression and
-darkening heuristics are not suitable as the authoritative simulation field.
+Retained-path reuse remains unimplemented. The current direction applies the
+screen-bucket approach to the **view-driven far tier**, retaining the persistent
+voxel cache nearby (see [direction](direction.md#f2-design-constraints-from-naadf)).
+A resampling design must retain path geometry and proposal density, reconnect
+with current visibility, reject incompatible source/geometry dependencies, and
+preserve zero-sample accounting before any deliberate presentation bias. GI is
+now a display system, not the authoritative simulation field; the former
+requirement to retain all five bands in future reuse records no longer applies.
 
 The isolated fresh-emitter resampling experiment (`fcfca22`) tested four new
 candidates followed by one selected visibility ray, not retained-path reuse.

@@ -11,7 +11,7 @@ does not refresh the old CPU upload mirror. Simulation accuracy is not gated by
 RGB FLIP: check five-band energy/PDF correctness and measurement freshness, and
 report nonvisual sampling importance separately.
 
-Normal runs now use nonvisual importance 0.125, independently of backend.
+Normal runs now use nonvisual importance 0 (display-only GI), independently of backend.
 Use `VOXEL_GI_SETTINGS=config/gi-equal-band.json` to reproduce the historical
 equal-band control; selecting `sync` alone changes ownership, not sampling
 priority. Hold importance fixed when isolating path reuse. The existing paired
@@ -110,7 +110,9 @@ checks the closed-form integral and reproduces the faulty visibility as a
 test-only legacy ablation; the ordinary CPU `grazing_emitter_connection...` test
 also checks real blockers. All three native checks are opt-in/ignored.
 
-The preferred resident display now uses uncapped 2048-evidence reconstruction.
+The preferred resident display now uses uncapped 1024-evidence reconstruction
+after the frozen surface-cache qualification (2,048 remains the historical
+independent-path visual target, not a changed sampler gate).
 Do not let that hide estimator regressions or inflate apparent sample efficiency:
 
 - **Sampler qualification:** compare raw frozen-scene prefixes at matched path
@@ -128,6 +130,43 @@ Do not let that hide estimator regressions or inflate apparent sample efficiency
   reconstruction; unlike frozen prefixes it retains normal temporal response.
   Omitting `VOXEL_GI_SETTINGS` now enables reconstruction and is no longer an off
   control. Report cadence/freshness separately from fixed-prefix accuracy.
+
+### Near/far lifecycle checks
+
+Before evaluating far-tier image quality, use the focused native tests
+`geometry_tests` and `maintenance_tests` (`--ignored --test-threads=1`). They
+cover held render generations through growth/bounds changes, sparse edit reuse,
+GPU retirement during poll-only/budget-exhausted dispatch, and zero-near-receiver
+startup/update/idle. `gpu_headless_renderer_prepares_cache_and_material_generations_together`
+checks the material integration. These are lifetime checks, not sampler or
+gameplay performance qualification.
+
+Keep `cpu_statistics=false` in at least one runtime smoke check: validation with
+the full mirror alone cannot exercise slim-record HUD progress and publication
+ordering. `slim_progress_receives_gpu_stability_without_changing_sample_counts`
+and `mirror_record_never_replaces_a_newer_cpu_result` cover those native contracts.
+
+2026-10-21 lifecycle smoke: `a5edd91` (only documentation changed during the
+run), dev profile, Apple M4/Metal, 2560×1440 offscreen. Command: `RUST_LOG=warn
+VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_HEADLESS=1 VOXEL_GI_VALIDATE_BACKGROUND=1
+VOXEL_GI_VALIDATE_FRAME_TIMINGS=1 VOXEL_GI_VALIDATE_PROFILE=gameplay
+VOXEL_GI_VALIDATE_EXIT=1 VOXEL_GI_VALIDATE_EXPECT_BUILD_ROOT="$PWD"
+VOXEL_GI_SETTINGS=target/near-far-lifecycle-64.json cargo run --locked --offline`.
+The settings file contains `{"receiver_radius":64,"cpu_statistics":false}`;
+other settings are defaults (corner sun/indirect, 1024 evidence, textures on,
+AO off). Evidence:
+`target/gi-validation/gameplay-1792609609777779000-76370/` and
+`target/near-far-lifecycle-64.log`.
+
+All five captures reported valid targets and nonblank images; preferred and
+recovered captures were also visually inspected. Clean render log, 80 scripted
+edits and five moves completed, slim coverage/bootstrap reported 75.21%/75.20%
+under continued background loading. This establishes runtime/capture integrity,
+not convergence or a frame-pacing improvement. The far indirect contribution
+is still absent, with visibly darker distant shaded faces at this small radius.
+The full-statistics-only edit-freshness metric is unavailable in this slim run;
+do not interpret its zero observations as instantaneous response. No matched
+baseline or windowed performance claim is attached to this smoke check.
 
 Report average FLIP across windows, worst-window mean FLIP, and worst regional
 tile separately. These answer different questions; an average must not conceal a

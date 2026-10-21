@@ -5,7 +5,8 @@ implementation can be understood without reconstructing its development history.
 The planned direction (near/far lighting, the simulation split) is in
 [direction](direction.md). `receiver_radius` (default unlimited) limits
 world-space receivers to pages near the cameras; geometry stays every loaded
-page.
+page. The experimental far tier currently traces direct sun in the material;
+view-driven indirect transport is still planned, not implemented.
 The numerical model and the stable display policy are deliberately separate.
 
 ## Data flow and ownership
@@ -21,7 +22,7 @@ host chunks / edits / sources / material table
          ^                              /                  \
     validated async snapshots <--------+           GPU temporal RGB
          |                                                 |
-    CPU simulation estimates                     generation-checked rendering
+    CPU diagnostics/progress                     generation-checked rendering
                                                            |
                                           connected virtual-corner reconstruction
 ```
@@ -34,7 +35,7 @@ accumulation. The default resident path does not wait for CPU delivery to render
 | Plugin wiring and runtime state | `src/voxel_gi/mod.rs` |
 | BVW events, tracked edits and immutable page input | `bvw.rs` |
 | Scene/receiver representation | `world.rs`, `field.rs` |
-| Acceleration and packing | `naadf.rs`, `gpu_scene.rs` |
+| Acceleration, packing and shared GPU transactions | `naadf.rs`, `gpu_scene.rs`, `gpu/geometry.rs` |
 | Change metadata and retention | `world/delta.rs`, `geometry.rs`, `retention.rs`, `sources.rs`, `revision.rs` |
 | Receiver page publication | `publication.rs` |
 | Eligibility, priority and dispatch | `scheduling.rs`, `dispatch.rs` |
@@ -111,7 +112,23 @@ tracer is an independent representation/reference, not a decoder of GPU cells.
 Unchanged region identities retain packed allocations. Their top-level bounds are
 still refreshed when neighbours change. GPU upload plans contain changed header
 and cell ranges; the directory is rebuilt/uploaded only for residency changes.
-A grown buffer receives the full live array before sparse patching resumes.
+The worker stages deltas privately, then applies every directory/header/cell
+copy in one GPU command buffer. Render submissions cannot interleave those
+copies. When any buffer grows, the directory mask changes, or traversal bounds
+change, **all three allocations detach together**. Unchanged contents are copied
+GPU-to-GPU before sparse patches; old extracted materials retain their coherent
+buffers and bounds until replacement. Ordinary edits keep buffer identities and
+transfer only changed ranges. These are coherent allocation generations, not
+immutable scene snapshots: readers of the current generation observe an entire
+transaction before or after its submission.
+
+Geometry synchronization and receiver retirement run on the worker independently
+of ray allowance, pending snapshots and near-receiver count. A far-only camera
+still gets current geometry. Retirement updates both GPU lookup and live metadata
+without emitting rays, allocating a readback or advancing sampling batch IDs.
+An unchanged far-only world goes idle. Mandatory lifecycle submissions are not
+sampling work; they must not be mistaken for zero-cost GI or used as evidence
+that the future far tier fits the shared ray budget.
 
 Top-level bounds include loaded regions, but do not allocate an arbitrarily large
 box between disconnected islands: oversized domains fall back to region DDA.
@@ -523,7 +540,12 @@ The GPU state is the statistics authority. Probes keep no CPU statistics by
 default (`ProbeStatistics`, ~600 B per probe, is attached only with
 `cpu_statistics`, by the CPU reference tracer and in tests); the core record
 keeps topology, display and sun-corner words, revision flags and resident
-addresses. With statistics on, the CPU keeps a bounded mirror for diagnostics,
+addresses. A 32-byte `ProbeProgress` additionally retains per-face sequence,
+bootstrap-saturated count and the GPU's settled verdict. This supplies HUD
+coverage/bootstrap and rejects older mirrors without allocating full moments.
+The verdict occupies spare bits in the existing readback count, never the
+resident count; no additional readback is needed. These bounded, delayed progress
+observations are not a convergence measure. With statistics on, the CPU keeps a bounded mirror for diagnostics,
 validation recorders and the CPU fallback display. A pick marks
 its face's mirror stale, and selection emits at most
 `statistics_mirror_per_batch` (default 1,024) stale faces' full state per

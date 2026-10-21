@@ -68,18 +68,24 @@ Staging:
    corners. Measured (M4, headless gameplay): peak footprint 3.14 GB
    unlimited, 1.17 GB at 128, 1.0 GB at 64; GI main-thread p99 6.4 -> 3.2 /
    2.1 ms; more paths traced (fewer slots to rank). Faces beyond the radius
-   currently get only environment ambient: no sun, no shadows.
+   now get experimental ray-traced direct sunlight (F1 below), but still lack
+   the far indirect solution. The radius remains opt-in.
 2. **Far tier**, view driven, as above; then the radius shrinks. In stages:
-   - **F0, shared traversal.** `trace_domain` and its helpers move to
+   - **F0, shared traversal: done.** `trace_domain` and its helpers moved to
      `voxel_traversal.wgsl`, included textually by the transport compute
      shader and the terrain material (globals `params`, `directory`,
      `regions`, `cells` declared by each), so near and far traverse the same
      geometry with the same code.
-   - **F1, far sun in the material.** The GI worker publishes its geometry
-     buffers to the terrain material (as it publishes the resident buffer).
+   - **F1, far sun in the material: implemented, experimental.** The GI worker publishes its geometry
+     buffers to the terrain material as coherent allocation generations.
      Faces with no display probe trace one visibility ray per fragment to
      each sun: direct light and hard voxel shadows beyond the radius, same
      sun direction and colour as the near corner cache. No prepass needed.
+     Geometry transactions and receiver retirement also run without near
+     receivers or ray allowance. Native lifetime/maintenance tests cover these
+     contracts. This per-fragment visibility pass is not yet charged against
+     the shared compute budget; do not promote a smaller default radius on
+     its strength alone.
    - **F2, far bounce.** A screen-space compute pass after a depth/normal
      prepass (needs prepass vertex shaders for the voxel vertex layout),
      tracing the shared transport paths per pixel at reduced resolution,
@@ -89,9 +95,40 @@ Staging:
    - **F3, shrink the radius** to about the simulation distance.
 3. **Band removal and a slim CPU record**, with stability recalibrated.
 
-Until stage 2, faces beyond the radius have no display probe and the
-material shader needs an interim fallback (e.g. Bevy's shadow-mapped sun
-plus a flat sky ambient), which would show a change of look at the radius.
+Until F2, missing indirect light can still show a change of look at the radius.
+F1 is a staged implementation, not a replacement lighting model to conceal that.
+
+### F2 design constraints from NAADF
+
+The user's view-space direction is deliberate: retain the world-space near
+cache, but make far receiver/sample storage proportional to the view, not to
+loaded terrain. Geometry remains world-space and shared by both tiers.
+
+The upstream implementation retains individual path records, reprojects them
+into screen buckets, then reconnects candidates with geometry/PDF checks and
+visibility rays. It is **not just a temporally blended screen texture**. See
+[sample refinement](https://github.com/cg-tuwien/NAADF/blob/3ea3bb6a836aa4a30277c055f812d65a9d7d6766/NAADF/Content/shaders/render/versions/base/renderSampleRefine.fx)
+and [spatial resampling](https://github.com/cg-tuwien/NAADF/blob/3ea3bb6a836aa4a30277c055f812d65a9d7d6766/NAADF/Content/shaders/render/versions/base/renderSpatialResampling.fx).
+
+Build the next stage around these contracts:
+
+- First-hit data belongs to a view and frame: world position/voxel face,
+  material, normal, depth and near-cache ownership. Resizing, camera cuts,
+  disocclusion and edits must reject incompatible reuse explicitly.
+- Far tracing uses the same material/source/reach rules as near transport;
+  it may terminate on valid near-cache measurements. It must not recursively
+  treat a filtered screen result as an independent path measurement.
+- Temporal path reuse needs origin, direction/hit geometry and proposal
+  information, including correct accounting for dark samples. Color-only
+  history cannot later be reinterpreted as a resampling reservoir.
+- Spatial reconnection needs visibility and density/Jacobian handling;
+  normal/depth rejection alone does not establish correctness. Keep raw-path
+  tests separate from presentation smoothing.
+- Near/far handoff uses actual published cache validity, with an explicit
+  transition policy; a radius test alone is insufficient during streaming.
+- A view-local dispatch budget shares the existing GPU-time allowance. Measure
+  disocclusion response, edit freshness, memory and frame tails before shrinking
+  the default radius. No full-frame CPU readback or main-thread GPU wait.
 
 ## Simulation: deterministic direct transport, not GI
 
