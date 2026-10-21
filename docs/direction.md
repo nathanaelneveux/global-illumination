@@ -74,9 +74,15 @@ table, NAADF), not the GI solver:
 - **IR goggles** display the deterministic infrared field.
 
 GI's display path becomes RGB only. The transport code stays band-generic so
-bands can return, but resident state, scheduling stability and emitter
-sampling stop carrying infrared and ionizing bands (`simulation_sampling_
-importance` currently diverts 1/8 of emitter selection to simulation bands).
+bands can return. Done (6cc4407): emitter sampling (`simulation_sampling_
+importance` 0, was 1/8) and Russian roulette follow the visible bands.
+Remaining, best folded into the near-residency work that redesigns face state:
+removing the bands from GPU state, checkpoints, readback and the CPU probe
+record (~32 B per face and ~144 B per probe; roughly 50 MB in the canyon, ~2%
+of the measured footprint). Scheduling stability must be recalibrated at the
+same time: judged on visible bands alone at today's tolerance, cave faces
+rested too early (flicker p95 roughly doubled, settle p90 +4 s), because
+IR noise had been acting as a stricter visible convergence test.
 
 ## Emitters
 
