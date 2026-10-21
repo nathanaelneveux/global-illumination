@@ -15,7 +15,8 @@ impl ScenePreset {
         if std::env::var("VOXEL_GI_SCENE").is_ok_and(|v| v == "canyon")
             || (cfg!(debug_assertions)
                 && std::env::var_os("VOXEL_GI_VALIDATE").is_some()
-                && std::env::var("VOXEL_GI_VALIDATE_PROFILE").is_ok_and(|v| v == "canyon"))
+                && std::env::var("VOXEL_GI_VALIDATE_PROFILE")
+                    .is_ok_and(|v| v == "canyon" || v == "day-cycle"))
         {
             Self::Canyon
         } else if crate::cave_scene::enabled() {

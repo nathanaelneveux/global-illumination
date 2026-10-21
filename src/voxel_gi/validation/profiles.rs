@@ -14,6 +14,7 @@ pub(super) enum Profile {
     Sources,
     Cave,
     Canyon,
+    DayCycle,
     Structures,
     Hallway,
     LiveCave,
@@ -34,6 +35,7 @@ impl Profile {
             "sources" => Ok(Self::Sources),
             "cave" => Ok(Self::Cave),
             "canyon" => Ok(Self::Canyon),
+            "day-cycle" => Ok(Self::DayCycle),
             "structures" => Ok(Self::Structures),
             "hallway" => Ok(Self::Hallway),
             "live-cave" => Ok(Self::LiveCave),
@@ -41,7 +43,7 @@ impl Profile {
             "compare" => Ok(Self::Compare),
             "stress" => Ok(Self::Stress),
             _ => Err(format!(
-                "unknown validation profile {value:?}; choose gameplay, streaming, house, house-edits, response, edits, sources, cave, canyon, structures, hallway, live-cave, live-hallway, compare, or stress"
+                "unknown validation profile {value:?}; choose gameplay, streaming, house, house-edits, response, edits, sources, cave, canyon, day-cycle, structures, hallway, live-cave, live-hallway, compare, or stress"
             )),
         }
     }
@@ -57,6 +59,7 @@ impl Profile {
             Self::Sources => "sources",
             Self::Cave => "cave",
             Self::Canyon => "canyon",
+            Self::DayCycle => "day-cycle",
             Self::Structures => "structures",
             Self::Hallway => "hallway",
             Self::LiveCave => "live-cave",
@@ -75,6 +78,7 @@ impl Profile {
             Self::Streaming => 35.0,
             Self::House => 90.0,
             Self::LiveCave | Self::LiveHallway => 182.0,
+            Self::DayCycle => 183.0,
             Self::Cave | Self::Canyon | Self::Structures | Self::Hallway => 62.0,
             Self::HouseEdits => 180.0,
             Self::Response | Self::Edits => 30.0,
@@ -97,6 +101,13 @@ impl Profile {
         }
         if self == Self::Hallway {
             return &[(15., "hallway-15s"), (30., "hallway-30s"), (60., "hallway-60s")];
+        }
+        if self == Self::DayCycle {
+            // Pairs one second apart: the sun moves a fraction of a degree,
+            // so their difference is mostly flicker, not lighting change.
+            return &[(30., "day-030s"), (31., "day-031s"), (60., "day-060s"), (61., "day-061s"),
+                (90., "day-090s"), (91., "day-091s"), (120., "day-120s"), (121., "day-121s"),
+                (150., "day-150s"), (151., "day-151s"), (180., "day-180s"), (181., "day-181s")];
         }
         if self == Self::Canyon {
             return &[
@@ -215,7 +226,7 @@ impl Profile {
             } else {
                 "cave"
             }
-        } else if matches!(self, Self::Cave | Self::Canyon | Self::Hallway | Self::LiveCave | Self::LiveHallway) {
+        } else if matches!(self, Self::Cave | Self::Canyon | Self::DayCycle | Self::Hallway | Self::LiveCave | Self::LiveHallway) {
             if elapsed < 15.0 {
                 "startup"
             } else {

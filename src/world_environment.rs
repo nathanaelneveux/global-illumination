@@ -8,12 +8,19 @@ use crate::voxel_gi::render::VoxelTransportMaterial;
 #[derive(Component)]
 struct DemoSun;
 
+/// The demo sun's rotation in degrees about the world Z axis from the scene's
+/// sun direction (the day-cycle validation profile drives it). Host policy,
+/// not GI: transport sees an ordinary moving directional light.
+#[derive(Resource, Clone, Copy, PartialEq, Default)]
+pub struct SunAngle(pub f32);
+
 pub struct WorldEnvironmentPlugin;
 
 impl Plugin for WorldEnvironmentPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ClearColor(sky_color()))
             .add_systems(Startup, setup_lighting)
+            .add_systems(Update, rotate_sun)
             .add_systems(
                 PostUpdate,
                 synchronize_sun_shadows
@@ -65,16 +72,7 @@ fn setup_lighting(mut commands: Commands) {
             shadow_maps_enabled: true,
             ..default()
         },
-        Transform::IDENTITY.looking_at(
-            if cave {
-                -crate::cave_scene::sun_direction()
-            } else if canyon {
-                -crate::canyon_scene::sun_direction()
-            } else {
-                Vec3::new(0.35, -0.8, 0.25)
-            },
-            Vec3::Y,
-        ),
+        Transform::IDENTITY.looking_at(-scene_sun_direction(), Vec3::Y),
         cascade_shadow_config,
     ));
     if cave || canyon {
@@ -89,6 +87,25 @@ fn setup_lighting(mut commands: Commands) {
     }
 
     commands.insert_resource(GlobalAmbientLight::NONE);
+}
+
+/// Direction toward the scene's sun.
+fn scene_sun_direction() -> Vec3 {
+    match crate::scene_presets::ScenePreset::current() {
+        crate::scene_presets::ScenePreset::Cave => crate::cave_scene::sun_direction(),
+        crate::scene_presets::ScenePreset::Canyon => crate::canyon_scene::sun_direction(),
+        crate::scene_presets::ScenePreset::Terrain => -Vec3::new(0.35, -0.8, 0.25),
+    }
+}
+
+fn rotate_sun(angle: Option<Res<SunAngle>>, mut suns: Query<&mut Transform, With<DemoSun>>) {
+    let Some(angle) = angle.filter(|angle| angle.is_changed()) else {
+        return;
+    };
+    let direction = Quat::from_rotation_z(angle.0.to_radians()) * scene_sun_direction();
+    for mut transform in &mut suns {
+        *transform = Transform::IDENTITY.looking_at(-direction, Vec3::Y);
+    }
 }
 
 /// Corner sunlight does not sample cascaded shadow maps. This is a demo policy,

@@ -288,6 +288,7 @@ Durations start after required assets are ready and exclude process compilation.
 | `sources` | 72 | Analytic/emissive source changes, multi-band field and streaming |
 | `cave` | 62 | Fixed view of many-emitter chamber; automatically selects cave geometry/palette |
 | `structures` | 62 | Normal-world house/path, cave entrance, and underground interior |
+| `day-cycle` | 183 | Canyon under a rotating sun: history, sky retrace and flicker |
 | `compare` | 29 | Controlled display-mode visual comparison |
 | `stress` | 72 | Optional toggle/buffer lifetime stress |
 
@@ -330,6 +331,27 @@ nearby cave and house through ordinary streaming, not character locomotion.
 Normal sunlight/environment and the ten-chunk spawning distance stay active.
 Do not compare this workload with isolated `cave` timings. See
 [structure ownership and verification](structures.md).
+
+The `day-cycle` profile uses the canyon view and rotates the sun about world Z
+from the canyon sun at `VOXEL_GI_VALIDATE_SUN_RATE` degrees per second (default
+0.3, a 20-minute day), starting at `VOXEL_GI_VALIDATE_SUN_OFFSET` degrees.
+`VOXEL_GI_VALIDATE_SUN_STEP` quantizes the angle to whole steps. A fixed-sun
+reference is rate 0 with the offset the moving run reaches at a capture time.
+Captures come in pairs one second apart (30/31 ... 180/181 s): the sun moves a
+fraction of a degree between them, so their FLIP is mostly flicker. `day.json`
+records per-second history percentiles (CPU mirror: use
+`config/gi-mirror-full.json`), traced paths, sky-corner retraces and revisions.
+
+First results (gi-day-night on 4915387, Apple M4, headless, full mirror). A
+fixed sun settles to median history ~1,000 samples by 180 s at ~4.3M paths/s,
+sky retrace stops after ~40 s, and paired-frame FLIP is ~.001. A sun moving
+continuously at 0.3°/s publishes a global source change every frame
+(source revision +43/s): median history stays 0, traced paths drop to
+0.04-0.13M/s, sky corners are retraced at ~18k/s without end, and the frame
+never receives sunlight or bounce (FLIP to the fixed-sun reference .49-.56,
+tile max .98; paired frames identical). Stepping the sun 1° at a time keeps
+median history 0 (p90 16-20), paths 1.2-1.7M/s, FLIP to reference .12-.16
+and paired-frame tile spikes up to .96 at steps.
 
 ### Background-terrain variants
 

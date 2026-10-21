@@ -2,6 +2,7 @@
 //! comparisons and toggle stress have distinct report identities.
 mod background;
 mod cave;
+mod day;
 mod host_timing;
 mod house;
 mod metrics;
@@ -123,6 +124,7 @@ pub(super) struct ValidationRun {
     structures: structures::StructuresRun,
     background: background::BackgroundRun,
     cave: cave::CaveObservations,
+    day: day::DayRun,
     max_pages: usize,
     capture_pause_until: f32,
     done: bool,
@@ -280,6 +282,7 @@ pub(super) fn run_validation(
         profile,
         Profile::Cave
             | Profile::Canyon
+            | Profile::DayCycle
             | Profile::Hallway
             | Profile::LiveCave
             | Profile::LiveHallway
@@ -293,7 +296,7 @@ pub(super) fn run_validation(
             (Vec3::new(47., -11.4, -18.), Vec3::new(76., -17., -34.), 65.)
         } else if profile == Profile::Hallway {
             crate::structures::hallway::overview()
-        } else if profile == Profile::Canyon {
+        } else if matches!(profile, Profile::Canyon | Profile::DayCycle) {
             (crate::canyon_scene::EYE, crate::canyon_scene::TARGET, 65.)
         } else {
             let (eye, target) = cave::view();
@@ -317,6 +320,9 @@ pub(super) fn run_validation(
         Profile::Cave | Profile::Structures | Profile::LiveCave
     ) {
         run.cave.record(elapsed, &field);
+    }
+    if profile == Profile::DayCycle {
+        run.day.tick(elapsed, &mut commands, &field, &stats);
     }
     if matches!(
         profile,
@@ -587,6 +593,14 @@ pub(super) fn run_validation(
         && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("cave.json"),
             json!({"samples": run.cave.samples, "note": "Fixed wall receivers; all five measured bands, RGB display, history and measurement age. No ground-truth/convergence claim."}).to_string()) {
         evidence.fail(&format!("Could not save cave sequence: {error}"));
+        commands.write_message(AppExit::error());
+        return;
+    }
+    if profile == Profile::DayCycle
+        && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("day.json"),
+            json!({"settings": run.day.settings(), "samples": run.day.samples,
+                "note": "Canyon, fixed camera, sun rotating about world Z. Sample counts are the CPU statistics mirror (current only with gi-mirror-full.json). Paired captures one second apart show flicker."}).to_string()) {
+        evidence.fail(&format!("Could not save day sequence: {error}"));
         commands.write_message(AppExit::error());
         return;
     }
