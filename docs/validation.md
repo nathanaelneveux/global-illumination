@@ -336,7 +336,9 @@ The `day-cycle` profile uses the canyon view and rotates the sun about world Z
 from the canyon sun at `VOXEL_GI_VALIDATE_SUN_RATE` degrees per second (default
 0.3, a 20-minute day), starting at `VOXEL_GI_VALIDATE_SUN_OFFSET` degrees.
 `VOXEL_GI_VALIDATE_SUN_STEP` quantizes the angle to whole steps. A fixed-sun
-reference is rate 0 with the offset the moving run reaches at a capture time.
+reference is rate 0 with the offset the moving run reaches at a capture time;
+`tools/day_cycle_analysis.py cont=<run> ref18=<run> ref36=<run> ref54=<run>`
+compares them.
 Captures come in pairs one second apart (30/31 ... 180/181 s): the sun moves a
 fraction of a degree between them, so their FLIP is mostly flicker. `day.json`
 records per-second history percentiles (CPU mirror: use

@@ -261,16 +261,31 @@ or stochastic diffuse environment radiance. The latter belongs to path transport
 ## Shared sunlight, separate estimator
 
 A directional visibility query has a known ray direction. The cache interns
-integer corner positions; one ray per corner and visible sun projects onto all
-receiving normals. The canonical origin is displaced toward the source, not
-toward a particular face normal. Grid-plane ties are consistent on CPU and GPU.
+integer corner positions; one ray per corner and visibly colored sun (at most
+four) records whether that sun is visible. The canonical origin is displaced
+toward the source, not toward a particular face normal. Grid-plane ties are
+consistent on CPU and GPU.
+
+A corner stores a visibility word, not energy: zero is unknown, otherwise a
+known bit plus one lit bit per sun (source order of the visibly colored suns;
+CPU and GPU count the same way). The display shader applies each sun's current
+direction and transport color (`GpuTransportSettings` sun fields, kept by
+`synchronize_sun_display`) with the face's axis normal, so a sun that moves or
+changes color relights every frame without a retrace. Four corner words per
+face preserve the 208-byte display probe.
 
 `SkyCache` persists across batches and uses spatial buckets to invalidate corners
 intersecting changed geometry's shadow sweeps, including distant receivers.
-Sun direction/color changes invalidate visibility; camera motion, display toggles,
-points and environment changes do not. Retired receiver corners are pruned.
-Unknown corners retry; packed zero means unknown and packed one means measured
-black. Four RGBE corner colors per face preserve the 208-byte display probe.
+Visibility generations are keyed by a cube-projected grid of sun directions
+with ~0.5° cells (`visibility_key`): a sun leaving its cell invalidates
+visibility (corners keep showing the previous word until retraced); color
+changes, motion within a cell, camera motion, display toggles, points and
+environment changes do not. Retired receiver corners are pruned. Unknown
+corners retry. A corner whose lit bits flip records a Light change (luminance
+at the current sun), which measured retention spreads to nearby faces: an
+opening far above a floor reaches the floor, and a moving shadow border caps
+the bounce history it changes. A gradually moving sun is not a source reset
+(`SourceChange::Sun`, see below); the day-cycle validation profile measures it.
 
 Sky jobs share the indirect worker/submission, geometry and scratch buffers.
 `ProbeWork::sky_requested` records explicit sunlight demand. Indirect refinement
@@ -343,6 +358,10 @@ Legacy geometry control and the unchanged non-geometry policies:
 Geometry and sources use the same eight-transition `ChangeHistory` mechanism,
 with different policies over their deltas. Every intervening retained transition
 is consulted. The journals keep metadata, not scene snapshots or old rays.
+Directional lights that each turn at most 2° and change energy by at most a
+tenth per update are a moving sun (`SourceChange::Sun`): sources are replaced
+with no history cap or revision change; shadow-border flips carry the change.
+Larger jumps (a time skip) remain a global source change.
 Canonical source ordering prevents ECS order changes from causing relights;
 point-source deltas include both old and new influence volumes but exclude
 unchanged lights. Distance affects responsiveness, never visibility or eligibility.
