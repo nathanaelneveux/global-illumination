@@ -271,7 +271,10 @@ fn transport_field_correctness_gate() {
             for (i, &site) in case.sites.iter().enumerate() {
                 let (reference, reference_se) = pooled(&oracle, i);
                 let (actual, actual_se) = pooled(&replicas, i);
-                for b in 0..5 {
+                // GI serves the visible bands: emitter sampling and roulette
+                // ignore IR/ionizing, which a deterministic direct field owns
+                // (docs/direction.md), so only RGB must match the oracle.
+                for b in 0..3 {
                     let expected = case.analytic.map_or(reference[b], |a| a[b]);
                     let se = (actual_se[b].powi(2)
                         + if case.analytic.is_some() {
