@@ -80,7 +80,7 @@ pub(super) fn start_trace_task(
     mut runtime: ResMut<VoxelGiRuntime>,
     field: ResMut<VoxelEnergyField>,
     mut stats: ResMut<VoxelGiStats>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     gpu_device: Option<Res<gpu::GpuTransportDevice>>,
     settings: Res<VoxelGiSettings>,
     frame: Option<Res<bevy::diagnostic::FrameCount>>,
@@ -111,8 +111,8 @@ pub(super) fn start_trace_task(
     }
     let gpu_device = gpu_device.expect("Voxel GI requires a GPU transport device");
     let selection_started = Instant::now();
-    let focus = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
-        camera.translation().floor().as_ivec3()
+    let focus = cameras.iter().find(|(camera, _)| camera.is_active).map_or(IVec3::ZERO, |(_, transform)| {
+        transform.translation().floor().as_ivec3()
     });
     runtime.batch_size = runtime.batch_size.min(settings.batch_limit());
     runtime.sky_batch_size = runtime.sky_batch_size.min(settings.batch_limit());

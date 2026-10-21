@@ -24,12 +24,12 @@ const MAX_REBUILD_LATENCY: Duration = Duration::from_secs(1);
 const RECEIVER_HYSTERESIS: f32 = PAGE_EDGE as f32;
 
 /// Which loaded pages have world-space receivers: those within
-/// `receiver_radius` of any camera (distance to the page's nearest point),
+/// `receiver_radius` of any active camera (distance to the page's nearest point),
 /// kept until beyond the radius plus a hysteresis. Geometry is unaffected.
 pub(super) fn update_receiver_residency(
     mut runtime: ResMut<VoxelGiRuntime>,
     settings: Res<super::VoxelGiSettings>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
 ) {
     let Some(radius) = settings.receiver_radius() else {
         // Unlimited again: every loaded page without receivers rescans.
@@ -44,7 +44,9 @@ pub(super) fn update_receiver_residency(
         }
         return;
     };
-    let foci: Vec<Vec3> = cameras.iter().map(|camera| camera.translation()).collect();
+    let foci: Vec<Vec3> = cameras.iter()
+        .filter(|(camera, _)| camera.is_active)
+        .map(|(_, transform)| transform.translation()).collect();
     if foci.is_empty() {
         return;
     }

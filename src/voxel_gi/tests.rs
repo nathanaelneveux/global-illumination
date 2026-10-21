@@ -914,6 +914,9 @@ fn receiver_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
             GlobalTransform::from_translation(Vec3::splat(16.0)),
         ))
         .id();
+    // Inactive streaming cameras load geometry, not lighting receivers.
+    world.spawn((Camera3d::default(), Camera { is_active: false, ..default() },
+        GlobalTransform::from_translation(Vec3::new(304.0, 16.0, 16.0))));
     world
         .run_system_once(bvw::update_receiver_residency)
         .unwrap();
