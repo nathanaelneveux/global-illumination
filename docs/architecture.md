@@ -6,7 +6,10 @@ The planned direction (near/far lighting, the simulation split) is in
 [direction](direction.md). `receiver_radius` (default unlimited) limits
 world-space receivers to pages near the cameras; geometry stays every loaded
 page. The experimental far tier currently traces direct sun in the material;
-view-driven indirect transport is still planned, not implemented.
+view-driven indirect transport is not connected to gameplay yet. Its shared
+estimator, retained path layout and resumable uncached tails are native-qualified
+in `gpu/view_tests.rs`; view scheduling, reuse and presentation remain in
+[the staged plan](direction.md#f2-design-constraints-from-naadf).
 The numerical model and the stable display policy are deliberately separate.
 
 ## Data flow and ownership
@@ -42,7 +45,7 @@ accumulation. The default resident path does not wait for CPU delivery to render
 | Construction policy; model/work configuration and revision synchronization | `startup.rs`, `settings.rs` |
 | Thread-transfer payload and result merge | `work.rs` |
 | Source model and Bevy light adaptation | `sources.rs` |
-| Sampling, emitters and transport | `sampling.rs`, `emission.rs`, `tracer.rs`, `gpu.rs`, `voxel_trace.wgsl` |
+| Sampling, emitters and transport | `sampling.rs`, `emission.rs`, `tracer.rs`, `gpu.rs`, shared `voxel_path.wgsl`, face consumer `voxel_trace.wgsl` |
 | Surface-cache face lookup | `gpu/face_index.rs` |
 | Stable GPU ownership, accumulation and bounded snapshots | `gpu/resident.rs`, `gpu/readback.rs`, `voxel_accumulate.wgsl` |
 | Shared uncertainty heuristic | `statistics.rs` |

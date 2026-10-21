@@ -371,78 +371,105 @@ struct PathEnergy {
     // moment reduction does not consume this field (the compiler removes it).
     first_hit: RayResult,
 }
-// Cosine-sampled continuation. A hit on a measured face ends the path with
-// that face's cached incident energy; otherwise up to DIFFUSE_HITS explicit
-// hits with emitter NEE, ending in the terminal emission mixture.
-fn trace_path(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3<f32>, stream: u32, sequence: u32) -> PathEnergy {
-    var path: PathEnergy;
-    var throughput = Energy(vec4(1.0), 1.0, vec3(0.0));
-    var origin = start;
-    var direction = first_direction;
-    var previous_normal = initial_normal;
-    var previous_pdf = cosine_pdf(initial_normal, first_direction);
-    var previous_position = start - initial_normal * 0.001;
-    for (var bounce = 0u; bounce < DIFFUSE_HITS; bounce += 1u) {
-        let hit = trace_diffuse(origin, direction);
-        if bounce == 0u { path.first_hit = hit; }
+// Explicit state lets a view path pause at a dispatch boundary without
+// turning the work budget into a physical path-depth cutoff. The near consumer
+// still requests its existing finite prefix and terminal emission mixture.
+struct PathState {
+    result: PathEnergy,
+    throughput: Energy,
+    origin: vec3<f32>,
+    direction: vec3<f32>,
+    previous_position: vec3<f32>,
+    previous_normal: vec3<f32>,
+    previous_pdf: f32,
+    bounce: u32,
+    done: bool,
+}
+fn begin_path(start: vec3<f32>, direction: vec3<f32>, normal: vec3<f32>) -> PathState {
+    var state: PathState;
+    state.throughput = Energy(vec4(1.0), 1.0, vec3(0.0));
+    state.origin = start;
+    state.direction = direction;
+    state.previous_normal = normal;
+    state.previous_pdf = cosine_pdf(normal, direction);
+    state.previous_position = start - normal * 0.001;
+    state.done = state.previous_pdf <= 0.0;
+    return state;
+}
+fn advance_path(initial: PathState, stream: u32, sequence: u32, steps: u32, terminal: bool) -> PathState {
+    var state = initial;
+    if state.done { return state; }
+    for (var step = 0u; step < steps; step += 1u) {
+        let bounce = state.bounce;
+        // Every exit below completes the path. Only a surviving continuation
+        // clears this flag, allowing the dispatch boundary to pause it.
+        state.done = true;
+        let hit = trace_diffuse(state.origin, state.direction);
+        if bounce == 0u { state.result.first_hit = hit; }
         if hit.status == 0u {
-            let horizon = clamp(direction.y * 0.35 + 0.65, 0.15, 1.0);
-            path.energy.value += throughput.value * params.environment * horizon;
-            path.energy.radiation += throughput.radiation * params.extra.x * horizon;
+            let horizon = clamp(state.direction.y * 0.35 + 0.65, 0.15, 1.0);
+            state.result.energy.value += state.throughput.value * params.environment * horizon;
+            state.result.energy.radiation += state.throughput.radiation * params.extra.x * horizon;
             break;
         }
-        if hit.status == 2u { path.unknown = true; break; }
+        if hit.status == 2u { state.result.unknown = true; break; }
         if hit.status == 3u { break; }
         let material = materials[hit.material];
         let direct = direct_at(hit.position, hit.normal);
         let emission_weight = material.emission_extra.y;
-        let delta = hit.position - origin;
+        let delta = hit.position - state.origin;
         var selection_pdf = emission_weight / max(params.extra.z, 1e-20);
         if emission_weight > 0.0 && params.extra.w > 0.0 && load_emitter(0u).sampling.w > 0.0 {
-            selection_pdf = tree_probability(previous_position, previous_normal, hit.voxel, hit.normal);
+            selection_pdf = tree_probability(state.previous_position, state.previous_normal, hit.voxel, hit.normal);
         }
-        let light_pdf = selection_pdf * dot(delta, delta) / max(dot(hit.normal, -direction), 1e-8);
+        let light_pdf = selection_pdf * dot(delta, delta) / max(dot(hit.normal, -state.direction), 1e-8);
         var mis = 1.0;
-        if light_pdf > 0.0 { mis = previous_pdf / (previous_pdf + light_pdf); }
+        if light_pdf > 0.0 { mis = state.previous_pdf / (state.previous_pdf + light_pdf); }
         // A measured face already holds the incident energy that NEE plus a
         // continued path would estimate here: end the path with it.
         let cached = cached_energy(hit.voxel, face_index_of(hit.normal));
         if cached.found {
-            path.energy.value += throughput.value * (material.emission * mis + material.diffuse * (direct.value + cached.value));
-            path.energy.radiation += throughput.radiation * (material.emission_extra.x * mis + material.diffuse_extra.x * (direct.radiation + cached.radiation));
+            state.result.energy.value += state.throughput.value * (material.emission * mis + material.diffuse * (direct.value + cached.value));
+            state.result.energy.radiation += state.throughput.radiation * (material.emission_extra.x * mis + material.diffuse_extra.x * (direct.radiation + cached.radiation));
             break;
         }
         var nee: Energy;
-        if bounce + 1u == DIFFUSE_HITS {
+        if terminal && step + 1u == steps {
             nee = sample_terminal_emission(hit.position, hit.normal, stream, sequence, bounce);
         } else {
             nee = sample_emitter(hit.position, hit.normal, stream, sequence, bounce + 1u);
         }
-        path.energy.value += throughput.value * (material.emission * mis + material.diffuse * (direct.value + nee.value));
-        path.energy.radiation += throughput.radiation * (material.emission_extra.x * mis + material.diffuse_extra.x * (direct.radiation + nee.radiation));
-        if bounce + 1u == DIFFUSE_HITS { break; }
-        throughput.value *= material.diffuse;
-        throughput.radiation *= material.diffuse_extra.x;
+        state.result.energy.value += state.throughput.value * (material.emission * mis + material.diffuse * (direct.value + nee.value));
+        state.result.energy.radiation += state.throughput.radiation * (material.emission_extra.x * mis + material.diffuse_extra.x * (direct.radiation + nee.radiation));
+        if terminal && step + 1u == steps { break; }
+        state.throughput.value *= material.diffuse;
+        state.throughput.radiation *= material.diffuse_extra.x;
         // Roulette follows the visible bands: GI serves the display, and paths
         // must not outlive their visible contribution to carry IR/ionizing.
-        let maximum = max(throughput.value.x, max(throughput.value.y, throughput.value.z));
+        let maximum = max(state.throughput.value.x, max(state.throughput.value.y, state.throughput.value.z));
         // A small weight can still reach a bright source. Only exact zero is
         // safely discarded; roulette compensates surviving nonzero paths.
         if maximum == 0.0 { break; }
         if bounce >= 1u {
             let survival = clamp(maximum, 0.1, 0.95);
             if continuation_sample(stream, sequence, bounce, 2u) > survival { break; }
-            throughput.value /= survival;
-            throughput.radiation /= survival;
+            state.throughput.value /= survival;
+            state.throughput.radiation /= survival;
         }
-        origin = hit.position + hit.normal * 0.002;
-        previous_position = hit.position;
-        previous_normal = hit.normal;
-        direction = hemisphere(hit.normal, continuation_sample(stream, sequence, bounce, 0u), continuation_sample(stream, sequence, bounce, 1u));
-        previous_pdf = cosine_pdf(hit.normal, direction);
-        if previous_pdf <= 0.0 { break; }
+        state.origin = hit.position + hit.normal * 0.002;
+        state.previous_position = hit.position;
+        state.previous_normal = hit.normal;
+        state.direction = hemisphere(hit.normal, continuation_sample(stream, sequence, bounce, 0u), continuation_sample(stream, sequence, bounce, 1u));
+        state.previous_pdf = cosine_pdf(hit.normal, state.direction);
+        if state.previous_pdf <= 0.0 { break; }
+        state.bounce += 1u;
+        state.done = false;
     }
-    return path;
+    return state;
+}
+
+fn trace_path(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3<f32>, stream: u32, sequence: u32) -> PathEnergy {
+    return advance_path(begin_path(start, first_direction, initial_normal), stream, sequence, DIFFUSE_HITS, true).result;
 }
 
 struct ReceiverSample { energy: Energy, known: bool }

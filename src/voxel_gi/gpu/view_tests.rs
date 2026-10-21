@@ -5,6 +5,7 @@ use crate::voxel_gi::{research, sampling, world::FACE_OFFSETS};
 
 const PATH_BYTES: usize = 128;
 const PATH_WORDS: usize = PATH_BYTES / 4;
+mod wave;
 
 #[derive(Clone, Copy, Default, ShaderType)]
 struct ViewReceiver {
@@ -38,16 +39,23 @@ fn view_path_shader_and_receiver_layout_validate() {
             .len(),
         32
     );
-    let path = module
-        .types
-        .iter()
-        .find(|(_, ty)| ty.name.as_deref() == Some("ViewPath"))
-        .unwrap()
-        .1;
-    let naga::TypeInner::Struct { span, .. } = &path.inner else {
-        panic!("path record struct")
-    };
-    assert_eq!(*span as usize, PATH_BYTES);
+    for (name, bytes) in [
+        ("ViewReceiver", 32),
+        ("ViewPath", PATH_BYTES),
+        ("ViewContinuation", 128),
+        ("ViewWave", 32),
+    ] {
+        let layout = module
+            .types
+            .iter()
+            .find(|(_, ty)| ty.name.as_deref() == Some(name))
+            .unwrap()
+            .1;
+        let naga::TypeInner::Struct { span, .. } = &layout.inner else {
+            panic!("{name} must be a struct")
+        };
+        assert_eq!(*span as usize, bytes, "{name} layout");
+    }
 }
 
 /// Runs the actual far consumer with the near tracer's uploaded model and

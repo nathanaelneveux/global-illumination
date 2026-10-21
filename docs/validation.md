@@ -141,6 +141,24 @@ startup/update/idle. `gpu_headless_renderer_prepares_cache_and_material_generati
 checks the material integration. These are lifetime checks, not sampler or
 gameplay performance qualification.
 
+The far consumer's raw gate is `cargo test --locked --offline
+voxel_gi::gpu::view_tests -- --ignored --test-threads=1 --nocapture`.
+It covers matched prefixes against near transport, frozen-cache termination,
+black/unknown/inactive accounting, and analytic multi-bounce tails. The `wave`
+tests compare one/three/eight-hit partitions with unsplit paths, including
+zero-budget pauses, idempotent completion and generation/receiver replacement.
+The uncapped-tail furnace test aggregates only after each cohort finishes;
+partial or early-completed samples must not establish a false convergence claim.
+These test readbacks are intentionally synchronous; gameplay must keep the queue
+and records on the GPU. The record layout is uncompressed qualification data,
+not the final per-pixel memory budget. No far indirect gameplay image is claimed.
+
+For shared-kernel refactors, `shader_candidate_benchmark` accepts a fully
+composed baseline WGSL via `VOXEL_GI_BASELINE_SHADER`. It checks five-band moment
+parity and alternating compute timings against that exact shader. Use the
+targeted `shader` filter for layout/composition checks; avoid the broad `view_`
+filter, which also selects unrelated view-factor and upload studies.
+
 Keep `cpu_statistics=false` in at least one runtime smoke check: validation with
 the full mirror alone cannot exercise slim-record HUD progress and publication
 ordering. `slim_progress_receives_gpu_stability_without_changing_sample_counts`

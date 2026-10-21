@@ -95,6 +95,14 @@ Staging:
      replay key, separate emitter/continuation energy, direct energy and known
      status. Black paths count; unknown and inactive paths do not. This is not
      yet a reservoir, a compressed production layout or a rendered far solution.
+     A second entry point advances uncached tails by at most eight hits per
+     dispatch, saving throughput, accumulated energy, ray, MIS state and bounce
+     index in 128 bytes of **in-flight scratch**. Paused energy is not published
+     as a sample. Without the qualification-only depth limit, paths finish by
+     cache hit, escape, roulette, zero throughput, reach, or explicit unknown.
+     One/three/eight-hit partitions match the unsplit estimator; generation and
+     receiver changes restart incompatible continuations. The per-view queue,
+     scratch compaction and shared GPU-time arbitration are not wired yet.
      The next integration is a screen-space compute pass after a depth/normal
      prepass (needs prepass vertex shaders for the voxel vertex layout),
      tracing the shared transport paths per pixel at reduced resolution,
@@ -139,6 +147,10 @@ Build the next stage around these contracts:
   budgeted continuation of uncached tails; reusing a permanently truncated
   estimate would retain its darker fixed point. Deeper sampling reserves
   distinct dimensions so it cannot alias the near prefix's roulette choices.
+  The resumable version, with three hits per dispatch and no path-depth cutoff,
+  measured **1.0003/0.9999/0.9983** over 49,152 raw paths; every path finished
+  within ten waves in this fixture. That is a correctness result, not a chosen
+  runtime cadence or a promise that every scene finishes in ten waves.
 - Temporal path reuse needs origin, direction/hit geometry and proposal
   information, including correct accounting for dark samples. Color-only
   history cannot later be reinterpreted as a resampling reservoir.
@@ -150,6 +162,29 @@ Build the next stage around these contracts:
 - A view-local dispatch budget shares the existing GPU-time allowance. Measure
   disocclusion response, edit freshness, memory and frame tails before shrinking
   the default radius. No full-frame CPU readback or main-thread GPU wait.
+  Pending paths must retain their original receivers across ordinary camera
+  motion; a new frame is not a new generation. Reproject completed records into
+  the current view. Replacing pending receiver lists every frame would keep
+  restarting longer paths and bias the moving view dark. Likewise, do not treat
+  the early-completed subset of a cohort as representative of all its paths:
+  completion time is correlated with path depth. Queue ownership and publication
+  must explicitly handle that before the kernel becomes a gameplay tier.
+
+### Near-kernel regression checkpoint
+
+At `81c6b72` plus the resumable-kernel diff, compared against the pre-experiment
+`5a638df` composed shader on Apple M4/Metal, dev profile, no viewport (isolated
+compute), unchanged source/material settings: 30 alternating pairs passed
+five-band mean/moment and exact count/direct/sky parity. GPU p50/p95 ms:
+
+| Workload | Baseline | Resumable shared kernel |
+| --- | ---: | ---: |
+| 1,024 open-floor faces × 4 paths | 0.053 / 0.059 | 0.053 / 0.058 |
+| 8,100 faces in nine emissive rooms × 4 paths | 1.798 / 3.484 | 1.798 / 3.498 |
+
+No near-kernel performance change is claimed. The new view entry points are not
+dispatched by gameplay; visual handoff, live frame pacing and reuse remain to
+qualify. Gameplay defaults and the receiver radius are unchanged.
 
 ## Simulation: deterministic direct transport, not GI
 
