@@ -279,6 +279,11 @@ struct VoxelGiRuntime {
     sky_band: Vec<IVec3>,
     sky_revision: u64,
     sky_batch_size: usize,
+    /// GPU milliseconds transport may still spend under `gpu_time_share`:
+    /// accrues with wall time, a batch reserves its budget at submission
+    /// and is charged its measured time at completion.
+    gpu_allowance_ms: f32,
+    gpu_allowance_at: Option<Instant>,
     gpu_topology_dirty: bool,
     gpu_rebuild_required: bool,
     gpu_added: Vec<IVec3>,
@@ -342,6 +347,8 @@ impl Default for VoxelGiRuntime {
             sky_band: Vec::new(),
             sky_revision: 0,
             sky_batch_size: 512,
+            gpu_allowance_ms: 0.0,
+            gpu_allowance_at: None,
             gpu_topology_dirty: false,
             gpu_rebuild_required: false,
             gpu_added: Vec::new(),
@@ -394,6 +401,8 @@ struct TransportBatch {
     execution_ms: Option<f32>,
     sky_only: bool,
     sky_count: usize,
+    /// GPU milliseconds reserved from the allowance at submission.
+    gpu_reserved_ms: f32,
     scene_generation: u64,
     sky_revision: u64,
 }

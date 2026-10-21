@@ -284,8 +284,21 @@ environment changes do not. Retired receiver corners are pruned. Unknown
 corners retry. A corner whose lit bits flip records a Light change (luminance
 at the current sun), which measured retention spreads to nearby faces: an
 opening far above a floor reaches the floor, and a moving shadow border caps
-the bounce history it changes. A gradually moving sun is not a source reset
-(`SourceChange::Sun`, see below); the day-cycle validation profile measures it.
+the bounce history it changes. A flip's flux is the reflected change (times
+the most reflective solid voxel at the corner), as edit flux is measured;
+while the sun moves (a visibility step in the last 10 s) flips merge in their
+buckets and publish at most every 250 ms, while under a still sun they publish
+at once. A gradually moving sun is not a source reset (`SourceChange::Sun`, see
+below); the day-cycle validation profile measures it.
+
+Sky requests come in three tiers: explicit requests (new probes), then the
+band, then the world sweep. The band holds the voxels touching corners whose
+lit bits flipped in the previous visibility generation and their axis
+neighbours (shadow borders move about a voxel per 0.5° step), and the voxels
+touching corners that changed geometry invalidated (shadows near an edit and
+under new terrain). The worker sorts each band nearest the batch focus; bands
+accumulate on the main thread, bounded, with the sweep as fallback. The
+publication path does not scan an edit's neighbourhood for sky.
 
 Sky jobs share the indirect worker/submission, geometry and scratch buffers.
 `ProbeWork::sky_requested` records explicit sunlight demand. Indirect refinement
@@ -533,6 +546,15 @@ indices, temporal display and scheduler state stay authoritative on the main
 world. Workers own scene/source snapshots and perform preparation, submission,
 waiting and decoding asynchronously. The explicit CPU reference pool is created lazily and
 limited to two threads. One outstanding trace batch bounds resource ownership.
+The GI budget is `gpu_time_share` (default 0.2): the share of wall time
+transport batches may occupy the GPU, independent of frame rate. An allowance
+accrues with wall time (banking at most two batches); a batch reserves
+`trace_budget_ms` at submission and is charged its measured GPU time at
+completion, and batches wait while the allowance is spent. Main-thread work
+per batch (selection, merge) scales with the batch rate; scene publication,
+display topology (2,048 additions per frame) and value uploads keep their own
+per-frame caps.
+
 The default dispatch adds 16 paths per selected face within the same adaptive
 4-ms transport target. This amortizes receiver scheduling, transfer and merge;
 it does not increase bounce depth, reach, retained history or the work target.

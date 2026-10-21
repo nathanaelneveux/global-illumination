@@ -67,6 +67,12 @@ pub(super) fn append_sky_work(
     count
 }
 
+/// GPU milliseconds available after `elapsed_ms` of wall time at `share`,
+/// banking at most two batches' budget.
+fn accrue_gpu_allowance(allowance: f32, elapsed_ms: f32, share: f32, budget_ms: f32) -> f32 {
+    (allowance + elapsed_ms * share).min(2.0 * budget_ms)
+}
+
 /// Probes per batch whose untraced faces get a resident slot and seed. GPU
 /// coverage only reaches faces with a slot, so this bounds how fast newly
 /// streamed terrain is traced (1,024 left a growing backlog in the hallway).
@@ -103,7 +109,22 @@ pub(super) fn start_trace_task(
     runtime.sky_batch_size = runtime.sky_batch_size.min(settings.batch_limit());
     // Three owned staging allocations bound queue latency and memory. When full,
     // poll without selecting more work: never turn backpressure into a CPU wait.
-    let can_submit = !field.order.is_empty() && runtime.gpu_pending.len() < 3;
+    // The GI budget: a share of wall time, independent of frame rate. A short
+    // burst may bank up to two batches' budget; spending waits below zero.
+    let now = Instant::now();
+    let elapsed_ms = runtime
+        .gpu_allowance_at
+        .map_or(0.0, |at| (now - at).as_secs_f32() * 1000.0);
+    runtime.gpu_allowance_at = Some(now);
+    runtime.gpu_allowance_ms = accrue_gpu_allowance(
+        runtime.gpu_allowance_ms,
+        elapsed_ms,
+        settings.gpu_share(),
+        settings.budget_ms(),
+    );
+    let can_submit = !field.order.is_empty()
+        && runtime.gpu_pending.len() < 3
+        && runtime.gpu_allowance_ms > 0.0;
     let mut selected = if can_submit {
         info_span!("gi_select").in_scope(|| select_transport(&mut runtime, &field, &settings))
     } else {
@@ -175,11 +196,15 @@ pub(super) fn start_trace_task(
     let paths = selected.faces.len() as u64 * u64::from(samples);
     stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
     let scene = Arc::clone(&runtime.scene);
+    let batch_submits = !selected.probes.is_empty() || selected.picks > 0;
+    let gpu_reserved_ms = if batch_submits { settings.budget_ms() } else { 0.0 };
+    runtime.gpu_allowance_ms -= gpu_reserved_ms;
     let mut batch = super::TransportBatch {
         work: selected,
         paths,
         sky_only,
         sky_count,
+        gpu_reserved_ms,
         scene_generation: runtime.generation,
         sky_revision: runtime.sky_revision,
         ..default()
@@ -491,6 +516,8 @@ pub(super) fn apply_trace_task(
     } else {
         stats.transport_batches += 1;
     }
+    // Charge the measured GPU time against what was reserved.
+    runtime.gpu_allowance_ms += batch.gpu_reserved_ms - batch.gpu_ms.unwrap_or(measured_ms);
     let sky_current =
         batch.scene_generation == runtime.generation && batch.sky_revision == runtime.sky_revision;
     let transport_revision = field.transport_revision;
@@ -620,4 +647,27 @@ pub(super) fn apply_trace_task(
         );
     }
     update_stats_from_counters(&runtime, &field, &mut stats);
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::accrue_gpu_allowance;
+
+    #[test]
+    fn gpu_share_spends_a_fraction_of_wall_time_whatever_the_frame_rate() {
+        // 20% of 1 s is 200 GPU ms: fifty 4 ms batches, at 60 or 144 Hz.
+        for frame_ms in [1000.0 / 60.0, 1000.0 / 144.0] {
+            let (mut allowance, mut spent) = (0.0_f32, 0.0_f32);
+            for _ in 0..(1000.0 / frame_ms) as usize {
+                allowance = accrue_gpu_allowance(allowance, frame_ms, 0.2, 4.0);
+                if allowance > 0.0 {
+                    allowance -= 4.0;
+                    spent += 4.0;
+                }
+            }
+            assert!((spent - 200.0).abs() <= 8.0, "{frame_ms} ms frames spent {spent}");
+        }
+        // Idle time banks at most two batches.
+        assert_eq!(accrue_gpu_allowance(0.0, 10_000.0, 0.2, 4.0), 8.0);
+    }
 }

@@ -40,7 +40,14 @@ pub struct VoxelGiSettings {
     pub spatial_max_donors: u32,
     /// Disable for a same-kernel continuous-sampling A/B baseline.
     pub adaptive_updates: bool,
+    /// GPU time per transport batch: its size, and how coarsely the GPU
+    /// share below is spent.
     pub trace_budget_ms: f32,
+    /// The GI budget: the share of GPU time transport batches may use
+    /// (0.2 = 20%), independent of frame rate. Batches wait while it is spent;
+    /// main-thread work per batch scales with them. Publication keeps its own
+    /// per-frame caps.
+    pub gpu_time_share: f32,
     pub max_probes_per_dispatch: usize,
     /// Main-thread receiver publication budget (capped at 8 ms). A page is
     /// atomic, so one expensive page may exceed it; at most four pages publish
@@ -80,6 +87,7 @@ impl Default for VoxelGiSettings {
             spatial_max_donors: 0,
             adaptive_updates: true,
             trace_budget_ms: 4.0,
+            gpu_time_share: 0.2,
             max_probes_per_dispatch: 8192,
             scene_publish_budget: Duration::from_millis(2),
             display_upload_interval: Duration::from_millis(50),
@@ -138,6 +146,13 @@ impl VoxelGiSettings {
             self.trace_budget_ms.clamp(0.25, 16.0)
         } else {
             4.0
+        }
+    }
+    pub(super) fn gpu_share(&self) -> f32 {
+        if self.gpu_time_share.is_finite() {
+            self.gpu_time_share.clamp(0.02, 1.0)
+        } else {
+            0.2
         }
     }
     pub(super) fn batch_limit(&self) -> usize {
