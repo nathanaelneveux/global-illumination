@@ -107,7 +107,7 @@ fn retirements_survive_poll_only_and_empty_receiver_dispatch() {
     }
 }
 
-fn read_words(context: &GpuTransportDevice, source: &Buffer, size: u64) -> Vec<u32> {
+pub(super) fn read_words(context: &GpuTransportDevice, source: &Buffer, size: u64) -> Vec<u32> {
     let mut readback = UploadBuffer::new(
         &context.device,
         "maintenance assertion",
@@ -143,6 +143,37 @@ fn read_words(context: &GpuTransportDevice, source: &Buffer, size: u64) -> Vec<u
     drop(view);
     readback.buffer.unmap();
     words
+}
+
+#[test]
+#[ignore = "native transport cache allocation-generation regression"]
+fn retained_cache_pairs_stay_coherent_when_either_member_grows() {
+    let mut gpu = super::tests::native_tracer();
+    gpu.enable_resident().unwrap();
+    let (scene, sources, probes) = super::tests::open_floor_fixture();
+    let materials = VoxelMaterialTransportTable::default();
+    let emitters = Arc::new(EmissionDistribution::default());
+    let mut work = TraceWork::from_probes(&probes[..1], false);
+    gpu.trace_compact(scene.clone(), &sources, &materials, &mut work, 16, &emitters, false).unwrap();
+    for (count, grow_index) in [(2, false), (600, true)] {
+        let resident = gpu.resident.as_ref().unwrap();
+        let (state, index) = resident.cache_buffers();
+        let held = (state.shared(), index.shared());
+        let state_words = read_words(&gpu.context, &held.0.buffer, held.0.capacity);
+        let index_words = read_words(&gpu.context, &held.1.buffer, held.1.capacity);
+        let mut work = TraceWork::from_probes(&probes[..count], false);
+        gpu.trace_compact(scene.clone(), &sources, &materials, &mut work, 16, &emitters, false).unwrap();
+        let (state, index) = gpu.resident.as_ref().unwrap().cache_buffers();
+        assert_ne!(state.buffer.id(), held.0.buffer.id());
+        assert_ne!(index.buffer.id(), held.1.buffer.id());
+        assert_eq!(index.capacity > held.1.capacity, grow_index);
+        assert_eq!(read_words(&gpu.context, &held.0.buffer, held.0.capacity), state_words);
+        assert_eq!(read_words(&gpu.context, &held.1.buffer, held.1.capacity), index_words);
+        // Seeded histories survive the copy; later merges do not mutate the
+        // retained generation. Check native words rather than CPU ownership.
+        let current = read_words(&gpu.context, &state.buffer, state.capacity);
+        assert!(current[5] >= 32, "first face's history survived growth");
+    }
 }
 
 #[test]

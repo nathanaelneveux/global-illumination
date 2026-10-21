@@ -690,18 +690,7 @@ impl ResidentAccumulator {
         drop(_evidence);
         let device = &context.device;
         let queue = &context.queue;
-        let previous = self.state.buffer.clone();
-        let capacity = self.state.capacity;
-        if self
-            .state
-            .ensure(device, self.high_water as usize * RECORD_BYTES)?
-        {
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Preserve GI resident measurements during growth"),
-            });
-            encoder.copy_buffer_to_buffer(&previous, 0, &self.state.buffer, 0, capacity);
-            queue.submit([encoder.finish()]);
-        }
+        self.ensure_cache_generation(context)?;
         self.index_scatter_count = info_span!("gi_face_index_upload").in_scope(|| {
             self.face_index.upload(
                 &mut self.face_index_buffer,
@@ -994,6 +983,38 @@ impl ResidentAccumulator {
     }
 
     /// Measurements and face ownership read by path termination.
+    /// Keep the index and its addressed measurements in one allocation
+    /// generation. A render-view consumer may retain both across worker
+    /// batches: growing just one would let an old index address recycled slots
+    /// or a new index address beyond an old measurement allocation.
+    fn ensure_cache_generation(&mut self, context: &GpuTransportDevice) -> Result<(), String> {
+        let state_bytes = self.high_water as usize * RECORD_BYTES;
+        let index_bytes = self.face_index.gpu_bytes();
+        if state_bytes as u64 <= self.state.capacity
+            && index_bytes as u64 <= self.face_index_buffer.capacity
+        {
+            return Ok(());
+        }
+        let device = &context.device;
+        let mut state = UploadBuffer::new(device, self.state.label, self.state.usage);
+        let mut index = UploadBuffer::new(
+            device, self.face_index_buffer.label, self.face_index_buffer.usage,
+        );
+        state.ensure(device, state_bytes.max(self.state.capacity as usize))?;
+        index.ensure(device, index_bytes.max(self.face_index_buffer.capacity as usize))?;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Preserve GI transport cache generation"),
+        });
+        encoder.copy_buffer_to_buffer(&self.state.buffer, 0, &state.buffer, 0, self.state.capacity);
+        context.queue.submit([encoder.finish()]);
+        self.state = state;
+        self.face_index_buffer = index;
+        self.face_index.require_full_upload();
+        Ok(())
+    }
+
+    /// Ordinary updates remain queue-ordered, in-place transactions. Only
+    /// allocation changes freeze an old pair; this is not a per-batch snapshot.
     pub(super) fn cache_buffers(&self) -> (&UploadBuffer, &UploadBuffer) {
         (&self.state, &self.face_index_buffer)
     }

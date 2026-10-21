@@ -153,7 +153,7 @@ impl FaceIndex {
         scatter: &mut Vec<u8>,
     ) -> Result<u32, String> {
         scatter.clear();
-        let bytes = (self.entries.len() + 1) * 16;
+        let bytes = self.gpu_bytes();
         if buffer.ensure(device, bytes)? || self.full_upload {
             let mut data = Vec::with_capacity(bytes);
             for word in [self.mask() as u32, MAX_PROBE as u32, 0, 0] {
@@ -182,6 +182,16 @@ impl FaceIndex {
         }
         self.dirty.clear();
         Ok(count)
+    }
+
+    pub(super) fn gpu_bytes(&self) -> usize {
+        (self.entries.len() + 1) * 16
+    }
+
+    /// The companion measurement buffer changed allocation. Rebuild this
+    /// index into a fresh allocation too, even if its capacity is unchanged.
+    pub(super) fn require_full_upload(&mut self) {
+        self.full_upload = true;
     }
 
     /// The words the GPU table should hold: header, then entries.
