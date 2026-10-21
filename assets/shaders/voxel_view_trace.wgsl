@@ -36,7 +36,7 @@ struct ViewPath {
     direct: vec3<f32>,
     stream: u32,
 }
-@group(0) @binding(6) var<storage, read> receivers: array<ViewReceiver>;
+@group(0) @binding(6) var<storage, read_write> receivers: array<ViewReceiver>;
 @group(0) @binding(7) var<storage, read_write> paths: array<ViewPath>;
 
 @compute @workgroup_size(64)
@@ -100,6 +100,13 @@ struct ViewWave {
 fn advance_view_paths(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= wave.range.y || wave.range.z == 0u { return; }
     let index = wave.range.x + id.x;
+    advance_view_path(index);
+}
+
+// The live scheduler supplies a compact visible-owner queue. Keeping the
+// index mapping outside the kernel also qualifies the identical path state
+// machine with contiguous native fixtures.
+fn advance_view_path(index: u32) {
     if index >= params.counts.x * params.counts.y { return; }
     let receiver = receivers[index / params.counts.y];
     let sequence = receiver.sequence + index % params.counts.y;

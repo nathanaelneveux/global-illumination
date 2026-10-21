@@ -26,13 +26,17 @@ const SELECTION_WORDS: usize = 4 * 256 + 4 * 3 + 2;
 /// `TraceWork::mirror_budget` per batch; the CPU merges only those.
 pub(super) const MIRROR_RECORD_BYTES: usize = 7 * 16;
 const SEL_MIRRORS: u64 = 1037;
-const SHADER: &str = include_str!("../../../assets/shaders/voxel_accumulate.wgsl");
+static SHADER: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    include_retention(include_str!(
+        "../../../assets/shaders/voxel_accumulate.wgsl"
+    ))
+});
 type Key = (IVec3, usize);
 
-#[path = "resident_topology.rs"]
-mod topology;
 #[path = "donor_cache.rs"]
 mod donor_cache;
+#[path = "resident_topology.rs"]
+mod topology;
 
 #[derive(Clone, Copy)]
 struct Slot {
@@ -76,6 +80,8 @@ pub(super) struct ResidentAccumulator {
     pub(super) events: Vec<super::super::retention::RetentionEvent>,
     event_bytes: Vec<u8>,
     event_count: u32,
+    publish_view_changes: bool,
+    pub(super) view_changes: Vec<super::view::ViewChange>,
     measure_bytes: Vec<u8>,
     measure_entries: u32,
     measure_positions: u32,
@@ -154,7 +160,7 @@ impl ResidentAccumulator {
             .push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
             label: Some("GI persistent measurements"),
-            source: ShaderSource::Wgsl(Cow::Borrowed(SHADER)),
+            source: ShaderSource::Wgsl(Cow::Borrowed(&SHADER)),
         });
         let pipeline = |entry| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -209,11 +215,7 @@ impl ResidentAccumulator {
             index_scatter: UploadBuffer::new(device, "GI face index changes", storage),
             index_scatter_bytes: Vec::new(),
             index_scatter_count: 0,
-            inputs: UploadBuffer::new(
-                device,
-                "GI resident jobs",
-                storage | BufferUsages::COPY_SRC,
-            ),
+            inputs: UploadBuffer::new(device, "GI resident jobs", storage | BufferUsages::COPY_SRC),
             checkpoint: UploadBuffer::new(
                 device,
                 "GI resident merge checkpoints",
@@ -231,6 +233,8 @@ impl ResidentAccumulator {
             events: Vec::new(),
             event_bytes: Vec::new(),
             event_count: 0,
+            publish_view_changes: false,
+            view_changes: Vec::new(),
             measure_bytes: Vec::new(),
             measure_entries: 0,
             measure_positions: 0,
@@ -441,7 +445,8 @@ impl ResidentAccumulator {
             for face in &mut work.faces[job.faces()] {
                 let key = (face.voxel, face.face);
                 if !self.slots.contains_key(&key) {
-                    let slot = self.allocate_slot(key, face.material, indexed_spatial, &mut walk_joined);
+                    let slot =
+                        self.allocate_slot(key, face.material, indexed_spatial, &mut walk_joined);
                     self.slots.insert(key, slot);
                 }
                 let slot = self.slots.get_mut(&key).unwrap();
@@ -535,7 +540,8 @@ impl ResidentAccumulator {
                 }
                 continue;
             }
-            let mut slot = self.allocate_slot(key, ensure.face.material, indexed_spatial, &mut walk_joined);
+            let mut slot =
+                self.allocate_slot(key, ensure.face.material, indexed_spatial, &mut walk_joined);
             self.incarnation = self
                 .incarnation
                 .checked_add(1)
@@ -546,7 +552,12 @@ impl ResidentAccumulator {
             self.meta_writes
                 .write(slot.index * META_WORDS + 6, ensure.revision as u32);
             let seed = (self.seed_bytes.len() / RECORD_BYTES) as u32;
-            encode_seed(&mut self.seed_bytes, &ensure.face, slot.incarnation, self.origin);
+            encode_seed(
+                &mut self.seed_bytes,
+                &ensure.face,
+                slot.incarnation,
+                self.origin,
+            );
             if let Some(graph) = &mut self.evidence_topology {
                 graph.set_incarnation(slot.index, slot.incarnation);
             }
@@ -636,7 +647,11 @@ impl ResidentAccumulator {
                 .iter()
                 .chain(&work.retention_events)
                 .flat_map(|event| {
-                    event.bounds.iter().zip(&event.urgent).filter(|(_, urgent)| **urgent)
+                    event
+                        .bounds
+                        .iter()
+                        .zip(&event.urgent)
+                        .filter(|(_, urgent)| **urgent)
                 })
                 .map(|(bounds, _)| *bounds)
                 .collect();
@@ -652,9 +667,11 @@ impl ResidentAccumulator {
                     let count = face.samples.min(face.history_cap).min(face.revision_cap);
                     (face.resident, if near_edit { 0 } else { count })
                 })
-                .chain(requests.into_iter().filter(|(address, _)| {
-                    self.picked_face(address.x, address.y).is_some()
-                }));
+                .chain(
+                    requests
+                        .into_iter()
+                        .filter(|(address, _)| self.picked_face(address.x, address.y).is_some()),
+                );
             // One plan per slot, at its smallest count: an older request's
             // higher count must not release a list this batch's edit needs.
             let mut wanted: Vec<_> = wanted.filter(|(address, _)| address.y != 0).collect();
@@ -672,9 +689,10 @@ impl ResidentAccumulator {
                     self.donor_cache.invalidate(address.x);
                 } else if self.donor_cache.needs(address.x, sites as u32 - 1) {
                     let graph = self.evidence_topology.as_ref().expect("adaptive topology");
-                    self.evidence_gather.collect(address, sites, |address, edge| {
-                        graph.neighbor(address.x, edge)
-                    });
+                    self.evidence_gather
+                        .collect(address, sites, |address, edge| {
+                            graph.neighbor(address.x, edge)
+                        });
                     donors.clear();
                     donors.extend(self.evidence_gather.values().skip(1).map(|a| a.x));
                     // Fewer sites than asked: the walk ran out of surface.
@@ -707,10 +725,10 @@ impl ResidentAccumulator {
         {
             let previous = self.checkpoint.buffer.clone();
             let capacity = self.checkpoint.capacity;
-            if self
-                .checkpoint
-                .ensure(device, (self.high_water as usize * CHECKPOINT_BYTES).max(16))?
-            {
+            if self.checkpoint.ensure(
+                device,
+                (self.high_water as usize * CHECKPOINT_BYTES).max(16),
+            )? {
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Preserve GI merge checkpoints during growth"),
                 });
@@ -720,12 +738,14 @@ impl ResidentAccumulator {
         }
         self.seeds.upload(device, queue, &self.seed_bytes)?;
         self.events.append(&mut work.retention_events);
+        self.publish_view_changes = work.view_transport;
         let encoded = encode_events(&mut self.event_bytes, &mut self.measure_bytes, &self.events);
         self.event_count = encoded.events;
         self.measure_entries = encoded.entries;
         self.measure_positions = encoded.positions;
         if self.event_count > 0 {
-            self.events_buffer.upload(device, queue, &self.event_bytes)?;
+            self.events_buffer
+                .upload(device, queue, &self.event_bytes)?;
         }
         if self.measure_entries > 0 {
             self.measures.upload(device, queue, &self.measure_bytes)?;
@@ -760,7 +780,10 @@ impl ResidentAccumulator {
         }
         let chunk = self.high_water.div_ceil(4);
         let first = (work.batch_id % 4) * chunk;
-        self.classify_range = (first.min(self.high_water), (first + chunk).min(self.high_water));
+        self.classify_range = (
+            first.min(self.high_water),
+            (first + chunk).min(self.high_water),
+        );
         {
             let previous = self.meta.buffer.clone();
             let capacity = self.meta.capacity;
@@ -783,14 +806,18 @@ impl ResidentAccumulator {
             // Persistent buffers keep their contents across growth.
             for (buffer, bytes) in [
                 (&mut self.donor_table, self.high_water as usize * 8),
-                (&mut self.donor_arena, self.donor_cache.arena_len as usize * 4),
+                (
+                    &mut self.donor_arena,
+                    self.donor_cache.arena_len as usize * 4,
+                ),
             ] {
                 let previous = buffer.buffer.clone();
                 let capacity = buffer.capacity;
                 if buffer.ensure(device, bytes.max(16))? {
-                    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("Preserve GI evidence donors during growth"),
-                    });
+                    let mut encoder =
+                        device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("Preserve GI evidence donors during growth"),
+                        });
                     encoder.copy_buffer_to_buffer(&previous, 0, &buffer.buffer, 0, capacity);
                     queue.submit([encoder.finish()]);
                 }
@@ -939,7 +966,11 @@ impl ResidentAccumulator {
             })
             .collect();
         if values != self.material_light_values {
-            let bytes: Vec<u8> = values.iter().flatten().flat_map(|v| v.to_le_bytes()).collect();
+            let bytes: Vec<u8> = values
+                .iter()
+                .flatten()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
             self.material_light
                 .upload(&context.device, &context.queue, &bytes)?;
             self.material_light_values = values;
@@ -953,13 +984,22 @@ impl ResidentAccumulator {
 
     /// The prepared batch's GPU pick records: buffer, byte offset and count.
     pub(super) fn pick_records(&self) -> (&Buffer, u64, u32) {
-        (&self.inputs.buffer, u64::from(self.cpu_faces) * 16, self.picks)
+        (
+            &self.inputs.buffer,
+            u64::from(self.cpu_faces) * 16,
+            self.picks,
+        )
     }
 
     /// The statistics mirror of the prepared batch: the buffer and byte
     /// offset of its record count, the records, and their budget.
     pub(super) fn mirror_buffers(&self) -> (&Buffer, u64, &Buffer, u32) {
-        (&self.selection.buffer, SEL_MIRRORS * 4, &self.mirror_out.buffer, self.mirror_budget)
+        (
+            &self.selection.buffer,
+            SEL_MIRRORS * 4,
+            &self.mirror_out.buffer,
+            self.mirror_budget,
+        )
     }
 
     /// A face to (re)plan a donor list for in the next batch, from its merged
@@ -998,10 +1038,15 @@ impl ResidentAccumulator {
         let device = &context.device;
         let mut state = UploadBuffer::new(device, self.state.label, self.state.usage);
         let mut index = UploadBuffer::new(
-            device, self.face_index_buffer.label, self.face_index_buffer.usage,
+            device,
+            self.face_index_buffer.label,
+            self.face_index_buffer.usage,
         );
         state.ensure(device, state_bytes.max(self.state.capacity as usize))?;
-        index.ensure(device, index_bytes.max(self.face_index_buffer.capacity as usize))?;
+        index.ensure(
+            device,
+            index_bytes.max(self.face_index_buffer.capacity as usize),
+        )?;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Preserve GI transport cache generation"),
         });
@@ -1027,6 +1072,11 @@ impl ResidentAccumulator {
         count: usize,
         timestamps: Option<&wgpu::QuerySet>,
     ) {
+        let view_event_count = if self.publish_view_changes {
+            self.event_count
+        } else {
+            0
+        };
         let bindings = cached_bindings(
             &mut self.prepare_bindings,
             device,
@@ -1150,6 +1200,35 @@ impl ResidentAccumulator {
             self.event_count = 0;
         }
         drop(pass);
+        if view_event_count > 0 {
+            // Copy AFTER edit-flux measurement, not its CPU prior, and before
+            // a later worker batch reuses the event buffer. All view domains
+            // consume the same event and distance law, without a CPU readback.
+            let events = device.create_buffer(&BufferDescriptor {
+                label: Some("GI immutable measured view changes"),
+                size: self.event_bytes.len() as u64,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            encoder.copy_buffer_to_buffer(
+                &self.events_buffer.buffer,
+                0,
+                &events,
+                0,
+                self.event_bytes.len() as u64,
+            );
+            let reach = super::super::retention::INFLUENCE_RADIUS as u32;
+            let bytes = [view_event_count, reach * reach, 0, 0].map(u32::to_le_bytes);
+            let control = device.create_buffer_with_data(
+                &bevy::render::render_resource::BufferInitDescriptor {
+                    label: Some("GI view event descriptor"),
+                    contents: bytes.as_flattened(),
+                    usage: BufferUsages::UNIFORM,
+                },
+            );
+            self.view_changes
+                .push(super::view::ViewChange { events, control });
+        }
         // GPU picks, in their own pass (own timing): after retention (which
         // may revoke stability), before the traced faces' changes are marked.
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1186,7 +1265,11 @@ impl ResidentAccumulator {
                 &mut self.histogram_bindings,
                 device,
                 || self.select_histogram.get_bind_group_layout(0).into(),
-                [(0, &self.control), (15, &self.selection), (16, &self.slot_keys)],
+                [
+                    (0, &self.control),
+                    (15, &self.selection),
+                    (16, &self.slot_keys),
+                ],
             );
             pass.set_pipeline(&self.select_histogram);
             pass.set_bind_group(0, &**histogram, &[]);
@@ -1395,8 +1478,19 @@ fn encode_events(
                 }
                 ChangeKind::Light => (4, 0),
             };
-            push(bytes, [b.min.x as u32, b.min.y as u32, b.min.z as u32, w.flux.to_bits()]);
-            push(bytes, [b.max.x as u32, b.max.y as u32, b.max.z as u32, kind | high]);
+            push(
+                bytes,
+                [
+                    b.min.x as u32,
+                    b.min.y as u32,
+                    b.min.z as u32,
+                    w.flux.to_bits(),
+                ],
+            );
+            push(
+                bytes,
+                [b.max.x as u32, b.max.y as u32, b.max.z as u32, kind | high],
+            );
             record += 2;
         }
     }
@@ -1476,24 +1570,43 @@ mod tests {
         let mut gpu = GpuTracer::new(control.context.clone()).unwrap();
         gpu.enable_resident().unwrap();
         let fixture = crate::voxel_gi::research::skylight_room();
-        let emitters = Arc::new(EmissionDistribution::build(&fixture.scene, &fixture.materials));
+        let emitters = Arc::new(EmissionDistribution::build(
+            &fixture.scene,
+            &fixture.materials,
+        ));
         let probe = SurfaceProbe::new(IVec3::new(8, 4, 8), 4);
         let mut a = TraceWork::from_probes(std::slice::from_ref(&probe), false);
         let mut b = TraceWork::from_probes(&[probe], false);
         b.display_transition_frames = 8;
         let rgb = |words: &[u32], offset: usize| {
-            Vec3::new(f32::from_bits(words[offset]), f32::from_bits(words[offset + 1]), f32::from_bits(words[offset + 2]))
+            Vec3::new(
+                f32::from_bits(words[offset]),
+                f32::from_bits(words[offset + 1]),
+                f32::from_bits(words[offset + 2]),
+            )
         };
         let mut previous: Option<Vec<u32>> = None;
         // Includes interrupted transitions, completion, counter wrap and a
         // submission one frame ahead of the visible renderer's counter.
-        for (step, frame) in [u32::MAX - 5, u32::MAX - 1, 2, 20, 19].into_iter().enumerate() {
+        for (step, frame) in [u32::MAX - 5, u32::MAX - 1, 2, 20, 19]
+            .into_iter()
+            .enumerate()
+        {
             a.display_frame = frame;
             b.display_frame = frame;
             for (tracer, work) in [(&mut control, &mut a), (&mut gpu, &mut b)] {
                 tracer.resident.as_mut().unwrap().clock_ms = Some(1000 + step as u32 * 50);
-                tracer.trace_compact(fixture.scene.clone(), &fixture.sources, &fixture.materials,
-                    work, 16, &emitters, false).unwrap();
+                tracer
+                    .trace_compact(
+                        fixture.scene.clone(),
+                        &fixture.sources,
+                        &fixture.materials,
+                        work,
+                        16,
+                        &emitters,
+                        false,
+                    )
+                    .unwrap();
             }
             assert_eq!(a.faces[0].radiance, b.faces[0].radiance);
             assert_eq!(a.faces[0].second_moment, b.faces[0].second_moment);
@@ -1505,8 +1618,16 @@ mod tests {
             assert_eq!(words[30], 8);
             if let Some(old) = previous {
                 let age = frame.wrapping_sub(old[35]);
-                let blend = if age > i32::MAX as u32 { 0.0 } else { (age as f32 / 8.0).min(1.0) };
-                let target = Vec3::new(f32::from_bits(old[7]), f32::from_bits(old[13]), f32::from_bits(old[14]));
+                let blend = if age > i32::MAX as u32 {
+                    0.0
+                } else {
+                    (age as f32 / 8.0).min(1.0)
+                };
+                let target = Vec3::new(
+                    f32::from_bits(old[7]),
+                    f32::from_bits(old[13]),
+                    f32::from_bits(old[14]),
+                );
                 let expected = rgb(&old, 32).lerp(target, blend);
                 assert!((rgb(&words, 32) - expected).abs().max_element() < 0.000001);
             } else {
@@ -1529,7 +1650,12 @@ mod tests {
             let base = (slot.index * META_WORDS) as usize;
             assert_eq!(
                 &words[base..base + 4],
-                &[key.0.x as u32, key.0.y as u32, key.0.z as u32, key.1 as u32 | META_LIVE],
+                &[
+                    key.0.x as u32,
+                    key.0.y as u32,
+                    key.0.z as u32,
+                    key.1 as u32 | META_LIVE
+                ],
                 "slot {}",
                 slot.index
             );
@@ -1545,7 +1671,11 @@ mod tests {
 
     fn read_state(gpu: &GpuTracer) -> Vec<u32> {
         let resident = gpu.resident.as_ref().unwrap();
-        read_words(gpu, &resident.state.buffer, resident.high_water as u64 * RECORD_BYTES as u64)
+        read_words(
+            gpu,
+            &resident.state.buffer,
+            resident.high_water as u64 * RECORD_BYTES as u64,
+        )
     }
 
     fn read_words(gpu: &GpuTracer, source: &Buffer, size: u64) -> Vec<u32> {
@@ -1712,7 +1842,8 @@ mod tests {
                     gather.sites.clear();
                     gather.sites.push((IVec2::ZERO, center));
                     assert_eq!(position_gather.sites.len(), donors + 1);
-                    for (expected, &index) in position_gather.sites[1..].iter().zip(&list[..donors]) {
+                    for (expected, &index) in position_gather.sites[1..].iter().zip(&list[..donors])
+                    {
                         assert_eq!(expected.1.x, index);
                         // Recover the real offset from the stable keys.
                         let (donor_key, donor_slot) = by_index[&index];
@@ -1747,7 +1878,7 @@ mod tests {
 
     #[test]
     fn resident_shader_validates() {
-        let module = naga::front::wgsl::parse_str(SHADER).unwrap();
+        let module = naga::front::wgsl::parse_str(&SHADER).unwrap();
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
@@ -1779,13 +1910,23 @@ mod tests {
         let emitters = Arc::new(EmissionDistribution::default());
         let mut work = TraceWork::from_probes(&probes[..8], false);
         let trace = |gpu: &mut GpuTracer, work: &mut TraceWork| {
-            gpu.trace_compact(Arc::clone(&scene), &sources, &materials, work, 16, &emitters, false)
-                .unwrap();
+            gpu.trace_compact(
+                Arc::clone(&scene),
+                &sources,
+                &materials,
+                work,
+                16,
+                &emitters,
+                false,
+            )
+            .unwrap();
             let words = read_state(gpu);
             let slots = &gpu.resident.as_ref().unwrap().slots;
             work.faces
                 .iter()
-                .map(|face| words[slots[&(face.voxel, face.face)].index as usize * (RECORD_BYTES / 4) + 5])
+                .map(|face| {
+                    words[slots[&(face.voxel, face.face)].index as usize * (RECORD_BYTES / 4) + 5]
+                })
                 .collect::<Vec<_>>()
         };
         let after_a = trace(&mut gpu, &mut work);
@@ -1835,10 +1976,24 @@ mod tests {
         work.measured_retention = 1.0;
         work.retention_events.push(RetentionEvent::single(
             Bounds::point(work.faces[0].voxel + IVec3::Y),
-            ChangeWeight { kind: ChangeKind::Edit { voxels: 1, measure: false }, flux: 100.0 },
+            ChangeWeight {
+                kind: ChangeKind::Edit {
+                    voxels: 1,
+                    measure: false,
+                },
+                flux: 100.0,
+            },
         ));
-        gpu.trace_compact(scene.clone(), &sources, &materials, &mut work, 16, &emitters, false)
-            .unwrap();
+        gpu.trace_compact(
+            scene.clone(),
+            &sources,
+            &materials,
+            &mut work,
+            16,
+            &emitters,
+            false,
+        )
+        .unwrap();
         let retained = work.faces[0].samples;
         assert!(retained <= 16);
         // A second edit rejects that merge (not the first edit's change):
@@ -1846,8 +2001,13 @@ mod tests {
         work.retention_events.clear();
         work.faces[0].rollback = true;
         work.probes[0].revision += 1;
-        gpu.trace_compact(scene, &sources, &materials, &mut work, 16, &emitters, false).unwrap();
-        assert!(work.faces[0].samples <= retained + 16, "{}", work.faces[0].samples);
+        gpu.trace_compact(scene, &sources, &materials, &mut work, 16, &emitters, false)
+            .unwrap();
+        assert!(
+            work.faces[0].samples <= retained + 16,
+            "{}",
+            work.faces[0].samples
+        );
     }
 
     #[test]
@@ -1864,8 +2024,19 @@ mod tests {
             work.spatial_reconstruction = 1.0;
             work.spatial_evidence_target = 1024;
             work.measured_retention = 1.0;
-            for job in &mut work.probes { job.sky_requested = false; }
-            gpu.trace_compact(scene.clone(), &sources, &materials, work, 16, &emitters, false).unwrap();
+            for job in &mut work.probes {
+                job.sky_requested = false;
+            }
+            gpu.trace_compact(
+                scene.clone(),
+                &sources,
+                &materials,
+                work,
+                16,
+                &emitters,
+                false,
+            )
+            .unwrap();
         };
         let mut cpu = TraceWork::from_probes(&probes[264..272], false);
         cpu.batch_id = 1;
@@ -1882,10 +2053,21 @@ mod tests {
         picked.picks = 8;
         trace(&mut gpu, &mut picked);
         let &(voxel, face, _) = picked.pick_tags.first().expect("GPU picks");
-        let address = cpu.faces.iter().find(|f| (f.voxel, f.face) == (voxel, face)).unwrap().resident;
+        let address = cpu
+            .faces
+            .iter()
+            .find(|f| (f.voxel, f.face) == (voxel, face))
+            .unwrap()
+            .resident;
         let mut edit = RetentionEvent::single(
             Bounds::point(voxel + IVec3::Y),
-            ChangeWeight { kind: ChangeKind::Edit { voxels: 1, measure: false }, flux: 100.0 },
+            ChangeWeight {
+                kind: ChangeKind::Edit {
+                    voxels: 1,
+                    measure: false,
+                },
+                flux: 100.0,
+            },
         );
         edit.urgent = vec![true];
         cpu.batch_id = 6;
@@ -1894,10 +2076,17 @@ mod tests {
         let result = cpu.faces.iter().find(|f| f.resident == address).unwrap();
         let resident = gpu.resident.as_ref().unwrap();
         let donors = resident.donor_cache.donors(address.x).len();
-        let table = read_words(&gpu, &resident.donor_table.buffer, resident.high_water as u64 * 8);
+        let table = read_words(
+            &gpu,
+            &resident.donor_table.buffer,
+            resident.high_water as u64 * 8,
+        );
         let gpu_donors = table[address.x as usize * 2 + 1];
         assert!(result.samples < 1024, "{}", result.samples);
-        assert!(donors > 0 && gpu_donors > 0, "the older request released the list");
+        assert!(
+            donors > 0 && gpu_donors > 0,
+            "the older request released the list"
+        );
     }
 
     /// Faces converged past the evidence target whose history a change caps:
@@ -1925,22 +2114,42 @@ mod tests {
         spatial(&mut work);
         let mut event = RetentionEvent::single(
             Bounds::point(work.faces[3].voxel + IVec3::Y),
-            ChangeWeight { kind: ChangeKind::Edit { voxels: 1, measure: false }, flux: 100.0 },
+            ChangeWeight {
+                kind: ChangeKind::Edit {
+                    voxels: 1,
+                    measure: false,
+                },
+                flux: 100.0,
+            },
         );
         event.urgent = vec![edit];
         work.retention_events.push(event);
-        gpu.trace_compact(scene.clone(), &sources, &materials, &mut work, 16, &emitters, false)
-            .unwrap();
+        gpu.trace_compact(
+            scene.clone(),
+            &sources,
+            &materials,
+            &mut work,
+            16,
+            &emitters,
+            false,
+        )
+        .unwrap();
         let donors = |gpu: &GpuTracer, slot: u32| {
             let resident = gpu.resident.as_ref().unwrap();
-            read_words(gpu, &resident.donor_table.buffer, resident.high_water as u64 * 8)
-                [slot as usize * 2 + 1]
+            read_words(
+                gpu,
+                &resident.donor_table.buffer,
+                resident.high_water as u64 * 8,
+            )[slot as usize * 2 + 1]
         };
         let face = &work.faces[3];
         let after_cap = donors(&gpu, face.resident.x);
         let mut other = TraceWork::from_probes(&probes[..1], false);
         spatial(&mut other);
-        gpu.trace_compact(scene, &sources, &materials, &mut other, 16, &emitters, false).unwrap();
+        gpu.trace_compact(
+            scene, &sources, &materials, &mut other, 16, &emitters, false,
+        )
+        .unwrap();
         (after_cap, donors(&gpu, face.resident.x), face.samples)
     }
 
@@ -1949,7 +2158,10 @@ mod tests {
     fn edit_capped_faces_keep_their_donors() {
         let (donors, _, samples) = capped_face_donors(true);
         assert!(samples < 1024, "{samples}");
-        assert!(donors > 0, "a capped face traced without donors (pre-cap CPU count)");
+        assert!(
+            donors > 0,
+            "a capped face traced without donors (pre-cap CPU count)"
+        );
     }
 
     #[test]
@@ -1957,7 +2169,10 @@ mod tests {
     fn capped_faces_get_donors_for_their_next_trace() {
         let (_, donors, samples) = capped_face_donors(false);
         assert!(samples < 1024, "{samples}");
-        assert!(donors > 0, "the GPU's capped count never reached donor planning");
+        assert!(
+            donors > 0,
+            "the GPU's capped count never reached donor planning"
+        );
     }
 
     #[test]
@@ -1970,8 +2185,10 @@ mod tests {
         let emitters = Arc::new(EmissionDistribution::default());
         let mut work = TraceWork::from_probes(&probes[..1], false);
         work.measured_retention = 1.0;
-        gpu.trace_compact(scene, &sources, &materials, &mut work, 16, &emitters, false).unwrap();
-        let slot = gpu.resident.as_ref().unwrap().slots[&(work.faces[0].voxel, work.faces[0].face)].index;
+        gpu.trace_compact(scene, &sources, &materials, &mut work, 16, &emitters, false)
+            .unwrap();
+        let slot =
+            gpu.resident.as_ref().unwrap().slots[&(work.faces[0].voxel, work.faces[0].face)].index;
         // The state `mark_changed` leaves for a binding change, then an
         // all-unknown result: nothing to resolve the change with yet.
         let resident = gpu.resident.as_ref().unwrap();
@@ -1990,7 +2207,13 @@ mod tests {
             "All-unknown result",
             BufferUsages::STORAGE | BufferUsages::COPY_DST,
         );
-        unknown.upload(&gpu.context.device, &gpu.context.queue, &[0u8; RESULT_BYTES]).unwrap();
+        unknown
+            .upload(
+                &gpu.context.device,
+                &gpu.context.queue,
+                &[0u8; RESULT_BYTES],
+            )
+            .unwrap();
         let mut encoder = gpu.context.device.create_command_encoder(&default());
         gpu.resident.as_mut().unwrap().dispatch_accumulate(
             &gpu.context.device,
@@ -2001,7 +2224,11 @@ mod tests {
         );
         gpu.context.queue.submit([encoder.finish()]);
         let resident = gpu.resident.as_ref().unwrap();
-        let meta = read_words(&gpu, &resident.meta.buffer, resident.high_water as u64 * META_BYTES as u64);
+        let meta = read_words(
+            &gpu,
+            &resident.meta.buffer,
+            resident.high_water as u64 * META_BYTES as u64,
+        );
         let pending = f32::from_bits(meta[slot as usize * META_WORDS as usize + 4]);
         assert!(pending > 0.0, "an all-unknown batch consumed the change");
     }
@@ -2020,8 +2247,16 @@ mod tests {
             }
             work.picks = 64;
             work.mirror_budget = 1024;
-            gpu.trace_compact(scene.clone(), &sources, &materials, work, 16, &emitters, false)
-                .unwrap();
+            gpu.trace_compact(
+                scene.clone(),
+                &sources,
+                &materials,
+                work,
+                16,
+                &emitters,
+                false,
+            )
+            .unwrap();
         };
         let mut first = TraceWork::default();
         first.batch_id = 1;
@@ -2045,11 +2280,17 @@ mod tests {
         let settings = crate::voxel_gi::VoxelGiSettings::default();
         next.probes[0].publish(&next.faces, &mut published, Instant::now(), &settings);
         assert!(mirror.sequence < published.stats().sequence[face]);
-        assert!(mirror.predates(&published), "dispatch would publish the older record");
+        assert!(
+            mirror.predates(&published),
+            "dispatch would publish the older record"
+        );
         let mut slim = SurfaceProbe::new_slim(probe.voxel, probe.face_mask);
         next.probes[0].publish(&next.faces, &mut slim, Instant::now(), &settings);
         assert!(slim.stats.is_none());
-        assert!(mirror.predates(&slim), "slim publication must also reject the older mirror");
+        assert!(
+            mirror.predates(&slim),
+            "slim publication must also reject the older mirror"
+        );
     }
 
     #[test]
@@ -2068,8 +2309,21 @@ mod tests {
             work.stable_error = 0.12;
             work.stable_samples = 32;
             work.batch_id = batch;
-            gpu.trace_compact(scene.clone(), &sources, &default(), &mut work, 64, &emitters, false).unwrap();
-            assert_eq!(work.faces[0].samples, batch * 64, "readback flag must not alter counts");
+            gpu.trace_compact(
+                scene.clone(),
+                &sources,
+                &default(),
+                &mut work,
+                64,
+                &emitters,
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                work.faces[0].samples,
+                batch * 64,
+                "readback flag must not alter counts"
+            );
             settled |= work.faces[0].gpu_settled == Some(true);
             work.probes[0].publish(&work.faces, &mut probe, Instant::now(), &settings);
             assert!(probe.stats.is_none());
@@ -2077,7 +2331,10 @@ mod tests {
             assert_eq!((bootstrap, covered), (8, 1));
             assert_eq!(stable > 0, work.faces[0].gpu_settled.unwrap());
         }
-        assert!(settled, "constant illumination must deliver a settled verdict");
+        assert!(
+            settled,
+            "constant illumination must deliver a settled verdict"
+        );
     }
 
     #[test]
@@ -2099,7 +2356,15 @@ mod tests {
         }
         let owned: Vec<_> = pending.faces.iter().map(|f| (f.voxel, f.face)).collect();
         let _unpublished = gpu
-            .submit_compact(scene.clone(), &sources, &materials, &mut pending, 16, &emitters, false)
+            .submit_compact(
+                scene.clone(),
+                &sources,
+                &materials,
+                &mut pending,
+                16,
+                &emitters,
+                false,
+            )
             .unwrap()
             .unwrap();
         // At most three batches are in flight, so batch 4 is the last one
@@ -2109,9 +2374,14 @@ mod tests {
         next.batch_id = 4;
         next.picks = 1024;
         next.mirror_budget = 1024;
-        gpu.trace_compact(scene, &sources, &materials, &mut next, 16, &emitters, false).unwrap();
+        gpu.trace_compact(scene, &sources, &materials, &mut next, 16, &emitters, false)
+            .unwrap();
         assert!(!next.pick_tags.is_empty());
-        assert!(next.pick_tags.iter().all(|&(p, f, _)| !owned.contains(&(p, f))));
+        assert!(
+            next.pick_tags
+                .iter()
+                .all(|&(p, f, _)| !owned.contains(&(p, f)))
+        );
     }
 
     #[test]
@@ -2137,15 +2407,30 @@ mod tests {
         for probe in &probes[1..9] {
             work.ensure_slots(probe);
         }
-        let ensured: Vec<_> = work.ensure.iter().map(|e| (e.face.voxel, e.face.face)).collect();
+        let ensured: Vec<_> = work
+            .ensure
+            .iter()
+            .map(|e| (e.face.voxel, e.face.face))
+            .collect();
         assert!(!ensured.is_empty());
         let mut ghost = SurfaceProbe::new(IVec3::new(5, 40, 5), 4);
         ghost.revision = 1;
         work.ensure_slots(&ghost);
-        gpu.trace_compact(Arc::clone(&scene), &sources, &materials, &mut work, 16, &emitters, false)
-            .unwrap();
+        gpu.trace_compact(
+            Arc::clone(&scene),
+            &sources,
+            &materials,
+            &mut work,
+            16,
+            &emitters,
+            false,
+        )
+        .unwrap();
         let resident = gpu.resident.as_ref().unwrap();
-        assert!(!resident.slots.contains_key(&(ghost.voxel, 2)), "absent faces get no slot");
+        assert!(
+            !resident.slots.contains_key(&(ghost.voxel, 2)),
+            "absent faces get no slot"
+        );
         assert_slot_metadata(&gpu);
         let words = read_state(&gpu);
         let bound: HashMap<_, _> = resident
@@ -2153,7 +2438,13 @@ mod tests {
             .iter()
             .map(|b| ((b.voxel, b.face), b.address))
             .collect();
-        assert!(resident.bindings.iter().filter(|b| b.voxel != probes[0].voxel).all(|b| b.source_revision == 3));
+        assert!(
+            resident
+                .bindings
+                .iter()
+                .filter(|b| b.voxel != probes[0].voxel)
+                .all(|b| b.source_revision == 3)
+        );
         for key in ensured {
             let slot = resident.slots[&key];
             assert_eq!(resident.face_index.get(key.0, key.1), Some(slot.index));
@@ -2178,13 +2469,18 @@ mod tests {
         let edit = RetentionEvent::single(
             Bounds::point(IVec3::new(8, 6, 8)),
             ChangeWeight {
-                kind: ChangeKind::Edit { voxels: 1, measure: false },
+                kind: ChangeKind::Edit {
+                    voxels: 1,
+                    measure: false,
+                },
                 flux: 3.0,
             },
         );
         // Many bounds; receivers lie outside their union.
         let mut loads = GeometryChange::default();
-        let ring: Vec<_> = (0..8).map(|x| Bounds::point(IVec3::new(x * 4, 10, 40))).collect();
+        let ring: Vec<_> = (0..8)
+            .map(|x| Bounds::point(IVec3::new(x * 4, 10, 40)))
+            .collect();
         for &b in &ring {
             loads.weights.insert(
                 b,
@@ -2201,7 +2497,8 @@ mod tests {
         let mut history = SpatialHistory::default();
         history.record(loads, &[]);
         let loads = history.take_events().pop().unwrap();
-        let unknown = RetentionEvent::single(Bounds::point(IVec3::new(60, 4, 20)), ChangeWeight::UNKNOWN);
+        let unknown =
+            RetentionEvent::single(Bounds::point(IVec3::new(60, 4, 20)), ChangeWeight::UNKNOWN);
         for (measured, events) in [
             (0.0, vec![edit.clone(), loads.clone()]),
             (1.0, vec![edit.clone(), loads.clone()]),
@@ -2212,16 +2509,25 @@ mod tests {
             let (scene, sources, probes) = super::super::tests::open_floor_fixture();
             let materials = VoxelMaterialTransportTable::default();
             let emitters = Arc::new(EmissionDistribution::default());
-            let trace = |gpu: &mut GpuTracer, probes: &[SurfaceProbe], events: Vec<RetentionEvent>| {
-                let mut work = TraceWork::from_probes(probes, false);
-                work.measured_retention = measured;
-                work.retention_events = events;
-                for job in &mut work.probes {
-                    job.sky_requested = false;
-                }
-                gpu.trace_compact(Arc::clone(&scene), &sources, &materials, &mut work, 16, &emitters, false)
+            let trace =
+                |gpu: &mut GpuTracer, probes: &[SurfaceProbe], events: Vec<RetentionEvent>| {
+                    let mut work = TraceWork::from_probes(probes, false);
+                    work.measured_retention = measured;
+                    work.retention_events = events;
+                    for job in &mut work.probes {
+                        job.sky_requested = false;
+                    }
+                    gpu.trace_compact(
+                        Arc::clone(&scene),
+                        &sources,
+                        &materials,
+                        &mut work,
+                        16,
+                        &emitters,
+                        false,
+                    )
                     .unwrap();
-            };
+                };
             // Uneven histories: probe i is traced (i % 4) + 1 times.
             for round in 0..4 {
                 let subset: Vec<_> = probes
@@ -2238,7 +2544,11 @@ mod tests {
             trace(&mut gpu, std::slice::from_ref(&traced), events.clone());
             let after = read_state(&gpu);
             let resident = gpu.resident.as_ref().unwrap();
-            let meta = read_words(&gpu, &resident.meta.buffer, resident.high_water as u64 * META_BYTES as u64);
+            let meta = read_words(
+                &gpu,
+                &resident.meta.buffer,
+                resident.high_water as u64 * META_BYTES as u64,
+            );
             let (mut capped, mut changed) = (0, 0);
             for (key, slot) in &resident.slots {
                 if key.0 == traced.voxel {
@@ -2265,7 +2575,10 @@ mod tests {
                     }
                 }
             }
-            assert!(capped + changed > 100, "exercise the rule: {capped} {changed}");
+            assert!(
+                capped + changed > 100,
+                "exercise the rule: {capped} {changed}"
+            );
         }
     }
 
@@ -2279,33 +2592,54 @@ mod tests {
         let emitters = Arc::new(EmissionDistribution::default());
         let focus = IVec3::new(3, 5, 3);
         let mut batch = 0u32;
-        let mut run = |gpu: &mut GpuTracer, cpu: &[SurfaceProbe], ensure: &[SurfaceProbe], picks: u32| {
-            batch += 1;
-            let mut work = TraceWork::from_probes(cpu, false);
-            for probe in ensure {
-                work.ensure_slots(probe);
-            }
-            for job in &mut work.probes {
-                job.sky_requested = false;
-            }
-            work.picks = picks;
-            work.focus = focus;
-            work.batch_id = batch;
-            work.stable_error = 0.12;
-            work.stable_samples = 32;
-            work.audit_ms = 1_000_000;
-            work.mirror_budget = 1024;
-            gpu.trace_compact(Arc::clone(&scene), &sources, &materials, &mut work, 16, &emitters, false)
+        let mut run =
+            |gpu: &mut GpuTracer, cpu: &[SurfaceProbe], ensure: &[SurfaceProbe], picks: u32| {
+                batch += 1;
+                let mut work = TraceWork::from_probes(cpu, false);
+                for probe in ensure {
+                    work.ensure_slots(probe);
+                }
+                for job in &mut work.probes {
+                    job.sky_requested = false;
+                }
+                work.picks = picks;
+                work.focus = focus;
+                work.batch_id = batch;
+                work.stable_error = 0.12;
+                work.stable_samples = 32;
+                work.audit_ms = 1_000_000;
+                work.mirror_budget = 1024;
+                gpu.trace_compact(
+                    Arc::clone(&scene),
+                    &sources,
+                    &materials,
+                    &mut work,
+                    16,
+                    &emitters,
+                    false,
+                )
                 .unwrap();
-            work.picked.iter().map(|(face, _)| (face.voxel, face.face)).collect::<Vec<_>>()
-        };
+                work.picked
+                    .iter()
+                    .map(|(face, _)| (face.voxel, face.face))
+                    .collect::<Vec<_>>()
+            };
         let counts = |gpu: &GpuTracer| -> HashMap<(IVec3, usize), u32> {
             if gpu.resident.as_ref().unwrap().high_water == 0 {
                 return HashMap::new();
             }
             let words = read_state(gpu);
-            gpu.resident.as_ref().unwrap().slots.iter()
-                .map(|(key, slot)| (*key, words[slot.index as usize * (RECORD_BYTES / 4) + 5] & 0x3fff_ffff))
+            gpu.resident
+                .as_ref()
+                .unwrap()
+                .slots
+                .iter()
+                .map(|(key, slot)| {
+                    (
+                        *key,
+                        words[slot.index as usize * (RECORD_BYTES / 4) + 5] & 0x3fff_ffff,
+                    )
+                })
                 .collect()
         };
         // Every face resident and unmeasured (seeded before selection in the
@@ -2325,12 +2659,21 @@ mod tests {
             let after = counts(&gpu);
             let picked: Vec<_> = after
                 .iter()
-                .filter(|(key, n)| before.get(*key).is_some_and(|b| *n > b) && (round > 0 || **key != owned))
+                .filter(|(key, n)| {
+                    before.get(*key).is_some_and(|b| *n > b) && (round > 0 || **key != owned)
+                })
                 .map(|(key, _)| *key)
                 .collect();
-            assert!(picked.len() <= budget as usize, "round {round}: {}", picked.len());
+            assert!(
+                picked.len() <= budget as usize,
+                "round {round}: {}",
+                picked.len()
+            );
             if (1..4).contains(&round) {
-                assert!(!picked.contains(&owned), "a face with a CPU job in flight is never picked");
+                assert!(
+                    !picked.contains(&owned),
+                    "a face with a CPU job in flight is never picked"
+                );
             }
             if round == 4 {
                 // Coverage goes nearest the focus first (log-distance buckets).
@@ -2340,7 +2683,11 @@ mod tests {
                 // Still candidates: unmeasured, with a live key (a pick whose
                 // paths all left the loaded world stays unmeasured, keyless).
                 let resident = gpu.resident.as_ref().unwrap();
-                let keys = read_words(&gpu, &resident.slot_keys.buffer, resident.high_water as u64 * 4);
+                let keys = read_words(
+                    &gpu,
+                    &resident.slot_keys.buffer,
+                    resident.high_water as u64 * 4,
+                );
                 let nearest_left = after
                     .iter()
                     .filter(|(key, n)| {
@@ -2351,21 +2698,36 @@ mod tests {
                     .map(|((v, _), _)| d2(*v))
                     .min()
                     .unwrap();
-                assert!(bucket(farthest) <= bucket(nearest_left), "{farthest} vs {nearest_left}");
+                assert!(
+                    bucket(farthest) <= bucket(nearest_left),
+                    "{farthest} vs {nearest_left}"
+                );
             }
         }
         let after = counts(&gpu);
-        assert!(after.values().all(|n| *n >= 16), "every face covered by GPU picks");
+        assert!(
+            after.values().all(|n| *n >= 16),
+            "every face covered by GPU picks"
+        );
         // Every face the GPU picked reached the CPU mirror (the owned face's
         // results came back with its CPU job instead, unless also picked).
-        let missing: Vec<_> = after.keys().filter(|k| **k != owned && !mirrored.contains(*k)).collect();
-        assert!(missing.is_empty(), "{} picked faces never mirrored", missing.len());
+        let missing: Vec<_> = after
+            .keys()
+            .filter(|k| **k != owned && !mirrored.contains(*k))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} picked faces never mirrored",
+            missing.len()
+        );
     }
 
     #[test]
     #[ignore = "native GPU edit flux measurement and edit urgency against their CPU statements"]
     fn gpu_measures_edit_flux_and_marks_faces_whose_history_it_binds() {
-        use crate::voxel_gi::geometry::{Bounds, ChangeKind, ChangeWeight, GeometryChange, PageChanges};
+        use crate::voxel_gi::geometry::{
+            Bounds, ChangeKind, ChangeWeight, GeometryChange, PageChanges,
+        };
         use crate::voxel_gi::retention::SpatialHistory;
         let mut gpu = super::super::tests::native_tracer();
         gpu.enable_resident().unwrap();
@@ -2379,8 +2741,16 @@ mod tests {
             for job in &mut work.probes {
                 job.sky_requested = false;
             }
-            gpu.trace_compact(Arc::clone(&scene), &sources, &materials, &mut work, 16, &emitters, false)
-                .unwrap();
+            gpu.trace_compact(
+                Arc::clone(&scene),
+                &sources,
+                &materials,
+                &mut work,
+                16,
+                &emitters,
+                false,
+            )
+            .unwrap();
         };
         for _ in 0..4 {
             trace(&mut gpu, &probes, Vec::new());
@@ -2388,12 +2758,19 @@ mod tests {
         let before = read_state(&gpu);
         let edit = IVec3::new(8, 4, 8);
         let mut change = GeometryChange::default();
-        change
-            .nearby
-            .insert(IVec3::ZERO, PageChanges::new(IVec3::ZERO, vec![Bounds::point(edit)]));
+        change.nearby.insert(
+            IVec3::ZERO,
+            PageChanges::new(IVec3::ZERO, vec![Bounds::point(edit)]),
+        );
         change.weights.insert(
             Bounds::point(edit),
-            ChangeWeight { kind: ChangeKind::Edit { voxels: 1, measure: true }, flux: 0.25 },
+            ChangeWeight {
+                kind: ChangeKind::Edit {
+                    voxels: 1,
+                    measure: true,
+                },
+                flux: 0.25,
+            },
         );
         let mut history = SpatialHistory::default();
         history.record(change, &[edit]);
@@ -2403,8 +2780,18 @@ mod tests {
         // luminance (albedo times incident, plus emission) within one voxel.
         let w = Vec3::new(0.2126, 0.7152, 0.0722);
         let light = |base: usize| {
-            let v = |o: usize| Vec3::new(f32::from_bits(before[o]), f32::from_bits(before[o + 1]), f32::from_bits(before[o + 2]));
-            if before[base + 5] & 0x7fff_ffff > 0 { w.dot(v(base)) + w.dot(v(base + 16)) } else { 0.0 }
+            let v = |o: usize| {
+                Vec3::new(
+                    f32::from_bits(before[o]),
+                    f32::from_bits(before[o + 1]),
+                    f32::from_bits(before[o + 2]),
+                )
+            };
+            if before[base + 5] & 0x7fff_ffff > 0 {
+                w.dot(v(base)) + w.dot(v(base + 16))
+            } else {
+                0.0
+            }
         };
         let material = materials.get(2);
         let resident = gpu.resident.as_ref().unwrap();
@@ -2412,7 +2799,10 @@ mod tests {
         for (key, slot) in &resident.slots {
             if (key.0 - edit).abs().max_element() <= 1 {
                 let base = slot.index as usize * (RECORD_BYTES / 4);
-                brightest = brightest.max(w.dot(material.diffuse.visible) * light(base) + w.dot(material.emission.visible));
+                brightest = brightest.max(
+                    w.dot(material.diffuse.visible) * light(base)
+                        + w.dot(material.emission.visible),
+                );
             }
         }
         assert!(brightest > 0.0);
@@ -2422,10 +2812,21 @@ mod tests {
         let resident = gpu.resident.as_ref().unwrap();
         let encoded = read_words(&gpu, &resident.events_buffer.buffer, 5 * 16);
         let measured = f32::from_bits(encoded[3 * 4 + 3]);
-        assert!((measured - flux).abs() <= 1e-4 * flux, "{measured} vs {flux}");
-        assert_eq!(encoded[4 * 4 + 3] & 7, 3, "measured: an ordinary edit for retention");
+        assert!(
+            (measured - flux).abs() <= 1e-4 * flux,
+            "{measured} vs {flux}"
+        );
+        assert_eq!(
+            encoded[4 * 4 + 3] & 7,
+            3,
+            "measured: an ordinary edit for retention"
+        );
         // Urgency: within 64 voxels, faces whose history this change binds.
-        let meta = read_words(&gpu, &resident.meta.buffer, resident.high_water as u64 * META_BYTES as u64);
+        let meta = read_words(
+            &gpu,
+            &resident.meta.buffer,
+            resident.high_water as u64 * META_BYTES as u64,
+        );
         let (mut urgent, mut checked) = (0, 0);
         for (key, slot) in &resident.slots {
             if key.0 == traced.voxel {
@@ -2434,7 +2835,13 @@ mod tests {
             let base = slot.index as usize * (RECORD_BYTES / 4);
             let d2 = (key.0 - edit).length_squared() as f32;
             let change = flux / (std::f32::consts::PI * d2.max(1.0));
-            let v = |o: usize| Vec3::new(f32::from_bits(before[o]), f32::from_bits(before[o + 1]), f32::from_bits(before[o + 2]));
+            let v = |o: usize| {
+                Vec3::new(
+                    f32::from_bits(before[o]),
+                    f32::from_bits(before[o + 1]),
+                    f32::from_bits(before[o + 2]),
+                )
+            };
             let mean = v(base);
             let variance = w.dot((v(base + 8) - mean * mean).max(Vec3::ZERO));
             let count = (before[base + 5] & 0x7fff_ffff) as f32;
@@ -2582,7 +2989,11 @@ mod tests {
             assert_slot_metadata(&candidate);
             let expected_index = resident.face_index.table_words();
             assert_eq!(
-                read_words(&candidate, &resident.face_index_buffer.buffer, expected_index.len() as u64 * 4),
+                read_words(
+                    &candidate,
+                    &resident.face_index_buffer.buffer,
+                    expected_index.len() as u64 * 4
+                ),
                 expected_index,
                 "step={step}"
             );
@@ -2692,7 +3103,11 @@ mod tests {
                     }
                 }
             }
-            assert_eq!(a.stats().samples, b.stats().samples, "partial cap step={step}");
+            assert_eq!(
+                a.stats().samples,
+                b.stats().samples,
+                "partial cap step={step}"
+            );
             assert_eq!(a.stats().sequence, b.stats().sequence);
             for face in [2, 3] {
                 assert!(

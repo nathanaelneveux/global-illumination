@@ -12,6 +12,8 @@ use super::{EnergySpectrum, world::SurfaceProbe};
 pub(crate) struct TraceWork {
     /// Immutable model snapshot for this batch, shared by both backends.
     pub transport: super::TransportSettings,
+    /// Retain measured GPU change packets for the view-owned receiver domain.
+    pub view_transport: bool,
     pub response_seconds: f32,
     /// Resident history ceiling and recency weighting for tests and harnesses;
     /// zero selects the gameplay defaults (65,536 and a plain running mean).
@@ -277,7 +279,9 @@ impl TraceWork {
             samples: if restart {
                 0
             } else {
-                probe.stats().samples[face].min(stale_limit).min(source_history_limit)
+                probe.stats().samples[face]
+                    .min(stale_limit)
+                    .min(source_history_limit)
             },
             sequence: probe.sequence(face),
             presentation: probe.display[face]
@@ -434,7 +438,10 @@ mod tests {
 
     #[test]
     fn slim_progress_reports_bootstrap_and_rejects_older_mirrors_without_allocating_statistics() {
-        assert_eq!(std::mem::size_of::<super::super::world::ProbeProgress>(), 32);
+        assert_eq!(
+            std::mem::size_of::<super::super::world::ProbeProgress>(),
+            32
+        );
         let mut full = SurfaceProbe::new(IVec3::ZERO, 4);
         full.stats_mut().samples[2] = 2048;
         full.stats_mut().sequence[2] = 4096;
@@ -452,7 +459,11 @@ mod tests {
         assert_eq!(super::super::probe_metrics(&slim, 0), (1, 8, 1, 0));
         slim.update_face_mask(5);
         assert_eq!(slim.bootstrap_samples(0), 0, "new exposure has no samples");
-        assert_eq!(slim.bootstrap_samples(2), 8, "unchanged face retains progress");
+        assert_eq!(
+            slim.bootstrap_samples(2),
+            8,
+            "unchanged face retains progress"
+        );
         work.probes[0].restart = true;
         work.probes[0].publish(&[], &mut slim, Instant::now(), &default());
         assert_eq!(super::super::probe_metrics(&slim, 0), (2, 0, 0, 0));
@@ -496,7 +507,8 @@ mod tests {
                 previous.stats_mut().radiance = [EnergySpectrum::ONE; 6];
                 previous.stats_mut().second_moment = [EnergySpectrum::ONE; 6];
                 previous.stats_mut().stable_batches = [4; 6];
-                previous.stats_mut().face_updated_at = [Some(now - std::time::Duration::from_millis(40)); 6];
+                previous.stats_mut().face_updated_at =
+                    [Some(now - std::time::Duration::from_millis(40)); 6];
                 previous.updated_at = previous.stats().face_updated_at[0];
                 previous.order_index = 123;
                 for display in &mut previous.display {
@@ -554,12 +566,24 @@ mod tests {
                 assert_eq!(actual.stats().samples, reference.stats().samples);
                 assert_eq!(actual.stats().sequence, reference.stats().sequence);
                 assert_eq!(actual.stats().radiance, reference.stats().radiance);
-                assert_eq!(actual.stats().second_moment, reference.stats().second_moment);
+                assert_eq!(
+                    actual.stats().second_moment,
+                    reference.stats().second_moment
+                );
                 assert_eq!(actual.stats().direct, reference.stats().direct);
-                assert_eq!(actual.stats().custom_direct, reference.stats().custom_direct);
-                assert_eq!(actual.stats().stable_batches, reference.stats().stable_batches);
+                assert_eq!(
+                    actual.stats().custom_direct,
+                    reference.stats().custom_direct
+                );
+                assert_eq!(
+                    actual.stats().stable_batches,
+                    reference.stats().stable_batches
+                );
                 assert_eq!(actual.fresh_mask, reference.fresh_mask);
-                assert_eq!(actual.stats().face_updated_at, reference.stats().face_updated_at);
+                assert_eq!(
+                    actual.stats().face_updated_at,
+                    reference.stats().face_updated_at
+                );
                 assert_eq!(actual.updated_at, reference.updated_at);
                 for face in 0..6 {
                     assert_eq!(
@@ -626,7 +650,11 @@ mod tests {
         probe.request_relight();
         let mut work = TraceWork::default();
         work.push(&probe, 5, 0, 0, false, u32::MAX, u32::MAX);
-        assert!(work.faces.iter().all(|f| f.revision_cap == super::super::geometry::NEAR_HISTORY));
+        assert!(
+            work.faces
+                .iter()
+                .all(|f| f.revision_cap == super::super::geometry::NEAR_HISTORY)
+        );
         work.probes[0].publish(&work.faces, &mut probe, Instant::now(), &Default::default());
         assert_eq!(probe.relit_mask, 0, "an accepted job consumes the relight");
         // A refresh (nearby edit) changes the revision but caps nothing.
@@ -666,7 +694,11 @@ mod tests {
         assert!(bytes < full / 2);
         // A probe without CPU statistics keeps the core: topology, display,
         // revisions and resident addresses.
-        assert!(size_of::<SurfaceProbe>() < 400, "{}", size_of::<SurfaceProbe>());
+        assert!(
+            size_of::<SurfaceProbe>() < 400,
+            "{}",
+            size_of::<SurfaceProbe>()
+        );
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 63);
         probe.stats_mut().samples = [128; 6];
         probe.stats_mut().sequence = [901; 6];

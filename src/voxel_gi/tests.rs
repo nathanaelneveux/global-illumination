@@ -122,7 +122,7 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
                 emission_cache: None,
                 gpu_error: None,
                 sunlight_change: None,
-            sky_band: Vec::new(),
+                sky_band: Vec::new(),
             }
         });
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -139,7 +139,9 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
         );
         if case == 4 {
             assert_eq!(
-                world.resource::<VoxelEnergyField>().probes[&IVec3::ZERO].stats().radiance[2],
+                world.resource::<VoxelEnergyField>().probes[&IVec3::ZERO]
+                    .stats()
+                    .radiance[2],
                 EnergySpectrum::ONE
             );
         }
@@ -333,7 +335,7 @@ fn new_receiver_display_clock_does_not_depend_on_material_id() {
             pages: default(),
             receivers_changed: false,
             exact_edits: vec![],
-                build_time: Duration::ZERO,
+            build_time: Duration::ZERO,
         };
         publish_scene_page(
             &mut runtime,
@@ -415,7 +417,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
                 pages: default(),
                 receivers_changed: false,
                 exact_edits: vec![],
-                        build_time: Duration::ZERO,
+                build_time: Duration::ZERO,
             };
             publish_scene_page(
                 &mut runtime,
@@ -466,7 +468,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
                     emission_cache: None,
                     gpu_error: None,
                     sunlight_change: None,
-            sky_band: Vec::new(),
+                    sky_band: Vec::new(),
                 }
             });
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -483,7 +485,9 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             world.init_resource::<GiWorkTimings>();
             world.run_system_once(apply_trace_task).unwrap();
             assert_eq!(
-                world.resource::<VoxelEnergyField>().probes[&voxel].stats().radiance[2],
+                world.resource::<VoxelEnergyField>().probes[&voxel]
+                    .stats()
+                    .radiance[2],
                 EnergySpectrum::ONE,
                 "pre-replacement jobs must not overwrite retained incident energy"
             );
@@ -527,7 +531,7 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
             pages: default(),
             receivers_changed: false,
             exact_edits: vec![],
-                build_time: Duration::ZERO,
+            build_time: Duration::ZERO,
         };
         let task = pool.spawn(async move { result });
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -629,7 +633,7 @@ fn publication_batches_cheap_pages_without_unbounded_display_work() {
             pages,
             receivers_changed: false,
             exact_edits: vec![],
-                build_time: Duration::ZERO,
+            build_time: Duration::ZERO,
         }),
         ..default()
     });
@@ -739,7 +743,8 @@ fn indirect_work_requests_only_unknown_sky_without_the_explicit_queue() {
     let work = push(&probe);
     work.copy_measurements(std::slice::from_mut(&mut probe));
     assert_eq!(
-        probe.display[2].sky, [sky::KNOWN; 4],
+        probe.display[2].sky,
+        [sky::KNOWN; 4],
         "unrequested zero output must never replace valid sky"
     );
     probe.display[2].sky[3] = 0; // incomplete/unknown ray must retry
@@ -781,6 +786,7 @@ fn sky_comparison_is_display_only_and_independent_of_gi_toggle() {
     let mut materials = Assets::<VoxelTransportMaterial>::default();
     let handle = materials.add(render::material_template(&VoxelTransportAssets {
         geometry: default(),
+        far: default(),
         resident: default(),
         texture: default(),
         hash_entries: default(),
@@ -856,14 +862,21 @@ fn cpu_selects_only_event_work_and_sky_requests() {
     let requested = field.order[17];
     enqueue_urgent(&mut runtime, [requested]);
     let forced = select_probes(&mut runtime, &field);
-    assert_eq!(forced.len(), 1, "a simulation refresh request is CPU event work");
+    assert_eq!(
+        forced.len(),
+        1,
+        "a simulation refresh request is CPU event work"
+    );
     assert_eq!(forced[0].voxel, requested);
     assert_eq!(forced[0].trace_mask, 5);
     // Far invalidation makes every face due, but bulk work is the GPU's pick.
     field.transport_revision += 1;
     assert!(select_probes(&mut runtime, &field).is_empty());
     assert!(
-        field.probes.values().all(|probe| probe.stats().samples[2] == 256),
+        field
+            .probes
+            .values()
+            .all(|probe| probe.stats().samples[2] == 256),
         "scheduling must not mutate published histories"
     );
     enqueue_sky(&mut runtime, field.order.iter().copied());
@@ -871,7 +884,12 @@ fn cpu_selects_only_event_work_and_sky_requests() {
     append_sky_work(&mut runtime, &field, &mut sky);
     assert_eq!(sky.probes.len(), 64);
     assert!(sky.faces.is_empty());
-    assert!(field.probes.values().all(|probe| probe.stats().samples[2] == 256));
+    assert!(
+        field
+            .probes
+            .values()
+            .all(|probe| probe.stats().samples[2] == 256)
+    );
 }
 
 #[test]
@@ -879,18 +897,26 @@ fn receiver_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
     use bevy::ecs::system::RunSystemOnce;
     let mut world = World::new();
     let mut runtime = VoxelGiRuntime::default();
-    runtime
-        .loaded_pages
-        .extend([IVec3::ZERO, IVec3::new(2, 0, 0), IVec3::new(4, 0, 0), IVec3::new(9, 0, 0)]);
+    runtime.loaded_pages.extend([
+        IVec3::ZERO,
+        IVec3::new(2, 0, 0),
+        IVec3::new(4, 0, 0),
+        IVec3::new(9, 0, 0),
+    ]);
     world.insert_resource(runtime);
     world.insert_resource(VoxelGiSettings {
         receiver_radius: 64.0,
         ..default()
     });
     let camera = world
-        .spawn((Camera3d::default(), GlobalTransform::from_translation(Vec3::splat(16.0))))
+        .spawn((
+            Camera3d::default(),
+            GlobalTransform::from_translation(Vec3::splat(16.0)),
+        ))
         .id();
-    world.run_system_once(bvw::update_receiver_residency).unwrap();
+    world
+        .run_system_once(bvw::update_receiver_residency)
+        .unwrap();
     let runtime = world.resource::<VoxelGiRuntime>();
     let allowed = runtime.receiver_pages.as_ref().unwrap();
     // Page 2 starts 48 voxels away (within 64); page 4 is 112 away.
@@ -900,18 +926,48 @@ fn receiver_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
     assert!(runtime.receiver_retired.contains(&IVec3::new(9, 0, 0)));
     assert!(runtime.receiver_dirty.is_empty());
     // At 88 voxels page 0 stays (radius 64 + 32 hysteresis); at 108 it retires.
-    world.entity_mut(camera).insert(GlobalTransform::from_translation(Vec3::new(120.0, 16.0, 16.0)));
-    world.run_system_once(bvw::update_receiver_residency).unwrap();
-    assert!(world.resource::<VoxelGiRuntime>().receiver_pages.as_ref().unwrap().contains(&IVec3::ZERO));
-    world.entity_mut(camera).insert(GlobalTransform::from_translation(Vec3::new(140.0, 16.0, 16.0)));
-    world.resource_mut::<VoxelGiRuntime>().receiver_retired.clear();
-    world.run_system_once(bvw::update_receiver_residency).unwrap();
+    world
+        .entity_mut(camera)
+        .insert(GlobalTransform::from_translation(Vec3::new(
+            120.0, 16.0, 16.0,
+        )));
+    world
+        .run_system_once(bvw::update_receiver_residency)
+        .unwrap();
+    assert!(
+        world
+            .resource::<VoxelGiRuntime>()
+            .receiver_pages
+            .as_ref()
+            .unwrap()
+            .contains(&IVec3::ZERO)
+    );
+    world
+        .entity_mut(camera)
+        .insert(GlobalTransform::from_translation(Vec3::new(
+            140.0, 16.0, 16.0,
+        )));
+    world
+        .resource_mut::<VoxelGiRuntime>()
+        .receiver_retired
+        .clear();
+    world
+        .run_system_once(bvw::update_receiver_residency)
+        .unwrap();
     let runtime = world.resource::<VoxelGiRuntime>();
-    assert!(runtime.receiver_dirty.contains(&IVec3::new(4, 0, 0)), "entered");
-    assert!(runtime.receiver_retired.contains(&IVec3::ZERO), "beyond radius + hysteresis");
+    assert!(
+        runtime.receiver_dirty.contains(&IVec3::new(4, 0, 0)),
+        "entered"
+    );
+    assert!(
+        runtime.receiver_retired.contains(&IVec3::ZERO),
+        "beyond radius + hysteresis"
+    );
     // Unlimited again: pages without receivers rescan.
     world.resource_mut::<VoxelGiSettings>().receiver_radius = 0.0;
-    world.run_system_once(bvw::update_receiver_residency).unwrap();
+    world
+        .run_system_once(bvw::update_receiver_residency)
+        .unwrap();
     let runtime = world.resource::<VoxelGiRuntime>();
     assert!(runtime.receiver_pages.is_none());
     assert!(runtime.receiver_dirty.contains(&IVec3::new(9, 0, 0)));

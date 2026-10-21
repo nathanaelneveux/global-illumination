@@ -3,10 +3,8 @@
 //! receiver remains eligible independently of camera visibility.
 use super::{
     TraceBatchResult, VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats, emission,
-    enqueue_urgent, geometry, gpu, probe_metrics, scheduling,
-    telemetry::GiWorkTimings,
-    update_stats_from_counters,
-    work::TraceWork,
+    enqueue_urgent, geometry, gpu, probe_metrics, scheduling, telemetry::GiWorkTimings,
+    update_stats_from_counters, work::TraceWork,
 };
 use bevy::{
     prelude::*,
@@ -98,19 +96,24 @@ pub(super) fn start_trace_task(
     let maintenance = !runtime.slot_retirements.is_empty()
         || runtime.gpu_tracer.as_ref().map_or_else(
             || !runtime.scene.regions.is_empty(),
-            |tracer| tracer.needs_geometry(&runtime.scene)
-                || tracer.needs_model(&runtime.sources, &runtime.materials,
-                    settings.sampling_importance(), runtime.transport),
+            |tracer| {
+                tracer.needs_geometry(&runtime.scene)
+                    || tracer.needs_model(
+                        &runtime.sources,
+                        &runtime.materials,
+                        settings.sampling_importance(),
+                        runtime.transport,
+                    )
+            },
         );
     if field.order.is_empty() && runtime.gpu_pending.is_empty() && !maintenance {
         return;
     }
     let gpu_device = gpu_device.expect("Voxel GI requires a GPU transport device");
     let selection_started = Instant::now();
-    let focus = cameras
-        .iter()
-        .next()
-        .map_or(IVec3::ZERO, |camera| camera.translation().floor().as_ivec3());
+    let focus = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
+        camera.translation().floor().as_ivec3()
+    });
     runtime.batch_size = runtime.batch_size.min(settings.batch_limit());
     runtime.sky_batch_size = runtime.sky_batch_size.min(settings.batch_limit());
     // Three owned staging allocations bound queue latency and memory. When full,
@@ -125,18 +128,23 @@ pub(super) fn start_trace_task(
     runtime.gpu_allowance_ms = accrue_gpu_allowance(
         runtime.gpu_allowance_ms,
         elapsed_ms,
-        settings.gpu_share(),
+        settings.gpu_share()
+            * if settings.receiver_radius().is_some() {
+                1.0 - gpu::view::FAR_SHARE
+            } else {
+                1.0
+            },
         settings.budget_ms(),
     );
-    let can_submit = !field.order.is_empty()
-        && runtime.gpu_pending.len() < 3
-        && runtime.gpu_allowance_ms > 0.0;
+    let can_submit =
+        !field.order.is_empty() && runtime.gpu_pending.len() < 3 && runtime.gpu_allowance_ms > 0.0;
     let mut selected = if can_submit {
         info_span!("gi_select").in_scope(|| select_transport(&mut runtime, &field, &settings))
     } else {
         TraceWork::default()
     };
     selected.transport = runtime.transport;
+    selected.view_transport = settings.receiver_radius().is_some();
     selected.response_seconds = settings.display_response_seconds();
     selected.measured_retention = settings.measured_retention();
     selected.display_frame = frame.as_ref().map_or(0, |frame| frame.0);
@@ -186,7 +194,11 @@ pub(super) fn start_trace_task(
         runtime.batch_counter = (runtime.batch_counter % 0x0fff_ffff) + 1;
         selected.batch_id = runtime.batch_counter;
     }
-    if selected.probes.is_empty() && selected.picks == 0 && runtime.gpu_pending.is_empty() && !maintenance {
+    if selected.probes.is_empty()
+        && selected.picks == 0
+        && runtime.gpu_pending.is_empty()
+        && !maintenance
+    {
         runtime.trace_scratch = selected;
         stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
         stats.idle_scheduler_frames += 1;
@@ -204,7 +216,11 @@ pub(super) fn start_trace_task(
     stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
     let scene = Arc::clone(&runtime.scene);
     let batch_submits = !selected.probes.is_empty() || selected.picks > 0;
-    let gpu_reserved_ms = if batch_submits { settings.budget_ms() } else { 0.0 };
+    let gpu_reserved_ms = if batch_submits {
+        settings.budget_ms()
+    } else {
+        0.0
+    };
     runtime.gpu_allowance_ms -= gpu_reserved_ms;
     let mut batch = super::TransportBatch {
         work: selected,
@@ -273,8 +289,9 @@ pub(super) fn start_trace_task(
                     if ready {
                         let mut oldest = pending.pop_front().unwrap();
                         if let Some(snapshot) = oldest.snapshot {
-                            info_span!("gi_readback")
-                                .in_scope(|| tracer.complete_readback(snapshot, &mut oldest.batch.work))?;
+                            info_span!("gi_readback").in_scope(|| {
+                                tracer.complete_readback(snapshot, &mut oldest.batch.work)
+                            })?;
                             oldest.batch.gpu_ms = tracer.last_gpu_ms;
                             oldest.batch.execution_ms = Some(tracer.last_dispatch_ms);
                         } else {
@@ -506,7 +523,13 @@ pub(super) fn apply_trace_task(
             .and_then(gpu::GpuTracer::resident_buffer);
     }
     if let Some(mut view) = view_transport {
-        view.0 = result.gpu_tracer.as_ref().and_then(gpu::GpuTracer::view_scene);
+        view.0 = result
+            .gpu_tracer
+            .as_ref()
+            .and_then(gpu::GpuTracer::view_scene);
+        if let Some(tracer) = result.gpu_tracer.as_mut() {
+            view.1.lock().unwrap().extend(tracer.take_view_changes());
+        }
     }
     runtime.gpu_tracer = result.gpu_tracer;
     runtime.emission_cache = result.emission_cache;
@@ -588,7 +611,12 @@ pub(super) fn apply_trace_task(
         let publish_display = batch.work.faces[job.faces()]
             .iter()
             .any(|face| face.resident.y == 0 || old.resident[face.face] != face.resident);
-        job.publish(&batch.work.faces[job.faces()], old, merge_started, &settings);
+        job.publish(
+            &batch.work.faces[job.faces()],
+            old,
+            merge_started,
+            &settings,
+        );
         let (_, new_samples, new_covered, new_settled) = probe_metrics(old, transport_revision);
         runtime.completed_samples =
             runtime.completed_samples.saturating_sub(old_samples) + new_samples;
@@ -694,7 +722,10 @@ mod budget_tests {
                     spent += 4.0;
                 }
             }
-            assert!((spent - 200.0).abs() <= 8.0, "{frame_ms} ms frames spent {spent}");
+            assert!(
+                (spent - 200.0).abs() <= 8.0,
+                "{frame_ms} ms frames spent {spent}"
+            );
         }
         // Idle time banks at most two batches.
         assert_eq!(accrue_gpu_allowance(0.0, 10_000.0, 0.2, 4.0), 8.0);

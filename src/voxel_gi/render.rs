@@ -40,24 +40,28 @@ pub struct VoxelTransportExtension {
     #[texture(100, dimension = "2d_array")]
     #[sampler(101)]
     pub voxel_texture: Handle<Image>,
-    #[storage(102, read_only)]
+    #[storage(102, read_only, visibility(fragment))]
     pub hash_entries: Handle<ShaderBuffer>,
-    #[storage(103, read_only)]
+    #[storage(103, read_only, visibility(fragment))]
     pub probes: Handle<ShaderBuffer>,
     #[uniform(104)]
     pub settings: GpuTransportSettings,
-    #[storage(105, read_only)]
+    #[storage(105, read_only, visibility(fragment))]
     pub resident: Handle<ShaderBuffer>,
     /// Transport geometry (region directory, headers, cells) and its bounds:
     /// faces without a display probe trace sun visibility through it.
-    #[storage(106, read_only)]
+    #[storage(106, read_only, visibility(fragment))]
     pub directory: Handle<ShaderBuffer>,
-    #[storage(107, read_only)]
+    #[storage(107, read_only, visibility(fragment))]
     pub regions: Handle<ShaderBuffer>,
-    #[storage(108, read_only)]
+    #[storage(108, read_only, visibility(fragment))]
     pub cells: Handle<ShaderBuffer>,
     #[uniform(109)]
     pub traversal: GpuTraversalParams,
+    /// Current view's GPU-resident indirect reconstruction (zero header when
+    /// disabled). Camera passes write it in encoder order before opaque draws.
+    #[storage(110, read_only, visibility(fragment))]
+    pub far: Handle<ShaderBuffer>,
 }
 
 /// `voxel_traversal.wgsl`'s `params`: the sun visibility distance
@@ -95,6 +99,16 @@ impl MaterialExtension for VoxelTransportExtension {
         layout: &bevy::mesh::MeshVertexBufferLayoutRef,
         _key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
+        // Prepasses use Bevy's own vertex shader/layout (UV at 1, normal at
+        // 3), not the custom forward terrain IO. Replacing that layout would
+        // corrupt the normal prepass used for view receiver discovery.
+        if descriptor
+            .vertex
+            .shader_defs
+            .contains(&"PREPASS_PIPELINE".into())
+        {
+            return Ok(());
+        }
         let vertex_layout = layout.0.get_layout(&vertex_layout())?;
         descriptor.vertex.buffers = vec![vertex_layout];
         Ok(())
@@ -189,6 +203,7 @@ pub struct VoxelTransportAssets {
     pub resident: Handle<ShaderBuffer>,
     /// Placeholder geometry until the GI worker publishes its own.
     pub geometry: Handle<ShaderBuffer>,
+    pub far: Handle<ShaderBuffer>,
 }
 
 /// The GI worker's geometry buffers, shared with the terrain material like
@@ -519,7 +534,8 @@ impl ProbePatchState {
             .step_by(4)
             .rev()
             .find(|&i| old[i..i + 4] != encoded[i..i + 4])
-            .unwrap() + 4;
+            .unwrap()
+            + 4;
         old[first..last].copy_from_slice(&encoded[first..last]);
         self.pending_probes
             .entry(slot)
@@ -543,20 +559,16 @@ impl ProbePatchState {
         {
             return Err("GPU destination is smaller than its cache generation");
         }
-        if self
-            .pending_probes
+        if self.pending_probes.iter().any(|(slot, range)| {
+            *slot >= self.probe_mirror.len() / GPU_PROBE_BYTES
+                || range.start >= range.end
+                || range.end > GPU_PROBE_BYTES
+                || range.start % 4 != 0
+                || range.end % 4 != 0
+        }) || self
+            .pending_hash
             .iter()
-            .any(|(slot, range)| {
-                *slot >= self.probe_mirror.len() / GPU_PROBE_BYTES
-                    || range.start >= range.end
-                    || range.end > GPU_PROBE_BYTES
-                    || range.start % 4 != 0
-                    || range.end % 4 != 0
-            })
-            || self
-                .pending_hash
-                .iter()
-                .any(|slot| *slot >= self.hash_mirror.len() / 16)
+            .any(|slot| *slot >= self.hash_mirror.len() / 16)
         {
             return Err("dirty slot is outside its cache generation");
         }
@@ -586,7 +598,9 @@ struct DisplayBuffersPrepared;
 /// color per pixel; corner visibility comes from its quantized direction.
 fn synchronize_sun_display(
     runtime: Option<Res<super::VoxelGiRuntime>>,
-    handle: Option<Res<bevy_voxel_world::rendering::VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
+    handle: Option<
+        Res<bevy_voxel_world::rendering::VoxelWorldMaterialHandle<VoxelTransportMaterial>>,
+    >,
     mut materials: ResMut<Assets<VoxelTransportMaterial>>,
 ) {
     let (Some(runtime), Some(handle)) = (runtime, handle) else {
@@ -653,6 +667,10 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
         .world_mut()
         .resource_mut::<Assets<ShaderBuffer>>()
         .add(ShaderBuffer::from(vec![UVec4::ZERO; 4]));
+    let far = app
+        .world_mut()
+        .resource_mut::<Assets<ShaderBuffer>>()
+        .add(ShaderBuffer::from(vec![UVec4::ZERO; 1029]));
     let _ = app.world_mut().resource_mut::<Assets<Shader>>().insert(
         VOXEL_TRANSPORT_SHADER_HANDLE.id(),
         Shader::from_wgsl(
@@ -668,6 +686,7 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
         probes: probes.clone(),
         resident,
         geometry,
+        far: far.clone(),
     });
     app.insert_resource(GpuProbePatchQueue {
         probe_buffer: probes,
@@ -702,6 +721,7 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
             ),
         );
     }
+    super::gpu::view::install(app, far);
 }
 
 pub fn material_template(assets: &VoxelTransportAssets) -> VoxelTransportMaterial {
@@ -722,6 +742,7 @@ pub fn material_template(assets: &VoxelTransportAssets) -> VoxelTransportMateria
             cells: assets.geometry.clone(),
             settings: GpuTransportSettings::default(),
             traversal: GpuTraversalParams::default(),
+            far: assets.far.clone(),
         },
     }
 }
@@ -1485,7 +1506,12 @@ fn apply_probe_patches(
 }
 
 fn patch_ranges(slots: Vec<usize>, stride: usize) -> Vec<std::ops::Range<usize>> {
-    coalesce_patch_ranges(slots.into_iter().map(|slot| slot * stride..(slot + 1) * stride).collect())
+    coalesce_patch_ranges(
+        slots
+            .into_iter()
+            .map(|slot| slot * stride..(slot + 1) * stride)
+            .collect(),
+    )
 }
 
 fn coalesce_patch_ranges(mut spans: Vec<std::ops::Range<usize>>) -> Vec<std::ops::Range<usize>> {
@@ -1688,6 +1714,7 @@ mod tests {
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
             geometry: default(),
+            far: default(),
             resident: default(),
             texture: default(),
             probes: default(),
@@ -1847,7 +1874,11 @@ mod tests {
         );
         assert_eq!(dirty.len(), 0);
         let state = prepared.patches.state.lock().unwrap();
-        assert_eq!(state.pending_probes.len(), 1, "unchanged probes need no upload");
+        assert_eq!(
+            state.pending_probes.len(),
+            1,
+            "unchanged probes need no upload"
+        );
         let slot = prepared.cache.slots[&voxel];
         let expected = ShaderBuffer::from(vec![gpu_probe(&probes[&voxel])])
             .data
@@ -2161,6 +2192,7 @@ mod tests {
         assert_eq!(encoded.direct_sky[0], UVec4::ZERO);
         let material = material_template(&VoxelTransportAssets {
             geometry: default(),
+            far: default(),
             resident: default(),
             texture: default(),
             hash_entries: default(),
@@ -2188,7 +2220,10 @@ mod tests {
         };
         settings.reset_display();
         assert_eq!((settings.hash_mask, settings.probe_capacity), (1023, 700));
-        assert_eq!((settings.sun_count, settings.sun_direction[0]), (1, Vec4::Y));
+        assert_eq!(
+            (settings.sun_count, settings.sun_direction[0]),
+            (1, Vec4::Y)
+        );
         assert_eq!(
             (
                 settings.enabled,
@@ -2448,6 +2483,7 @@ mod tests {
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
             geometry: default(),
+            far: default(),
             resident: default(),
             texture: Handle::default(),
             hash_entries: buffers.add(ShaderBuffer::from(vec![GpuHashEntry::EMPTY])),
@@ -2519,6 +2555,7 @@ mod tests {
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
             geometry: default(),
+            far: default(),
             resident: default(),
             texture: default(),
             probes: default(),
@@ -2664,6 +2701,7 @@ mod tests {
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
             geometry: default(),
+            far: default(),
             resident: default(),
             texture: default(),
             probes: default(),
@@ -2892,6 +2930,7 @@ mod tests {
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut assets = VoxelTransportAssets {
             geometry: default(),
+            far: default(),
             resident: default(),
             texture: default(),
             hash_entries: buffers.add(ShaderBuffer::from(vec![GpuHashEntry::EMPTY])),
@@ -3050,13 +3089,25 @@ mod tests {
         probe.direct_sky[2] = UVec4::splat(42);
         state.patch_probe(1, probe);
         let mut sent = Vec::new();
-        state.upload((GPU_PROBE_BYTES * 2) as u64, 0, |is_probe, offset, bytes| {
-            assert!(is_probe);
-            sent.push((offset, bytes.to_vec()));
-        }).unwrap();
-        assert_eq!(sent, vec![(GPU_PROBE_BYTES + 144, [42u32.to_le_bytes(); 4].concat())]);
+        state
+            .upload(
+                (GPU_PROBE_BYTES * 2) as u64,
+                0,
+                |is_probe, offset, bytes| {
+                    assert!(is_probe);
+                    sent.push((offset, bytes.to_vec()));
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            sent,
+            vec![(GPU_PROBE_BYTES + 144, [42u32.to_le_bytes(); 4].concat())]
+        );
         state.patch_probe(1, probe);
-        assert!(state.pending_probes.is_empty(), "identical publication adds no transfer");
+        assert!(
+            state.pending_probes.is_empty(),
+            "identical publication adds no transfer"
+        );
         probe.direct_sky[0].x = 9;
         state.patch_probe(1, probe);
         probe.resident[5] = UVec2::new(11, 12);
@@ -3065,9 +3116,11 @@ mod tests {
         let mut gpu = vec![0; GPU_PROBE_BYTES * 2];
         // Start from the previous completed snapshot, then replay the delta.
         gpu[GPU_PROBE_BYTES + 144..GPU_PROBE_BYTES + 160].copy_from_slice(&sent[0].1);
-        state.upload(gpu.len() as u64, 0, |_, offset, bytes| {
-            gpu[offset..offset + bytes.len()].copy_from_slice(bytes);
-        }).unwrap();
+        state
+            .upload(gpu.len() as u64, 0, |_, offset, bytes| {
+                gpu[offset..offset + bytes.len()].copy_from_slice(bytes);
+            })
+            .unwrap();
         assert_eq!(gpu, state.probe_mirror);
     }
 

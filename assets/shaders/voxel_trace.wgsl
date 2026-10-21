@@ -29,24 +29,7 @@ struct FaceResult {
 fn trace_sky_corners(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= u32(params.minimum.w) { return; }
     let position = vec3<f32>(tasks[params.counts.x + id.x].voxel);
-    var word = 0x80000000u;
-    // Lit bits count lights with visible color, as `sky_lights` does on CPU.
-    var bit = 0u;
-    for (var i = 0u; i < u32(params.maximum.w) && bit < 4u; i += 1u) {
-        let light = lights[i];
-        if all(max(light.energy.rgb - light.extra.yzw, vec3(0.0)) == vec3(0.0)) { continue; }
-        let direction = normalize(light.position_range.xyz);
-        // A canonical light-directed origin makes visibility independent of
-        // the receiving face. Axis ties use the same positive grid cell as CPU.
-        let origin = position + direction * 0.002;
-        // Display shadows match rendered loaded geometry. Do not turn gaps in
-        // the streaming directory into opaque slabs; continue to real occluders.
-        // Path transport and simulation direct energy still use strict trace().
-        let visibility = trace_domain(origin, direction, params.extra.y, true).status;
-        if visibility == 2u { word = 0u; break; }
-        if visibility == 0u { word |= 1u << bit; }
-        bit += 1u;
-    }
+    let word = sky_corner_visibility(position);
     let offset = params.counts.x * 6u + id.x * 2u;
     results[offset] = vec4(word, 0u, 0u, 0u);
     results[offset + 1u] = vec4(0u);

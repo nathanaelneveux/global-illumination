@@ -33,6 +33,27 @@ fn lookup_region(coordinate: vec3<i32>) -> u32 {
 fn in_bounds(region: vec3<i32>) -> bool {
     return all(region >= params.minimum.xyz) && all(region <= params.maximum.xyz);
 }
+
+// Point lookup for raster receiver identity and emission. 256 denotes air or
+// absent geometry; transport rays retain their separate unknown-space policy.
+fn voxel_material(voxel: vec3<i32>) -> u32 {
+    let region = vec3<i32>(floor(vec3<f32>(voxel) / 16.0));
+    if !in_bounds(region) { return 256u; }
+    let index = lookup_region(region);
+    if index == 0xffffffffu { return 256u; }
+    let metadata = regions[index];
+    if metadata.x == 1u { return 256u; }
+    if metadata.x != 3u { return metadata.y; }
+    let local = vec3<u32>(voxel & vec3<i32>(15));
+    let brick = local / 4u;
+    let word = cells[metadata.y + (brick.z * 4u + brick.y) * 4u + brick.x];
+    if (word & 3u) == 0u { return 256u; }
+    if (word & 3u) == 1u { return word >> 2u; }
+    let inner = local & vec3<u32>(3u);
+    let cell_index = (inner.z * 4u + inner.y) * 4u + inner.x;
+    let cell = (cells[(word >> 2u) + cell_index / 2u] >> ((cell_index & 1u) * 16u)) & 65535u;
+    return select(256u, cell >> 1u, (cell & 1u) != 0u);
+}
 fn unpack_bytes(value: u32) -> vec3<i32> {
     return vec3<i32>(i32(value & 255u), i32((value >> 8u) & 255u), i32((value >> 16u) & 255u));
 }

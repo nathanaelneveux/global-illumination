@@ -24,13 +24,18 @@ use super::world::SurfaceProbe;
 use super::world::{TransportScene, VoxelMaterialTransportTable};
 
 /// The world-space consumer with the shared transport and traversal included.
-static SHADER: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| include_paths(include_str!("../../assets/shaders/voxel_trace.wgsl")));
+static SHADER: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    include_paths(include_str!("../../assets/shaders/voxel_trace.wgsl"))
+});
 
 /// Compose a transport consumer without duplicating the lighting estimator.
 pub(crate) fn include_paths(source: &str) -> String {
     const MARKER: &str = "// #include voxel_path.wgsl\n";
-    assert_eq!(source.matches(MARKER).count(), 1, "shader needs one path include");
+    assert_eq!(
+        source.matches(MARKER).count(),
+        1,
+        "shader needs one path include"
+    );
     include_traversal(&source.replacen(
         MARKER,
         include_str!("../../assets/shaders/voxel_path.wgsl"),
@@ -41,8 +46,22 @@ pub(crate) fn include_paths(source: &str) -> String {
 /// Insert the shared traversal (`voxel_traversal.wgsl`) at its include marker.
 pub(crate) fn include_traversal(source: &str) -> String {
     const MARKER: &str = "// #include voxel_traversal.wgsl\n";
-    assert!(source.contains(MARKER), "shader lacks the traversal include marker");
-    source.replacen(MARKER, include_str!("../../assets/shaders/voxel_traversal.wgsl"), 1)
+    assert!(
+        source.contains(MARKER),
+        "shader lacks the traversal include marker"
+    );
+    source.replacen(
+        MARKER,
+        include_str!("../../assets/shaders/voxel_traversal.wgsl"),
+        1,
+    )
+}
+
+fn include_retention(source: &str) -> String {
+    source.replace(
+        "// #include voxel_retention.wgsl\n",
+        include_str!("../../assets/shaders/voxel_retention.wgsl"),
+    )
 }
 const RESULT_BYTES: usize = 96;
 const SKY_RESULT_BYTES: usize = 32;
@@ -50,17 +69,19 @@ const TASK_BYTES: usize = 32;
 
 mod face_index;
 mod geometry;
-pub(crate) mod view;
 mod readback;
 mod resident;
+pub(crate) mod view;
 pub(crate) use readback::Readback;
-
-
 
 #[cfg(test)]
 mod cache_tests;
 #[cfg(test)]
 mod correctness_audit;
+#[cfg(test)]
+mod geometry_tests;
+#[cfg(test)]
+mod maintenance_tests;
 #[cfg(test)]
 mod task_tests;
 #[cfg(test)]
@@ -69,10 +90,6 @@ mod traversal_tests;
 mod tuning_tests;
 #[cfg(test)]
 mod upload_tests;
-#[cfg(test)]
-mod geometry_tests;
-#[cfg(test)]
-mod maintenance_tests;
 #[cfg(test)]
 mod view_tests;
 
@@ -200,7 +217,12 @@ impl UploadBuffer {
     /// Model buffers travel with their counts and sampling metadata. Publish a
     /// fresh allocation on a model change so an extracted view cannot observe
     /// a new table through an older descriptor. Ordinary frames share handles.
-    fn upload_generation(&mut self, device: &RenderDevice, queue: &RenderQueue, bytes: &[u8]) -> Result<(), String> {
+    fn upload_generation(
+        &mut self,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        bytes: &[u8],
+    ) -> Result<(), String> {
         self.capacity = 0;
         self.upload(device, queue, bytes)
     }
@@ -287,8 +309,7 @@ pub(crate) struct GpuTracer {
     /// Three depths × finite/default horizon × two lane layouts.
     /// Reach itself stays a uniform; changing 16 to 32 never compiles another
     /// variant. Pipelines and compilation stay on the transport worker.
-    quality_pipelines:
-        bevy::platform::collections::HashMap<(u32, bool, u32), ComputePipeline>,
+    quality_pipelines: bevy::platform::collections::HashMap<(u32, bool, u32), ComputePipeline>,
     faces_per_workgroup: u32,
     adaptive_lanes: bool,
     #[cfg(test)]
@@ -385,10 +406,7 @@ impl GpuTracer {
     }
     /// Published retention changes, applied on the GPU before the next
     /// batch's rays (kept until a batch with resident inputs runs).
-    pub(super) fn queue_retention(
-        &mut self,
-        events: &mut Vec<super::retention::RetentionEvent>,
-    ) {
+    pub(super) fn queue_retention(&mut self, events: &mut Vec<super::retention::RetentionEvent>) {
         if let Some(resident) = &mut self.resident {
             resident.events.append(events);
         } else {
@@ -479,12 +497,9 @@ impl GpuTracer {
             });
         Ok(Self {
             resident: None,
-            quality_pipelines: [(
-                (3, false, 64 / faces_per_workgroup),
-                pipeline.clone(),
-            )]
-            .into_iter()
-            .collect(),
+            quality_pipelines: [((3, false, 64 / faces_per_workgroup), pipeline.clone())]
+                .into_iter()
+                .collect(),
             pipeline_key: (3, false, 64 / faces_per_workgroup),
             module,
             entry,
@@ -509,15 +524,31 @@ impl GpuTracer {
                 "GI uniforms",
                 BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             ),
-            directory: UploadBuffer::new(device, "GI sparse directory", storage | BufferUsages::COPY_SRC),
-            regions: UploadBuffer::new(device, "GI region headers", storage | BufferUsages::COPY_SRC),
-            cells: UploadBuffer::new(device, "GI packed NAADF cells", storage | BufferUsages::COPY_SRC),
+            directory: UploadBuffer::new(
+                device,
+                "GI sparse directory",
+                storage | BufferUsages::COPY_SRC,
+            ),
+            regions: UploadBuffer::new(
+                device,
+                "GI region headers",
+                storage | BufferUsages::COPY_SRC,
+            ),
+            cells: UploadBuffer::new(
+                device,
+                "GI packed NAADF cells",
+                storage | BufferUsages::COPY_SRC,
+            ),
             geometry_staging: UploadBuffer::new(
                 device,
                 "GI geometry transaction",
                 BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
             ),
-            materials: UploadBuffer::new(device, "GI material transport", storage),
+            materials: UploadBuffer::new(
+                device,
+                "GI material transport",
+                storage | BufferUsages::COPY_SRC,
+            ),
             material_table: None,
             material_importance: super::EnergySpectrum::ONE,
             view_transport: default(),
@@ -666,8 +697,14 @@ impl GpuTracer {
         // Reconcile ownership even without rays. A retirement must remove the
         // GPU face index and live metadata, not merely the CPU slot map.
         let prepare_resident = self.resident.is_some()
-            && (!work.faces.is_empty() || work.picks > 0
-                || geometry_changed || !work.retire_pages.is_empty());
+            && (!work.faces.is_empty()
+                || work.picks > 0
+                || geometry_changed
+                || !work.retire_pages.is_empty()
+                || self
+                    .resident
+                    .as_ref()
+                    .is_some_and(|resident| !resident.events.is_empty()));
         if prepare_resident && let Some(resident) = &mut self.resident {
             resident.set_materials(&self.context, materials)?;
             resident.prepare_inputs(&self.context, &scene, work, samples)?;
@@ -678,9 +715,9 @@ impl GpuTracer {
         let device = &self.context.device;
         let queue = &self.context.queue;
         if self
-                .emission
-                .as_ref()
-                .is_none_or(|previous| !Arc::ptr_eq(previous, emitters))
+            .emission
+            .as_ref()
+            .is_none_or(|previous| !Arc::ptr_eq(previous, emitters))
         {
             let mut data: Vec<_> = emitters
                 .faces
@@ -710,7 +747,7 @@ impl GpuTracer {
             self.emission = Some(Arc::clone(emitters));
         }
         if self.material_table.as_ref() != Some(materials)
-                || self.material_importance != emitters.importance
+            || self.material_importance != emitters.importance
         {
             let gpu_materials: Vec<_> = (0..=255)
                 .map(|i| {
@@ -767,8 +804,11 @@ impl GpuTracer {
             if gpu_lights.is_empty() {
                 gpu_lights.push(GpuLight::default());
             }
-            self.lights
-                .upload_generation(device, queue, &ShaderBuffer::from(gpu_lights).data.unwrap())?;
+            self.lights.upload_generation(
+                device,
+                queue,
+                &ShaderBuffer::from(gpu_lights).data.unwrap(),
+            )?;
         }
         self.sources = Some(sources.clone());
         // Geometry, ownership and model are now current. Maintenance needs
@@ -779,7 +819,11 @@ impl GpuTracer {
                     label: Some("GI receiver maintenance"),
                 });
                 self.resident.as_mut().unwrap().dispatch_prepare(
-                    device, &mut encoder, &self.tasks, 0, None,
+                    device,
+                    &mut encoder,
+                    &self.tasks,
+                    0,
+                    None,
                 );
                 queue.submit([encoder.finish()]);
             }
@@ -791,7 +835,11 @@ impl GpuTracer {
             self.sky_cache.apply(&mut work.probes);
             return Ok(None);
         }
-        let picks = if self.resident.is_some() { work.picks } else { 0 };
+        let picks = if self.resident.is_some() {
+            work.picks
+        } else {
+            0
+        };
         let face_count = work.faces.len() + picks as usize;
         #[cfg(not(test))]
         encode_tasks(&mut self.task_bytes, work, &sky_pending);
@@ -836,8 +884,13 @@ impl GpuTracer {
         let cpu_bytes = work.faces.len() * RESULT_BYTES;
         let sky_bytes = sky_pending.len() * SKY_RESULT_BYTES;
         let mirror_offset = cpu_bytes + sky_bytes;
-        let mirror_records = if picks > 0 { work.mirror_budget.max(1) } else { 0 };
-        let picks_offset = mirror_offset + 16 + mirror_records as usize * resident::MIRROR_RECORD_BYTES;
+        let mirror_records = if picks > 0 {
+            work.mirror_budget.max(1)
+        } else {
+            0
+        };
+        let picks_offset =
+            mirror_offset + 16 + mirror_records as usize * resident::MIRROR_RECORD_BYTES;
         let readback_bytes = if picks > 0 {
             picks_offset + picks as usize * 16
         } else {
@@ -860,12 +913,10 @@ impl GpuTracer {
             )
         });
         readback.ensure(device, readback_bytes + timestamp_bytes as usize)?;
-        let (cache_state, cache_index) = self
-            .resident
-            .as_ref()
-            .map_or((&self.external_cache.0, &self.external_cache.1), |resident| {
-                resident.cache_buffers()
-            });
+        let (cache_state, cache_index) = self.resident.as_ref().map_or(
+            (&self.external_cache.0, &self.external_cache.1),
+            |resident| resident.cache_buffers(),
+        );
         let buffers = [
             &self.params,
             &self.directory,
@@ -897,15 +948,14 @@ impl GpuTracer {
         {
             self.sky_bindings = None;
         }
-        let bindings =
-            (!sky_only).then(|| {
-                cached_bindings(
-                    &mut self.bindings,
-                    device,
-                    || self.pipeline.get_bind_group_layout(0).into(),
-                    std::array::from_fn(|index| (index as u32, buffers[index])),
-                )
-            });
+        let bindings = (!sky_only).then(|| {
+            cached_bindings(
+                &mut self.bindings,
+                device,
+                || self.pipeline.get_bind_group_layout(0).into(),
+                std::array::from_fn(|index| (index as u32, buffers[index])),
+            )
+        });
         let sky_bindings = if sky_pending.is_empty() {
             None
         } else {
@@ -919,9 +969,7 @@ impl GpuTracer {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("GI bounded transport batch"),
         });
-        if prepare_resident
-            && let Some(resident) = &mut self.resident
-        {
+        if prepare_resident && let Some(resident) = &mut self.resident {
             resident.dispatch_prepare(
                 device,
                 &mut encoder,
@@ -972,7 +1020,13 @@ impl GpuTracer {
             );
         }
         if cpu_bytes > 0 {
-            encoder.copy_buffer_to_buffer(&self.output.buffer, 0, &readback.buffer, 0, cpu_bytes as u64);
+            encoder.copy_buffer_to_buffer(
+                &self.output.buffer,
+                0,
+                &readback.buffer,
+                0,
+                cpu_bytes as u64,
+            );
         }
         if sky_bytes > 0 {
             encoder.copy_buffer_to_buffer(
@@ -988,7 +1042,13 @@ impl GpuTracer {
         {
             let (count, count_offset, records, budget) = resident.mirror_buffers();
             debug_assert_eq!(budget, mirror_records);
-            encoder.copy_buffer_to_buffer(count, count_offset, &readback.buffer, mirror_offset as u64, 4);
+            encoder.copy_buffer_to_buffer(
+                count,
+                count_offset,
+                &readback.buffer,
+                mirror_offset as u64,
+                4,
+            );
             encoder.copy_buffer_to_buffer(
                 records,
                 0,
@@ -1142,7 +1202,8 @@ impl GpuTracer {
                 .chunks_exact(resident::MIRROR_RECORD_BYTES)
                 .take(count)
             {
-                let word = |i: usize| u32::from_le_bytes(record[i * 4..i * 4 + 4].try_into().unwrap());
+                let word =
+                    |i: usize| u32::from_le_bytes(record[i * 4..i * 4 + 4].try_into().unwrap());
                 let (slot, incarnation, tag) = (word(0), word(1), word(2));
                 let Some((voxel, face)) = resident.picked_face(slot, incarnation) else {
                     continue;
@@ -1177,7 +1238,8 @@ impl GpuTracer {
             let picks_offset =
                 mirror_offset + 16 + mirror_records as usize * resident::MIRROR_RECORD_BYTES;
             for record in view[picks_offset..readback_bytes].chunks_exact(16) {
-                let word = |i: usize| u32::from_le_bytes(record[i * 4..i * 4 + 4].try_into().unwrap());
+                let word =
+                    |i: usize| u32::from_le_bytes(record[i * 4..i * 4 + 4].try_into().unwrap());
                 let (slot, tag, count, incarnation) = (word(0), word(1), word(2), word(3));
                 if slot == u32::MAX {
                     continue;
@@ -1215,11 +1277,7 @@ impl GpuTracer {
         // Larger batches benefit from more independent path lanes. Keep small
         // batches compact instead of allocating lanes with no samples to trace.
         let lanes = if self.adaptive_lanes {
-            if samples >= 16 {
-                8
-            } else {
-                4
-            }
+            if samples >= 16 { 8 } else { 4 }
         } else {
             self.pipeline_key.2
         };
@@ -1267,8 +1325,6 @@ impl GpuTracer {
         self.pipeline = pipeline;
         self.pipeline_key = key;
         self.faces_per_workgroup = 64 / lanes;
-
-
 
         // Auto-layout bind groups belong to their pipeline, even when every
         // buffer ID and binding type is unchanged. Sky has its own pipeline.
@@ -1388,7 +1444,10 @@ pub(super) mod tests {
         gpu.trace(extended, &sources, &materials, &mut after, 256, &emitters)
             .unwrap();
         assert_eq!(before[0].stats().radiance[0], after[0].stats().radiance[0]);
-        assert_eq!(before[0].stats().second_moment[0], after[0].stats().second_moment[0]);
+        assert_eq!(
+            before[0].stats().second_moment[0],
+            after[0].stats().second_moment[0]
+        );
         assert!(before[0].stats().radiance[0].visible.max_element() > 0.1);
     }
 
@@ -1485,8 +1544,15 @@ pub(super) mod tests {
         );
         for (actual, expected) in fresh.iter().zip(expected) {
             assert_eq!(actual.display[2].sky, expected.display[2].sky);
-            assert!((actual.stats().direct[2].visible - expected.stats().direct[2].visible).length() < 0.002);
-            assert!((actual.stats().radiance[2].visible - expected.stats().radiance[2].visible).length() < 0.002);
+            assert!(
+                (actual.stats().direct[2].visible - expected.stats().direct[2].visible).length()
+                    < 0.002
+            );
+            assert!(
+                (actual.stats().radiance[2].visible - expected.stats().radiance[2].visible)
+                    .length()
+                    < 0.002
+            );
         }
     }
 
@@ -1685,7 +1751,9 @@ pub(super) mod tests {
         assert_eq!(probes[0].face_mask, 5);
         assert_eq!(probes[0].stats().samples[2], 4);
         assert!(
-            (reference[0].stats().radiance[2].visible - probes[0].stats().radiance[2].visible).length() < 0.002
+            (reference[0].stats().radiance[2].visible - probes[0].stats().radiance[2].visible)
+                .length()
+                < 0.002
         );
         assert_eq!(reference[0].display[2].sky, probes[0].display[2].sky);
         for actual in [&probes[1], &reference[1]] {
@@ -1694,7 +1762,10 @@ pub(super) mod tests {
             assert_eq!(actual.stats().radiance, sky_receiver.stats().radiance);
             assert_eq!(actual.stats().direct, sky_receiver.stats().direct);
             assert_eq!(actual.updated_at, sky_receiver.updated_at);
-            assert_eq!(actual.stats().face_updated_at, sky_receiver.stats().face_updated_at);
+            assert_eq!(
+                actual.stats().face_updated_at,
+                sky_receiver.stats().face_updated_at
+            );
         }
     }
 
@@ -1789,7 +1860,11 @@ pub(super) mod tests {
             .sqrt();
         let max_error = probes
             .iter()
-            .map(|probe| (probe.stats().radiance[2].visible - expected).abs().max_element())
+            .map(|probe| {
+                (probe.stats().radiance[2].visible - expected)
+                    .abs()
+                    .max_element()
+            })
             .fold(0.0, f32::max);
         eprintln!("Analytic open-sky fixture error: RMS={rms:.6}, max channel={max_error:.6}");
         // This policy trades sampling for bounded observed fixture error, not
@@ -1997,7 +2072,8 @@ pub(super) mod tests {
                     assert_eq!(a.stats().custom_direct, b.stats().custom_direct);
                     assert_eq!(a.display[2].sky, b.display[2].sky);
                     for (a, b) in a
-                        .stats().radiance
+                        .stats()
+                        .radiance
                         .iter()
                         .chain(&a.stats().second_moment)
                         .zip(b.stats().radiance.iter().chain(&b.stats().second_moment))
@@ -2361,11 +2437,24 @@ pub(super) mod tests {
         .unwrap();
         let mut squared = 0.0;
         for (expected, actual) in cpu.iter().zip(&actual) {
-            squared += (expected.stats().radiance[2].visible - actual.stats().radiance[2].visible).length_squared();
-            assert!((expected.stats().direct[2].infrared - actual.stats().direct[2].infrared).abs() < 0.002);
-            assert!((expected.stats().direct[2].ionizing - actual.stats().direct[2].ionizing).abs() < 0.002);
-            assert!((expected.stats().direct[2].visible - actual.stats().direct[2].visible).length() < 0.002);
-            assert!((expected.stats().custom_direct[2] - actual.stats().custom_direct[2]).length() < 0.002);
+            squared += (expected.stats().radiance[2].visible - actual.stats().radiance[2].visible)
+                .length_squared();
+            assert!(
+                (expected.stats().direct[2].infrared - actual.stats().direct[2].infrared).abs()
+                    < 0.002
+            );
+            assert!(
+                (expected.stats().direct[2].ionizing - actual.stats().direct[2].ionizing).abs()
+                    < 0.002
+            );
+            assert!(
+                (expected.stats().direct[2].visible - actual.stats().direct[2].visible).length()
+                    < 0.002
+            );
+            assert!(
+                (expected.stats().custom_direct[2] - actual.stats().custom_direct[2]).length()
+                    < 0.002
+            );
             assert_eq!(
                 expected.display[2].sky, actual.display[2].sky,
                 "packed CPU/GPU sky corners at {:?}",
@@ -2565,7 +2654,9 @@ pub(super) mod tests {
         assert_eq!(receiver[0].display[2].sky, [super::super::sky::KNOWN; 4]);
         assert_eq!(receiver[0].display[2].sky, reference[0].display[2].sky);
         assert!(
-            (receiver[0].stats().radiance[2].visible - reference[0].stats().radiance[2].visible).length() < 0.002
+            (receiver[0].stats().radiance[2].visible - reference[0].stats().radiance[2].visible)
+                .length()
+                < 0.002
         );
 
         // Display shadows cross streamed gaps; simulation energy stays strict.
@@ -2640,7 +2731,8 @@ pub(super) mod tests {
         )
         .unwrap();
         assert_eq!(
-            boundary[0].display[0].sky, [super::super::sky::KNOWN; 4],
+            boundary[0].display[0].sky,
+            [super::super::sky::KNOWN; 4],
             "do not skip loaded occluders beyond streaming gaps"
         );
 
@@ -2677,7 +2769,6 @@ pub(super) mod tests {
             .flat_map(|z| (8..16).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
             .collect();
         let expected = trace_probe_batch(
-
             Arc::clone(&scene),
             sources.clone(),
             Arc::clone(&materials),
@@ -2690,7 +2781,9 @@ pub(super) mod tests {
         let squared = expected
             .iter()
             .zip(&actual)
-            .map(|(a, b)| (a.stats().radiance[2].visible - b.stats().radiance[2].visible).length_squared())
+            .map(|(a, b)| {
+                (a.stats().radiance[2].visible - b.stats().radiance[2].visible).length_squared()
+            })
             .sum::<f32>();
         let rms = (squared / (actual.len() * 3) as f32).sqrt();
         eprintln!("Emissive enclosed-room GPU/CPU RMS={rms:.6}");

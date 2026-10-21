@@ -31,7 +31,6 @@ pub(crate) fn configure_demo_launch(app: &mut App) -> Result<(), String> {
     Ok(())
 }
 
-
 impl Plugin for VoxelGiDiagnosticsPlugin {
     fn build(&self, app: &mut App) {
         tuning::load_launch_settings(app);
@@ -339,6 +338,7 @@ mod tests {
         let mut materials = Assets::<VoxelTransportMaterial>::default();
         let handle = materials.add(material_template(&VoxelTransportAssets {
             geometry: default(),
+            far: default(),
             resident: default(),
             texture: default(),
             probes: default(),

@@ -113,6 +113,61 @@ var<storage, read> cells: array<u32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(109)
 var<uniform> params: TraversalParams;
 
+struct FarPixel {
+    surface: vec3<f32>, face: u32,
+    irradiance: vec3<f32>, evidence: f32,
+    sky: vec4<u32>,
+}
+struct FarOutput {
+    viewport: vec4<u32>, shape: vec4<u32>, optical: array<vec4<f32>, 1024>, pixels: array<FarPixel>,
+}
+@group(#{MATERIAL_BIND_GROUP}) @binding(110)
+var<storage, read> far_view: FarOutput;
+
+// Geometry-aware upsampling only. No value is reused across an unrelated
+// face orientation or depth plane, even at foreground/background edges.
+fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec4<f32> {
+    if far_view.shape.z == 0u { return vec4(0.0); }
+    let uv = (pixel - vec2<f32>(far_view.viewport.xy)) / vec2<f32>(far_view.viewport.zw);
+    if any(uv < vec2(0.0)) || any(uv >= vec2(1.0)) { return vec4(0.0); }
+    let grid = uv * vec2<f32>(far_view.shape.xy) - 0.5;
+    let base = vec2<i32>(floor(grid));
+    let voxel = vec3<i32>(floor(position - normal * 0.01));
+    let surface = vec3<f32>(voxel) + 0.5 + normal * 0.5;
+    var sum = vec3(0.0);
+    var weight = 0.0;
+    for (var y = -1; y <= 2; y++) {
+        for (var x = -1; x <= 2; x++) {
+            let q = base + vec2(x, y);
+            if any(q < vec2(0)) || any(q >= vec2<i32>(far_view.shape.xy)) { continue; }
+            let donor = far_view.pixels[u32(q.y) * far_view.shape.x + u32(q.x)];
+            if donor.face >= 6u { continue; }
+            if !sky && donor.evidence == 0.0 { continue; }
+            if sky && any(donor.sky == vec4(0u)) { continue; }
+            if dot(vec3<f32>(FACE_NORMALS[donor.face]), normal) < 0.99 { continue; }
+            let delta = donor.surface - surface;
+            if abs(dot(delta, normal)) > 0.05 || dot(delta, delta) > 256.0 { continue; }
+            let d = vec2<f32>(q) - grid;
+            let w = 1.0 / (0.25 + dot(d, d));
+            var value = donor.irradiance;
+            if sky {
+                let voxel = floor(donor.surface - normal * 0.01);
+                let local = position - voxel;
+                var uv = local.yz;
+                if donor.face / 2u == 1u { uv = local.xz; }
+                else if donor.face / 2u == 2u { uv = local.xy; }
+                value = resolve_sky_corners(donor.sky, normal, uv).rgb;
+                // An exact face needs no screen-space blur: keep the same
+                // bilinear corner interpolation as the near material.
+                if all(abs(delta) < vec3(0.01)) { return vec4(value, 1.0); }
+            }
+            sum += value * w;
+            weight += w;
+        }
+    }
+    return vec4(sum / max(weight, 1e-8), select(0.0, 1.0, weight > 0.0));
+}
+
 // #include voxel_traversal.wgsl
 
 fn lookup_probe(voxel: vec3<i32>) -> u32 {
@@ -221,8 +276,12 @@ fn sky_irradiance(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     var axis = vec3(0.0);
     axis[face / 2u] = select(1.0, -1.0, negative);
     let corners = transport_probes[index].direct_sky[face];
+    return resolve_sky_corners(corners, axis, uv);
+}
+
+fn resolve_sky_corners(corners: vec4<u32>, axis: vec3<f32>, position: vec2<f32>) -> vec4<f32> {
     let ready = select(0.0, 1.0, all(corners != vec4(0u)));
-    uv = clamp(uv, vec2(0.0), vec2(1.0));
+    let uv = clamp(position, vec2(0.0), vec2(1.0));
     var sum = vec3(0.0);
     for (var light = 0u; light < min(transport_settings.sun_count, 4u); light += 1u) {
         let cosine = max(dot(axis, transport_settings.sun_direction[light].xyz), 0.0);
@@ -241,25 +300,39 @@ fn sky_irradiance(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     return vec4(sum, ready);
 }
 
-// Faces with no display probe (beyond the receiver radius, or not published
-// yet) trace their own sun visibility per fragment through the GI geometry:
-// the same suns, colors and visibility rule as the corner kernel
-// (`trace_sky_corners`), as hard per-pixel shadows instead of reconstructed
-// corners.
+// View-owned corners use the same visibility and interpolation as near. A
+// surface missed by reduced-resolution discovery evaluates its exact corners
+// here; this is coverage-hole shading, not a switch to shadow maps or hard
+// per-pixel shadows. It has no history or feedback into indirect transport.
 fn far_sun(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     let reach = f32(params.counts.x);
     if reach == 0.0 { return vec4(0.0); }
     let dominant = max(abs(normal.x), max(abs(normal.y), abs(normal.z)));
     let axis = select(vec3(0.0), sign(normal), abs(normal) == vec3(dominant));
+    let clip = position_world_to_clip(position);
+    let screen = clip.xy / clip.w * vec2(0.5, -0.5) + 0.5;
+    let pixel = vec2<f32>(far_view.viewport.xy) + screen * vec2<f32>(far_view.viewport.zw);
+    let cached = far_irradiance(pixel, position, axis, true);
+    if cached.w > 0.0 { return cached; }
+    let voxel = floor(position - axis * 0.01);
+    var u = vec3(0.0, 1.0, 0.0);
+    var v = vec3(0.0, 0.0, 1.0);
+    var uv = position.yz - voxel.yz;
+    if abs(axis.y) > 0.5 { u = vec3(1.0, 0.0, 0.0); uv = position.xz - voxel.xz; }
+    else if abs(axis.z) > 0.5 { u = vec3(1.0, 0.0, 0.0); v = vec3(0.0, 1.0, 0.0); uv = position.xy - voxel.xy; }
+    let base = voxel + max(axis, vec3(0.0));
     var sum = vec3(0.0);
     for (var light = 0u; light < min(transport_settings.sun_count, 4u); light += 1u) {
         let direction = transport_settings.sun_direction[light].xyz;
         let cosine = max(dot(axis, direction), 0.0);
         if cosine <= 0.0 { continue; }
-        let origin = position + axis * 0.002 + direction * 0.002;
-        if trace_domain(origin, direction, reach, true).status == 0u {
-            sum += transport_settings.sun_color[light].rgb * cosine;
+        var visible = vec4(0.0);
+        for (var corner = 0u; corner < 4u; corner++) {
+            let origin = base + u * f32(corner & 1u) + v * f32(corner >> 1u) + direction * 0.002;
+            visible[corner] = select(0.0, 1.0, trace_domain(origin, direction, reach, true).status == 0u);
         }
+        let amount = mix(mix(visible.x, visible.y, uv.x), mix(visible.z, visible.w, uv.x), uv.y);
+        sum += transport_settings.sun_color[light].rgb * cosine * amount;
     }
     return vec4(sum, 1.0);
 }
@@ -399,11 +472,21 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
 #else
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);
-    let indirect = probe_irradiance(in.world_position.xyz, normalize(in.world_normal), false);
+    var indirect = probe_irradiance(in.world_position.xyz, normalize(in.world_normal), false);
     let voxel = vec3<i32>(floor(in.world_position.xyz - in.world_normal * 0.01));
     let index = lookup_probe(voxel);
+    if index >= transport_settings.probe_capacity && transport_settings.enabled != 0u {
+        let far = far_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal), false);
+        if far.w > 0.0 { indirect = far.rgb * transport_settings.intensity; }
+    }
     var emission = vec3(0.0);
     if index < transport_settings.probe_capacity { emission = transport_probes[index].emission.rgb; }
+    else if far_view.shape.z != 0u {
+        let material = voxel_material(voxel);
+        if material < 256u {
+            emission = far_view.optical[material * 4u + 2u].rgb;
+        }
+    }
     out.color = vec4<f32>(
         out.color.rgb + pbr_input.material.base_color.rgb * (1.0 - pbr_input.material.metallic) * indirect + emission,
         out.color.a,

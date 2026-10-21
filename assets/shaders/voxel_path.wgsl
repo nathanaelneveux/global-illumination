@@ -230,6 +230,29 @@ fn hemisphere(n: vec3<f32>, u: f32, v: f32) -> vec3<f32> {
 fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayResult {
     return trace_domain(origin, direction, max_distance, false);
 }
+
+// Canonical grid-corner visibility shared by world and view receiver domains.
+fn sky_corner_visibility(position: vec3<f32>) -> u32 {
+    var word = 0x80000000u;
+    // Lit bits count lights with visible color, as `sky_lights` does on CPU.
+    var bit = 0u;
+    for (var i = 0u; i < u32(params.maximum.w) && bit < 4u; i += 1u) {
+        let light = lights[i];
+        if all(max(light.energy.rgb - light.extra.yzw, vec3(0.0)) == vec3(0.0)) { continue; }
+        let direction = normalize(light.position_range.xyz);
+        // A canonical light-directed origin makes visibility independent of
+        // the receiving face. Axis ties use the same positive grid cell as CPU.
+        let origin = position + direction * 0.002;
+        // Display shadows match rendered loaded geometry. Do not turn gaps in
+        // the streaming directory into opaque slabs; continue to real occluders.
+        // Path transport and simulation direct energy still use strict trace().
+        let visibility = trace_domain(origin, direction, params.extra.y, true).status;
+        if visibility == 2u { word = 0u; break; }
+        if visibility == 0u { word |= 1u << bit; }
+        bit += 1u;
+    }
+    return word;
+}
 fn connection_reach() -> f32 {
     if LIMITED_REACH { return params.transport.x; }
     return params.extra.y;
