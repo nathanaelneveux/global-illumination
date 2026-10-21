@@ -54,6 +54,15 @@ fn view_path_shader_and_receiver_layout_validate() {
 /// frozen raw-cache bindings. Test readback only; the eventual view owner keeps
 /// these records GPU-resident and supplies receivers from its first-hit pass.
 fn view_paths(gpu: &GpuTracer, receivers: &[ViewReceiver], samples: u32) -> Vec<u32> {
+    view_paths_with_depth(gpu, receivers, samples, gpu.pipeline_key.0)
+}
+
+fn view_paths_with_depth(
+    gpu: &GpuTracer,
+    receivers: &[ViewReceiver],
+    samples: u32,
+    depth: u32,
+) -> Vec<u32> {
     let context = &gpu.context;
     let device = &context.device;
     let queue = &context.queue;
@@ -65,7 +74,7 @@ fn view_paths(gpu: &GpuTracer, receivers: &[ViewReceiver], samples: u32) -> Vec<
         source: ShaderSource::Wgsl(shader().into()),
     });
     let constants = [
-        ("DIFFUSE_HITS", f64::from(gpu.pipeline_key.0)),
+        ("DIFFUSE_HITS", f64::from(depth)),
         ("LIMITED_REACH", f64::from(gpu.pipeline_key.1)),
     ];
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -397,4 +406,86 @@ fn view_paths_match_near_at_the_surface_cache_boundary() {
     let (hits, unknown) = compare(&gpu, &work, 4096, 17);
     assert_eq!(hits, work.faces.len() * 17);
     assert_eq!(unknown, 0);
+}
+
+/// Equal finite prefixes alone cannot qualify a far tier: a settled near cache
+/// approaches E/(1-r), whereas three explicit hits approach only
+/// E*(1+r+r^2+r^3). No amount of temporal averaging removes the missing tail.
+#[test]
+#[ignore = "native analytic far cache-miss bounce-tail qualification"]
+fn view_cache_misses_measure_the_missing_multibounce_tail() {
+    let fixture = research::furnace();
+    let emitters = Arc::new(EmissionDistribution::with_importance(
+        &fixture.scene,
+        &fixture.materials,
+        crate::voxel_gi::VoxelGiSettings::default().sampling_importance(),
+    ));
+    let mut gpu = GpuTracer::with_kernel(super::tests::native_tracer().context, false).unwrap();
+    let material = fixture.materials.get(4);
+    let reference = material.emission.visible / (Vec3::ONE - material.diffuse.visible);
+    for depth in [3, 16, 32] {
+        let mut sum = [0.0f64; 3];
+        let mut square = [0.0f64; 3];
+        let mut count = 0u32;
+        let mut unknown = 0u32;
+        for batch in 0..32 {
+            let mut work = TraceWork::from_probes(&fixture.receivers, false);
+            let first = batch * 1024;
+            for face in &mut work.faces {
+                face.sequence = first;
+            }
+            for probe in &mut work.probes {
+                probe.sky_requested = false;
+            }
+            gpu.trace_compact(
+                fixture.scene.clone(),
+                &fixture.sources,
+                &fixture.materials,
+                &mut work,
+                1024,
+                &emitters,
+                false,
+            )
+            .unwrap();
+            let words = view_paths_with_depth(&gpu, &receivers(&work, first), 1024, depth);
+            for record in words.chunks_exact(PATH_WORDS) {
+                if record[23] == 0 {
+                    unknown += 1;
+                    continue;
+                }
+                let value = vector(&record[20..]) + vector(&record[24..]);
+                for band in 0..3 {
+                    let v = f64::from(value[band]);
+                    sum[band] += v;
+                    square[band] += v * v;
+                }
+                count += 1;
+            }
+        }
+        let mean = Vec3::from_array(sum.map(|v| (v / f64::from(count)) as f32));
+        let expected = reference * (Vec3::ONE - material.diffuse.visible.powf((depth + 1) as f32));
+        let relative = mean / reference;
+        let standard_error = Vec3::from_array(std::array::from_fn(|b| {
+            let n = f64::from(count);
+            ((square[b] / n - (sum[b] / n).powi(2)).max(0.0) / (n - 1.0)).sqrt() as f32
+        }));
+        eprintln!(
+            "VIEW_TAIL depth={depth} paths={count} unknown={unknown} mean={mean:?} expected={expected:?} infinite={reference:?} fraction={relative:?} se={standard_error:?}"
+        );
+        assert!(
+            unknown <= 32,
+            "closed-world traversal should almost always resolve"
+        );
+        // Correlated low-discrepancy prefixes are not IID confidence intervals;
+        // this is an analytic tolerance, not a statistical significance claim.
+        assert!(((mean - expected).abs() / expected).max_element() < 0.015);
+        if depth >= 16 {
+            assert!((relative - Vec3::ONE).abs().max_element() < 0.015);
+        } else {
+            assert!(
+                relative.z < 0.78,
+                "three-hit cache misses miss a substantial blue tail"
+            );
+        }
+    }
 }

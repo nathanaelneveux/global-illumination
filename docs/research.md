@@ -96,6 +96,19 @@ preserve zero-sample accounting before any deliberate presentation bias. GI is
 now a display system, not the authoritative simulation field; the former
 requirement to retain all five bands in future reuse records no longer applies.
 
+**Far cache misses need complete tails.** The view consumer now shares the
+near estimator and retains explicit path records in native qualification, but
+the near cache's fixed point includes more bounces than a cold three-hit path.
+The analytic furnace in `gpu/view_tests.rs` measures that distinction (see
+[direction](direction.md#f2-design-constraints-from-naadf)). Use ordinary
+throughput-compensated roulette, as in
+[pbrt's path integrator](https://pbr-book.org/4ed/Light_Transport_I_Surface_Reflection/A_Better_Path_Tracer),
+and split unfinished work across bounded dispatches instead of making the
+dispatch limit a physical path-length cutoff. A paused path is neither a dark
+sample nor a completed observation. Extending the old sampling dimension
+formula past three hits aliases scatter and roulette dimensions; the shared
+kernel now preserves the old prefix and reserves distinct deeper dimensions.
+
 The isolated fresh-emitter resampling experiment (`fcfca22`) tested four new
 candidates followed by one selected visibility ray, not retained-path reuse.
 It used [weighted reservoir selection](https://www.pbr-book.org/4ed/Sampling_Algorithms/Reservoir_Sampling)

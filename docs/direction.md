@@ -130,6 +130,15 @@ Build the next stage around these contracts:
   Matching a finite-path kernel is necessary but not sufficient: the near
   cache's converged multi-bounce solution must also be matched when far paths
   cannot reach a cached face. The analytic furnace is the gate for that tail.
+  On M4/Metal, 98,304 raw paths per depth in the existing RGB furnace
+  (reflectances 0.30/0.55/0.70) measured fractions of the infinite-bounce
+  solution of **0.9925/0.9094/0.7608** at three hits,
+  **1.0006/1.0009/0.9992** at 16, and **1.0006/1.0010/1.0013** at 32.
+  No unknown paths occurred. This is an analytic transport check, not a
+  gameplay/FLIP qualification or a universal 16-hit cutoff. Far paths need
+  budgeted continuation of uncached tails; reusing a permanently truncated
+  estimate would retain its darker fixed point. Deeper sampling reserves
+  distinct dimensions so it cannot alias the near prefix's roulette choices.
 - Temporal path reuse needs origin, direction/hit geometry and proposal
   information, including correct accounting for dark samples. Color-only
   history cannot later be reinterpreted as a resampling reservoir.

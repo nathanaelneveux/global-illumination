@@ -202,6 +202,18 @@ fn sample_1d(stream: u32, sequence: u32, dimension: u32) -> f32 {
     let value = reverseBits(scramble_reverse(index, pcg(seed ^ pcg(dimension))));
     return f32(value >> 9u) / 8388608.0;
 }
+// The original three-hit prefix uses dimensions 2..7 for scattering and
+// 9..10 for roulette. Extending 2 + bounce*2 would alias earlier roulette
+// dimensions at hit four. Give deeper hits distinct scrambled dimensions; keep
+// the established near prefix byte-for-byte identical.
+fn continuation_sample(stream: u32, sequence: u32, bounce: u32, dimension: u32) -> f32 {
+    if bounce < 3u {
+        let legacy = select(2u + bounce * 2u + dimension, 8u + bounce, dimension == 2u);
+        return sample_1d(stream, sequence, legacy);
+    }
+    return sample_1d(stream, sequence, 16u + (bounce - 3u) * 3u + dimension);
+}
+
 fn face_normal(face: u32) -> vec3<f32> {
     var n = vec3(0.0);
     n[face / 2u] = select(1.0, -1.0, (face & 1u) != 0u);
@@ -324,13 +336,13 @@ fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, se
 fn sample_terminal_emission(position: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: u32, bounce: u32) -> Energy {
     var result: Energy;
     if params.extra.w == 0.0 { return result; }
-    if sample_1d(stream, sequence, 8u + bounce) < 0.5 {
+    if continuation_sample(stream, sequence, bounce, 2u) < 0.5 {
         result = sample_emitter(position, normal, stream, sequence, bounce + 1u);
         result.value *= 2.0;
         result.radiation *= 2.0;
         return result;
     }
-    let direction = hemisphere(normal, sample_1d(stream, sequence, 2u + bounce * 2u), sample_1d(stream, sequence, 3u + bounce * 2u));
+    let direction = hemisphere(normal, continuation_sample(stream, sequence, bounce, 0u), continuation_sample(stream, sequence, bounce, 1u));
     if dot(normal, direction) <= 0.0 { return result; }
     let hit = trace(position + normal * 0.002, direction, connection_reach());
     if hit.status != 1u { return result; }
@@ -419,14 +431,14 @@ fn trace_path(start: vec3<f32>, first_direction: vec3<f32>, initial_normal: vec3
         if maximum == 0.0 { break; }
         if bounce >= 1u {
             let survival = clamp(maximum, 0.1, 0.95);
-            if sample_1d(stream, sequence, 8u + bounce) > survival { break; }
+            if continuation_sample(stream, sequence, bounce, 2u) > survival { break; }
             throughput.value /= survival;
             throughput.radiation /= survival;
         }
         origin = hit.position + hit.normal * 0.002;
         previous_position = hit.position;
         previous_normal = hit.normal;
-        direction = hemisphere(hit.normal, sample_1d(stream, sequence, 2u + bounce * 2u), sample_1d(stream, sequence, 3u + bounce * 2u));
+        direction = hemisphere(hit.normal, continuation_sample(stream, sequence, bounce, 0u), continuation_sample(stream, sequence, bounce, 1u));
         previous_pdf = cosine_pdf(hit.normal, direction);
         if previous_pdf <= 0.0 { break; }
     }
