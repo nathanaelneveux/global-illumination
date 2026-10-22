@@ -482,6 +482,12 @@ fn render_view(
                 far_discovery_ms = renderer.budget.discovery_ms,
                 far_discovery_mean_ms = renderer.budget.discovery_sum_ms / f64::from(renderer.budget.discovery_count.max(1)),
                 far_discovery_receipts = renderer.budget.discovery_count,
+                far_pool_prepare_ms = renderer.budget.pool_prepare_ms,
+                far_pool_scan_ms = renderer.budget.pool_scan_ms,
+                far_pool_free = renderer.budget.pool_free,
+                far_pool_claimed = renderer.budget.pool_claimed,
+                far_pool_exhausted = renderer.budget.pool_exhausted,
+                far_pool_retained = renderer.budget.pool_retained,
                 far_cache_ms = renderer.budget.cache_ms,
                 far_cache_loads = renderer.budget.cache_loads,
                 far_cache_promotions = renderer.budget.cache_promotions,
@@ -679,7 +685,7 @@ fn render_view(
     let mut executed = 0u32;
     // Each phase has a timestamp pair in the SAME pass. Cross-pass timestamp
     // pairs can collapse on Metal and falsely report zero or negative costs.
-    for stage in 0..9usize {
+    for stage in [9, 0, 1, 2, 3, 4, 5, 6, 7, 8] {
         let retained = stage == 3;
         let dispatch_count = if stage == 5 {
             work
@@ -695,7 +701,7 @@ fn render_view(
             continue;
         }
         executed |= 1 << stage;
-        let index = if stage > 3 { stage - 1 } else { stage };
+        let index = if stage == 9 { 8 } else if stage > 3 { stage - 1 } else { stage };
         let kernel = if retained {
             &renderer.retain
         } else {
@@ -713,16 +719,6 @@ fn render_view(
             label: Some("Far view GI"),
             timestamp_writes: timestamps,
         });
-        if stage == 0 {
-            // Dispatch ordering publishes the complete free list and retained
-            // spatial lists before any tile borrows a slot. Both passes are
-            // included in the existing discovery timestamp pair.
-            pass.set_pipeline(&renderer.prepare_pool[usize::from(multisampled)].pipeline);
-            for (group, binding) in camera.groups[camera.current][8].iter().enumerate() {
-                pass.set_bind_group(group as u32, &**binding, &[]);
-            }
-            pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
-        }
         pass.set_pipeline(&kernel.pipeline);
         if retained {
             for groups in &changes {
@@ -746,7 +742,7 @@ fn render_view(
     if let Some(ticket) = ticket {
         renderer
             .budget
-            .finish(encoder, &camera.queue.buffer, ticket, executed);
+            .finish(encoder, &camera.queue.buffer, &current.pool.buffer, ticket, executed);
     }
     camera.current = 1 - camera.current;
     camera.valid = true;

@@ -1,4 +1,4 @@
-//! Bounded asynchronous timing receipts. Only 192 bytes per view dispatch cross
+//! Bounded asynchronous timing receipts. Only 224 bytes per view dispatch cross
 //! back to the CPU: timestamps and queue counters, never lighting.
 use super::*;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -57,6 +57,12 @@ pub(super) struct Budget {
     pub discovery_ms: f32,
     pub discovery_sum_ms: f64,
     pub discovery_count: u32,
+    pub pool_prepare_ms: f32,
+    pub pool_scan_ms: f32,
+    pub pool_free: u32,
+    pub pool_claimed: u32,
+    pub pool_exhausted: u32,
+    pub pool_retained: u32,
     pub trace_ms: f32,
     pub cache_ms: f32,
     pub cache_loads: u64,
@@ -83,7 +89,7 @@ impl Budget {
                     .create_query_set(&wgpu::QuerySetDescriptor {
                         label: Some("Far GI GPU cost"),
                         ty: wgpu::QueryType::Timestamp,
-                        count: 18,
+                        count: 20,
                     })
             });
         let resolve = device.create_buffer(&BufferDescriptor {
@@ -96,7 +102,7 @@ impl Budget {
             .map(|_| {
                 device.create_buffer(&BufferDescriptor {
                     label: Some("Far GI asynchronous timing receipt"),
-                    size: 192,
+                    size: 224,
                     usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
                     mapped_at_creation: false,
                 })
@@ -114,6 +120,12 @@ impl Budget {
             discovery_ms: 0.0,
             discovery_sum_ms: 0.0,
             discovery_count: 0,
+            pool_prepare_ms: 0.0,
+            pool_scan_ms: 0.0,
+            pool_free: 0,
+            pool_claimed: 0,
+            pool_exhausted: 0,
+            pool_retained: 0,
             trace_ms: 0.0,
             cache_ms: 0.0,
             cache_loads: 0,
@@ -150,9 +162,9 @@ impl Budget {
                 _ => panic!("far GPU timing mapping failed"),
             }
             let ticket = self.pending.swap_remove(index);
-            let bytes = ticket.buffer.slice(..192).get_mapped_range();
+            let bytes = ticket.buffer.slice(..224).get_mapped_range();
             let stamp = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
-            let costs: [f32; 9] = std::array::from_fn(|stage| {
+            let costs: [f32; 10] = std::array::from_fn(|stage| {
                 if ticket.stages & (1 << stage) == 0 {
                     return 0.0;
                 }
@@ -162,7 +174,7 @@ impl Budget {
             let total: f32 = costs.iter().sum();
             let trace = costs[5];
             let counter =
-                |i: usize| u32::from_le_bytes(bytes[144 + i * 4..148 + i * 4].try_into().unwrap());
+                |i: usize| u32::from_le_bytes(bytes[160 + i * 4..164 + i * 4].try_into().unwrap());
             let active = counter(0);
             assert_eq!(
                 counter(1),
@@ -179,8 +191,14 @@ impl Budget {
             self.paused = counter(8);
             self.trace_ms = trace;
             self.presentation_ms = total - trace;
-            self.discovery_ms = costs[0];
-            self.discovery_sum_ms += f64::from(costs[0]);
+            self.discovery_ms = costs[0] + costs[9];
+            self.pool_prepare_ms = costs[9];
+            self.pool_scan_ms = costs[0];
+            self.pool_free = counter(12);
+            self.pool_claimed = counter(13);
+            self.pool_exhausted = counter(14);
+            self.pool_retained = counter(15);
+            self.discovery_sum_ms += f64::from(self.discovery_ms);
             self.discovery_count += 1;
             self.cache_ms = costs[4] + costs[7];
             self.cache_loads += u64::from(counter(10));
@@ -227,15 +245,17 @@ impl Budget {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         counters: &Buffer,
+        pool: &Buffer,
         mut ticket: Ticket,
         stages: u32,
     ) {
         ticket.stages = stages;
-        encoder.resolve_query_set(self.queries.as_ref().unwrap(), 0..18, &self.resolve, 0);
-        encoder.copy_buffer_to_buffer(&self.resolve, 0, &ticket.buffer, 0, 144);
-        encoder.copy_buffer_to_buffer(counters, 0, &ticket.buffer, 144, 48);
+        encoder.resolve_query_set(self.queries.as_ref().unwrap(), 0..20, &self.resolve, 0);
+        encoder.copy_buffer_to_buffer(&self.resolve, 0, &ticket.buffer, 0, 160);
+        encoder.copy_buffer_to_buffer(counters, 0, &ticket.buffer, 160, 48);
+        encoder.copy_buffer_to_buffer(pool, 0, &ticket.buffer, 208, 16);
         let ready = ticket.ready.clone();
-        encoder.map_buffer_on_submit(&ticket.buffer, wgpu::MapMode::Read, ..192, move |result| {
+        encoder.map_buffer_on_submit(&ticket.buffer, wgpu::MapMode::Read, ..224, move |result| {
             ready.store(if result.is_ok() { 1 } else { 2 }, Ordering::Release)
         });
         self.pending.push(ticket);
