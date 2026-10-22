@@ -7,6 +7,7 @@ pub(super) enum Profile {
     #[default]
     Gameplay,
     Streaming,
+    Motion,
     House,
     HouseEdits,
     Response,
@@ -28,6 +29,7 @@ impl Profile {
         match value {
             "gameplay" => Ok(Self::Gameplay),
             "streaming" => Ok(Self::Streaming),
+            "motion" => Ok(Self::Motion),
             "house" => Ok(Self::House),
             "house-edits" => Ok(Self::HouseEdits),
             "response" => Ok(Self::Response),
@@ -43,7 +45,7 @@ impl Profile {
             "compare" => Ok(Self::Compare),
             "stress" => Ok(Self::Stress),
             _ => Err(format!(
-                "unknown validation profile {value:?}; choose gameplay, streaming, house, house-edits, response, edits, sources, cave, canyon, day-cycle, structures, hallway, live-cave, live-hallway, compare, or stress"
+                "unknown validation profile {value:?}; choose gameplay, streaming, motion, house, house-edits, response, edits, sources, cave, canyon, day-cycle, structures, hallway, live-cave, live-hallway, compare, or stress"
             )),
         }
     }
@@ -52,6 +54,7 @@ impl Profile {
         match self {
             Self::Gameplay => "gameplay",
             Self::Streaming => "streaming",
+            Self::Motion => "motion",
             Self::House => "house",
             Self::HouseEdits => "house-edits",
             Self::Response => "response",
@@ -76,6 +79,7 @@ impl Profile {
         match self {
             Self::Compare => 29.0,
             Self::Streaming => 35.0,
+            Self::Motion => 32.0,
             Self::House => 90.0,
             Self::LiveCave | Self::LiveHallway => 182.0,
             Self::DayCycle => 183.0,
@@ -95,6 +99,10 @@ impl Profile {
     }
 
     pub fn captures(self) -> &'static [(f32, &'static str)] {
+        if self == Self::Motion {
+            return &[(14.4, "before"), (16.4, "base-1"), (17.4, "turned-1"),
+                (18.4, "base-2"), (19.4, "turned-2"), (30.4, "returned")];
+        }
         if super::handoff::enabled(self) { return super::handoff::CAPTURES; }
         if matches!(self, Self::LiveCave | Self::LiveHallway) {
             return &[(15., "live-15s"), (30., "live-30s"), (60., "live-60s"),
@@ -219,6 +227,7 @@ impl Profile {
     }
 
     pub fn phase(self, elapsed: f32) -> &'static str {
+        if self == Self::Motion { return if elapsed < 15.0 { "settling" } else { "small-turns" }; }
         if self == Self::Structures {
             if elapsed < 12.0 {
                 "approach"
@@ -318,6 +327,7 @@ mod tests {
         for profile in [
             Profile::Gameplay,
             Profile::Streaming,
+            Profile::Motion,
             Profile::House,
             Profile::HouseEdits,
             Profile::Response,

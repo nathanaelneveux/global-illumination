@@ -383,6 +383,21 @@ pub(super) fn run_validation(
             run.moves += 1;
         }
     }
+    if profile == Profile::Motion {
+        // Same eye and two repeatable orientations, separated by 0.15 degrees.
+        // Exact returns distinguish selection flicker from camera parallax.
+        let yaw = if (15.0..30.0).contains(&elapsed) && elapsed as u32 % 2 == 1 {
+            0.15f32.to_radians()
+        } else { 0.0 };
+        let eye = run.center + Vec3::Y * 1.62;
+        let transform = Transform::from_translation(eye).with_rotation(
+            Quat::from_rotation_y(std::f32::consts::PI + yaw) * Quat::from_rotation_x(-0.12));
+        for camera in &cameras {
+            commands.entity(camera)
+                .remove::<bevy_ahoy::prelude::CharacterControllerCameraOf>()
+                .insert(transform);
+        }
+    }
     if elapsed < 1.0 {
         run.center = player.translation;
     }
