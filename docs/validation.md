@@ -168,10 +168,14 @@ transport geometry. It checks even/odd tile edges, retained background coverage,
 unchanged flat-surface identities, and rejection of raster-only geometry. Set
 `VOXEL_GI_DISCOVERY_BASELINE` to the old `voxel_view_runtime.wgsl` in a baseline
 worktree to run the identical fixture against its discovery kernel. A path to
-the newer `voxel_view_discovery.wgsl` instead runs exact record parity against
+the newer `voxel_view_discovery.wgsl` compares retained coverage against
 full surface-aware discovery. The multi-frame gate checks the four-frame bound
 for new planes, persistent thin-face coverage between checks, unchanged receiver
 identities, missing-geometry retry, periodic refresh and forced camera refresh.
+It also checks small-motion witness reuse and rejects surfaces that disappear
+from the prepass even when their transport geometry still exists. Exact slot
+parity against a full-scan control applies to flat scenes; different valid
+representatives are intentional when retaining thin surfaces across scans.
 This is a coverage test, not rendered quality evidence. Pair it with cave/streaming captures
 and presentation GPU cost before changing discovery.
 
@@ -380,6 +384,7 @@ Durations start after required assets are ready and exclude process compilation.
 | --- | ---: | --- |
 | `gameplay` | 72 | Preferred-look settling, edits and streaming |
 | `streaming` | 35 | Turn 180° and move into newly visible terrain |
+| `motion` | 32 | Fixed spawn eye; repeat exact views 0.15° apart to expose selection flicker |
 | `house` | 90 | Revisit dark ceiling corners without edits |
 | `house-edits` | 180 | House corners, roof skylight, wall doors and turn |
 | `response` | 30 | Underground cavity and emitter on/off response |
@@ -400,6 +405,21 @@ suite on a target machine (windowed gameplay and day-cycle for frame pacing;
 headless response, house-edits and day-cycle with fixed-sun references for
 lighting and memory) and archives the results to copy back; `BASE_SPEC_ONLY`
 selects runs by name.
+
+The `motion` profile keeps the generator's spawn eye fixed (independent of
+startup physics), uses the ordinary terrain camera's 45° vertical FOV, and
+alternates two exact orientations 0.15° apart. `VOXEL_GI_VALIDATE_VIEW_COVERAGE=1`
+replaces terrain shading with an identity-coverage mask: green is exact-face
+support, yellow is coplanar-only support, red has no indirect support. This
+measures visible holes that the selected-owner `far_uncovered` counter cannot.
+Do not use mask runs to compare normal material cost or lighting quality.
+`tools/motion_quality.py RUN...` compares normal captures: exact-return FLIP,
+plus an analytically aligned small-turn luminance residual with a two-pixel
+low-pass to suppress texture resampling. The latter is a motion-stability
+diagnostic, not the calibrated raw-reference FLIP threshold. Run analysis outside
+timed gameplay. Interval `far_discovery_mean_ms` and `far_discovery_receipts`
+aggregate every existing GPU receipt; prefer them over sparsely logged last-frame
+costs for moving/staggered workloads.
 
 For unattended lighting/capture checks, use Bevy's offscreen target:
 
