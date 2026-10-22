@@ -64,18 +64,23 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
     let mut sources = vec![("surface-aware", source.clone())];
     if let Some(path) = std::env::var_os("VOXEL_GI_DISCOVERY_BASELINE") {
         let old = std::fs::read_to_string(path).unwrap();
-        let start = old
-            .find("@compute @workgroup_size(64)\nfn discover_receivers")
-            .unwrap();
-        let end = old[start..].find("// Receiver keys").unwrap() + start;
+        let (label, old) = if old.contains("// Receiver keys") {
+            let start = old
+                .find("@compute @workgroup_size(64)\nfn discover_receivers")
+                .unwrap();
+            let end = old[start..].find("// Receiver keys").unwrap() + start;
+            ("fixed-centre control", old[start..end].to_owned())
+        } else {
+            ("surface-aware control", old)
+        };
         assert!(source.contains(include_str!(
             "../../../../assets/shaders/voxel_view_discovery.wgsl"
         )));
         sources.push((
-            "fixed-centre control",
+            label,
             source.replace(
                 include_str!("../../../../assets/shaders/voxel_view_discovery.wgsl"),
-                &old[start..end],
+                &old,
             ),
         ));
     }
@@ -118,6 +123,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
         },
         size,
     );
+    let mut expected = Vec::new();
     for (label, source) in sources {
         let source = source
             .replace("texture_depth_2d", "texture_2d<f32>")
@@ -138,7 +144,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
             cache: None,
         });
         for grid in [4u32, 3] {
-            let mut camera = CameraState::new(device, grid * grid);
+            let mut camera = CameraState::new(device, UVec2::splat(grid));
             camera
                 .params
                 .upload(
@@ -147,27 +153,31 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                     &ShaderBuffer::from(vec![scene.params]).data.unwrap(),
                 )
                 .unwrap();
+            let mut control = Control {
+                world_from_clip: Mat4::from_cols(
+                    Vec4::new(8., 0., 0., 0.),
+                    Vec4::new(0., -8., 0., 0.),
+                    Vec4::new(0., 0., 1., 0.),
+                    Vec4::new(15.5, 15.5, 7.5, 1.),
+                ),
+                viewport: UVec4::new(0, 0, 16, 16),
+                grid: UVec4::new(grid, grid, grid * grid, 0),
+                ..default()
+            };
             camera
                 .control
                 .upload(
                     device,
                     queue,
-                    &ShaderBuffer::from(vec![Control {
-                        world_from_clip: Mat4::from_cols(
-                            Vec4::new(8., 0., 0., 0.),
-                            Vec4::new(0., -8., 0., 0.),
-                            Vec4::new(0., 0., 1., 0.),
-                            Vec4::new(15.5, 15.5, 7.5, 1.),
-                        ),
-                        viewport: UVec4::new(0, 0, 16, 16),
-                        grid: UVec4::new(grid, grid, grid * grid, 0),
-                        ..default()
-                    }])
-                    .data
-                    .unwrap(),
+                    &ShaderBuffer::from(vec![control]).data.unwrap(),
                 )
                 .unwrap();
-            let groups: Vec<_> = [&[0u32, 1, 2, 3, 6][..], &[], &[0, 5, 8, 9]]
+            let view_bindings: &[u32] = if label == "surface-aware" {
+                &[0, 1, 5, 8, 9, 17]
+            } else {
+                &[0, 5, 8, 9]
+            };
+            let groups: Vec<_> = [&[0u32, 1, 2, 3, 6][..], &[], view_bindings]
                 .iter()
                 .enumerate()
                 .map(|(group, bindings)| {
@@ -181,9 +191,11 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                                 }
                                 (0, 6) => camera.history[0].receivers.buffer.as_entire_binding(),
                                 (2, 0) => camera.control.buffer.as_entire_binding(),
+                                (2, 1) => camera.history[1].receivers.buffer.as_entire_binding(),
                                 (2, 5) => camera.history[0].estimates.buffer.as_entire_binding(),
                                 (2, 8) => wgpu::BindingResource::TextureView(&depth_view),
                                 (2, 9) => wgpu::BindingResource::TextureView(&normal_view),
+                                (2, 17) => camera.discovery_tiles.buffer.as_entire_binding(),
                                 _ => unreachable!(),
                             };
                             BindGroupEntry { binding, resource }
@@ -228,47 +240,105 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                     },
                     size,
                 );
-                let mut encoder = device.create_command_encoder(&default());
-                {
-                    let mut pass = encoder.begin_compute_pass(&default());
-                    pass.set_pipeline(&pipeline);
-                    for (i, group) in groups.iter().enumerate() {
-                        pass.set_bind_group(i as u32, &**group, &[]);
+                let mut original = Vec::new();
+                let mut previous_refresh = 0;
+                for frame in 0..3 {
+                    control.history.z = strips * 3 + frame + 1;
+                    control.discovery.x = u32::from(control.history.z > 1);
+                    camera
+                        .control
+                        .upload(
+                            device,
+                            queue,
+                            &ShaderBuffer::from(vec![control]).data.unwrap(),
+                        )
+                        .unwrap();
+                    let mut encoder = device.create_command_encoder(&default());
+                    encoder.copy_buffer_to_buffer(
+                        &camera.history[0].receivers.buffer,
+                        0,
+                        &camera.history[1].receivers.buffer,
+                        0,
+                        u64::from(grid * grid) * 32,
+                    );
+                    {
+                        let mut pass = encoder.begin_compute_pass(&default());
+                        pass.set_pipeline(&pipeline);
+                        for (i, group) in groups.iter().enumerate() {
+                            pass.set_bind_group(i as u32, &**group, &[]);
+                        }
+                        let groups = if label != "fixed-centre control" {
+                            grid.div_ceil(2).pow(2)
+                        } else {
+                            1
+                        };
+                        pass.dispatch_workgroups(groups, 1, 1);
                     }
-                    let groups = if label == "surface-aware" {
-                        grid.div_ceil(2).pow(2)
+                    queue.submit([encoder.finish()]);
+                    let words = crate::voxel_gi::gpu::maintenance_tests::read_words(
+                        &gpu.context,
+                        &camera.history[0].receivers.buffer,
+                        u64::from(grid * grid) * 32,
+                    );
+                    let faces: Vec<_> = words.chunks_exact(8).map(|w| w[3]).collect();
+                    if frame == 0 {
+                        original = words.clone();
                     } else {
-                        1
-                    };
-                    pass.dispatch_workgroups(groups, 1, 1);
-                }
-                queue.submit([encoder.finish()]);
-                let words = crate::voxel_gi::gpu::maintenance_tests::read_words(
-                    &gpu.context,
-                    &camera.history[0].receivers.buffer,
-                    u64::from(grid * grid) * 32,
-                );
-                let faces: Vec<_> = words.chunks_exact(8).map(|w| w[3]).collect();
-                eprintln!("{label} grid={grid} strips={strips}: {faces:?}");
-                assert!(faces.iter().all(|&face| face < 6));
-                if label == "fixed-centre control" || strips == 0 || strips == 3 {
-                    assert!(faces.iter().all(|&face| face == 4));
-                    for (i, words) in words.chunks_exact(8).enumerate() {
-                        let center = |q: u32| ((q as f32 + 0.5) / grid as f32 * 16.) as u32;
                         assert_eq!(
-                            &words[4..7],
-                            &[center(i as u32 % grid) + 8, center(i as u32 / grid) + 8, 7],
-                            "flat surfaces retain the original centre identities"
+                            words, original,
+                            "coverage must remain identical between scans"
                         );
                     }
-                } else {
-                    assert!(
-                        faces.contains(&0),
-                        "one-pixel side face must receive a real sample"
-                    );
-                    assert!(faces.contains(&4), "the background must remain represented");
-                    if strips == 2 {
-                        assert!(faces.contains(&2));
+                    if label == "surface-aware" {
+                        let metadata = crate::voxel_gi::gpu::maintenance_tests::read_words(
+                            &gpu.context,
+                            &camera.discovery_tiles.buffer,
+                            16,
+                        );
+                        if frame == 2 && strips < 3 {
+                            assert_eq!(metadata[2], 1, "valid footprint is reusable");
+                            assert_eq!(
+                                metadata[3], previous_refresh,
+                                "unchanged footprint must take the reuse path"
+                            );
+                        }
+                        if strips == 3 {
+                            assert_eq!(metadata[2], 0, "pending geometry must remain discoverable");
+                        }
+                        previous_refresh = metadata[3];
+                    }
+                    if label == "surface-aware" {
+                        if frame == 0 {
+                            expected.push(words.clone());
+                        }
+                    } else if label == "surface-aware control" {
+                        let case = usize::from(grid == 3) * 4 + strips as usize;
+                        assert_eq!(
+                            words, expected[case],
+                            "optimized discovery must preserve exact receiver records"
+                        );
+                    }
+                    eprintln!("{label} grid={grid} strips={strips} frame={frame}: {faces:?}");
+                    assert!(faces.iter().all(|&face| face < 6));
+                    if label == "fixed-centre control" || strips == 0 || strips == 3 {
+                        assert!(faces.iter().all(|&face| face == 4));
+                        for (i, words) in words.chunks_exact(8).enumerate() {
+                            let center = |q: u32| ((q as f32 + 0.5) / grid as f32 * 16.) as u32;
+                            assert_eq!(
+                                &words[4..7],
+                                &[center(i as u32 % grid) + 8, center(i as u32 / grid) + 8, 7],
+                                "flat surfaces retain the original centre identities"
+                            );
+                        }
+                    } else {
+                        assert!(
+                            faces.contains(&0),
+                            "one-pixel side face must receive a real sample"
+                        );
+                        assert!(faces.contains(&4), "the background must remain represented");
+                        if strips == 2 {
+                            assert!(faces.contains(&2));
+                        }
                     }
                 }
             }

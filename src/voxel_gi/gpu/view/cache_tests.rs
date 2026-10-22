@@ -67,7 +67,7 @@ impl Fixture {
         world.insert_resource(device.clone());
         world.insert_resource(queue.clone());
         let renderer = ViewRenderer::from_world(&mut world);
-        let mut camera = CameraState::new(device, 1);
+        let mut camera = CameraState::new(device, UVec2::ONE);
         let f = &work.faces[0];
         let normal = crate::voxel_gi::world::FACE_OFFSETS[f.face].as_vec3();
         camera.history[0]

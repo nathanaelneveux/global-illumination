@@ -11,6 +11,7 @@ struct ViewControl {
     history: vec4<u32>, // previous grid count, previous hash mask, frame, view-first
     display: vec4<f32>, // evidence goal, strength, temporal blend, measured retention
     cache: vec4<u32>, // writable epoch, worker-clock milliseconds, enabled, reserved
+    discovery: vec4<u32>, // unchanged camera/viewport/overlap/MSAA; reserved
 }
 struct ViewEstimate {
     mean: vec4<f32>, // raw RGB, physical history weight
@@ -49,6 +50,7 @@ struct FarOutput {
 @group(2) @binding(14) var<storage, read_write> shared_state: array<vec4<u32>>;
 @group(2) @binding(15) var<storage, read_write> shared_meta: array<vec4<u32>>;
 @group(2) @binding(16) var<storage, read> cache_guard: array<u32>;
+@group(2) @binding(17) var<storage, read_write> discovery_tiles: array<vec4<u32>>;
 
 // #include voxel_retention.wgsl
 // #include voxel_view_cache.wgsl

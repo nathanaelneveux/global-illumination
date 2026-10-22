@@ -152,6 +152,7 @@ struct Control {
     history: UVec4,
     display: Vec4,
     cache: UVec4,
+    discovery: UVec4,
 }
 #[derive(Clone, Copy, Default, ShaderType)]
 struct Wave {
@@ -195,7 +196,9 @@ impl History {
 struct CameraState {
     history: [History; 2],
     current: usize,
-    count: u32,
+    grid: UVec2,
+    discovery_tiles: UploadBuffer,
+    discovery_view: Option<(Mat4, UVec4, f32, u32)>,
     valid: bool,
     control: UploadBuffer,
     params: UploadBuffer,
@@ -217,13 +220,17 @@ struct BindingKey {
     limited: bool,
 }
 impl CameraState {
-    fn new(device: &RenderDevice, count: u32) -> Self {
+    fn new(device: &RenderDevice, grid: UVec2) -> Self {
+        let count = grid.element_product();
+        let tiles = grid.x.div_ceil(2) * grid.y.div_ceil(2);
         let uniform =
             |name| UploadBuffer::new(device, name, BufferUsages::UNIFORM | BufferUsages::COPY_DST);
         Self {
             history: [History::new(device, count), History::new(device, count)],
             current: 0,
-            count,
+            grid,
+            discovery_tiles: storage(device, "Far discovery fingerprints", tiles as usize * 16),
+            discovery_view: None,
             valid: false,
             control: uniform("Far view control"),
             params: uniform("Far transport parameters"),
@@ -313,7 +320,7 @@ impl FromWorld for ViewRenderer {
                     "discover_receivers",
                     m,
                     false,
-                    [&[0, 1, 2, 3, 6], &[], &[0, 5, 8, 9]],
+                    [&[0, 1, 2, 3, 6], &[], &[0, 1, 5, 8, 9, 17]],
                 )
             }),
             index: make("index_receivers", 0, false, [&[6], &[], &[0, 7, 10]]),
@@ -494,14 +501,17 @@ fn render_view(
     let mut camera = renderer
         .cameras
         .remove(&key)
-        .filter(|camera| camera.count == count)
-        .unwrap_or_else(|| CameraState::new(&device, count));
+        .filter(|camera| camera.grid == grid)
+        .unwrap_or_else(|| CameraState::new(&device, grid));
     let current = &camera.history[camera.current];
     let previous = &camera.history[1 - camera.current];
     let hash_mask = current.hash.capacity as u32 / 4 - 1;
     let clip = view
         .clip_from_world
         .unwrap_or_else(|| view.clip_from_view * view.world_from_view.affine().inverse());
+    let discovery_view = (clip, view.viewport, settings.inner_radius, msaa.samples());
+    let discovery_stable = camera.valid && camera.discovery_view == Some(discovery_view);
+    camera.discovery_view = Some(discovery_view);
     let control = Control {
         world_from_clip: clip.inverse(),
         camera: view
@@ -520,6 +530,7 @@ fn render_view(
         cache: scene.cache.as_ref().map_or(UVec4::ZERO, |cache|
             UVec4::new(cache.epoch, cache.origin.elapsed().as_millis() as u32,
                 u32::from(cache.enabled && settings.view_first), 0)),
+        discovery: UVec4::new(u32::from(discovery_stable), 0, 0, 0),
     };
     camera
         .control
@@ -615,6 +626,7 @@ fn render_view(
                                 14 => scene.buffers[6].as_entire_binding(),
                                 15 => scene.cache.as_ref().map_or(&scene.buffers[6], |cache| &cache.meta).as_entire_binding(),
                                 16 => scene.cache.as_ref().map_or(&scene.buffers[6], |cache| &cache.guard).as_entire_binding(),
+                                17 => camera.discovery_tiles.buffer.as_entire_binding(),
                                 _ => group2[binding as usize].as_entire_binding(),
                             },
                         };
