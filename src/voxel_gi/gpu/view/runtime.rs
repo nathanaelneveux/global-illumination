@@ -251,6 +251,8 @@ fn shader(multisampled: bool) -> String {
     let source = include_retention(&include_paths(&source));
     let source = source.replace("// #include voxel_view_cache.wgsl\n",
         include_str!("../../../../assets/shaders/voxel_view_cache.wgsl"));
+    let source = source.replace("// #include voxel_view_discovery.wgsl\n",
+        include_str!("../../../../assets/shaders/voxel_view_discovery.wgsl"));
     if multisampled {
         source
             .replace("texture_depth_2d", "texture_depth_multisampled_2d")
@@ -352,8 +354,8 @@ impl FromWorld for ViewRenderer {
 }
 
 fn grid_size(viewport: UVec2) -> UVec2 {
-    // Four-pixel cells preserve thin voxel sides at the normal 720p window.
-    // Larger viewports retain the same bounded storage/work ceiling.
+    // Nominal four-pixel cells, capped storage at larger viewports. Discovery
+    // redistributes each 2x2 group across visible planes within its footprint.
     let mut grid = UVec2::new(viewport.x.div_ceil(4), viewport.y.div_ceil(4)).max(UVec2::ONE);
     if grid.x * grid.y > MAX_PIXELS {
         let scale = (MAX_PIXELS as f32 / (grid.x * grid.y) as f32).sqrt();
@@ -369,6 +371,10 @@ mod batch_tests;
 #[cfg(test)]
 #[path = "cache_tests.rs"]
 mod cache_tests;
+
+#[cfg(test)]
+#[path = "coverage_tests.rs"]
+mod coverage_tests;
 
 #[cfg(test)]
 mod tests {
@@ -648,7 +654,14 @@ fn render_view(
     // pairs can collapse on Metal and falsely report zero or negative costs.
     for stage in 0..9usize {
         let retained = stage == 3;
-        let dispatch_count = if stage == 5 { work } else { count };
+        let dispatch_count = if stage == 5 {
+            work
+        } else if stage == 0 {
+            // One cooperative workgroup per 2x2-cell discovery tile.
+            grid.x.div_ceil(2) * grid.y.div_ceil(2)
+        } else {
+            count
+        };
         if dispatch_count == 0 || (retained && changes.is_empty())
             || ((stage == 4 || stage == 7) && control.cache.z == 0)
         {
@@ -685,7 +698,12 @@ fn render_view(
             for (group, binding) in camera.groups[camera.current][index].iter().enumerate() {
                 pass.set_bind_group(group as u32, &**binding, &[]);
             }
-            pass.dispatch_workgroups(dispatch_count.div_ceil(64), 1, 1);
+            let groups = if stage == 0 {
+                dispatch_count
+            } else {
+                dispatch_count.div_ceil(64)
+            };
+            pass.dispatch_workgroups(groups, 1, 1);
         }
     }
     if let Some(ticket) = ticket {

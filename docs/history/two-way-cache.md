@@ -148,3 +148,57 @@ Logs are `target/two-way-{final,repeat}-*.log`; native gates use
 `target/two-way-{native,view,material,unit,clippy}-final.log` and
 `target/two-way-admission-tail.log`. Earlier preliminary pairs are retained but
 are not substituted for the measurements above.
+
+## Grazing-face coverage correction (2026-10-22)
+
+The reduced grid's fixed pixel centres could permanently miss a thin visible
+plane. Cache admission then appeared to fix it because the world cache supplied
+the previously unrepresented face. Discovery now scans each 2x2-cell footprint
+cooperatively and trades redundant plane samples for missing planes. Selection
+uses deterministic distance/slot/pixel ordering and verifies transport geometry
+before replacement. Broad flat surfaces retain their original centre identities.
+Ray allowance, persistent buffer capacity, raw sampling and reconstruction rules
+are unchanged. Four slots cannot represent unlimited subpixel complexity.
+
+The native fixture reproduces the old miss with one-pixel-wide side planes:
+the `23a3775` control selects only the background, while the correction represents
+both side orientations and the background. It also covers odd grid edges,
+unchanged flat identities and raster geometry absent from the transport scene.
+Native single/MSAA pipelines, shader composition, rank bounds through 16K
+viewports and production Clippy pass. Release build passes with the existing 33
+release-only unused/dead-code warnings (`target/grazing-release.log`). This is
+identity/coverage evidence, not a rendered lighting oracle.
+
+Cave pair: control `23a3775`; candidate `1a0516d` plus this discovery change,
+before documentation/test-only finishing changes. Same M4/Metal, development
+profile, 2560x1440 offscreen target, +cache settings and background loading as
+above. Runs are `cave-1792685114166712000-25726` (control worktree) and
+`cave-1792685416097221000-26096` (candidate); comparison is under
+`target/grazing-comparison/`. All captures are valid and render logs clean.
+
+- Cave 15s-to-own-60s mean FLIP: .00999 -> .00930; 30s: .00609 -> .00547.
+  Final cross-run mean FLIP .00348, mean display luminance ratio 1.00002.
+- Logged view presentation GPU cost median .632 -> 1.578 ms. A rejected serial
+  scan cost 4.429 ms; the retained implementation classifies pixels in parallel.
+  This is added coverage work, not a free improvement or a transport-budget change.
+- Offscreen cadence p95/p99: 26.07/26.82 -> 22.89/23.54 ms. One pair excludes an
+  obvious regression here; it does not establish a repeatable performance gain
+  or windowed frame pacing. Whole-process peak allocation: 966 -> 944 MB; discovery
+  adds only per-workgroup scratch, not a new persistent allocation.
+
+The same development +cache pair also ran the 35-second `streaming` workload
+(turn 180 degrees, move across terrain, stop). Both sets of three captures are
+valid and visually inspected, with clean render logs. After 15s, excluding capture
+frames, offscreen cadence p95/p99 is 21.80/24.09 -> 21.46/22.23 ms; whole-process
+peaks 864 -> 865 MB. Final logged visible owners increase 2058 -> 2453 without
+growing the grid; this measures representation, not sample independence or
+convergence. Captured moving cameras differ slightly in position, so no raw
+pixel/FLIP quality claim is made from that pair. Runs:
+`streaming-1792685693713156000-26645` (control worktree) and
+`streaming-1792685805050648000-26850` (candidate). Logs are
+`target/grazing-{baseline,candidate}-streaming.log` in their respective worktrees.
+
+Native logs: `target/grazing-{native,pipelines,rank,clippy,shader}.log`.
+Cave logs: `target/grazing-baseline-cave.log` in the control worktree and
+`target/grazing-parallel-cave.log` here. The initial serial attempt remains in
+`target/grazing-candidate-cave.log`; do not substitute it for the retained design.

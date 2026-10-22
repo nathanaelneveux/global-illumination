@@ -81,47 +81,7 @@ fn previous_owner(r: ViewReceiver) -> u32 {
     return 0xffffffffu;
 }
 
-@compute @workgroup_size(64)
-fn discover_receivers(@builtin(global_invocation_id) id: vec3<u32>) {
-    if id.x >= view.grid.z { return; }
-    let xy = vec2(id.x % view.grid.x, id.x / view.grid.x);
-    let center_uv = (vec2<f32>(xy) + 0.5) / vec2<f32>(view.grid.xy);
-    let pixel = vec2<i32>(view.viewport.xy + min(vec2<u32>(center_uv * vec2<f32>(view.viewport.zw)), view.viewport.zw - 1u));
-    let uv = (vec2<f32>(pixel) + 0.5 - vec2<f32>(view.viewport.xy)) / vec2<f32>(view.viewport.zw);
-    var receiver: ViewReceiver;
-    receiver.face = 0xffffffffu;
-    receivers[id.x] = receiver;
-    var empty: ViewEstimate;
-    estimates[id.x] = empty;
-    let z = textureLoad(depth, pixel, 0);
-    if z <= 0.0 { return; }
-    let clip = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0);
-    let homogeneous = view.world_from_clip * clip;
-    let position = homogeneous.xyz / homogeneous.w;
-    if distance(position, view.camera.xyz) < view.camera.w { return; }
-    let decoded = textureLoad(normals, pixel, 0).xyz * 2.0 - 1.0;
-    if max(max(abs(decoded.x), abs(decoded.y)), abs(decoded.z)) < 0.99 { return; }
-    // RGB10A2 cannot represent the two zero components exactly. Traversal's
-    // face_index_of expects an exact axis normal; quantized raster normals
-    // must instead select their dominant component.
-    receiver.face = select(4u, 5u, decoded.z < 0.0);
-    if abs(decoded.x) > 0.99 { receiver.face = select(0u, 1u, decoded.x < 0.0); }
-    else if abs(decoded.y) > 0.99 { receiver.face = select(2u, 3u, decoded.y < 0.0); }
-    let normal = face_normal(receiver.face);
-    // MSAA depth is evaluated at a subpixel sample, while unprojection above
-    // uses the pixel center. Snap the normal axis to the exact voxel plane;
-    // otherwise that small drift can select a buried voxel on grazing faces.
-    var surface_position = position;
-    surface_position[receiver.face / 2u] = round(surface_position[receiver.face / 2u]);
-    receiver.voxel = vec3<i32>(floor(surface_position - normal * 0.01));
-    receiver.surface = vec3<f32>(receiver.voxel) + 0.5 + normal * 0.5;
-    // Reject nonvoxel meshes and mesh/transport publication skew. This is a
-    // short geometry identity check, not another primary camera ray.
-    let material = voxel_material(receiver.voxel);
-    if material == 256u || voxel_material(receiver.voxel + vec3<i32>(normal)) != 256u { return; }
-    receivers[id.x] = receiver;
-    estimates[id.x].identity.y = material;
-}
+// #include voxel_view_discovery.wgsl
 
 // Receiver keys are fully written by discover before this pass. CAS publishes
 // only an index, never a partially initialized identity. Colliding keys probe;

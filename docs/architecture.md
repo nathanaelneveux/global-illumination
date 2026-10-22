@@ -62,9 +62,16 @@ interpolation, not a second production reconstruction path.
 ### View-owned far lighting
 
 After Bevy's depth/normal prepass and before opaque rendering, each active view
-discovers voxel-face identities on a reduced grid (one sample per 4x4 pixels,
-at most 65,536 entries). Quantized normals select their dominant axis; depth is
-snapped to the voxel plane before the geometry identity check. Duplicate pixels
+discovers voxel-face identities on a reduced grid (nominal four-pixel cells,
+at most 65,536 entries). Each 2x2-cell tile cooperatively scans its full-resolution
+prepass footprint. It keeps the original centre identities on flat surfaces;
+redundant coplanar slots make room for thin planes between those centres. Selection
+is deterministic and geometry-validated before replacement, including when raster
+geometry leads transport uploads. There are still only four slots per full tile:
+this improves grazing coverage, not unlimited coverage of arbitrarily dense
+subpixel geometry. It adds prepass classification, not rays, persistent storage,
+or CPU readback. Quantized normals select their dominant axis; depth is snapped
+to the voxel plane before the geometry identity check. Duplicate pixels
 share one face owner. A ping-pong hash reprojects the exact same face, its raw
 mean/second moment, sequence, retained path and any unfinished continuation.
 No filtered image is ever treated as a new transport measurement.

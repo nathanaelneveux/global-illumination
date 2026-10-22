@@ -161,6 +161,16 @@ movement/edit qualification. CPU field diagnostics cover near receivers only;
 they cannot establish far-image stability. Far timing logs report raw owners,
 known completions, history, pending tails and display coverage separately.
 
+`native_view_discovery_keeps_thin_surfaces_without_growing_storage` is the focused
+native coverage gate (`--ignored --nocapture`). Synthetic depth/normal prepasses
+contain one-pixel side planes missed by the old fixed centres, backed by real
+transport geometry. It checks even/odd tile edges, retained background coverage,
+unchanged flat-surface identities, and rejection of raster-only geometry. Set
+`VOXEL_GI_DISCOVERY_BASELINE` to the old `voxel_view_runtime.wgsl` in a baseline
+worktree to run the identical fixture against its discovery kernel. This is a
+coverage test, not rendered quality evidence. Pair it with cave/streaming captures
+and presentation GPU cost before changing discovery.
+
 For the opt-in `view_cache_exchange`, run `native_two_way_cache` with
 `--ignored --test-threads=1 --nocapture`. It checks raw transfers (not summed
 histories), alternating worker/view sequences, unfinished tails, stale-generation
