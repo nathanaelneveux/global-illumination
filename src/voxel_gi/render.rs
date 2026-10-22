@@ -1691,6 +1691,10 @@ pub(crate) fn prepare_texture_array(
 }
 
 #[cfg(test)]
+#[path = "render/coverage_tests.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::voxel_gi::spectrum::EnergySpectrum;
