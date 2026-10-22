@@ -150,7 +150,7 @@ pub(super) fn run_validation(
     field: Res<VoxelEnergyField>,
     mut dirty: ResMut<VoxelGiDirty>,
     mut world: VoxelWorld<PrototypeWorld>,
-    mut player_state: Single<(&mut Transform, &mut bevy_ahoy::CharacterLook), With<Player>>,
+    mut player_state: Single<&mut Transform, (With<Player>, With<bevy_ahoy::CharacterLook>)>,
     mut lights: Query<&mut Transform, Without<Player>>,
     cameras: Query<Entity, With<Camera3d>>,
     mut commands: Commands,
@@ -273,7 +273,7 @@ pub(super) fn run_validation(
     }
     let elapsed = run.started.unwrap().elapsed().as_secs_f32();
     let profile = run.profile;
-    let (ref mut player, ref mut look) = *player_state;
+    let player = &mut *player_state;
     if crate::cave_scene::background_terrain_requested() {
         run.background
             .tick(elapsed, &evidence, &mut commands, &mut lights);
