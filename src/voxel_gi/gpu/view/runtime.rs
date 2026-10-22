@@ -468,6 +468,7 @@ fn render_view(
                 far_active = renderer.budget.active,
                 far_trace_ms = renderer.budget.trace_ms,
                 far_presentation_ms = renderer.budget.presentation_ms,
+                far_discovery_ms = renderer.budget.discovery_ms,
                 far_cache_ms = renderer.budget.cache_ms,
                 far_cache_loads = renderer.budget.cache_loads,
                 far_cache_promotions = renderer.budget.cache_promotions,
