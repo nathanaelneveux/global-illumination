@@ -422,7 +422,12 @@ For motion diagnosis, `VOXEL_GI_VALIDATE_LIGHT_COMPONENT=sun|indirect|combined`
 captures lighting without terrain textures, using the same transport and cached
 corner shadows. It is mutually exclusive with `VOXEL_GI_VALIDATE_VIEW_COVERAGE`.
 Reports record `view_diagnostic` (0 appearance, 1 combined irradiance, 2 coverage,
-3 indirect, 4 sunlight). `VOXEL_GI_VALIDATE_MOTION_STATIC=1` keeps the camera
+3 indirect, 4 sunlight, 5 exact corner sunlight). The `sun-reference` component
+traces each displayed face's own four canonical corners, bypassing borrowed
+view-cache shadows. Compare it against `sun` at the same camera to detect
+persistent wrong shadows even when exact-view return tests are stable. It is an
+expensive diagnostic, not a proposed gameplay fallback or a performance run.
+`VOXEL_GI_VALIDATE_MOTION_STATIC=1` keeps the camera
 stationary through the same capture schedule and background streaming, to
 separate ongoing refinement from motion-sensitive reconstruction. Reports record
 the actual `motion_turn_degrees`; the analysis uses that angle for reprojection.

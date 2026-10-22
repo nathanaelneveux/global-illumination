@@ -341,6 +341,14 @@ fn far_sun(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     let pixel = vec2<f32>(far_view.viewport.xy) + screen * vec2<f32>(far_view.viewport.zw);
     let cached = far_irradiance(pixel, position, axis, true);
     if cached.w > 0.0 { return cached; }
+    return exact_corner_sun(position, axis);
+}
+
+// Canonical reference for a particular world face, independent of the view
+// receiver selection. Also serves the existing uncovered-face fallback.
+fn exact_corner_sun(position: vec3<f32>, axis: vec3<f32>) -> vec4<f32> {
+    let reach = f32(params.counts.x);
+    if reach == 0.0 { return vec4(0.0); }
     let voxel = floor(position - axis * 0.01);
     var u = vec3(0.0, 1.0, 0.0);
     var v = vec3(0.0, 0.0, 1.0);
@@ -562,9 +570,13 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
         var diagnostic_light = indirect;
         // Component captures isolate motion-induced lighting changes from
         // textured appearance. Normal presentation never enters this branch.
-        if transport_settings.debug_irradiance == 4u { diagnostic_light = vec3(0.0); }
+        if transport_settings.debug_irradiance >= 4u { diagnostic_light = vec3(0.0); }
         if transport_settings.debug_irradiance != 3u && use_voxel_sky() {
-            diagnostic_light += probe_irradiance(in.world_position.xyz, normalize(in.world_normal), true)
+            var sunlight = probe_irradiance(in.world_position.xyz, normalize(in.world_normal), true);
+            if transport_settings.debug_irradiance == 5u {
+                sunlight = exact_corner_sun(in.world_position.xyz, normalize(in.world_normal)).rgb;
+            }
+            diagnostic_light += sunlight
                 * (10000.0 / 3.14159265359) * mesh_view_bindings::view.exposure;
         }
         out.color = vec4(diagnostic_light, 1.0);
