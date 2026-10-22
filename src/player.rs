@@ -29,6 +29,7 @@ const PLAYER_STEP_SIZE: f32 = 0.55;
 const PLAYER_MAX_SPEED: f32 = 80.0;
 const PLAYER_AIR_ACCELERATION_HZ: f32 = 8.0;
 const PLAYER_MAX_AIR_WISH_SPEED: f32 = 0.35;
+const BOMB_RADIUS: i32 = 5;
 
 pub struct PlayerPlugin;
 
@@ -36,6 +37,7 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_input_context::<PlayerInput>()
             .add_message::<PlaceEmissiveBlock>()
+            .init_resource::<BombTool>()
             .add_systems(Startup, spawn_player)
             .add_systems(
                 FixedPostUpdate,
@@ -83,6 +85,17 @@ struct PlaceVoxel;
 #[derive(InputAction)]
 #[action_output(bool)]
 struct PlaceEmissiveVoxel;
+
+#[derive(InputAction)]
+#[action_output(bool)]
+struct ToggleBombTool;
+
+/// Shared by the keyboard shortcut and HUD. It changes left-click destruction,
+/// not placement or the cursor's UI interaction.
+#[derive(Resource, Default)]
+pub(crate) struct BombTool {
+    pub enabled: bool,
+}
 
 /// The HUD queues the same placement operation as the keyboard shortcut.
 #[derive(Message)]
@@ -140,6 +153,10 @@ fn spawn_player(mut commands: Commands, world: Res<PrototypeWorld>) {
                 (
                     Action::<PlaceEmissiveVoxel>::new(),
                     bindings![KeyCode::KeyE],
+                ),
+                (
+                    Action::<ToggleBombTool>::new(),
+                    bindings![KeyCode::KeyB],
                 ),
                 (
                     Action::<RotateCamera>::new(),
@@ -298,6 +315,8 @@ fn edit_voxels(
     break_events: Single<&ActionEvents, With<Action<BreakVoxel>>>,
     place_events: Single<&ActionEvents, With<Action<PlaceVoxel>>>,
     emissive_events: Single<&ActionEvents, With<Action<PlaceEmissiveVoxel>>>,
+    bomb_events: Single<&ActionEvents, With<Action<ToggleBombTool>>>,
+    mut bomb: ResMut<BombTool>,
     mut hud_requests: MessageReader<PlaceEmissiveBlock>,
     cursor_options: Single<&CursorOptions, With<PrimaryWindow>>,
     camera: Single<&GlobalTransform, (With<PlayerCamera>, Without<Player>)>,
@@ -308,6 +327,9 @@ fn edit_voxels(
     #[cfg(debug_assertions)]
     if std::env::var_os("VOXEL_GI_VALIDATE").is_some() {
         return;
+    }
+    if !cursor_options.visible && bomb_events.contains(ActionEvents::START) {
+        bomb.enabled = !bomb.enabled;
     }
     let breaking = !cursor_options.visible && break_events.contains(ActionEvents::START);
     let material = placement_material(
@@ -328,8 +350,15 @@ fn edit_voxels(
     };
 
     if breaking {
-        let edited_position = hit.position.as_ivec3();
-        voxel_gi_dirty.set_voxel(&mut voxel_world, edited_position, WorldVoxel::Air);
+        let radius = if bomb.enabled { BOMB_RADIUS } else { 0 };
+        for position in destruction_positions(hit.position.as_ivec3(), radius) {
+            // Do not manufacture air edits in unloaded chunks or rewrite air.
+            // Every actual removal uses the ordinary tracked edit gateway so
+            // meshing, collision and GI observe the same blast.
+            if matches!(voxel_world.get_voxel(position), WorldVoxel::Solid(_)) {
+                voxel_gi_dirty.set_voxel(&mut voxel_world, position, WorldVoxel::Air);
+            }
+        }
     }
 
     if let Some(material) = material {
@@ -356,6 +385,19 @@ fn edit_voxels(
             voxel_gi_dirty.set_voxel(&mut voxel_world, placement_position, voxel);
         }
     }
+}
+
+/// Integer voxel centers inside a sphere, including its radius boundary.
+/// Radius zero is the ordinary single-block tool. Iteration needs no allocation.
+fn destruction_positions(center: IVec3, radius: i32) -> impl Iterator<Item = IVec3> {
+    (-radius..=radius).flat_map(move |x| {
+        (-radius..=radius).flat_map(move |y| {
+            (-radius..=radius).filter_map(move |z| {
+                let offset = IVec3::new(x, y, z);
+                (offset.length_squared() <= radius * radius).then_some(center + offset)
+            })
+        })
+    })
 }
 
 fn placement_material(
@@ -394,6 +436,27 @@ fn sync_player_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bomb_removes_a_radius_five_sphere_around_the_clicked_voxel() {
+        let center = IVec3::new(-32, 17, 64);
+        let targets: std::collections::HashSet<_> =
+            destruction_positions(center, BOMB_RADIUS).collect();
+        assert_eq!(targets.len(), 515);
+        assert!(targets.contains(&center));
+        for offset in [IVec3::X, IVec3::Y, IVec3::Z] {
+            assert!(targets.contains(&(center + offset * 5)));
+            assert!(targets.contains(&(center - offset * 5)));
+            assert!(!targets.contains(&(center + offset * 6)));
+        }
+        assert!(!targets.contains(&(center + IVec3::splat(5))));
+        for &position in &targets {
+            let offset = position - center;
+            assert!(offset.length_squared() <= 25);
+            assert!(targets.contains(&(center - offset)));
+        }
+        assert_eq!(destruction_positions(center, 0).collect::<Vec<_>>(), [center]);
+    }
 
     #[test]
     fn emitting_shortcut_and_hud_share_placement_without_replacing_normal_blocks() {

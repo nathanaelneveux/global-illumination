@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use super::render::VoxelTransportMaterial;
 use super::{VoxelEnergyField, VoxelGiRuntime, VoxelGiStats, VoxelGiSystems};
-use crate::player::PlaceEmissiveBlock;
+use crate::player::{BombTool, PlaceEmissiveBlock};
 
 /// Demo-only UI, keyboard comparisons and opt-in validation. Install after GI
 /// and the player plugins; the reusable transport does not own player input.
@@ -96,6 +96,7 @@ fn draw_hud(
     mut state: Local<HudState>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     mut place_emissive: MessageWriter<PlaceEmissiveBlock>,
+    mut bomb: ResMut<BombTool>,
     mut tuning: ResMut<tuning::TuningPanel>,
 ) {
     if !state.visible {
@@ -134,6 +135,11 @@ fn draw_hud(
                         .on_hover_text("Place a warm emitting voxel against the aimed-at face. E works while playing; Esc releases the cursor for this button.")
                         .clicked() {
                         place_emissive.write(PlaceEmissiveBlock);
+                    }
+                    if ui.selectable_label(bomb.enabled, "Bomb tool: radius 5 (B)")
+                        .on_hover_text("Toggle with B or this button. While active, left-click removes a radius-5 sphere centered on the aimed-at voxel. Toggle off for single-block digging.")
+                        .clicked() {
+                        bomb.enabled = !bomb.enabled;
                     }
                     if ui.button("Lighting controls…")
                         .on_hover_text("Esc releases the cursor. Compare lighting reach, quality, work budget and presentation.")
