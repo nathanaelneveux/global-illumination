@@ -418,6 +418,20 @@ timed gameplay. Interval `far_discovery_mean_ms` and `far_discovery_receipts`
 aggregate every existing GPU receipt; prefer them over sparsely logged last-frame
 costs for moving/staggered workloads.
 
+For motion diagnosis, `VOXEL_GI_VALIDATE_LIGHT_COMPONENT=sun|indirect|combined`
+captures lighting without terrain textures, using the same transport and cached
+corner shadows. It is mutually exclusive with `VOXEL_GI_VALIDATE_VIEW_COVERAGE`.
+Reports record `view_diagnostic` (0 appearance, 1 combined irradiance, 2 coverage,
+3 indirect, 4 sunlight). `VOXEL_GI_VALIDATE_MOTION_STATIC=1` keeps the camera
+stationary through the same capture schedule and background streaming, to
+separate ongoing refinement from motion-sensitive reconstruction. Reports record
+the actual `motion_turn_degrees`; the analysis uses that angle for reprojection.
+Component residuals cover the valid image overlap, including unchanged sky:
+the green-terrain mask is inappropriate for white/blue irradiance. Compare like
+components, not their means against textured-terrain means. Exact-view return
+and repeated-turned-view FLIP need no alignment; coverage colors are rejected as
+lighting evidence. Component runs are diagnostic, not normal-material timings.
+
 The `streaming` profile now detaches the camera from the character controller
 and replays the generator's spawn eye, a 180-degree turn at 15s and 64.8 voxels
 of absolute travel over the next 15s. It still streams normal/background terrain;

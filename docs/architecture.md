@@ -69,8 +69,11 @@ indexes a linked list of projected receivers and can borrow unused slots from
 anywhere in the view. A preparation dispatch validates old witnesses, retains
 surviving slots and completes the free list before discovery allocates from it.
 An index of the retained identities prevents a tile from recreating a face that
-is already represented elsewhere. New keys are indexed only after initialization
-finishes; no workgroup spins on another group's partially published data.
+is already represented elsewhere. Preparation inserts only canonical previous
+owners: their keys are unique, so CAS insertion does not need to inspect any
+concurrently initialized current receiver. Discovery reads this index after the
+preparation dispatch completes. Newly allocated keys are indexed only after
+discovery finishes; no workgroup spins on another group's partially published data.
 
 Discovery retains useful coarse coverage and scans full-resolution footprints
 for missing planes under the same world-distance gate as presentation. There is

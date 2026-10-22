@@ -548,3 +548,78 @@ Clippy passes with warnings denied. Logs: `target/pool-history-native.log`,
 `target/pool-batch.log`, `target/pool-final-{layout,pipelines,clippy}.log` and
 `target/pool-material.log`. `cargo build --release --locked --offline` passes
 with 33 existing unused/dead-code warnings (`target/pool-final-release.log`).
+
+### Follow-up discovery experiments and motion diagnosis (2026-10-22)
+
+Keep the shared-pool baseline at `3e8eb1c`. Focused experiments did not close the
+moving-cost gap, so neither changed scheduling nor wider workgroups is promoted:
+
+| Candidate | Mean moving discovery | Decision |
+| --- | ---: | --- |
+| `3e8eb1c` control | .9619 ms | Tested pool baseline |
+| Lane frontier, `c2ca08d` | .9695 ms | Reject; no gain |
+| Coarse-cell repair masks, `d5f34cc` | .9470 ms | Unpromoted; too little gain for changed scheduling |
+| Fused retained indexing, `52b7390` | .9486 ms | Keep redundant-dispatch removal; no measured speedup claim |
+| Fused indexing with 64 discovery lanes | 1.0333 ms | Reject; retain 32 lanes |
+
+All use M4/Metal 16 GB, dev, 2560x1440 offscreen, explicit
+`config/gi-view-cached.json`, deterministic `streaming` plus background terrain,
+480 receipts each in fully moving intervals ending 18–30s. The control omitted
+frame-timeline instrumentation; compare GPU discovery only. Control run is
+`streaming-1792698200872467000-47093` in the baseline worktree, candidates are
+`streaming-1792698303369975000-47334`, `streaming-1792698533984130000-47757`,
+`streaming-1792698777558887000-48136`, `streaming-1792698901359967000-48400`
+respectively. Each capture precedes its commit and has only the named candidate
+diff against `3e8eb1c`. The 64-lane follow-up adds the workgroup-size/loop-stride
+change to the fused-index diff; it was reverted. Logs are
+`target/frontier-{control,candidate}-streaming.log`, `target/cell-mask-streaming.log`,
+`target/fused-index-streaming.log` and `target/pool64-streaming.log`.
+
+The retained change folds indexing into preparation. Only canonical previous
+owners insert keys; no two such owners share an identity. CAS collision handling
+therefore needs no reads from current receivers while preparation writes them.
+The dispatch boundary publishes all receiver contents before discovery reads
+the index. One full-capacity dispatch is removed without changing discovery,
+receiver/ray capacity or presentation. Native grazing/crowded coverage,
+history/QMC preservation, single/MSAA pipelines and shader layout pass
+(`target/fused-index-{native,pipelines,shader}.log`).
+
+`57b4698` adds component-specific motion captures. Sunlight return/repeated-view
+mean FLIP is .0000191 / .0000051; indirect is .001482 / .001357. Those runs are
+`motion-1792699093629026000-48738` and `motion-1792699126994063000-48730`, with
+clean logs and valid, visually inspected offscreen captures. This isolates
+remaining same-view change primarily to indirect presentation in this workload;
+it does not yet distinguish refinement from camera-induced donor changes.
+Analysis: `target/motion-components-quality.json`.
+
+Stationary indirect control `motion-1792699242689033000-49141` uses `57b4698`
+plus the static-camera/report/analysis diff. Return/repeated mean FLIP is
+.001288 / .001254 versus .001482 / .001357 with turns. Much of the same-view
+change therefore continues without camera motion; do not attribute it all to
+discovery or missing faces. The aligned one-second stationary residual is
+.0000225 with zero pixels above .02, versus .000347 and 1837 pixels with the
+turn. The latter still includes silhouette/raster interpolation error and does
+not by itself prove a lighting bug. Sunlight's aligned residual also contains
+those edges despite its almost unchanged exact-view captures. These diagnostics
+do not establish a fix for all observed gameplay flicker or raw-path accuracy.
+
+Final coverage `motion-1792699276145770000-49335` has **1 / 3 / 1** unsupported
+pixels in base/turned/returned views, retaining the pooled coverage result.
+Normal motion `motion-1792699309512997000-49140` has return mean FLIP .000224
+(previous pool .000240) and aligned mean residual .007107 (previous .007111):
+no meaningful stability difference. Both use the same runtime and static-harness
+diff above, with ordinary turns enabled. All capture targets are valid/varied
+2560x1440, logs clean; normal, sunlight and indirect images were inspected.
+Logs `target/motion-component-{sun,indirect,static}.log`,
+`target/fused-index-{mask,motion}.log`; analysis
+`target/fused-final-motion-quality.json`. Normal material and transport settings
+remain unchanged. Production Clippy passes (`target/fused-final-clippy.log`).
+The static harness is committed as `1ab8810`. The final release build passes
+with the same 33 existing unused/dead-code warnings (`target/fused-final-release.log`).
+This follow-up remains on `codex/view-pool-index-fusion`; the tested shared-pool
+baseline and original two-way-cache branch are unchanged.
+
+The next diagnostic target is indirect refinement/reconstruction, with component
+captures and a stationary/background-streaming control. Do not add stronger
+smoothing based only on these small aggregate changes; first reproduce the
+visibly objectionable changes and separate raw estimates from reconstruction.
