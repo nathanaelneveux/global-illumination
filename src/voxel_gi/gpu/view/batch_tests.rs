@@ -71,6 +71,7 @@ fn native_view_batches_preserve_raw_prefixes_and_pending_tails() {
                     (2, 0) => &camera.control.buffer,
                     (2, 5) => &history.estimates.buffer,
                     (2, 10) => &camera.queue.buffer,
+                    (2, 16) => &scene.buffers[6], // exchange disabled in this raw-path control
                     _ => panic!("unexpected trace binding"),
                 };
                 BindGroupEntry { binding, resource: buffer.as_entire_binding() }

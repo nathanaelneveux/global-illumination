@@ -185,6 +185,7 @@ fn reproject_paths(@builtin(global_invocation_id) id: vec3<u32>) {
     estimates[id.x] = estimate;
     let entry = atomicAdd(&queue[0], 1u);
     atomicStore(&queue[12u + entry], id.x);
+    atomicStore(&queue[12u + view.grid.z + id.x], entry);
 }
 
 @compute @workgroup_size(64)
@@ -198,6 +199,12 @@ fn trace_visible_paths(@builtin(global_invocation_id) id: vec3<u32>) {
     // Hybrid keeps its existing one-visit policy. Neither policy truncates a
     // path or publishes its partial energy as a complete measurement.
     let visits = min(select(1u, 32u, view.history.w != 0u), (wave.range.y - id.x + count - 1u) / count);
+    let reserved_sequence = view.cache.z != 0u && view.cache.x == cache_guard[0] && estimates[index].identity.w != 0u;
+    // Cache admission reserved this dispatch's sequence range before tracing.
+    // An older unfinished path keeps its own sequence while background work
+    // is free to consume later, disjoint ranges.
+    var next = atomicLoad(&queue[12u + view.grid.z + index]);
+    if continuations[index].status != 1u { next += 1u; }
     for (var visit = 0u; visit < visits; visit++) {
         atomicAdd(&queue[9], 1u);
         advance_view_path(index);
@@ -207,7 +214,10 @@ fn trace_visible_paths(@builtin(global_invocation_id) id: vec3<u32>) {
         var estimate = estimates[index];
         // Unknown is not black. Advance every attempted sequence, including
         // rejected paths; the next visit may begin immediately in this pass.
-        estimate.identity.x += 1u;
+        if reserved_sequence {
+            estimate.identity.x = next;
+            next += 1u;
+        } else { estimate.identity.x += 1u; }
         receivers[index].sequence = estimate.identity.x;
         if paths[index].known != 0u {
             atomicAdd(&queue[3], 1u);
@@ -224,6 +234,15 @@ fn trace_visible_paths(@builtin(global_invocation_id) id: vec3<u32>) {
             estimate.moment = vec4(mix(estimate.moment.rgb, value * value, 1.0 / count), estimate.moment.w);
         }
         estimates[index] = estimate;
+    }
+    if reserved_sequence {
+        // Unfinished work owns its current index. A completed path's successor
+        // is not owned until started. Return only the unstarted suffix, without
+        // rewinding past ranges already consumed by the background scheduler.
+        let first = atomicLoad(&queue[12u + view.grid.z + index]);
+        let used = select(estimates[index].identity.x, paths[index].sequence + 1u,
+            continuations[index].status == 1u);
+        atomicStore(&queue[12u + view.grid.z + index], max(first, used));
     }
 }
 

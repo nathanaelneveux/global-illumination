@@ -59,10 +59,26 @@ fn load_shared_faces(@builtin(global_invocation_id) id: vec3<u32>) {
         estimate.shown = select(vec4(estimate.mean.rgb, 1.0), shown, shown.w > 0.0);
     }
     estimate.identity.w = incarnation;
+    let pending = continuations[id.x].status == 1u;
+    let owner_count = atomicLoad(&queue[0]);
+    let rank = atomicLoad(&queue[12u + view.grid.z + id.x]);
+    let ordinal = (rank + owner_count - wave.range.x % max(owner_count, 1u)) % max(owner_count, 1u);
+    var visits = 0u;
+    if ordinal < min(owner_count, wave.range.y) && wave.range.z > 0u {
+        visits = min(select(1u, 32u, view.history.w != 0u),
+            (wave.range.y - ordinal + owner_count - 1u) / owner_count);
+    }
+    let first = max(next, estimate.identity.x);
+    // Reserve attempts, not completed energy. A pending tail already owns its
+    // original sequence. Trace/store release the unstarted suffix in this same
+    // command buffer, before another scheduler can consume the cursor. Keeping
+    // it would skip QMC indices according to path length and bias the prefix.
+    let starts = visits - select(0u, 1u, pending && visits > 0u);
+    shared_state[base + 1u].z = first + starts;
+    atomicStore(&queue[12u + view.grid.z + id.x], first);
+    estimate.identity.x = select(first, paths[id.x].sequence, pending);
     estimates[id.x] = estimate;
     receivers[id.x].sequence = estimate.identity.x;
-    // An unfinished view path is speculative until completion. If background
-    // work advanced this face, advance_view_path restarts at its new sequence.
 }
 
 @compute @workgroup_size(64)
@@ -76,14 +92,14 @@ fn store_shared_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     let base = slot * 9u;
     if estimate.identity.w != shared_state[base + 7u].x { return; }
     let count = u32(estimate.mean.w);
-    let advanced = shared_state[base + 1u].z != estimate.identity.x;
     let changed_count = (shared_state[base + 1u].y & 0x7fffffffu) != count;
+    let changed_mean = any(shared_state[base].rgb != bitcast<vec3<u32>>(estimate.mean.rgb));
     shared_state[base] = vec4(bitcast<vec3<u32>>(estimate.mean.rgb), 0u);
     shared_state[base + 2u] = vec4(bitcast<vec3<u32>>(estimate.moment.rgb), 0u);
     shared_state[base + 1u].x = 0u;
     shared_state[base + 3u].x = 0u;
     shared_state[base + 1u].y = count | select(0u, 0x80000000u, estimate.moment.w > 0.0);
-    shared_state[base + 1u].z = estimate.identity.x;
+    shared_state[base + 1u].z = atomicLoad(&queue[12u + view.grid.z + id.x]);
     shared_meta[slot * 3u + 1u].x = bitcast<u32>(estimate.moment.w);
     // The presentation prior can contain borrowed support, but never enters
     // raw mean/moments or the physical count read by cached_energy.
@@ -94,11 +110,10 @@ fn store_shared_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     shared_state[base + 3u].w = bitcast<u32>(estimate.shown.w);
     // Refresh the scheduler's compact rank, not CPU mirror data. No extra
     // readback is introduced by visible sampling.
-    if advanced || changed_count {
+    if changed_mean || changed_count {
         let noise = sqrt(max(estimate.moment.rgb - estimate.mean.rgb * estimate.mean.rgb, vec3(0.0)))
             / (vec3(0.002) + abs(estimate.mean.rgb));
-        let at = select(shared_meta[slot * 3u + 2u].y, view.cache.y, advanced);
-        shared_meta[slot * 3u + 2u] = vec4(bitcast<u32>(max(noise.x, max(noise.y, noise.z))), at,
+        shared_meta[slot * 3u + 2u] = vec4(bitcast<u32>(max(noise.x, max(noise.y, noise.z))), view.cache.y,
             bitcast<u32>(max(estimate.mean.x, max(estimate.mean.y, estimate.mean.z))), 0xa0000000u | count);
     }
 }
