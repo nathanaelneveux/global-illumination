@@ -14,7 +14,7 @@ identities and paths live in a bounded view cache, discovered from depth/normals
 ## Start here
 
 - [Architecture](docs/architecture.md): data model, estimator, ownership,
-  invalidation, presentation, simulation API, and integration limits.
+  invalidation, presentation, simulation separation, and integration limits.
 - [Structures experiment](docs/structures.md): shared templates, placements,
   chunk-local generation, and the nearby cave route.
 - [Research and decisions](docs/research.md): what we adopted, what differs from
@@ -53,17 +53,20 @@ all-near control. See [runtime evidence](docs/history/far-view-runtime.md).
 
 Experimental view-first controls are available without changing that default:
 `VOXEL_GI_SETTINGS=config/gi-view-cached.json cargo run --locked` puts all visible
-RGB on the view tier and keeps a 32-voxel bounce cache;
+RGB on the view tier and keeps a 32-voxel bounce cache with two-way face-history
+handoff (`view_cache_exchange`);
 `config/gi-view-cacheless.json` removes that cache. The
 [comparison and limitations](docs/history/view-first-transport.md) include cave,
 house turns, emitter response and memory. These are not promoted defaults;
-first-reveal history and windowed frame pacing still need qualification.
+the [two-way cache qualification](docs/history/two-way-cache.md) substantially
+improves reveal/return history. Windowed frame pacing still needs qualification.
 
-The default uses GPU-resident accumulation with asynchronous simulation snapshots
-and RGB-prioritized emitter sampling (RGB importance 1, IR/radiation 0.125).
-Near receivers keep all five unfiltered physical estimates; simulation bands
-may be noisier. `config/gi-equal-band.json` selects equal-band importance.
-Explicit values in settings files remain respected.
+GI is a client visual system, not the heat/radiation simulation. Emitter sampling
+and roulette prioritize RGB (nonvisual importance is zero). Legacy multi-band
+records and the `config/gi-equal-band.json` research control remain, but there is
+no gameplay simulation-query API. Shared view/cache history is RGB-only. A future
+CPU-capable authoritative simulation will own heat/radiation and publish material
+changes back to the visual world; see [the split](docs/direction.md).
 
 With surface-cache transport, a path that hits a measured face ends there
 with that face's cached energy, which gives infinite bounces. See

@@ -1,15 +1,16 @@
 # Validation and regression tracking
 
 Use the smallest check that answers the current question. The purpose is faster,
-stable gameplay and useful simulation measurements, not maximizing test minutes.
+stable gameplay, not maximizing test minutes. GI owns visual RGB; heat/radiation
+are a separate future simulation, not a GPU lighting delivery contract.
 The full suite is an integration checkpoint, not the default for every tweak.
 
 For resident transport, distinguish `snapshot_latency_ms` (submission to CPU
 delivery) from worker occupancy and GPU timestamps. It is not a blocking wait.
 Temporal corner diagnostics must use `validation_snapshot`; resident display
-does not refresh the old CPU upload mirror. Simulation accuracy is not gated by
-RGB FLIP: check five-band energy/PDF correctness and measurement freshness, and
-report nonvisual sampling importance separately.
+does not refresh the old CPU upload mirror. Historical multi-band research
+controls still check energy/PDF correctness, with nonvisual importance reported
+separately; RGB FLIP does not qualify those bands for simulation.
 
 Normal runs now use nonvisual importance 0 (display-only GI), independently of backend.
 Use `VOXEL_GI_SETTINGS=config/gi-equal-band.json` to reproduce the historical
@@ -159,6 +160,25 @@ runtime entry points and both single/multisample prepasses. Use the same
 movement/edit qualification. CPU field diagnostics cover near receivers only;
 they cannot establish far-image stability. Far timing logs report raw owners,
 known completions, history, pending tails and display coverage separately.
+
+For the opt-in `view_cache_exchange`, run `native_two_way_cache` with
+`--ignored --test-threads=1 --nocapture`. It checks raw transfers (not summed
+histories), alternating worker/view sequences, unfinished tails, stale-generation
+write rejection, edit retention, and an analytic furnace without reconstruction.
+The furnace also asserts that unused reservations do not skip QMC indices based
+on path length. `native_view_batches_preserve_raw_prefixes_and_pending_tails`
+keeps the exchange-disabled frontend's batching behavior covered.
+
+Rendered exchange checks use background loading and the same +cache settings on
+both commits: `house` for reveal/return, `response` for offscreen emitter edits,
+and `cave` for sustained many-emitter lighting. Set
+`VOXEL_GI_VALIDATE_CACHE_HANDOFF=1` with `hallway` to move an already-visible
+source wall into the resident radius and back while preserving its view identity.
+`tools/view_cache_quality.py PROFILE BASELINE_RUN CANDIDATE_RUN OUTPUT_DIRECTORY`
+compares actual captures, validates offscreen target dimensions/nonblankness, and
+produces paired images. Its early-to-own-later FLIP measures remaining visible
+change, not reference accuracy; final cross-run differences are separate. It
+does not establish interactive FPS. See [two-way results](history/two-way-cache.md).
 
 For shared-kernel refactors, `shader_candidate_benchmark` accepts a fully
 composed baseline WGSL via `VOXEL_GI_BASELINE_SHADER`. It checks five-band moment

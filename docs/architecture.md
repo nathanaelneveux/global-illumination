@@ -29,8 +29,8 @@ host chunks / edits / sources / material table
                                           connected virtual-corner reconstruction
 ```
 
-The synchronous GPU control and independent CPU reference retain CPU-owned
-accumulation. The default resident path does not wait for CPU delivery to render.
+The runtime uses resident GPU accumulation; the independent CPU tracer remains
+a test oracle. Rendering does not wait for CPU delivery of lighting statistics.
 
 | Responsibility | Owner / source |
 | --- | --- |
@@ -47,6 +47,7 @@ accumulation. The default resident path does not wait for CPU delivery to render
 | Sampling, emitters and transport | `sampling.rs`, `emission.rs`, `tracer.rs`, `gpu.rs`, shared `voxel_path.wgsl`, face consumer `voxel_trace.wgsl` |
 | Surface-cache face lookup | `gpu/face_index.rs` |
 | View-owned far receivers, scheduling and asynchronous timing | `gpu/view/runtime.rs`, `gpu/view/timing.rs`, `voxel_view_runtime.wgsl` |
+| Experimental bidirectional RGB face ownership | `voxel_view_cache.wgsl`, `gpu/view/cache_tests.rs` |
 | Stable GPU ownership, accumulation and bounded snapshots | `gpu/resident.rs`, `gpu/readback.rs`, `voxel_accumulate.wgsl` |
 | Shared uncertainty heuristic | `statistics.rs` |
 | Direct-sun visibility cache | `sky.rs`, `sky_cache.rs` |
@@ -91,12 +92,64 @@ looked up per fragment so a subpixel emitter does not disappear.
 Per-camera state stays on the GPU. The material reads a shared output scratch
 buffer overwritten in camera encoder order, with validity cleared before each
 camera. Immutable optical-table generations and coherent geometry/cache buffer
-pairs are shared with the worker. Only 160-byte asynchronous timestamp/counter
+pairs are shared with the worker. Only 192-byte asynchronous timestamp/counter
 receipts return to the CPU; callbacks are polled without waiting. Far receives
 25% of the existing transport time share and near the rest. Prepass, discovery,
 corner sunlight and reconstruction are separately measured presentation costs,
-not hidden in the transport quota. Current view state is about 48.5 MiB at
+not hidden in the transport quota. Current view state is about 48.75 MiB at
 2560x1440; it is bounded by viewport capacity, not loaded world size.
+
+### Experimental two-way face cache
+
+`config/gi-view-cached.json` chooses view-owned display everywhere and a small
+persistent world cache (32-voxel admission radius, 32-voxel retirement hysteresis).
+Its `view_cache_exchange` flag adds exact-face exchange; it does not change the
+hybrid default, expand residency, or share paths between different faces.
+
+A resident `(voxel, face, material, incarnation)` record is the single raw RGB
+authority. Before view tracing, a matching visible owner loads that record.
+On first admission only, a better-supported valid view estimate can replace a
+cold resident estimate. Their weights are never added: the two histories can
+contain the same path prefix. Once admitted, the resident value wins even when
+an edit has reduced its weight. After tracing, the view writes updated raw
+mean, second moment and physical count back to the same record. The next worker
+dispatch or newly revealed view therefore resumes the shared history.
+An independent unfinished view attempt is discarded when importing a different
+authority's prefix: it may duplicate that prefix and owns no reservation there.
+This is distinct from preserving already-admitted tails across background work.
+
+The display value is copied separately as a warm-start prior. Reconstructed
+neighbour support never enters raw moments or the physical count, and only raw
+energy can terminate a secondary ray. Presentation-only copies do not refresh
+scheduler ranks or measurement freshness. Pending change estimates continue to
+exclude stale raw values from bounce termination until measured.
+
+Both schedulers consume one advancing sample sequence. A view reserves its
+dispatch's potential new attempts; an unfinished path keeps its original index
+while background work consumes later indices. Trace/store return the unstarted
+reservation suffix before the command buffer ends. Keeping unused indices
+would introduce path-length-dependent gaps into the low-discrepancy sequence;
+restarting unfinished paths would preferentially discard long contributions.
+Only complete, known paths increase the sample count. The reservation scratch
+adds at most 256 KiB per camera, not another persistent face-history allocation.
+
+Load, trace and store are separate passes in one command buffer on the shared
+GPU queue: no pass reads bounce data while writing it. Worker maintenance
+revokes a small GPU epoch guard before changing geometry, material identity,
+retention or slot allocations. Held render descriptors cannot write afterward;
+new descriptors become available after maintenance submission. A temporary stale
+descriptor preserves its admission provenance so it cannot resurrect pre-edit
+history when current bindings arrive. Genuine eviction clears that provenance.
+The shared mode uses GPU retention as authority, not CPU checkpoint rollback,
+which could overwrite newer view samples. Ordinary nonshared rollback is unchanged.
+
+There is no new lighting readback, CPU merge, or player-thread wait. Existing
+asynchronous timing receipts include exchange cost and load/admission counters.
+Cacheless faces retain the existing bounded, visibility-dependent view history.
+This does not promise persistent lighting for all distant/offscreen surfaces.
+Native tests in `gpu/view/cache_tests.rs` cover ownership, retention, generations,
+sequence allocation and analytic RGB energy; rendered qualification is recorded
+in [the experiment](history/two-way-cache.md).
 
 ## Geometry and traversal
 
@@ -295,8 +348,9 @@ grazing light samples; this is regression-covered by an analytic emitting plane.
 This follows the endpoint construction in
 [PBRT's ray spawning](https://pbr-book.org/4ed/Shapes/Managing_Rounding_Error#SpawnRayTo),
 while retaining our voxel-scale epsilon, not PBRT's full interval error bounds.
-Source weights include all five scalar channels:
-R, G, B, infrared and ionizing. The tree shares the emitter storage binding,
+Source weighting is RGB-only by default. The legacy importance setting can
+include infrared/ionizing for research controls, not gameplay simulation.
+The tree shares the emitter storage binding,
 adds 64 bytes per node and rebuilds with the worker's emitter snapshot; there is
 no per-receiver allocation or incremental tree refit. See the
 [many-emitter results and tradeoffs](history/research-2026-10-09.md#spatial-light-hierarchy).
@@ -316,7 +370,7 @@ or dose to those values. The environment gradient uses world Y; it must become a
 host-defined directional environment before a planet-local-up integration.
 
 Ordinary Bevy direct RGB stays in PBR (or the explicit cached-sun override).
-Face-center direct energy is still measured for simulations, and direct lighting
+Face-center direct energy supports edit-flux measurement, and direct lighting
 is evaluated at bounce hits. Indirect RGB, custom-emitter direct RGB and voxel
 self-emission are added without duplicating ordinary Bevy direct illumination.
 “Sky” in the code can mean two different things: deterministic direct sunlight,
@@ -783,7 +837,7 @@ is allocated capacity, not current occupancy.
 
 Buffers and indices retain high-water capacity. GPU geometry is persistent and
 patched; ordinary lighting updates do not rebuild geometry or the entire display
-hash. Display disabled with F4 is only an A/B presentation switch: simulation
+hash. Display disabled with F4 is only an A/B presentation switch: lighting
 transport intentionally continues.
 
 ## Simulation and sources
@@ -798,10 +852,9 @@ response and emission; inputs are sanitized and reflectance is bounded to one.
 `VoxelGiEnvironment` makes the background energy host-configurable. Rendering
 never writes filtered RGB back into these measurements.
 
-### Resident measurements and asynchronous simulation delivery
+### Resident measurements and asynchronous scheduling feedback
 
-The default `Auto` / explicit `Resident` backend implements runtime GPU ownership, not only a
-fixed-slot prototype. Stable `(voxel, face)` slots own five-band means, second
+The runtime implements GPU ownership. Stable `(voxel, face)` slots retain legacy five-band means, second
 moments, direct energy, effective count, advancing sequence, and filtered display
 RGB. Slot incarnations separate allocation identity from scene freshness.
 Growth copies measurements; retirement is local to changed regions; recycling
@@ -824,33 +877,22 @@ source revisions. Sky jobs have generation/batch tickets, so overlapping work
 cannot publish superseded corners. The synchronous and CPU runtime backends
 were removed on the surface-cache branch; the CPU tracer remains a test oracle.
 
-Snapshots retain all five bands, sample/variance metadata and measurement ages,
-and distinguish unknown or stale results from valid zero energy. They currently
-accompany transport batches because the CPU scheduler needs their feedback. A
-separate demand/tick-based snapshot cadence is future work, not a prerequisite
-for rendering. There is no fixed simulation tick rate or delivery deadline.
+Snapshots accompany transport batches for CPU scheduling/progress and optional
+diagnostics. Their legacy layout still contains nonvisual values; these are not
+a simulation delivery contract. The former `estimate` API is removed. Heat and
+radiation belong to a separate future server-capable simulation, whose updates
+can change voxel materials and therefore their visible emission.
 
-Simulation is allowed to lag lighting. `estimate` returns the latest completed
-unfiltered measurement with age/currentness metadata; it never stalls the player
-to obtain the current render-frame value. Acceptable age, exposure integration,
-and material-state transitions belong to the future host simulation. Filtered
-display RGB never becomes simulation energy.
-
-RGB perceptual quality and simulation accuracy are separate requirements.
-`simulation_sampling_importance` changes emitter proposal weights, not emitted
-energy: RGB has weight one and IR/ionizing have a configurable positive weight.
-The default nonvisual weight is 0.125 on every backend, independently of path
-reuse; one restores equal-band proposals. This is a proposal preference, not an
-eight-to-one allocation of rays or a change to the five-band transport model.
-CPU and GPU MIS use the same weighted power. Nonzero support preserves physical
-expectation, while lower simulation importance can increase its sampling noise.
-Proposal-cache changes preserve valid lighting history. Display confidence and
-smoothing remain RGB-only; the current conservative sleep heuristic still checks
-all bands. Demand-specific simulation tolerances/ticks remain future host work.
+`simulation_sampling_importance` is a legacy research control: zero by default,
+one for equal-band proposals. RGB perceptual qualification does not establish
+nonvisual accuracy. Shared view/cache writes retain only RGB measurements and
+clear unused nonvisual statistics. The old world scheduler still has multi-band
+stability machinery; removing it requires the separate recalibration described
+in [direction](direction.md), not an unmeasured threshold change in the handoff.
 
 The resident record is 144 bytes per allocated face (including a 16-byte
-render-transition record), plus the CPU scheduling/
-simulation snapshot and ownership index. Render probes grow from 208 to 256 bytes
+render-transition record), plus the CPU scheduling snapshot and ownership index.
+Render probes grow from 208 to 256 bytes
 to carry six addresses. These are deliberate memory costs, not a claim that GPU
 residency removes CPU memory. Debug temporal diagnostics reconstruct from the
 latest completed resident presentation snapshot; the old CPU upload mirror only

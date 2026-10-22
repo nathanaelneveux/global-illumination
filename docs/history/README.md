@@ -1,14 +1,19 @@
 # Historical studies
 
-These records measured the explicit three-bounce estimator and the history,
-sampling and presentation policies built around it before the surface cache
-([surface cache](../surface-cache.md)). They stay for their evidence and
-rejected alternatives. They describe superseded defaults: for the current design
+These records preserve experiment evidence and rejected alternatives. Many
+older studies measured the explicit three-bounce estimator before the
+[surface cache](../surface-cache.md); newer records qualify the current transport
+and view/cache architecture. A study's defaults apply to its recorded commit,
+not necessarily today's runtime. For the current design
 read [architecture](../architecture.md), [validation](../validation.md) and
 [research decisions](../research.md).
 
 Notable records:
 
+- [Two-way face cache](two-way-cache.md): shared RGB history between visible
+  sampling and a small persistent cache, with rendered and analytic gates.
+- [View-first transport](view-first-transport.md): hybrid, +cache and cacheless
+  comparison before two-way history exchange.
 - [Hallway outliers](hallway-path-outliers.md): heavy-tailed sparse-hallway
   paths, roulette and the guiding experiment (removed).
 - [Path reuse](resident-path-reuse.md): fresh spatial path sharing (removed).

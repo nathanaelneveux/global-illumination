@@ -2,14 +2,19 @@
 
 Decided with the user on 2026-10-21, while moving the base spec from an M4 Mac
 mini to the MacBook Neo (A18 Pro: 5-core GPU, 8 GB shared memory, 60 GB/s) and
-the A19 Apple TV (same class). This is the plan, not the current
-implementation; [architecture](architecture.md) describes what exists.
+the A19 Apple TV (same class). This records the motivation and staged plan;
+[architecture](architecture.md) describes what exists. Bounded world residency
+and view-driven far lighting are now playable. The subsequent
+[view-first experiment](history/view-first-transport.md) moves visible ownership
+entirely to the view tier; its [two-way cache](history/two-way-cache.md) shares
+exact-face history with a small persistent cache. Neither replaces the hybrid
+default yet.
 
 ## Why change
 
-GI today keeps a world-space lighting cache for every exposed face in the
-loaded world. Memory and the fixed per-batch GPU cost (ranking ~800k slots,
-applying events) scale with world size, not with what is on screen.
+At the start of this work, GI kept a world-space lighting cache for every exposed
+face in the loaded world. Memory and the fixed per-batch GPU cost (ranking ~800k slots,
+applying events) scaled with world size, not with what was on screen.
 
 Per-face sizes: ~240 B of GPU state (state 144 + metadata 48 + rollback
 checkpoint 48), a 936 B CPU `SurfaceProbe` and a 256 B display probe per

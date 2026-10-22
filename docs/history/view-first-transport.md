@@ -1,5 +1,9 @@
 # View-first receiver experiment
 
+Follow-up: [two-way cache exchange](two-way-cache.md) tests persistent exact-face
+history for the cached candidate. The evidence below predates that exchange;
+its cold-reveal limitation describes this original one-way implementation.
+
 Baseline: `9e52b7a` on `gi-far-view-transport`, preserved in the managed
 `view-first-baseline` worktree. This branch keeps the hybrid default unchanged.
 

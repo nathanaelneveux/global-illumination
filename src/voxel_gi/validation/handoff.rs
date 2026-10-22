@@ -5,8 +5,7 @@
 use super::*;
 
 pub(super) fn enabled(profile: Profile) -> bool {
-    profile == Profile::Hallway
-        && std::env::var_os("VOXEL_GI_VALIDATE_CACHE_HANDOFF").is_some()
+    profile == Profile::Hallway && std::env::var_os("VOXEL_GI_VALIDATE_CACHE_HANDOFF").is_some()
 }
 
 pub(super) const CAPTURES: &[(f32, &str)] = &[
@@ -26,7 +25,11 @@ pub(super) fn tick(
     cameras: &Query<Entity, With<Camera3d>>,
     transforms: &mut Query<&mut Transform, Without<Player>>,
 ) {
-    let x = if (30.0..40.0).contains(&elapsed) { -85.0 } else { -55.0 };
+    let x = if (30.0..40.0).contains(&elapsed) {
+        -85.0
+    } else {
+        -55.0
+    };
     let eye = Vec3::new(x, -8.5, -19.5);
     player.translation = eye - Vec3::Y * 1.62;
     for camera in cameras {
