@@ -623,3 +623,37 @@ The next diagnostic target is indirect refinement/reconstruction, with component
 captures and a stationary/background-streaming control. Do not add stronger
 smoothing based only on these small aggregate changes; first reproduce the
 visibly objectionable changes and separate raw estimates from reconstruction.
+
+### Persistent camera-angle shadow report (2026-10-22)
+
+The user narrowed the remaining symptom to mostly up-facing, partially shadowed
+faces. They can stay fully dark indefinitely at one angle and change after a
+tiny pan. This reopens view-dependent lookup/coverage, including sunlight:
+returning to an identical view cannot detect a deterministic wrong lookup.
+Do not interpret the earlier same-view results as clearing sunlight during turns.
+
+`e3f2931` adds capture-only `sun-reference`, tracing the displayed face's own
+canonical corners instead of using the view cache's copied corner values. Normal
+shading, discovery and transport are unchanged. Code inspection found a plausible
+mechanism: a missing exact face may borrow sunlight from coplanar donors up to
+16 voxels away, clamping target coordinates to each donor's corners. Shared plane
+identity does not imply shared shadow visibility. This is not yet established as
+the cause of the user's persistent dark patches.
+
+On that exact clean commit, M4/Metal 16 GB, dev, 2560x1440 offscreen, motion plus
+background terrain and `config/gi-view-cached.json`, compare cached sunlight
+`motion-1792709609340745000-53564` with exact corner reference
+`motion-1792709648944147000-53776`. Both completed with six valid, varied captures
+and clean render logs. Base/turned/returned cross-run mean FLIP was
+.000711/.000679/.000701. At the returned view, only 22 pixels were darker than
+reference by >.1 display luminance; 235 were brighter by >.1. Visual inspection
+shows small edge differences, not a reproduction of large persistent black top
+faces. This mostly open spawn view is insufficient to qualify the reported bug.
+The reference traces per fragment and is deliberately expensive; its cadence
+and indirect history are not gameplay performance/transport evidence.
+
+Logs: `target/shadow-lookup-{control,reference}.log`; paired images and amplified
+signed error maps: `target/shadow-lookup-{base-1,turned-1,returned}{,-error}.png`.
+Diagnostic selection and full Bevy material composition tests passed (one each):
+`target/shadow-{diagnostic,material}-test.log`. No shading fix or smoothing change
+is promoted. Reproduce the reported location/angle before choosing a remedy.
