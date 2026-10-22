@@ -310,3 +310,95 @@ quality evidence. Native tests cover witness reuse, thin orientations, bounded
 discovery, raster-only geometry and disappearance from the prepass. Native
 coverage/pipelines and production Clippy pass after the vacant-centre change
 (`target/moving-{native,pipelines,clippy}.log`).
+
+### Moving reuse qualification and raster lookup (2026-10-22)
+
+The final moving-discovery implementation is `fa6d562`. `7b95fc8` adds interval
+averages of all existing timestamp receipts; it does not change scheduling or
+add GPU trips. This supersedes the sparse last-receipt estimate above. The
+`3bf0790` motion-analysis tool separates visible raster coverage, exact-return
+stability and an analytically aligned small-turn residual from raw accuracy.
+
+The material lookup now uses actual world-space donor distances, not screen
+slot distances: discovery can relocate a representative within its tile, and
+that slot is not the sample location. An empty ordinary 4x4 lookup searches one
+additional ring (6x6 total), with unchanged orientation, plane and 16-voxel
+distance gates. This is presentation only; raw estimates and path budgets are
+unchanged. It reduces missing support but does not guarantee every visible face
+is represented. Four local receiver slots remain a capacity constraint.
+
+Two broader approaches were rejected, not silently promoted:
+
+- `codex/wider-view-discovery` / `a78627f` shares nine slots across 3x3 cells.
+  It reduces missing turned-view pixels from 3470 to 1966, but moving discovery
+  rises from 1.087 to 1.242 ms in the sparse-receipt comparison; a parallel-mask
+  variant costs 1.424 ms. Native stepped-plane coverage passes. This branch is
+  retained for future allocation work, not merged.
+- Expanding empty raster lookups to 10x10 reduces missing pixels to 2677, but
+  process footprint rises: streaming peak 910 -> 1068 MB and cave 973 -> 1426 MB.
+  Returning to 6x6 restores streaming peak to 910 MB. The increase is much larger
+  than discovery's extra 512 KiB of metadata; its exact Metal allocation cause
+  is not established. The additional coverage does not justify retaining it.
+
+Coverage control: `motion-1792691700830776000-36865` in the baseline worktree.
+The retained 6x6 footprint gives 2969 unsupported turned-view pixels versus 3470
+(14.4% fewer), from `motion-1792692929602136000-39048`. The later world-weight
+correction changes values, not the geometry-validity mask. The rejected 10x10
+mask is `motion-1792693053415036000-39466`; its normal motion run is
+`motion-1792693344792483000-40100`. That run's aligned luminance residual is
+essentially unchanged from the control (.007118 versus .007123), so neither
+the fewer holes nor reprojection is claimed to solve overall distant flicker.
+Zero-angle self-alignment returns no pixels above .02 luminance residual.
+
+Final performance pair: baseline `a3ee4e4` in the baseline worktree retains
+`3b10c1b` discovery plus identical harness/timing instrumentation; candidate is
+`7b95fc8` plus this section's one-ring/world-weight material diff (the intervening
+`3bf0790` changes only tools/docs). Same M4/Metal, 16 GB, development profile,
+2560x1440 offscreen, explicit `config/gi-view-cached.json`, background loading,
+corner look and 1024-evidence reconstruction. Frame timing is enabled in both.
+No other game/build/analysis ran during measured phases. Captures are valid and
+render logs clean.
+
+| Streaming, fully moving intervals ending 18–30s | Control | Retained candidate |
+| --- | ---: | ---: |
+| Discovery mean, 480 GPU receipts each | 1.0757 ms | .9070 ms |
+| Offscreen cadence p50 / p95 / p99 after 15s, capture frames excluded | 23.071 / 25.305 / 26.433 ms | 22.974 / 25.155 / 26.253 ms |
+| Peak process footprint | 910 MB | 913 MB |
+
+Moving discovery saves .169 ms / 15.7%. A preliminary repeat of the final material
+without CPU frame-timeline instrumentation measured .9404 ms / 479 GPU receipts
+and 910 MB; it is not used for cadence comparisons. The earlier 10x10 material
+measured .9131 ms / 480 receipts, but is rejected on memory above. These runs do
+not establish windowed interactive frame pacing. Receiver count/ray allowance
+and raw estimator are unchanged; discovery metadata adds 512 KiB per 1440p view,
+not a new readback or CPU wait.
+
+Final streaming run IDs: control `streaming-1792693176004804000-39702`, candidate
+`streaming-1792694119128168000-41701`. Logs:
+`target/moving-control-streaming-mean.log` in the baseline worktree and
+`target/moving-final-ring1-streaming.log` here. The preliminary no-frame-timeline
+repeat is `streaming-1792693927407330000-41034` / `target/moving-memory-ring1.log`.
+
+Cave control `cave-1792693488227939000-40351` and final candidate
+`cave-1792694003150381000-41259` have clean, valid and visually inspected captures.
+Candidate frame-timeline instrumentation was omitted, so this is a quality/memory
+check, not a cave cadence comparison. Early-to-own-60s mean FLIP is .010288 ->
+.009624 at 15s and .006284 -> .005884 at 30s. Final cross-run mean FLIP is .003055,
+display luminance ratio .999969. Peak footprint is 973 -> 977 MB. These are
+presentation/stability comparisons, not raw transport accuracy or convergence.
+
+Final normal motion run `motion-1792694224792115000-41941` also has clean, valid
+and inspected captures. Exact-return mean FLIP is .000201 versus .000193 control;
+aligned mean absolute display-luminance residual is .007118 versus .007123.
+This confirms no meaningful overall motion-stability gain is established by
+the small-turn diagnostic yet; the narrower supported claim is fewer uncovered
+pixels and cheaper moving discovery. Detailed output is
+`target/moving-final-ring1-quality.json`.
+
+Native thin-face/moving-witness/disappearance and single/MSAA pipeline checks
+passed at the unchanged discovery checkpoint. Raw-prefix/pending-tail and full
+Bevy terrain-material composition checks passed; composition was rerun for the
+retained one-ring material (`target/moving-ring1-material.log`). Production
+Clippy passed on the unchanged Rust (`target/moving-clippy-final.log`).
+The final `cargo build --release --locked --offline` passes with the existing
+release-only unused/dead-code warnings (`target/moving-final-release.log`).

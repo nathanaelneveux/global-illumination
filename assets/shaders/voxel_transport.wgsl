@@ -137,34 +137,44 @@ fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>, sky:
     let surface = vec3<f32>(voxel) + 0.5 + normal * 0.5;
     var sum = vec3(0.0);
     var weight = 0.0;
-    for (var y = -1; y <= 2; y++) {
-        for (var x = -1; x <= 2; x++) {
-            let q = base + vec2(x, y);
-            if any(q < vec2(0)) || any(q >= vec2<i32>(far_view.shape.xy)) { continue; }
-            let donor = far_view.pixels[u32(q.y) * far_view.shape.x + u32(q.x)];
-            if donor.face >= 6u { continue; }
-            if !sky && donor.evidence == 0.0 { continue; }
-            if sky && any(donor.sky == vec4(0u)) { continue; }
-            if dot(vec3<f32>(FACE_NORMALS[donor.face]), normal) < 0.99 { continue; }
-            let delta = donor.surface - surface;
-            if abs(dot(delta, normal)) > 0.05 || dot(delta, delta) > 256.0 { continue; }
-            let d = vec2<f32>(q) - grid;
-            let w = 1.0 / (0.25 + dot(d, d));
-            var value = donor.irradiance;
-            if sky {
-                let voxel = floor(donor.surface - normal * 0.01);
-                let local = position - voxel;
-                var uv = local.yz;
-                if donor.face / 2u == 1u { uv = local.xz; }
-                else if donor.face / 2u == 2u { uv = local.xy; }
-                value = resolve_sky_corners(donor.sky, normal, uv).rgb;
-                // An exact face needs no screen-space blur: keep the same
-                // bilinear corner interpolation as the near material.
-                if all(abs(delta) < vec3(0.01)) { return vec4(value, 1.0); }
+    // Discovery may move a representative to another slot in its tile. Only
+    // when the ordinary footprint is empty, search one surrounding ring (6x6
+    // slots total). Stop as soon as valid geometric support is available.
+    // Every ring uses identical world-space distance and plane gates.
+    for (var ring = 0; ring <= 1; ring++) {
+        for (var y = -1 - ring; y <= 2 + ring; y++) {
+            for (var x = -1 - ring; x <= 2 + ring; x++) {
+                if ring != 0 && x >= -ring && x <= 1 + ring && y >= -ring && y <= 1 + ring { continue; }
+                let q = base + vec2(x, y);
+                if any(q < vec2(0)) || any(q >= vec2<i32>(far_view.shape.xy)) { continue; }
+                let donor = far_view.pixels[u32(q.y) * far_view.shape.x + u32(q.x)];
+                if donor.face >= 6u { continue; }
+                if !sky && donor.evidence == 0.0 { continue; }
+                if sky && any(donor.sky == vec4(0u)) { continue; }
+                if dot(vec3<f32>(FACE_NORMALS[donor.face]), normal) < 0.99 { continue; }
+                let delta = donor.surface - surface;
+                if abs(dot(delta, normal)) > 0.05 || dot(delta, delta) > 256.0 { continue; }
+                // Discovery redistributes representatives between grid slots.
+                // A slot is not the sample position: screen-slot weights change
+                // under camera motion even when receiver and donors do not.
+                let w = 1.0 / (0.25 + dot(delta, delta));
+                var value = donor.irradiance;
+                if sky {
+                    let voxel = floor(donor.surface - normal * 0.01);
+                    let local = position - voxel;
+                    var uv = local.yz;
+                    if donor.face / 2u == 1u { uv = local.xz; }
+                    else if donor.face / 2u == 2u { uv = local.xy; }
+                    value = resolve_sky_corners(donor.sky, normal, uv).rgb;
+                    // An exact face needs no screen-space blur: keep the same
+                    // bilinear corner interpolation as the near material.
+                    if all(abs(delta) < vec3(0.01)) { return vec4(value, 1.0); }
+                }
+                sum += value * w;
+                weight += w;
             }
-            sum += value * w;
-            weight += w;
         }
+        if weight > 0.0 { break; }
     }
     return vec4(sum / max(weight, 1e-8), select(0.0, 1.0, weight > 0.0));
 }

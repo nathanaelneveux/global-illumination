@@ -76,19 +76,22 @@ share one face owner. A ping-pong hash reprojects the exact same face, its raw
 mean/second moment, sequence, retained path and any unfinished continuation.
 No filtered image is ever treated as a new transport measurement.
 
-Discovery selection is now memoized separately from lighting. Moving cameras
-perform the full scan. With an identical camera, viewport, overlap radius and
-MSAA mode, tiles check their depth/normal footprint in four staggered phases.
-Unchanged tiles retain their exact previous receiver identities between checks;
-every retained receiver is still geometry-validated each frame. Missing transport
-geometry keeps the tile eligible for immediate rescanning, so a later upload
-cannot strand a raster-only face. Changed footprints rescan on their next check:
-at most three intervening frames for a newly exposed plane while the camera is
-still. A 64-frame periodic full scan bounds fingerprint-collision lifetime.
-World edits remain immediate; existing receivers' transport, sunlight, retention
-and presentation continue every frame. It does not jitter receivers
-in and out of the one-frame history. Per-camera metadata is 16 bytes per 2x2
-tile (512 KiB allocated at 1440p with buffer growth rounding); it stays on the GPU.
+Discovery selection is memoized separately from lighting. Each slot retains a
+face-local UNORM16x2 point that was actually visible; the voxel centre may be
+hidden on a partially occluded or grazing face. Camera motion projects that fixed
+world point and checks current depth, normal, voxel identity and geometry. Valid
+selections remain in the tile; lost witnesses trigger immediate discovery. Vacant
+centres check for newly exposed terrain. A viewport, overlap or MSAA change
+disables reuse. Static tiles additionally fingerprint their depth/normal footprint.
+Footprint searches are staggered over four frames, so a new thin plane can wait
+three intervening frames. Missing transport geometry forces retries independently
+of this cadence. Full scans preserve valid selections instead of reanchoring them
+at screen centres. A 64-frame refresh bounds fingerprint-collision lifetime.
+World edits and all existing receivers' lighting stages continue every frame.
+Per-camera metadata is 32 bytes per 2x2 tile (1 MiB allocated at 1440p with buffer
+growth rounding); it stays on the GPU. Four local slots remain a coverage limit,
+not a promise that all visible faces have an owner; use the raster coverage mask
+in validation rather than the selected-owner counter to measure those holes.
 
 Each owner advances one path at a time, at most three intersections per wave.
 Long paths remain pending; their partial energy is not published. Finishing
@@ -104,7 +107,12 @@ silently missing events. Near residency is driven only by active cameras;
 inactive terrain-loading cameras do not allocate lighting receivers.
 
 Display reconstruction borrows unique coplanar owners within a bounded screen
-and world radius; it does not alter raw moments. This is presentation smoothing,
+and world radius; it does not alter raw moments. Raster upsampling first searches
+4x4 slots and expands only an empty lookup to its surrounding ring (6x6). Both
+footprints retain the same coplanarity and 16-voxel distance gates. Donor weights use
+actual world-space positions, not reassigned screen-slot coordinates; camera
+motion alone cannot change those weights for a fixed receiver/donor set.
+This is presentation smoothing,
 not NAADF-style spatial path resampling. Sun visibility is evaluated at the
 same four canonical voxel corners as the near cache. Unrepresented coverage
 holes use those same corner rays, not a different shadow model. Emission is
@@ -118,7 +126,7 @@ receipts return to the CPU; callbacks are polled without waiting. Far receives
 25% of the existing transport time share and near the rest. Prepass, discovery,
 corner sunlight and reconstruction are separately measured presentation costs,
 not hidden in the transport quota. Current view state is about 48.75 MiB at
-2560x1440 before the 512-KiB discovery metadata; it is bounded by viewport
+2560x1440 before the 1-MiB discovery metadata; it is bounded by viewport
 capacity, not loaded world size.
 
 ### Experimental two-way face cache
