@@ -4,6 +4,7 @@ mod background;
 mod cave;
 mod day;
 mod host_timing;
+mod handoff;
 mod house;
 mod memory;
 mod metrics;
@@ -317,6 +318,9 @@ pub(super) fn run_validation(
                 }));
         }
         run.cave_camera_initialized = true;
+    }
+    if handoff::enabled(profile) {
+        handoff::tick(elapsed, player, &cameras, &mut lights);
     }
     if matches!(
         profile,
@@ -641,6 +645,7 @@ pub(super) fn run_validation(
             crate::scene_presets::ScenePreset::Terrain => "terrain",
         },
         "house_only_control": crate::structures::showcase::validation_house_only(),
+        "cache_handoff": handoff::enabled(run.profile),
         "background_terrain": {"enabled": crate::cave_scene::background_terrain_requested(),
             "moves": run.background.moves, "speed_voxels_per_second": 4.32,
             "note": "Inactive BVW loader walks from (-96,40,0) toward -Z. Does not render or alter GI view priority. Loaded terrain participates in transport."},

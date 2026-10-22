@@ -95,6 +95,7 @@ impl Profile {
     }
 
     pub fn captures(self) -> &'static [(f32, &'static str)] {
+        if super::handoff::enabled(self) { return super::handoff::CAPTURES; }
         if matches!(self, Self::LiveCave | Self::LiveHallway) {
             return &[(15., "live-15s"), (30., "live-30s"), (60., "live-60s"),
                 (120., "live-120s"), (180., "live-180s")];
