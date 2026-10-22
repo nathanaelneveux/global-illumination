@@ -80,6 +80,14 @@ removal capture the floor is still strongly orange, unlike hybrid/cached view.
 These are not qualified replacements. The following corner change addresses
 presentation only; it does not dismiss the cacheless response weakness.
 
+The first cacheless response comparison is **invalid as an architectural
+judgment**: inspection found scene publication pruning events by CPU world-cache
+pages. Cacheless therefore received changed geometry but no geometry-retention
+events. Publication now keeps the scene-derived affected domain for both
+receiver owners, including changed-sunlight events. Native regression covers
+scene publication through worker submission and GPU event bytes with no world
+pages, not just manually queued packets. No receiver allocations are recreated.
+
 Offscreen post-15s cadence p95 was 25.0–26.0 ms across the nine runs (including
 the harness's sleep); this is not windowed frame pacing. World-display CPU
 site metrics are unavailable in view-first and must not be reported as zeros

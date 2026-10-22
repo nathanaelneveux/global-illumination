@@ -478,14 +478,11 @@ pub(super) fn apply_trace_task(
         }
         runtime.sky_band.append(&mut result.sky_band);
     }
-    if let Some(mut change) = result.sunlight_change.take() {
+    if let Some(change) = result.sunlight_change.take() {
         // Even superseded results describe a possible change, so retain their
         // conservative evidence. They cannot publish stale sky display values.
-        // Jobs carry their *selection* stamp, leaving late evidence pending.
-        // A superseded worker must not recreate metadata for retired pages.
-        change
-            .nearby
-            .retain(|page, _| field.pages.contains_key(page));
+        // Events carry no page allocations: retired world pages must not
+        // suppress the same illumination change for view-owned receivers.
         runtime.spatial_history.record(change, &[]);
     }
     timing.record_gpu_batch(result.batch.as_ref().and_then(|batch| batch.gpu_ms));

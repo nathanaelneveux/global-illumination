@@ -89,9 +89,9 @@ pub(super) fn apply_scene_task(
         if let Some(mut change) = result.geometry_change.take() {
             advance_transport_revision(&mut runtime, &mut field);
             finalize_change_flux(&mut change, &runtime.sources);
-            change
-                .nearby
-                .retain(|page, _| field.pages.contains_key(page));
+            // The scene's occupied pages include view-owned receivers too.
+            // Filtering by world-cache residency drops edits outside that
+            // cache (all edits in cacheless mode). GPU consumers apply reach.
             // The GPU measures edits' flux and wakes the faces near player
             // edits whose history the change binds (no CPU statistics read).
             runtime.spatial_history.record(change, &result.exact_edits);

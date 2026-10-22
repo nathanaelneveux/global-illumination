@@ -189,6 +189,55 @@ fn retirements_survive_poll_only_and_empty_receiver_dispatch() {
     }
 }
 
+#[test]
+#[ignore = "native scene-to-view edit lifecycle without world receivers"]
+fn scene_edits_reach_view_history_without_world_cache_pages() {
+    use gi::geometry::{Bounds, ChangeKind, ChangeWeight, GeometryChange};
+    let device = super::tests::native_tracer().context;
+    let (scene, sources, _) = super::tests::open_floor_fixture();
+    let mut world = world(gi::VoxelGiRuntime { scene: scene.clone(), sources, ..default() }, default(), device);
+    world.resource_mut::<gi::VoxelGiSettings>().receiver_strategy =
+        gi::ReceiverStrategy::View { cache_radius: 0.0, cache_share: 0.0 };
+    let first = run_worker(&mut world);
+    let bounds = Bounds::point(IVec3::new(1, 4, 1));
+    let mut change = GeometryChange::from_bounds(&scene, &[bounds], gi::retention::INFLUENCE_RADIUS);
+    assert!(!change.nearby.is_empty(), "fixture has geometry for visible receivers");
+    change.weights.insert(bounds, ChangeWeight {
+        kind: ChangeKind::Edit { voxels: 1, measure: false }, flux: 2.0,
+    });
+    {
+        let mut runtime = world.resource_mut::<gi::VoxelGiRuntime>();
+        runtime.gpu_tracer = first.gpu_tracer;
+        runtime.emission_cache = first.emission_cache;
+        runtime.scene_task = Some(AsyncComputeTaskPool::get().spawn(async move {
+            gi::SceneBuildResult {
+                scene, changed: true, geometry_change: Some(change), pages: default(),
+                receivers_changed: false, exact_edits: vec![bounds.min],
+                build_time: std::time::Duration::ZERO,
+            }
+        }));
+    }
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        world.run_system_once(gi::publication::apply_scene_task).unwrap();
+        if world.resource::<gi::VoxelGiRuntime>().scene_task.is_none() { break; }
+        assert!(Instant::now() < deadline, "scene publication timed out");
+        std::thread::yield_now();
+    }
+    assert!(world.resource::<gi::VoxelEnergyField>().pages.is_empty());
+    assert!(world.resource::<gi::VoxelGiRuntime>().spatial_history.has_events(),
+        "view receivers must receive geometry events without any world-cache page");
+    let mut next = run_worker(&mut world);
+    let tracer = next.gpu_tracer.as_mut().unwrap();
+    let packets = tracer.take_view_changes();
+    assert_eq!(packets.len(), 1);
+    let words = read_words(&tracer.context, &packets[0].events, packets[0].events.size());
+    assert_eq!(&words[12..15], &[1, 4, 1]);
+    assert_eq!(words[19] & 7, 0, "no cache observations: use distance retention");
+    assert_ne!(words[19] & 8, 0, "player-edit identity survives publication");
+    assert!(next.bindings.is_empty(), "events must not recreate world receivers");
+}
+
 pub(super) fn read_words(context: &GpuTransportDevice, source: &Buffer, size: u64) -> Vec<u32> {
     let mut readback = UploadBuffer::new(
         &context.device,
