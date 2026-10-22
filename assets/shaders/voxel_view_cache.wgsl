@@ -40,6 +40,7 @@ fn load_shared_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     let incarnation = shared_state[base + 7u].x;
     let count = shared_state[base + 1u].y & 0x7fffffffu;
     let next = shared_state[base + 1u].z;
+    atomicAdd(&queue[10], 1u);
     // On first admission retain the better-supported valid estimate. Histories
     // may share path prefixes: do NOT sum their counts or mix them as independent
     // measurements. Once admitted, always load the resident authority, including
@@ -50,6 +51,7 @@ fn load_shared_faces(@builtin(global_invocation_id) id: vec3<u32>) {
             bitcast<f32>(shared_meta[slot * 3u + 1u].x));
         estimate.identity.x = next;
     } else {
+        atomicAdd(&queue[11], 1u);
         estimate.identity.x = max(estimate.identity.x, next);
     }
     if estimate.shown.w == 0.0 && count > 0u {
@@ -74,6 +76,8 @@ fn store_shared_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     let base = slot * 9u;
     if estimate.identity.w != shared_state[base + 7u].x { return; }
     let count = u32(estimate.mean.w);
+    let advanced = shared_state[base + 1u].z != estimate.identity.x;
+    let changed_count = (shared_state[base + 1u].y & 0x7fffffffu) != count;
     shared_state[base] = vec4(bitcast<vec3<u32>>(estimate.mean.rgb), 0u);
     shared_state[base + 2u] = vec4(bitcast<vec3<u32>>(estimate.moment.rgb), 0u);
     shared_state[base + 1u].x = 0u;
@@ -90,8 +94,11 @@ fn store_shared_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     shared_state[base + 3u].w = bitcast<u32>(estimate.shown.w);
     // Refresh the scheduler's compact rank, not CPU mirror data. No extra
     // readback is introduced by visible sampling.
-    let noise = sqrt(max(estimate.moment.rgb - estimate.mean.rgb * estimate.mean.rgb, vec3(0.0)))
-        / (vec3(0.002) + abs(estimate.mean.rgb));
-    shared_meta[slot * 3u + 2u] = vec4(bitcast<u32>(max(noise.x, max(noise.y, noise.z))), view.cache.y,
-        bitcast<u32>(max(estimate.mean.x, max(estimate.mean.y, estimate.mean.z))), 0xa0000000u | count);
+    if advanced || changed_count {
+        let noise = sqrt(max(estimate.moment.rgb - estimate.mean.rgb * estimate.mean.rgb, vec3(0.0)))
+            / (vec3(0.002) + abs(estimate.mean.rgb));
+        let at = select(shared_meta[slot * 3u + 2u].y, view.cache.y, advanced);
+        shared_meta[slot * 3u + 2u] = vec4(bitcast<u32>(max(noise.x, max(noise.y, noise.z))), at,
+            bitcast<u32>(max(estimate.mean.x, max(estimate.mean.y, estimate.mean.z))), 0xa0000000u | count);
+    }
 }

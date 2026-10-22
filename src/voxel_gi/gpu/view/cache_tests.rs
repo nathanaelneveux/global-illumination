@@ -255,4 +255,12 @@ fn native_two_way_cache_rejects_stale_writes_and_obeys_retention() {
     f.control();
     f.pass("load", None);
     assert_eq!(f32::from_bits(f.estimate()[3]), 20.0, "a retained 1024 view copy cannot undo the cap");
+    let mut pending = f.estimate();
+    pending[7] = 1.0f32.to_bits();
+    f.set_estimate(&pending);
+    f.pass("store", None);
+    assert_eq!(f.resident()[5], 0x80000000 | 20,
+        "an unresolved edit must not serve stale light to secondary rays");
+    f.pass("load", None);
+    assert_eq!(f32::from_bits(f.estimate()[3]), 20.0, "flags are not sample weight");
 }

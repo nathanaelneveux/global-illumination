@@ -55,6 +55,9 @@ pub(super) struct Budget {
     wave_cost: f32,
     pub presentation_ms: f32,
     pub trace_ms: f32,
+    pub cache_ms: f32,
+    pub cache_loads: u64,
+    pub cache_promotions: u64,
     pub active: u32,
     pub completed: u32,
     pub known: u32,
@@ -106,6 +109,9 @@ impl Budget {
             wave_cost: 1.0,
             presentation_ms: 0.0,
             trace_ms: 0.0,
+            cache_ms: 0.0,
+            cache_loads: 0,
+            cache_promotions: 0,
             active: 0,
             completed: 0,
             known: 0,
@@ -167,6 +173,9 @@ impl Budget {
             self.paused = counter(8);
             self.trace_ms = trace;
             self.presentation_ms = total - trace;
+            self.cache_ms = costs[4] + costs[7];
+            self.cache_loads += u64::from(counter(10));
+            self.cache_promotions += u64::from(counter(11));
             let attempted = counter(9);
             if attempted > 0 {
                 // View-first owns the primary lighting budget, not just a
