@@ -18,6 +18,7 @@ from PIL import Image
 def evaluate(run):
     report = json.loads((run / "report.json").read_text())
     assert report["status"] == "completed" and report["view_diagnostic"] == 6
+    assert report["settings"]["receiver_strategy"]["mode"] == "view", "Face validity requires view-owned display"
     assert report["capture_mode"] == "offscreen"
     assert report["capture_windows"] and all(
         c["target_valid"] and c["varied"] and c["width"] == 2560 and c["height"] == 1440

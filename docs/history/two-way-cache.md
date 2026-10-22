@@ -714,3 +714,10 @@ boundary ties, and borrowed sunlight accuracy are not solved by this change.
 The material composition test now checks the actual centroid interpolation
 contract (`target/centroid-material-test.log`); selection/composition also passed
 for the diagnostic (`target/centroid-validity-{test,material}.log`).
+
+The retained fix is `780e824` on `codex/centroid-face-lookup`; previous baselines
+are unchanged and the temporary baseline checkout is restored to
+`codex/shared-pool-baseline` at `933909f`. The final release build passes with
+the same 33 existing warnings (`target/centroid-release.log`). No live GI process
+is left running. The validity analyzer rejects non-view ownership configurations
+instead of treating ordinary hybrid shading as a diagnostic mask.
