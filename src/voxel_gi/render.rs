@@ -1999,7 +1999,22 @@ mod tests {
                 cache.set_shader(id, shader.clone());
             }
             match cache.get(0, handle.id(), &defs) {
-                Ok(_) => break,
+                Ok(module) => {
+                    let fragment = module.entry_points.iter()
+                        .find(|entry| entry.name == "fragment").unwrap();
+                    let naga::TypeInner::Struct { members, .. } =
+                        &module.types[fragment.function.arguments[0].ty].inner else {
+                            panic!("terrain fragment must receive its vertex output struct");
+                        };
+                    assert!(members.iter().any(|member| matches!(member.binding,
+                        Some(naga::Binding::Location {
+                            location: 0,
+                            interpolation: Some(naga::Interpolation::Perspective),
+                            sampling: Some(naga::Sampling::Centroid), ..
+                        })
+                    )), "world position must not extrapolate from an uncovered MSAA pixel centre");
+                    break;
+                }
                 Err(bevy::shader::ShaderCacheError::ShaderImportNotYetAvailable)
                     if std::time::Instant::now() < deadline =>
                 {

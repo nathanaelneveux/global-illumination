@@ -129,6 +129,16 @@ same four canonical voxel corners as the near cache. Unrepresented coverage
 holes use those same corner rays, not a different shadow model. Emission is
 looked up per fragment so a subpixel emitter does not disappear.
 
+The material's world-position interpolant uses perspective-correct **centroid**
+sampling. With MSAA, a primitive can cover samples without covering the pixel
+centre; extrapolating world position there can select an unrelated or buried
+voxel and produce a stable dark speck that changes with camera angle. Centroid
+keeps interpolation on the covered primitive without sample-rate fragment
+shading, extra transport rays or larger receiver storage. This is a raster/face
+identity contract, not temporal smoothing. Exact floating-point grid-edge ties
+and discovery of faces absent from prepass sample zero remain separate issues.
+See the [WGSL interpolation rules](https://www.w3.org/TR/WGSL/#interpolation).
+
 Per-camera state stays on the GPU. The material reads a shared output scratch
 buffer overwritten in camera encoder order, with validity cleared before each
 camera. Immutable optical-table generations and coherent geometry/cache buffer

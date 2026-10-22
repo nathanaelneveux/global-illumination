@@ -81,7 +81,9 @@ struct Vertex {
 
 struct CustomVertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) world_position: vec4<f32>,
+    // MSAA may shade a covered sample whose pixel centre is outside this
+    // primitive. Face-keyed lighting must use a position on the actual face.
+    @location(0) @interpolate(perspective, centroid) world_position: vec4<f32>,
     @location(1) world_normal: vec3<f32>,
 #ifdef VERTEX_UVS
     @location(2) uv: vec2<f32>,
