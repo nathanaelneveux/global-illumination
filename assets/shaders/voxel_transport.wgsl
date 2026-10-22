@@ -498,6 +498,7 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
     out.color = apply_pbr_lighting(pbr_input);
     let view_first = (far_view.shape.z & 2u) != 0u;
     var indirect = vec3(0.0);
+    var view_coverage = vec3(1.0, 0.0, 0.0);
     if !view_first { indirect = probe_irradiance(in.world_position.xyz, normalize(in.world_normal), false); }
     let voxel = vec3<i32>(floor(in.world_position.xyz - in.world_normal * 0.01));
     let index = lookup_probe(voxel);
@@ -510,11 +511,21 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
         if !near_valid {
             var far = vec4(0.0);
             if view_first { far = corner_irradiance(in.world_position.xyz, normalize(in.world_normal), true); }
+            if far.w > 0.0 { view_coverage = vec3(0.0, 1.0, 0.0); }
             // Thin/distant faces may miss the reduced prepass grid entirely.
             // Only those holes use geometric upsampling, not world history.
-            if far.w == 0.0 { far = far_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal), false); }
+            if far.w == 0.0 {
+                far = far_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal), false);
+                if far.w > 0.0 { view_coverage = vec3(1.0, 1.0, 0.0); }
+            }
             if far.w > 0.0 { indirect = far.rgb * transport_settings.intensity; }
         }
+    }
+    // Validation-only identity coverage, before tone mapping or fog. Selected
+    // receiver counters cannot detect visible surfaces absent from the grid.
+    if view_first && transport_settings.debug_irradiance == 2u {
+        out.color = vec4(view_coverage, 1.0);
+        return out;
     }
     var emission = vec3(0.0);
     if index < transport_settings.probe_capacity { emission = transport_probes[index].emission.rgb; }

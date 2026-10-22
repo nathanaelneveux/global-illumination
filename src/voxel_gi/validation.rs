@@ -408,6 +408,9 @@ pub(super) fn run_validation(
     {
         let mut next = material.extension.settings;
         profile.configure(elapsed, &mut next);
+        if profile == Profile::Motion && std::env::var_os("VOXEL_GI_VALIDATE_VIEW_COVERAGE").is_some() {
+            next.debug_irradiance = 2;
+        }
         if next != material.extension.settings {
             materials
                 .get_mut(&handle.handle)
