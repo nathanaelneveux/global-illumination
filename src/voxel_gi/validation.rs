@@ -369,19 +369,20 @@ pub(super) fn run_validation(
             &mut lights,
         );
     }
-    if profile == Profile::Streaming && elapsed >= 15.0 {
-        // Reproduce turning into unseen terrain, then moving at walking speed.
-        // Scripted translation isolates streaming; this is not a KCC motion test.
-        look.yaw = std::f32::consts::PI;
+    if profile == Profile::Streaming {
+        // Replay an absolute path, independent of asynchronous startup physics
+        // and controller synchronization. Mutating the body Transform alone can
+        // be overwritten by the KCC and silently turn this into a static test.
+        let distance = 4.32 * (elapsed - 15.0).clamp(0.0, 15.0);
+        let eye = generator.player_spawn_position() + Vec3::Y * 1.62 + Vec3::Z * distance;
+        let yaw = if elapsed >= 15.0 { std::f32::consts::PI } else { 0.0 };
+        let transform = Transform::from_translation(eye).with_rotation(Quat::from_rotation_y(yaw));
         for camera in &cameras {
-            if let Ok(mut transform) = lights.get_mut(camera) {
-                transform.rotation = Quat::from_rotation_y(std::f32::consts::PI);
-            }
+            commands.entity(camera)
+                .remove::<bevy_ahoy::prelude::CharacterControllerCameraOf>()
+                .insert(transform);
         }
-        if elapsed < 30.0 {
-            player.translation.z += 4.32 * time.delta_secs();
-            run.moves += 1;
-        }
+        if (15.0..30.0).contains(&elapsed) { run.moves += 1; }
     }
     if profile == Profile::Motion {
         // Same eye and two repeatable orientations, separated by 0.15 degrees.
