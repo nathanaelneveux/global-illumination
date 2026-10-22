@@ -450,6 +450,15 @@ fn native_two_way_cache_does_not_discard_long_paths_when_background_advances() {
     e[13] = f.work.faces[0].material as u32;
     f.set_estimate(&e);
     f.wave(1, 1);
+    // A cache-independent pending prefix must not be merged into an authority
+    // which already contains that sequence. Only admitted tails own a lease.
+    f.pass("trace", None);
+    let independent = crate::voxel_gi::gpu::maintenance_tests::read_words(
+        &f.gpu.context,
+        &f.camera.history[0].tails.buffer,
+        128,
+    );
+    assert_eq!(independent[19], 1);
     let first = f.resident()[6];
     f.pass("load", None);
     assert_eq!(

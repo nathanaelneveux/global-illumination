@@ -46,6 +46,11 @@ fn load_shared_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     // measurements. Once admitted, always load the resident authority, including
     // a smaller retained count following an edit.
     if estimate.identity.w == incarnation || estimate.mean.w <= f32(count) {
+        if estimate.identity.w != incarnation {
+            // This independent local tail may overlap the imported prefix. It
+            // was not reserved against this authority; start a fresh attempt.
+            continuations[id.x].status = 0u;
+        }
         estimate.mean = vec4(bitcast<vec4<f32>>(shared_state[base]).rgb, f32(count));
         estimate.moment = vec4(bitcast<vec4<f32>>(shared_state[base + 2u]).rgb,
             bitcast<f32>(shared_meta[slot * 3u + 1u].x));
