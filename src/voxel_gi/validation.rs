@@ -109,6 +109,7 @@ pub(super) struct ValidationRun {
     started: Option<Instant>,
     profile: Profile,
     motion_diagnostic: u32,
+    motion_static: bool,
     metrics: Metrics,
     captures: usize,
     edits: u32,
@@ -216,6 +217,7 @@ pub(super) fn run_validation(
         }
         run.profile = profile;
         if profile == Profile::Motion {
+            run.motion_static = std::env::var_os("VOXEL_GI_VALIDATE_MOTION_STATIC").is_some();
             let component = std::env::var("VOXEL_GI_VALIDATE_LIGHT_COMPONENT").ok();
             run.motion_diagnostic = match profiles::motion_diagnostic(
                 std::env::var_os("VOXEL_GI_VALIDATE_VIEW_COVERAGE").is_some(), component.as_deref(),
@@ -402,7 +404,7 @@ pub(super) fn run_validation(
     if profile == Profile::Motion {
         // Same eye and two repeatable orientations, separated by 0.15 degrees.
         // Exact returns distinguish selection flicker from camera parallax.
-        let yaw = if (15.0..30.0).contains(&elapsed) && elapsed as u32 % 2 == 1 {
+        let yaw = if !run.motion_static && (15.0..30.0).contains(&elapsed) && elapsed as u32 % 2 == 1 {
             0.15f32.to_radians()
         } else { 0.0 };
         // Use the generator's fixed spawn, not the physics body's position
@@ -687,6 +689,7 @@ pub(super) fn run_validation(
             "note": "Inactive BVW loader walks from (-96,40,0) toward -Z. Does not render or alter GI view priority. Loaded terrain participates in transport."},
         "presentation": "shared-corner sun + corner-reconstructed indirect; preferred modes except compare/stress",
         "view_diagnostic": run.motion_diagnostic,
+        "motion_turn_degrees": if run.motion_static { 0.0 } else { 0.15 },
         "spatial_retention": super::retention::POLICY_NAME,
         "settings": {"transport": settings.transport, "receiver_radius": settings.receiver_radius,
             "receiver_strategy": settings.receiver_strategy,

@@ -63,7 +63,9 @@ def evaluate(run):
     return {"run": str(run), "build": report["build"], "view_diagnostic": mode,
             "return_flip": compare(image(run / "base-1.png"), image(run / "base-2.png")),
             "turned_repeat_flip": compare(image(run / "turned-1.png"), image(run / "turned-2.png")),
-            "aligned_small_turn": aligned_turn(run / "base-1.png", run / "turned-1.png", appearance=mode == 0)}
+            "turn_degrees": report.get("motion_turn_degrees", .15),
+            "aligned_small_turn": aligned_turn(run / "base-1.png", run / "turned-1.png",
+                turn_degrees=report.get("motion_turn_degrees", .15), appearance=mode == 0)}
 
 
 if __name__ == "__main__":
