@@ -9,7 +9,7 @@ mod runtime;
 mod timing;
 pub(crate) use runtime::install;
 
-// FarOutput's fixed header, optical table and visible-face index. Shared by
+// FarOutput's fixed header, optical table, face hash and spatial lists. Shared by
 // the active allocation and material placeholder; the unsized tail needs at
 // least one 48-byte FarPixel even before the first view has been published.
 pub(crate) const OUTPUT_PREFIX_BYTES: u64 = 32 + 16384 + (131072 + 32768 + 65536) * 4;

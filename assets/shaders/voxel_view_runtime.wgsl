@@ -254,18 +254,18 @@ fn reconstruct_view(@builtin(global_invocation_id) id: vec3<u32>) {
                 if any(q < vec2(0)) || any(q >= vec2<i32>(tiles)) { continue; }
                 var entry = atomicLoad(&pool.tiles[u32(q.y) * tiles.x + u32(q.x)].head);
                 for (var visited = 0u; entry != 0u && visited < view.grid.z; visited++) {
-                let candidate = entry - 1u;
-                entry = pool.slots[candidate].next;
-                if candidate == id.x { continue; }
-                let donor = receivers[candidate];
-                if donor.face != receiver.face { continue; }
-                let delta = donor.surface - receiver.surface;
-                let d2 = dot(delta, delta);
-                if abs(dot(delta, normal)) > 0.05 || d2 > 256.0 || owner_of(donor) != candidate { continue; }
-                let value = estimates[candidate].mean;
-                let w = min(value.w, 1024.0) / (1.0 + d2 * 0.0625);
-                sum += value.rgb * w;
-                weight += w;
+                    let candidate = entry - 1u;
+                    entry = pool.slots[candidate].next;
+                    if candidate == id.x { continue; }
+                    let donor = receivers[candidate];
+                    if donor.face != receiver.face { continue; }
+                    let delta = donor.surface - receiver.surface;
+                    let d2 = dot(delta, delta);
+                    if abs(dot(delta, normal)) > 0.05 || d2 > 256.0 || owner_of(donor) != candidate { continue; }
+                    let value = estimates[candidate].mean;
+                    let w = min(value.w, 1024.0) / (1.0 + d2 * 0.0625);
+                    sum += value.rgb * w;
+                    weight += w;
                 }
             }
         }
@@ -313,13 +313,11 @@ fn publish_view(@builtin(global_invocation_id) id: vec3<u32>) {
                 let byte = (value.identity.z >> (corner * 8u)) & 255u;
                 output.sky[corner] = (byte & 15u) | ((byte & 128u) << 24u);
             }
-            if owner == id.x {
-                atomicAdd(&queue[4], u32(value.mean.w));
-                atomicMax(&queue[5], u32(value.mean.w));
-                if value.mean.w == 0.0 { atomicAdd(&queue[6], 1u); }
-                if output.evidence > 0.0 { atomicAdd(&queue[7], 1u); }
-                if continuations[owner].status == 1u { atomicAdd(&queue[8], 1u); }
-            }
+            atomicAdd(&queue[4], u32(value.mean.w));
+            atomicMax(&queue[5], u32(value.mean.w));
+            if value.mean.w == 0.0 { atomicAdd(&queue[6], 1u); }
+            if output.evidence > 0.0 { atomicAdd(&queue[7], 1u); }
+            if continuations[owner].status == 1u { atomicAdd(&queue[8], 1u); }
         }
     }
     far_output.pixels[id.x] = output;
