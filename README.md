@@ -51,6 +51,14 @@ resumable paths. Geometry remains available across all loaded terrain. Use
 `VOXEL_GI_SETTINGS=config/gi-all-near.json cargo run --locked` for the former
 all-near control. See [runtime evidence](docs/history/far-view-runtime.md).
 
+Experimental view-first controls are available without changing that default:
+`VOXEL_GI_SETTINGS=config/gi-view-cached.json cargo run --locked` puts all visible
+RGB on the view tier and keeps a 32-voxel bounce cache;
+`config/gi-view-cacheless.json` removes that cache. The
+[comparison and limitations](docs/history/view-first-transport.md) include cave,
+house turns, emitter response and memory. These are not promoted defaults;
+first-reveal history and windowed frame pacing still need qualification.
+
 The default uses GPU-resident accumulation with asynchronous simulation snapshots
 and RGB-prioritized emitter sampling (RGB importance 1, IR/radiation 0.125).
 Near receivers keep all five unfiltered physical estimates; simulation bands

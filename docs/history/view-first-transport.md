@@ -50,12 +50,89 @@ one-visit policy. A native furnace test compares 128 one-visit dispatches with
 tail and raw moments are bit-identical. There is no display filtering in this
 check. This removes an incidental one-path-per-frame limit, not path termination.
 
-## Qualification
+## Decision
 
-In progress. Start with matched cave, house turns/returns and edit-response captures,
-with background terrain loading. Compare visible stability, reveal response,
-lighting progress, memory and GPU costs before a windowed frame-pacing pair.
-Do not promote either candidate based on counts or lower allocation alone.
+Keep **view-first with a small persistent bounce cache** as the preferred
+experimental candidate. Do not replace the hybrid default yet: it is better
+on first reveal, and the attempted windowed comparison was invalid. Cacheless
+is functional and useful as a control, but its modest additional memory saving
+does not offset slower emitter response and greater reveal error in these runs.
+The runtime controls stay independent so cache radius/share can be qualified
+without another frontend rewrite. No sampler accuracy threshold changed.
+
+### Corrected comparison
+
+Baseline `9e52b7a` vs clean candidate `5fe9a3b`. Same hardware, profile, 2560×1440
+offscreen targets, appearance and background loading as below. Candidate
+`6e19c1c` changes only the frame-modulo spelling to satisfy the current compiler's
+production lint; no rendering/sampling behavior changes. All six corrected
+candidate runs and the three baseline runs have valid varied captures and clean
+render logs. No other game, build or analysis job ran during measured phases.
+
+| Measurement | Hybrid | View + small cache | View, no cache |
+| --- | ---: | ---: | ---: |
+| Cave peak physical footprint, MB | 1189 | 967 | 900 |
+| House peak physical footprint, MB | 1231 | 978 | 933 |
+| Response peak physical footprint, MB | 1075 | 940 | 905 |
+| Cave 15s → own 60s, mean FLIP | .01742 | .01077 | .01887 |
+| Cave 30s → own 60s, mean FLIP | .01114 | .00643 | .01334 |
+| House ceiling: 400ms turn → own later view, mean FLIP | .00897 | .03494 | .05407 |
+| Emitter addition 1s → own final, mean FLIP | .08672 | .01712 | .02848 |
+| Emitter removal 600ms → own final, mean FLIP | .40795 | .01164 | .13250 |
+| Emitter removal 1s → own final, mean FLIP | .11061 | .00574 | .06813 |
+
+These use the official FLIP evaluator at 67 pixels/degree on actual material
+captures. **Self differences measure remaining visible change, not accuracy
+against a converged reference or a continuously observed settle time.** House
+comparison uses the upper 40% of the image to exclude the streamed outdoor
+view through the doorway. Response uses fixed-camera whole images. The final
+response targets are four seconds after the edit, not certified convergence.
+Against the hybrid's live 60s cave image, mean FLIP is .01010 cached / .01914
+cacheless. The final room images also differ (.06413/.07116 for emitter-on,
+.03482/.02929 for emitter-off); do not claim identical physical solutions or
+use these comparisons to recalibrate raw sampling accuracy.
+
+Visual inspection confirms smooth torch halos and floor gradients after shared
+corner reconstruction. Cold house turns remain the clearest weakness: visible
+history is discarded when a face leaves the view. The small bounce cache helps
+subsequent paths, but it is not yet used as an exact-face presentation prior.
+That is the next targeted experiment if this direction is pursued; no spatial
+path reconnection or invisible history count is being claimed here.
+
+Post-15s offscreen cadence p95 ranges from 24.9 to 26.2 ms, including the
+harness's sleep; it establishes no interactive FPS result. The windowed hybrid
+attempt (`target/view-baseline-gameplay-window.log` in the baseline worktree)
+failed its first capture: unfocused and uniformly black. The harness exited
+with failure. That run is excluded; no windowed performance win is claimed.
+The screensaver/security settings were not changed.
+
+Evidence: candidate `target/view-final-{cached,cacheless}-{cave,house,response}.log`;
+baseline `target/view-first-baseline-{cave,house,response}.log`. Each records the
+unique `target/gi-validation/` output path. Combined sheets and numeric summaries
+are under `target/view-final-comparison/`; scratch reproduction scripts are
+`target/analyze_view_first.py` (argument `final`) and `target/view_capture_flip.py`.
+Large captures and logs remain ignored. The baseline worktree is preserved.
+
+Verification: 244 regular tests pass, 82 native/benchmark tests remain explicitly
+ignored; selected native batching, view pipelines, event lifecycle and edit-flux
+parity tests passed separately. The native headless material/cache-generation
+test also passes with the enlarged display placeholder. Production-target strict Clippy and development
+build pass. All-target strict Clippy still reports nine inherited test-only
+style lints (default-field reassignment, test-module placement, single-element
+loop); it is not reported as lint-clean.
+
+### Scope of the experimental controls
+
+- The world-display CPU directory and donor topology are absent in both view
+  modes. The cache, when enabled, feeds raw bounce transport, not screen pixels.
+- The ordinary HUD's coverage/history describes world receivers, not view
+  convergence. Use view GPU counters plus captures when qualifying these modes.
+- View histories retain RGB presentation only. Cacheless does not provide a
+  persistent world-space IR/radiation field for simulation queries. A separately
+  scheduled simulation receiver service is not implemented by this experiment.
+- Sparse/subpixel coverage still uses geometric upsampling; visible-corner
+  neighbours are not a complete world topology. Camera-reveal behavior remains
+  part of the qualification, even when stationary images are good.
 
 ### First ownership comparison, before corner presentation
 
