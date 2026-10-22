@@ -271,3 +271,42 @@ Runs: `streaming-1792689433194498000-31550` (control worktree) and
 `target/discovery-{control,stagger}-streaming.log` in the respective worktrees.
 Release build passes with the existing 33 release-only unused/dead-code warnings
 (`target/discovery-stagger-release.log`).
+
+## Moving discovery checkpoint (2026-10-22)
+
+Experimental moving-view reuse adds a face-local UNORM16x2 visibility witness
+per slot. Projecting this physical point, rather than a face centre or a pixel
+that drifts each frame, validates an existing selection against current depth,
+normal, voxel identity and transport geometry. Valid selections survive full
+tile scans; only vacated slots start again from grid centres. Moving footprints
+scan in four phases or immediately when a witness is lost. Vacant centres also
+check for newly exposed terrain during camera motion. Existing lighting advances
+every frame. Metadata is now 1 MiB at 1440p; receiver/ray limits are unchanged.
+
+This is not yet a solution to all coverage holes. The new validation-only
+`motion` profile and `VOXEL_GI_VALIDATE_VIEW_COVERAGE=1` mask show approximately
+0.15% of terrain pixels with no indirect support: red means missing, yellow
+coplanar-only support, green exact face support. Four slots still cannot represent
+every plane in a dense tile. This checkpoint motivates broader allocation tests.
+
+Controls retain `3b10c1b` discovery: streaming `2dae4a9`, fixed-eye motion `d3d70a8`,
+coverage mask `a6e8f97`. Candidate is `a6e8f97` plus this checkpoint's
+shader/runtime/test diff. Same
+M4/Metal, development profile, 2560x1440 offscreen +cache, background loading,
+preferred look. Control streaming run is `streaming-1792691210062578000-35905`
+(`target/moving-control-streaming.log` in the control worktree);
+candidate is `streaming-1792691766051647000-37032`. During movement (15–30s),
+logged discovery medians are 1.087 ms (five receipts) and .857 ms (six), a preliminary
+21% saving. The final vacant-centre check was added after that candidate run.
+
+Fixed-eye motion appearance runs: control `motion-1792691579067898000-36666`,
+candidate `motion-1792691829076776000-37243`. Base-return mean FLIP over two seconds
+is .000193 -> .000199; this does not establish a flicker improvement. Coverage-mask
+runs: control `motion-1792691700830776000-36865`, candidate
+`motion-1792691865539565000-37413`. Turned-view missing support is .155% -> .165%:
+reprojection by itself does not cure the missing-face issue. Earlier motion runs
+had different eye heights due to startup physics and are excluded from paired
+quality evidence. Native tests cover witness reuse, thin orientations, bounded
+discovery, raster-only geometry and disappearance from the prepass. Native
+coverage/pipelines and production Clippy pass after the vacant-centre change
+(`target/moving-{native,pipelines,clippy}.log`).

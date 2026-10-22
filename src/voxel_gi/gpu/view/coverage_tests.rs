@@ -125,6 +125,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
     );
     let mut expected = Vec::new();
     for (label, source) in sources {
+        let memoized = label == "surface-aware" || source.contains("let cached = discovery_tiles[id.x];");
         let source = source
             .replace("texture_depth_2d", "texture_2d<f32>")
             .replace(
@@ -172,7 +173,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                     &ShaderBuffer::from(vec![control]).data.unwrap(),
                 )
                 .unwrap();
-            let view_bindings: &[u32] = if label == "surface-aware" {
+            let view_bindings: &[u32] = if memoized {
                 &[0, 1, 5, 8, 9, 17]
             } else {
                 &[0, 5, 8, 9]
@@ -208,12 +209,14 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                     )
                 })
                 .collect();
-            // The last case presents a raster face absent from transport
-            // geometry; it must not evict the valid background receiver.
-            for strips in 0..=3 {
+            // Case 3 has raster-only geometry; case 4 hides the old surfaces
+            // in the prepass while they still exist in transport geometry.
+            for strips in 0..=4 {
                 let pixels: Vec<u8> = (0..256)
                     .flat_map(|i| {
-                        let normal = if strips == 3 && i % 16 == 0 {
+                        let normal = if strips == 4 {
+                            [0.5f32, 0.5, 0.5, 1.]
+                        } else if strips == 3 && i % 16 == 0 {
                             [0f32, 0.5, 0.5, 1.]
                         } else if strips >= 1 && i % 16 == 0 {
                             [1f32, 0.5, 0.5, 1.]
@@ -242,14 +245,18 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                 );
                 let mut original = Vec::new();
                 let mut previous_refresh = 0;
-                for frame in 0..9 {
+                for frame in 0u32..12 {
+                    control.world_from_clip.w_axis.x = 15.5 + 0.1 * frame.saturating_sub(8) as f32;
+                    control.clip_from_world = control.world_from_clip.inverse();
                     control.history.z = strips * 128
                         + match frame {
                             7 => 64,
                             8 => 65,
+                            9.. => frame + 57,
                             _ => frame + 1,
                         };
-                    control.discovery.x = u32::from(control.history.z > 1 && frame != 8);
+                    control.discovery.x = u32::from(control.history.z > 1 && frame < 8);
+                    control.discovery.y = u32::from(frame >= 9);
                     camera
                         .control
                         .upload(
@@ -286,9 +293,16 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                         u64::from(grid * grid) * 32,
                     );
                     let faces: Vec<_> = words.chunks_exact(8).map(|w| w[3]).collect();
+                    if strips == 4 {
+                        if frame >= 3 {
+                            assert!(faces.iter().all(|&face| face >= 6),
+                                "reprojection must discard faces absent from the current prepass");
+                        }
+                        continue;
+                    }
                     if frame == 3 {
                         original = words.clone();
-                    } else if frame > 3 {
+                    } else if (4..8).contains(&frame) || (frame >= 9 && strips == 0) {
                         assert_eq!(
                             words, original,
                             "coverage must remain identical between scans"
@@ -314,12 +328,16 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                                 "pending geometry must remain discoverable"
                             );
                         }
-                        if frame >= 7 {
+                        if (7..=8).contains(&frame) {
                             assert_eq!(
                                 metadata[3],
                                 control.history.z + 1,
                                 "periodic refresh and camera change must perform a full scan"
                             );
+                        }
+                        if frame == 9 && strips == 0 {
+                            assert_eq!(metadata[3], previous_refresh,
+                                "small camera motion must reuse validated face witnesses");
                         }
                         previous_refresh = metadata[3];
                     }
@@ -327,7 +345,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                         if frame == 3 {
                             expected.push(words.clone());
                         }
-                    } else if label == "surface-aware control" && frame >= 3 {
+                    } else if label == "surface-aware control" && frame >= 3 && strips == 0 {
                         let case = usize::from(grid == 3) * 4 + strips as usize;
                         assert_eq!(
                             words, expected[case],

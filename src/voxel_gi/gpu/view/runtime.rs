@@ -146,6 +146,7 @@ fn configure_views(
 #[derive(Clone, Copy, Default, ShaderType)]
 struct Control {
     world_from_clip: Mat4,
+    clip_from_world: Mat4,
     camera: Vec4,
     viewport: UVec4,
     grid: UVec4,
@@ -229,7 +230,7 @@ impl CameraState {
             history: [History::new(device, count), History::new(device, count)],
             current: 0,
             grid,
-            discovery_tiles: storage(device, "Far discovery fingerprints", tiles as usize * 16),
+            discovery_tiles: storage(device, "Far discovery fingerprints and witnesses", tiles as usize * 32),
             discovery_view: None,
             valid: false,
             control: uniform("Far view control"),
@@ -511,9 +512,12 @@ fn render_view(
         .unwrap_or_else(|| view.clip_from_view * view.world_from_view.affine().inverse());
     let discovery_view = (clip, view.viewport, settings.inner_radius, msaa.samples());
     let discovery_stable = camera.valid && camera.discovery_view == Some(discovery_view);
+    let discovery_compatible = camera.valid && camera.discovery_view.is_some_and(|(_, viewport, radius, samples)|
+        viewport == view.viewport && radius == settings.inner_radius && samples == msaa.samples());
     camera.discovery_view = Some(discovery_view);
     let control = Control {
         world_from_clip: clip.inverse(),
+        clip_from_world: clip,
         camera: view
             .world_from_view
             .translation()
@@ -530,7 +534,7 @@ fn render_view(
         cache: scene.cache.as_ref().map_or(UVec4::ZERO, |cache|
             UVec4::new(cache.epoch, cache.origin.elapsed().as_millis() as u32,
                 u32::from(cache.enabled && settings.view_first), 0)),
-        discovery: UVec4::new(u32::from(discovery_stable), 0, 0, 0),
+        discovery: UVec4::new(u32::from(discovery_stable), u32::from(discovery_compatible), 0, 0),
     };
     camera
         .control

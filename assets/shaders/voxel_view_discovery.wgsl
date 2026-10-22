@@ -61,12 +61,43 @@ fn same_plane(a: ViewReceiver, b: ViewReceiver) -> bool {
 
 var<workgroup> discovery_chosen: array<ViewReceiver, 4>;
 var<workgroup> discovery_centers: array<vec2<i32>, 4>;
+var<workgroup> discovery_witnesses: array<u32, 4>;
 var<workgroup> discovery_winner: atomic<u32>;
 var<workgroup> discovery_hash_xor: atomic<u32>;
 var<workgroup> discovery_hash_sum: atomic<u32>;
 var<workgroup> discovery_pending: atomic<u32>;
 var<workgroup> discovery_reuse: u32;
 const DISCOVERY_PERIOD: u32 = 4u;
+
+// Reproject the visible point, not the voxel centre: a partially occluded or
+// grazing face's centre may never have been visible. Face-local coordinates
+// keep the physical point fixed; snapping to each new pixel centre would let
+// it drift across the voxel and eventually discard an otherwise valid face.
+fn reproject_witness(receiver: ViewReceiver, packed: u32) -> vec2<i32> {
+    let axis = receiver.face / 2u;
+    let uv = unpack2x16unorm(packed);
+    var point = vec3<f32>(receiver.voxel);
+    point[axis] = receiver.surface[axis];
+    point[(axis + 1u) % 3u] += uv.x;
+    point[(axis + 2u) % 3u] += uv.y;
+    let clip = view.clip_from_world * vec4(point, 1.0);
+    if clip.w <= 0.0 { return vec2(-1); }
+    let projected = clip.xy / clip.w * vec2(0.5, -0.5) + 0.5;
+    return vec2<i32>(floor(vec2<f32>(view.viewport.xy) + projected * vec2<f32>(view.viewport.zw)));
+}
+
+fn pack_witness(receiver: ViewReceiver, pixel: vec2<i32>) -> u32 {
+    let z = textureLoad(depth, pixel, 0);
+    let local = prepass_position(pixel, z) - vec3<f32>(receiver.voxel);
+    let axis = receiver.face / 2u;
+    let uv = vec2(local[(axis + 1u) % 3u], local[(axis + 2u) % 3u]);
+    return pack2x16unorm(clamp(uv, vec2(1.0 / 65535.0), vec2(1.0 - 1.0 / 65535.0)));
+}
+
+fn save_witnesses(tile: u32) {
+    discovery_tiles[tile * 2u + 1u] = vec4(discovery_witnesses[0],
+        discovery_witnesses[1], discovery_witnesses[2], discovery_witnesses[3]);
+}
 
 fn receiver_exists(receiver: ViewReceiver) -> bool {
     if receiver.face >= 6u { return false; }
@@ -93,18 +124,53 @@ fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invoc
     let pixels = extent.x * extent.y;
 
     let check = (view.history.z + id.x) % DISCOVERY_PERIOD == 0u;
-    // Reuse selection, never stale lighting. Stagger footprint checks while the
-    // camera is still, retaining receivers and checking their geometry every
-    // frame. A newly exposed plane waits at most three frames for discovery.
-    // Moving cameras scan immediately without the fingerprint pass.
-    if view.discovery.x != 0u {
+    let compatible = view.discovery.x != 0u || view.discovery.y != 0u;
+    if thread == 0u { atomicStore(&discovery_pending, 0u); }
+    if thread < 4u {
+        let q = cell + vec2(thread & 1u, thread >> 1u);
+        discovery_chosen[thread].face = 0xffffffffu;
+        if all(q < view.grid.xy) {
+            let uv = (vec2<f32>(q) + 0.5) / vec2<f32>(view.grid.xy);
+            discovery_centers[thread] = vec2<i32>(view.viewport.xy + min(vec2<u32>(uv * vec2<f32>(view.viewport.zw)), view.viewport.zw - 1u));
+        }
+    }
+    workgroupBarrier();
+    if compatible && thread < 4u {
+        let q = cell + vec2(thread & 1u, thread >> 1u);
+        if all(q < view.grid.xy) {
+            let receiver = previous_receivers[q.y * view.grid.x + q.x];
+            if receiver.face < 6u {
+                let packed = discovery_tiles[id.x * 2u + 1u][thread];
+                var valid = true;
+                if check || view.discovery.x == 0u {
+                    let witness = reproject_witness(receiver, packed);
+                    valid = all(witness >= vec2<i32>(begin)) && all(witness < vec2<i32>(end));
+                    if valid { valid = same_receiver(receiver, prepass_receiver(witness)); }
+                }
+                if valid && receiver_exists(receiver) {
+                    discovery_chosen[thread] = receiver;
+                    discovery_witnesses[thread] = packed;
+                } else { atomicOr(&discovery_pending, 1u); }
+            } else if view.discovery.x == 0u {
+                // A sky tile has no old witness to reject on a camera turn.
+                // Check its vacant centres so newly exposed terrain starts now.
+                if prepass_receiver(discovery_centers[thread]).face < 6u {
+                    atomicOr(&discovery_pending, 1u);
+                }
+            }
+        }
+    }
+    workgroupBarrier();
+    // Reuse selection, never stale lighting. Motion validates projected witness
+    // pixels each frame. Static views also fingerprint their footprint; moving
+    // views search it once per four-frame phase, or immediately on lost witnesses.
+    if compatible {
         if thread == 0u {
             atomicStore(&discovery_hash_xor, 0u);
             atomicStore(&discovery_hash_sum, 0u);
-            atomicStore(&discovery_pending, 0u);
         }
         workgroupBarrier();
-        if check {
+        if check && view.discovery.x != 0u {
             var xor = 0u;
             var sum = 0u;
             for (var offset = thread; offset < pixels; offset += 32u) {
@@ -120,31 +186,22 @@ fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invoc
         }
         workgroupBarrier();
         if thread == 0u {
-            let cached = discovery_tiles[id.x];
+            let cached = discovery_tiles[id.x * 2u];
             let matched = (cached.z & 2u) != 0u
                 && cached.x == atomicLoad(&discovery_hash_xor)
                 && cached.y == atomicLoad(&discovery_hash_sum);
-            discovery_reuse = u32((cached.z & 1u) != 0u && (!check || matched)
+            discovery_reuse = u32((cached.z & 1u) != 0u && (!check || (view.discovery.x != 0u && matched))
                 && (view.history.z + id.x) % 64u != 0u);
         }
         if workgroupUniformLoad(&discovery_reuse) != 0u {
-            if thread < 4u {
-                let q = cell + vec2(thread & 1u, thread >> 1u);
-                if all(q < view.grid.xy) {
-                    let receiver = previous_receivers[q.y * view.grid.x + q.x];
-                    if receiver.face < 6u && !receiver_exists(receiver) {
-                        atomicOr(&discovery_pending, 1u);
-                    }
-                }
-            }
-            workgroupBarrier();
             if thread == 0u { discovery_reuse = u32(atomicLoad(&discovery_pending) == 0u); }
             if workgroupUniformLoad(&discovery_reuse) != 0u {
+                if thread == 0u { save_witnesses(id.x); }
                 if thread < 4u {
                     let q = cell + vec2(thread & 1u, thread >> 1u);
                     if all(q < view.grid.xy) {
                         let index = q.y * view.grid.x + q.x;
-                        publish_discovery(index, previous_receivers[index]);
+                        publish_discovery(index, discovery_chosen[thread]);
                     }
                 }
                 return;
@@ -156,12 +213,12 @@ fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invoc
     workgroupBarrier();
     if thread < 4u {
         let q = cell + vec2(thread & 1u, thread >> 1u);
-        discovery_chosen[thread].face = 0xffffffffu;
-        if all(q < view.grid.xy) {
-            let uv = (vec2<f32>(q) + 0.5) / vec2<f32>(view.grid.xy);
-            discovery_centers[thread] = vec2<i32>(view.viewport.xy + min(vec2<u32>(uv * vec2<f32>(view.viewport.zw)), view.viewport.zw - 1u));
+        if all(q < view.grid.xy) && discovery_chosen[thread].face >= 6u {
             let receiver = prepass_receiver(discovery_centers[thread]);
-            if receiver_exists(receiver) { discovery_chosen[thread] = receiver; }
+            if receiver_exists(receiver) {
+                discovery_chosen[thread] = receiver;
+                discovery_witnesses[thread] = pack_witness(receiver, discovery_centers[thread]);
+            }
             else if receiver.face < 6u { atomicOr(&discovery_pending, 1u); }
         }
     }
@@ -216,6 +273,7 @@ fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invoc
             let offset = winner % pixels;
             let lane = (winner / pixels) % 4u;
             discovery_chosen[lane] = prepass_receiver(vec2<i32>(begin + vec2(offset % extent.x, offset / extent.x)));
+            discovery_witnesses[lane] = pack_witness(discovery_chosen[lane], vec2<i32>(begin + vec2(offset % extent.x, offset / extent.x)));
         }
         workgroupBarrier();
     }
@@ -226,7 +284,8 @@ fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invoc
             cached = vec4(atomicLoad(&discovery_hash_xor), atomicLoad(&discovery_hash_sum),
                 ready | 2u, view.history.z + 1u);
         }
-        discovery_tiles[id.x] = cached;
+        discovery_tiles[id.x * 2u] = cached;
+        save_witnesses(id.x);
     }
     if thread < 4u {
         let q = cell + vec2(thread & 1u, thread >> 1u);
