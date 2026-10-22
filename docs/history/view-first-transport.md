@@ -88,6 +88,14 @@ receiver owners, including changed-sunlight events. Native regression covers
 scene publication through worker submission and GPU event bytes with no world
 pages, not just manually queued packets. No receiver allocations are recreated.
 
+Sparse-cache measurement also distinguishes missing support from measured
+darkness: the outgoing-flux atomic carries an observation bit. An edit whose
+one-voxel neighbourhood has no sampled world faces uses unknown-flux distance
+retention, even when a cache exists elsewhere. A genuinely sampled dark
+neighbourhood still reports measured zero. The native regression covers both;
+the existing measured-flux/urgency CPU-parity test also passes. This matters
+for any bounded world cache, including the hybrid, not just cacheless mode.
+
 Offscreen post-15s cadence p95 was 25.0–26.0 ms across the nine runs (including
 the harness's sleep); this is not windowed frame pacing. World-display CPU
 site metrics are unavailable in view-first and must not be reported as zeros

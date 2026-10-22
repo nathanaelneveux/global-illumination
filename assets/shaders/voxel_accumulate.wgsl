@@ -50,7 +50,8 @@ struct Controls {
 @group(0) @binding(19) var<storage, read> material_light: array<vec2<f32>>;
 // Edit bounds whose flux the GPU measures, three uint4s each: (bound record,
 // first position, positions, changed voxels), (scan min, base flux), (scan
-// size, 0). measure_max holds each entry's brightest outgoing luminance.
+// size, 0). measure_max stores nonnegative luminance bits with bit 31 marking
+// an actual observation. An absent cache neighbourhood is not measured black.
 @group(0) @binding(20) var<storage, read> measures: array<vec4<u32>>;
 @group(0) @binding(21) var<storage, read_write> measure_max: array<atomic<u32>>;
 // Selection scratch, cleared per batch: three 256-bucket histograms, then
@@ -498,20 +499,20 @@ fn measure_edits(@builtin(global_invocation_id) id: vec3<u32>) {
     let p = bitcast<vec3<i32>>(measures[e * 3u + 1u].xyz) + vec3<i32>(offset);
     let w = vec3(0.2126, 0.7152, 0.0722);
     var brightest = 0.0;
+    var observed = false;
     for (var face = 0u; face < 6u; face += 1u) {
         let slot = face_slot(p, face);
         if slot == NO_LIMIT { continue; }
         let identity = slot_meta[slot * 3u];
         if (identity.w & 8u) == 0u { continue; }
         let base = slot * 9u;
-        var incident = 0.0;
-        if (state[base + 1u].y & 0x7fffffffu) > 0u {
-            incident = dot(w, bitcast<vec4<f32>>(state[base]).rgb) + dot(w, bitcast<vec4<f32>>(state[base + 4u]).rgb);
-        }
+        if (state[base + 1u].y & 0x7fffffffu) == 0u { continue; }
+        observed = true;
+        let incident = dot(w, bitcast<vec4<f32>>(state[base]).rgb) + dot(w, bitcast<vec4<f32>>(state[base + 4u]).rgb);
         let light = material_light[identity.w >> 16u];
         brightest = max(brightest, light.x * incident + light.y);
     }
-    if brightest > 0.0 { atomicMax(&measure_max[e], bitcast<u32>(brightest)); }
+    if observed { atomicMax(&measure_max[e], bitcast<u32>(brightest) | 0x80000000u); }
 }
 
 // Each measured edit's flux: base (the changed voxels' own emission) plus
@@ -522,7 +523,14 @@ fn finish_edits(@builtin(global_invocation_id) id: vec3<u32>) {
     if e >= settings.edits.y { return; }
     let a = measures[e * 3u];
     let base_flux = bitcast<f32>(measures[e * 3u + 1u].w);
-    let brightest = bitcast<f32>(atomicLoad(&measure_max[e]));
+    let observation = atomicLoad(&measure_max[e]);
+    if (observation & 0x80000000u) == 0u {
+        // The cache may be nonempty but entirely outside this edit's scan.
+        // Use the same unknown-flux distance rule as a cacheless consumer.
+        events[a.x + 1u].w &= 0xfffffff8u;
+        return;
+    }
+    let brightest = bitcast<f32>(observation & 0x7fffffffu);
     events[a.x].w = bitcast<u32>(base_flux + brightest * 2.0 * f32(a.w));
     events[a.x + 1u].w = (events[a.x + 1u].w & 0xfffffff8u) | 3u;
 }

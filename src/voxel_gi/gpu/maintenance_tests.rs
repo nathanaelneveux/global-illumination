@@ -238,6 +238,33 @@ fn scene_edits_reach_view_history_without_world_cache_pages() {
     assert!(next.bindings.is_empty(), "events must not recreate world receivers");
 }
 
+#[test]
+#[ignore = "native sparse-cache edit observation qualification"]
+fn edit_flux_distinguishes_missing_cache_support_from_observed_darkness() {
+    use gi::geometry::{Bounds, ChangeKind, ChangeWeight};
+    let mut gpu = super::tests::native_tracer();
+    gpu.enable_resident().unwrap();
+    let (scene, mut sources, probes) = super::tests::open_floor_fixture();
+    sources.environment = default();
+    sources.directional.clear();
+    let emitters = Arc::new(EmissionDistribution::default());
+    let mut work = TraceWork::from_probes(&probes[..1], false);
+    gpu.trace_compact(scene.clone(), &sources, &default(), &mut work, 4, &emitters, false).unwrap();
+    for (position, expected_kind) in [(probes[0].voxel, 3), (IVec3::splat(1000), 0)] {
+        let event = gi::retention::RetentionEvent::single(Bounds::point(position), ChangeWeight {
+            kind: ChangeKind::Edit { voxels: 1, measure: true }, flux: 0.0,
+        });
+        let mut work = TraceWork { view_transport: true, retention_events: vec![event], ..default() };
+        gpu.queue_retention(&mut work.retention_events);
+        gpu.submit_compact(scene.clone(), &sources, &default(), &mut work, 0, &emitters, true).unwrap();
+        let packets = gpu.take_view_changes();
+        assert_eq!(packets.len(), 1);
+        let words = read_words(&gpu.context, &packets[0].events, packets[0].events.size());
+        assert_eq!(words[19] & 7, expected_kind, "edit at {position:?}");
+        assert_eq!(f32::from_bits(words[15]), 0.0, "known dark stays exactly zero");
+    }
+}
+
 pub(super) fn read_words(context: &GpuTransportDevice, source: &Buffer, size: u64) -> Vec<u32> {
     let mut readback = UploadBuffer::new(
         &context.device,
