@@ -124,7 +124,7 @@ CPU and GPU work overlap, so their displayed costs must not be added.
 | Space / Ctrl / Shift | Jump / crouch / sprint |
 | Left / right click | Remove / place a voxel |
 | E / Add emitting block button | Place a warm emitting voxel at the aimed-at face |
-| B / Bomb tool button | Toggle radius-5 spherical digging; left-click centers the blast on the aimed-at voxel. Toggle off for normal digging. |
+| B / Bomb button | Immediately remove a radius-5 sphere centered on the aimed-at voxel; left-click remains single-block digging. |
 | Lighting controls… button | Quality/work sliders, A/B settings, defaults reset and JSON export |
 | F3 | Mesh debug overlay |
 | F4 | Toggle indirect GI display |

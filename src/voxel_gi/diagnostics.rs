@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use super::render::VoxelTransportMaterial;
 use super::{VoxelEnergyField, VoxelGiRuntime, VoxelGiStats, VoxelGiSystems};
-use crate::player::{BombTool, PlaceEmissiveBlock};
+use crate::player::{BombAtAim, PlaceEmissiveBlock};
 
 /// Demo-only UI, keyboard comparisons and opt-in validation. Install after GI
 /// and the player plugins; the reusable transport does not own player input.
@@ -96,7 +96,7 @@ fn draw_hud(
     mut state: Local<HudState>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     mut place_emissive: MessageWriter<PlaceEmissiveBlock>,
-    mut bomb: ResMut<BombTool>,
+    mut bomb: MessageWriter<BombAtAim>,
     mut tuning: ResMut<tuning::TuningPanel>,
 ) {
     if !state.visible {
@@ -136,10 +136,10 @@ fn draw_hud(
                         .clicked() {
                         place_emissive.write(PlaceEmissiveBlock);
                     }
-                    if ui.selectable_label(bomb.enabled, "Bomb tool: radius 5 (B)")
-                        .on_hover_text("Toggle with B or this button. While active, left-click removes a radius-5 sphere centered on the aimed-at voxel. Toggle off for single-block digging.")
+                    if ui.button("Bomb: radius 5 (B)")
+                        .on_hover_text("Remove a radius-5 sphere centered on the aimed-at voxel. B detonates immediately while playing; left-click always digs a single block.")
                         .clicked() {
-                        bomb.enabled = !bomb.enabled;
+                        bomb.write(BombAtAim);
                     }
                     if ui.button("Lighting controls…")
                         .on_hover_text("Esc releases the cursor. Compare lighting reach, quality, work budget and presentation.")

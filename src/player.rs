@@ -37,7 +37,7 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_input_context::<PlayerInput>()
             .add_message::<PlaceEmissiveBlock>()
-            .init_resource::<BombTool>()
+            .add_message::<BombAtAim>()
             .add_systems(Startup, spawn_player)
             .add_systems(
                 FixedPostUpdate,
@@ -88,14 +88,11 @@ struct PlaceEmissiveVoxel;
 
 #[derive(InputAction)]
 #[action_output(bool)]
-struct ToggleBombTool;
+struct DetonateBomb;
 
-/// Shared by the keyboard shortcut and HUD. It changes left-click destruction,
-/// not placement or the cursor's UI interaction.
-#[derive(Resource, Default)]
-pub(crate) struct BombTool {
-    pub enabled: bool,
-}
+/// The HUD requests the same one-shot blast as B, without changing click modes.
+#[derive(Message)]
+pub(crate) struct BombAtAim;
 
 /// The HUD queues the same placement operation as the keyboard shortcut.
 #[derive(Message)]
@@ -155,7 +152,7 @@ fn spawn_player(mut commands: Commands, world: Res<PrototypeWorld>) {
                     bindings![KeyCode::KeyE],
                 ),
                 (
-                    Action::<ToggleBombTool>::new(),
+                    Action::<DetonateBomb>::new(),
                     bindings![KeyCode::KeyB],
                 ),
                 (
@@ -315,8 +312,8 @@ fn edit_voxels(
     break_events: Single<&ActionEvents, With<Action<BreakVoxel>>>,
     place_events: Single<&ActionEvents, With<Action<PlaceVoxel>>>,
     emissive_events: Single<&ActionEvents, With<Action<PlaceEmissiveVoxel>>>,
-    bomb_events: Single<&ActionEvents, With<Action<ToggleBombTool>>>,
-    mut bomb: ResMut<BombTool>,
+    bomb_events: Single<&ActionEvents, With<Action<DetonateBomb>>>,
+    mut bomb_requests: MessageReader<BombAtAim>,
     mut hud_requests: MessageReader<PlaceEmissiveBlock>,
     cursor_options: Single<&CursorOptions, With<PrimaryWindow>>,
     camera: Single<&GlobalTransform, (With<PlayerCamera>, Without<Player>)>,
@@ -324,13 +321,13 @@ fn edit_voxels(
     mut voxel_gi_dirty: ResMut<VoxelGiDirty>,
 ) {
     let hud_requested = hud_requests.read().count() > 0;
+    let hud_bomb = bomb_requests.read().count() > 0;
     #[cfg(debug_assertions)]
     if std::env::var_os("VOXEL_GI_VALIDATE").is_some() {
         return;
     }
-    if !cursor_options.visible && bomb_events.contains(ActionEvents::START) {
-        bomb.enabled = !bomb.enabled;
-    }
+    let bombing = hud_bomb
+        || (!cursor_options.visible && bomb_events.contains(ActionEvents::START));
     let breaking = !cursor_options.visible && break_events.contains(ActionEvents::START);
     let material = placement_material(
         cursor_options.visible,
@@ -339,7 +336,7 @@ fn edit_voxels(
         hud_requested,
     );
 
-    if !breaking && material.is_none() {
+    if !breaking && !bombing && material.is_none() {
         return;
     }
 
@@ -349,8 +346,8 @@ fn edit_voxels(
         return;
     };
 
-    if breaking {
-        let radius = if bomb.enabled { BOMB_RADIUS } else { 0 };
+    if breaking || bombing {
+        let radius = if bombing { BOMB_RADIUS } else { 0 };
         for position in destruction_positions(hit.position.as_ivec3(), radius) {
             // Do not manufacture air edits in unloaded chunks or rewrite air.
             // Every actual removal uses the ordinary tracked edit gateway so
