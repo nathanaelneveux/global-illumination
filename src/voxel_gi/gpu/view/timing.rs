@@ -55,6 +55,8 @@ pub(super) struct Budget {
     wave_cost: f32,
     pub presentation_ms: f32,
     pub discovery_ms: f32,
+    pub discovery_sum_ms: f64,
+    pub discovery_count: u32,
     pub trace_ms: f32,
     pub cache_ms: f32,
     pub cache_loads: u64,
@@ -110,6 +112,8 @@ impl Budget {
             wave_cost: 1.0,
             presentation_ms: 0.0,
             discovery_ms: 0.0,
+            discovery_sum_ms: 0.0,
+            discovery_count: 0,
             trace_ms: 0.0,
             cache_ms: 0.0,
             cache_loads: 0,
@@ -176,6 +180,8 @@ impl Budget {
             self.trace_ms = trace;
             self.presentation_ms = total - trace;
             self.discovery_ms = costs[0];
+            self.discovery_sum_ms += f64::from(costs[0]);
+            self.discovery_count += 1;
             self.cache_ms = costs[4] + costs[7];
             self.cache_loads += u64::from(counter(10));
             self.cache_promotions += u64::from(counter(11));

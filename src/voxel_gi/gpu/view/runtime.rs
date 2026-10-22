@@ -477,6 +477,8 @@ fn render_view(
                 far_trace_ms = renderer.budget.trace_ms,
                 far_presentation_ms = renderer.budget.presentation_ms,
                 far_discovery_ms = renderer.budget.discovery_ms,
+                far_discovery_mean_ms = renderer.budget.discovery_sum_ms / f64::from(renderer.budget.discovery_count.max(1)),
+                far_discovery_receipts = renderer.budget.discovery_count,
                 far_cache_ms = renderer.budget.cache_ms,
                 far_cache_loads = renderer.budget.cache_loads,
                 far_cache_promotions = renderer.budget.cache_promotions,
@@ -489,6 +491,8 @@ fn render_view(
                 far_pending = renderer.budget.paused,
                 "GI view transport"
             );
+            renderer.budget.discovery_sum_ms = 0.0;
+            renderer.budget.discovery_count = 0;
         }
         renderer
             .cameras
