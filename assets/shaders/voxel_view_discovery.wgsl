@@ -105,6 +105,19 @@ fn publish_receiver(index: u32, receiver: ViewReceiver) {
     estimates[index] = estimate;
 }
 
+// Only the canonical previous owner can retain a face. Its key is unique, so
+// insertion needs no reads of concurrently initialized current receivers.
+// Discovery reads this index only after the whole preparation dispatch ends.
+fn index_retained_receiver(index: u32, receiver: ViewReceiver) {
+    var slot = receiver_hash(receiver) & view.grid.w;
+    for (var step = 0u; step < 64u; step++) {
+        let claim = atomicCompareExchangeWeak(&current_hash[slot], 0u, index + 1u);
+        if claim.exchanged { return; }
+        if claim.old_value != 0u { slot = (slot + 1u) & view.grid.w; }
+    }
+    atomicAdd(&queue[1], 1u);
+}
+
 // All old slots are classified before discovery. Surviving faces keep their
 // physical slot even when they cross tile boundaries; face-keyed reprojection
 // still owns raw moments, QMC indices and unfinished paths.
@@ -142,6 +155,7 @@ fn prepare_receiver_pool(@builtin(global_invocation_id) id: vec3<u32>) {
                 pool.slots[id.x].witness = previous_pool.slots[id.x].witness;
                 pool.slots[id.x].tile = tile;
                 pool.slots[id.x].next = atomicExchange(&pool.tiles[tile].head, id.x + 1u);
+                index_retained_receiver(id.x, old);
                 atomicAdd(&pool.retained, 1u);
                 // Crossing a spatial-bin boundary is not lost visibility.
                 // Both bins keep the normal four-phase discovery cadence;

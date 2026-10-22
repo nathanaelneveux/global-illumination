@@ -52,9 +52,8 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
     let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
         label: Some("Shared pool coverage"), source: ShaderSource::Wgsl(source.into()),
     });
-    let specs: [(&str, [&[u32]; 3]); 5] = [
-        ("prepare_receiver_pool", [&[0, 1, 2, 3, 6], &[], &[0, 1, 5, 6, 8, 9, 17, 18]]),
-        ("index_receivers", [&[6], &[], &[0, 7, 10]]),
+    let specs: [(&str, [&[u32]; 3]); 4] = [
+        ("prepare_receiver_pool", [&[0, 1, 2, 3, 6], &[], &[0, 1, 5, 6, 7, 8, 9, 10, 17, 18]]),
         ("discover_receivers", [&[0, 1, 2, 3, 6], &[], &[0, 5, 7, 8, 9, 17]]),
         ("index_receivers", [&[6], &[], &[0, 7, 10]]),
         ("reproject_paths", [&[0, 1, 2, 3, 5, 6, 7], &[0], &[0, 1, 2, 3, 4, 5, 6, 7, 10]]),
@@ -158,7 +157,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                     let mut pass = encoder.begin_compute_pass(&default());
                     pass.set_pipeline(&kernel.pipeline);
                     for (i, group) in groups.iter().enumerate() { pass.set_bind_group(i as u32, &**group, &[]); }
-                    pass.dispatch_workgroups(if stage == 2 { grid.div_ceil(2).pow(2) } else { count.div_ceil(64) }, 1, 1);
+                    pass.dispatch_workgroups(if stage == 1 { grid.div_ceil(2).pow(2) } else { count.div_ceil(64) }, 1, 1);
                 }
                 queue.submit([encoder.finish()]);
                 let words = crate::voxel_gi::gpu::maintenance_tests::read_words(
