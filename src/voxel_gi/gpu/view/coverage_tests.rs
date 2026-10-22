@@ -52,11 +52,12 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
     let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
         label: Some("Shared pool coverage"), source: ShaderSource::Wgsl(source.into()),
     });
-    let specs: [(&str, [&[u32]; 3]); 4] = [
+    let specs: [(&str, [&[u32]; 3]); 5] = [
         ("prepare_receiver_pool", [&[0, 1, 2, 3, 6], &[], &[0, 1, 5, 6, 8, 9, 17, 18]]),
         ("index_receivers", [&[6], &[], &[0, 7, 10]]),
         ("discover_receivers", [&[0, 1, 2, 3, 6], &[], &[0, 5, 7, 8, 9, 17]]),
         ("index_receivers", [&[6], &[], &[0, 7, 10]]),
+        ("reproject_paths", [&[0, 1, 2, 3, 5, 6, 7], &[0], &[0, 1, 2, 3, 4, 5, 6, 7, 10]]),
     ];
     let kernels = specs.map(|(name, bindings)| Kernel {
         pipeline: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -131,9 +132,15 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                             let resource = match (group, binding) {
                                 (0, 0) => camera.params.buffer.as_entire_binding(),
                                 (0, 1..=3) => scene.buffers[binding as usize - 1].as_entire_binding(),
+                                (0, 5) => scene.buffers[4].as_entire_binding(),
                                 (0, 6) => current.receivers.buffer.as_entire_binding(),
+                                (0, 7) => current.paths.buffer.as_entire_binding(),
+                                (1, 0) => current.tails.buffer.as_entire_binding(),
                                 (2, 0) => camera.control.buffer.as_entire_binding(),
                                 (2, 1) => previous.receivers.buffer.as_entire_binding(),
+                                (2, 2) => previous.paths.buffer.as_entire_binding(),
+                                (2, 3) => previous.tails.buffer.as_entire_binding(),
+                                (2, 4) => previous.estimates.buffer.as_entire_binding(),
                                 (2, 5) => current.estimates.buffer.as_entire_binding(),
                                 (2, 6) => previous.hash.buffer.as_entire_binding(),
                                 (2, 7) => current.hash.buffer.as_entire_binding(),
@@ -160,6 +167,24 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                     &gpu.context, &current.pool.buffer, (POOL_PREFIX_BYTES + count as usize * 16) as u64);
                 let keys: BTreeSet<_> = words.chunks_exact(8).filter(|w| w[3] < 6)
                     .map(|w| (w[3], [w[4], w[5], w[6]])).collect();
+                let mut estimates = crate::voxel_gi::gpu::maintenance_tests::read_words(
+                    &gpu.context, &current.estimates.buffer, u64::from(count) * 64);
+                for (index, receiver) in words.chunks_exact(8).enumerate().filter(|(_, w)| w[3] < 6) {
+                    let key = (receiver[3], [receiver[4], receiver[5], receiver[6]]);
+                    let mean = [receiver[3] as f32 + 1., receiver[4] as f32 + 2., receiver[6] as f32 + 3., 128.];
+                    let tag = mean.map(f32::to_bits);
+                    let estimate = &mut estimates[index * 16..(index + 1) * 16];
+                    if previous_keys.contains(&key) {
+                        assert_eq!(&estimate[..4], &tag, "raw history follows the face, not its spatial bin");
+                        assert_eq!(estimate[12], 177, "QMC sequence survives reprojection");
+                    } else {
+                        assert_eq!(estimate[3], 0, "a reused physical slot cannot inherit unrelated history");
+                    }
+                    estimate[..4].copy_from_slice(&tag);
+                    estimate[12] = 177;
+                }
+                queue.write_buffer(&current.estimates.buffer, 0,
+                    &estimates.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>());
                 let planes: BTreeSet<_> = keys.iter().map(|(face, voxel)| (*face, voxel[*face as usize / 2])).collect();
                 eprintln!("shared pool grid={grid} thin={thin} frame={frame}: {} keys, {planes:?}, counters {:?}", keys.len(), &metadata[..4]);
                 assert!(keys.len() <= count as usize);

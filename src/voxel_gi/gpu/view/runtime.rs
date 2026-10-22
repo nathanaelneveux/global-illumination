@@ -407,6 +407,9 @@ mod tests {
             let naga::TypeInner::Struct { members, span } = layout else { panic!("FarOutput must be a struct"); };
             assert_eq!(members.last().unwrap().offset as u64, OUTPUT_PREFIX_BYTES);
             assert_eq!(*span as u64, EMPTY_OUTPUT_BYTES);
+            let pool = &module.types.iter().find(|(_, ty)| ty.name.as_deref() == Some("ReceiverPool")).unwrap().1.inner;
+            let naga::TypeInner::Struct { members, .. } = pool else { panic!("ReceiverPool must be a struct"); };
+            assert_eq!(members.last().unwrap().offset as usize, POOL_PREFIX_BYTES);
         }
     }
 
