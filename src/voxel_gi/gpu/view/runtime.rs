@@ -23,7 +23,7 @@ use bevy::{
 };
 
 const MAX_PIXELS: u32 = 65536;
-const DISPLAY_BYTES: u64 = 32 + 16384 + MAX_PIXELS as u64 * 48;
+const DISPLAY_BYTES: u64 = OUTPUT_PREFIX_BYTES + MAX_PIXELS as u64 * 48;
 #[derive(Resource, Clone, ExtractResource)]
 struct ViewSettings {
     output: Handle<ShaderBuffer>,
@@ -98,7 +98,7 @@ fn configure_views(
     let enabled = settings.view_enabled();
     if enabled != view.enabled {
         let mut asset = ShaderBuffer::default();
-        asset.buffer_description.size = if enabled { DISPLAY_BYTES } else { 16464 };
+        asset.buffer_description.size = if enabled { DISPLAY_BYTES } else { EMPTY_OUTPUT_BYTES };
         asset.buffer_description.usage =
             BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
         view.output = buffers.add(asset);
@@ -372,6 +372,10 @@ mod tests {
             )
             .validate(&module)
             .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
+            let layout = &module.types.iter().find(|(_, ty)| ty.name.as_deref() == Some("FarOutput")).unwrap().1.inner;
+            let naga::TypeInner::Struct { members, span } = layout else { panic!("FarOutput must be a struct"); };
+            assert_eq!(members.last().unwrap().offset as u64, OUTPUT_PREFIX_BYTES);
+            assert_eq!(*span as u64, EMPTY_OUTPUT_BYTES);
         }
     }
 

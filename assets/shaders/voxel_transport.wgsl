@@ -119,7 +119,8 @@ struct FarPixel {
     sky: vec4<u32>,
 }
 struct FarOutput {
-    viewport: vec4<u32>, shape: vec4<u32>, optical: array<vec4<f32>, 1024>, pixels: array<FarPixel>,
+    viewport: vec4<u32>, shape: vec4<u32>, optical: array<vec4<f32>, 1024>,
+    keys: array<u32, 131072>, pixels: array<FarPixel>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(110)
 var<storage, read> far_view: FarOutput;
@@ -351,10 +352,28 @@ fn corner_value(center: vec4<f32>, edge_u: vec4<f32>, edge_v: vec4<f32>, diagona
     return sum.rgb / max(sum.w, 0.000001);
 }
 
-fn probe_irradiance(position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec3<f32> {
-    if sky { return sky_irradiance(position, normal).rgb; }
-    if transport_settings.enabled == 0u || transport_settings.probe_capacity == 0u {
-        return vec3(0.0);
+fn display_face(voxel: vec3<i32>, face: u32, view_owned: bool) -> vec4<f32> {
+    if !view_owned { return lookup_face(voxel, face); }
+    var slot = (hash_voxel(voxel) ^ pcg(face + 1u)) & far_view.shape.w;
+    for (var step = 0u; step < 64u; step++) {
+        let entry = far_view.keys[slot];
+        if entry == 0u { break; }
+        let value = far_view.pixels[entry - 1u];
+        let donor = vec3<i32>(floor(value.surface - vec3<f32>(FACE_NORMALS[face]) * 0.01));
+        if value.face == face && all(donor == voxel) {
+            return vec4(value.irradiance, min(value.evidence, 1.0));
+        }
+        slot = (slot + 1u) & far_view.shape.w;
+    }
+    return vec4(0.0);
+}
+
+// Identical virtual-corner topology for both ownership models. The view index
+// only contains visible faces; missing neighbours never become invented paths
+// or borrowed physical history. All of this remains presentation-only.
+fn corner_irradiance(position: vec3<f32>, normal: vec3<f32>, view_owned: bool) -> vec4<f32> {
+    if transport_settings.enabled == 0u || (!view_owned && transport_settings.probe_capacity == 0u) {
+        return vec4(0.0);
     }
     let voxel = vec3<i32>(floor(position - normal * 0.01));
     var face = 0u;
@@ -370,25 +389,29 @@ fn probe_irradiance(position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec3<f
     }
     let axis = face / 2u;
     face += select(0u, 1u, normal[axis] < 0.0);
-    let intensity = transport_settings.intensity;
-    var center = lookup_face(voxel, face);
-    if center.w == 0.0 {
+    var center = display_face(voxel, face, view_owned);
+    if center.w == 0.0 && !view_owned {
         center = unpublished_face_prior(voxel, face);
     }
     if transport_settings.reconstruction == 0u {
-        return center.rgb * intensity;
+        return center;
     }
-    let left = lookup_face(voxel - u, face);
-    let right = lookup_face(voxel + u, face);
-    let bottom = lookup_face(voxel - v, face);
-    let top = lookup_face(voxel + v, face);
-    let c00 = corner_value(center, left, bottom, lookup_face(voxel - u - v, face));
-    let c10 = corner_value(center, right, bottom, lookup_face(voxel + u - v, face));
-    let c01 = corner_value(center, left, top, lookup_face(voxel - u + v, face));
-    let c11 = corner_value(center, right, top, lookup_face(voxel + u + v, face));
+    let left = display_face(voxel - u, face, view_owned);
+    let right = display_face(voxel + u, face, view_owned);
+    let bottom = display_face(voxel - v, face, view_owned);
+    let top = display_face(voxel + v, face, view_owned);
+    let c00 = corner_value(center, left, bottom, display_face(voxel - u - v, face, view_owned));
+    let c10 = corner_value(center, right, bottom, display_face(voxel + u - v, face, view_owned));
+    let c01 = corner_value(center, left, top, display_face(voxel - u + v, face, view_owned));
+    let c11 = corner_value(center, right, top, display_face(voxel + u + v, face, view_owned));
     let local = position - vec3<f32>(voxel);
     let uv = clamp(vec2(dot(local, vec3<f32>(u)), dot(local, vec3<f32>(v))), vec2(0.0), vec2(1.0));
-    return mix(mix(c00, c10, uv.x), mix(c01, c11, uv.x), uv.y) * intensity;
+    return vec4(mix(mix(c00, c10, uv.x), mix(c01, c11, uv.x), uv.y), center.w);
+}
+
+fn probe_irradiance(position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec3<f32> {
+    if sky { return sky_irradiance(position, normal).rgb; }
+    return corner_irradiance(position, normal, false).rgb * transport_settings.intensity;
 }
 
 fn use_voxel_sky() -> bool {
@@ -485,7 +508,11 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
         var near_valid = false;
         if !view_first && index < transport_settings.probe_capacity { near_valid = resolved_face(index, face).w > 0.0; }
         if !near_valid {
-            let far = far_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal), false);
+            var far = vec4(0.0);
+            if view_first { far = corner_irradiance(in.world_position.xyz, normalize(in.world_normal), true); }
+            // Thin/distant faces may miss the reduced prepass grid entirely.
+            // Only those holes use geometric upsampling, not world history.
+            if far.w == 0.0 { far = far_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal), false); }
             if far.w > 0.0 { indirect = far.rgb * transport_settings.intensity; }
         }
     }

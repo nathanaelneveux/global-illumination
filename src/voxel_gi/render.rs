@@ -697,7 +697,7 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
     let far = app
         .world_mut()
         .resource_mut::<Assets<ShaderBuffer>>()
-        .add(ShaderBuffer::from(vec![UVec4::ZERO; 1029]));
+        .add(ShaderBuffer::from(vec![UVec4::ZERO; super::gpu::view::EMPTY_OUTPUT_BYTES as usize / 16]));
     let _ = app.world_mut().resource_mut::<Assets<Shader>>().insert(
         VOXEL_TRANSPORT_SHADER_HANDLE.id(),
         Shader::from_wgsl(

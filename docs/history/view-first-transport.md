@@ -32,8 +32,13 @@ is explicitly unknown, so retention uses the existing distance curve rather
 than falsely treating no observations as a measured zero change.
 
 This is not spatial path reuse, a new sampler or a new calibrated accuracy
-threshold. View histories remain visibility-dependent, and reconstruction remains
-the existing bounded coplanar view filter. CPU world-display diagnostics do not
+threshold. View histories remain visibility-dependent. The bounded coplanar view
+filter feeds the same connected virtual-corner interpolation used by world
+receivers. View-first publishes its existing GPU face index with the display
+values, so close-up faces find exact neighbours instead of blurring nearby
+screen samples. Missing reduced-grid faces still use geometric upsampling.
+The fixed index adds 512 KiB to output allocations (including placeholders),
+no CPU directory or lighting readback. CPU world-display diagnostics do not
 measure view-first presentation; use actual captures and view GPU counters.
 
 View-first can spend its allowance on repeated sequential visits to a visible
@@ -47,7 +52,35 @@ check. This removes an incidental one-path-per-frame limit, not path termination
 
 ## Qualification
 
-Pending. Start with matched cave, house turns/returns and edit-response captures,
+In progress. Start with matched cave, house turns/returns and edit-response captures,
 with background terrain loading. Compare visible stability, reveal response,
 lighting progress, memory and GPU costs before a windowed frame-pacing pair.
 Do not promote either candidate based on counts or lower allocation alone.
+
+### First ownership comparison, before corner presentation
+
+Exact baseline `9e52b7a` vs `1880379`, clean tracked trees, development opt1 /
+dependencies opt3, Apple M4/Metal, 16 GB. Offscreen 2560×1440, preferred appearance,
+background terrain, 20% total transport allowance. VS Code and its Clippy build
+were closed; no competing build or game during captures. All nine runs had
+valid varied captures and no render errors. Logs `target/view-first-*.log` in
+each checkout identify their exact output directories.
+
+| Mode | Cave peak footprint | House peak footprint | Response peak footprint |
+| --- | ---: | ---: | ---: |
+| Hybrid | 1189 MB | 1231 MB | 1075 MB |
+| View + 32-voxel cache | 965 MB | 980 MB | 938 MB |
+| View without cache | 889 MB | 932 MB | 903 MB |
+
+Broad cave gradients agree visually. Both view candidates expose a presentation
+mismatch at close range: face-flat torch halos, ceiling and floor lighting.
+The house's 400 ms cold turn is much patchier than hybrid. Cacheless emitter
+response is also substantially slower in both directions; in its one-second
+removal capture the floor is still strongly orange, unlike hybrid/cached view.
+These are not qualified replacements. The following corner change addresses
+presentation only; it does not dismiss the cacheless response weakness.
+
+Offscreen post-15s cadence p95 was 25.0–26.0 ms across the nine runs (including
+the harness's sleep); this is not windowed frame pacing. World-display CPU
+site metrics are unavailable in view-first and must not be reported as zeros
+or perfect stability. Inspect the actual captures instead.

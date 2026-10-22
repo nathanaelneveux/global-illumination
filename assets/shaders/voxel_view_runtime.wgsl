@@ -28,6 +28,7 @@ struct FarOutput {
     viewport: vec4<u32>,
     shape: vec4<u32>,
     optical: array<vec4<f32>, 1024>,
+    keys: array<u32, 131072>, // visible face -> owner pixel + 1; zero is empty
     pixels: array<FarPixel>,
 }
 @group(2) @binding(0) var<uniform> view: ViewControl;
@@ -282,7 +283,14 @@ fn publish_view(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= view.grid.z { return; }
     if id.x == 0u {
         far_output.viewport = view.viewport;
-        far_output.shape = vec4(view.grid.xy, 1u | (view.history.w << 1u), atomicLoad(&queue[1]));
+        far_output.shape = vec4(view.grid.xy, 1u | (view.history.w << 1u), view.grid.w);
+    }
+    // Publish the already-built GPU index, not a second CPU world directory.
+    // Striding covers its power-of-two padding even for non-power-of-two grids.
+    if view.history.w != 0u {
+        for (var slot = id.x; slot <= view.grid.w; slot += view.grid.z) {
+            far_output.keys[slot] = atomicLoad(&current_hash[slot]);
+        }
     }
     let receiver = receivers[id.x];
     var output: FarPixel;
