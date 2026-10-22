@@ -437,6 +437,17 @@ components, not their means against textured-terrain means. Exact-view return
 and repeated-turned-view FLIP need no alignment; coverage colors are rejected as
 lighting evidence. Component runs are diagnostic, not normal-material timings.
 
+For tiny camera-dependent dark specks, use `VOXEL_GI_VALIDATE_LIGHT_COMPONENT=face-validity`
+(mode 6) with a view-first configuration. Red independently marks missing indirect
+support; green marks a material lookup that is not an exposed transport face.
+`tools/view_validity.py RUN...` counts both nonzero pixels and their resolved
+channel sums. The old green/yellow/red coverage palette can hide partially covered
+MSAA failures: red and green samples resolve to yellow, indistinguishable from
+valid borrowed support. Do not use only fully red pixels or whole-image FLIP to
+clear sparse edge flicker. This diagnostic excludes sky-mixed silhouette pixels;
+two flags in one resolved pixel need not describe the same MSAA sample. It uses
+additional geometry lookups and is not a normal-material performance run.
+
 The `streaming` profile now detaches the camera from the character controller
 and replays the generator's spawn eye, a 180-degree turn at 15s and 64.8 voxels
 of absolute travel over the next 15s. It still streams normal/background terrain;

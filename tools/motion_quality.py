@@ -59,7 +59,7 @@ def evaluate(run):
     assert captures and all(c["target_valid"] and c["varied"] and c["width"] == 2560
                             and c["height"] == 1440 for c in captures)
     mode = report.get("view_diagnostic", 0)
-    assert mode != 2, "Coverage colors are not lighting-stability evidence"
+    assert mode not in [2, 6], "Coverage/identity colors are not lighting-stability evidence"
     return {"run": str(run), "build": report["build"], "view_diagnostic": mode,
             "return_flip": compare(image(run / "base-1.png"), image(run / "base-2.png")),
             "turned_repeat_flip": compare(image(run / "turned-1.png"), image(run / "turned-2.png")),

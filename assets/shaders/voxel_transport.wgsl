@@ -550,6 +550,14 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
     }
     // Validation-only identity coverage, before tone mapping or fog. Selected
     // receiver counters cannot detect visible surfaces absent from the grid.
+    if view_first && transport_settings.debug_irradiance == 6u {
+        let face = face_index_of(normalize(in.world_normal));
+        let valid = voxel_material(voxel) != 256u && voxel_material(voxel + FACE_NORMALS[face]) == 256u;
+        // Independent channels survive MSAA resolve: red is missing indirect
+        // support, green is a lookup outside exposed transport geometry.
+        out.color = vec4(1.0 - view_coverage.g, select(1.0, 0.0, valid), 0.0, 1.0);
+        return out;
+    }
     if view_first && transport_settings.debug_irradiance == 2u {
         out.color = vec4(view_coverage, 1.0);
         return out;

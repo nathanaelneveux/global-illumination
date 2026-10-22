@@ -320,6 +320,7 @@ impl Profile {
 
 // Shader diagnostic modes are a material contract: 0 appearance, 1 combined
 // irradiance, 2 coverage, 3 indirect, 4 direct sunlight, 5 exact corner sunlight.
+// Mode 6 reports missing support and invalid exposed-face identity separately.
 // Capture-only controls; ordinary gameplay/performance retains mode zero.
 pub(super) fn motion_diagnostic(coverage: bool, component: Option<&str>) -> Result<u32, &'static str> {
     if coverage && component.is_some() {
@@ -331,7 +332,8 @@ pub(super) fn motion_diagnostic(coverage: bool, component: Option<&str>) -> Resu
         Some("indirect") => Ok(3),
         Some("sun") => Ok(4),
         Some("sun-reference") => Ok(5),
-        _ => Err("VOXEL_GI_VALIDATE_LIGHT_COMPONENT must be combined, indirect, sun or sun-reference."),
+        Some("face-validity") => Ok(6),
+        _ => Err("VOXEL_GI_VALIDATE_LIGHT_COMPONENT must be combined, indirect, sun, sun-reference or face-validity."),
     }
 }
 
@@ -341,7 +343,7 @@ mod tests {
 
     #[test]
     fn motion_diagnostics_are_explicit_and_exclusive() {
-        for (component, expected) in [(None, 0), (Some("combined"), 1), (Some("indirect"), 3), (Some("sun"), 4), (Some("sun-reference"), 5)] {
+        for (component, expected) in [(None, 0), (Some("combined"), 1), (Some("indirect"), 3), (Some("sun"), 4), (Some("sun-reference"), 5), (Some("face-validity"), 6)] {
             assert_eq!(motion_diagnostic(false, component), Ok(expected));
         }
         assert_eq!(motion_diagnostic(true, None), Ok(2));
