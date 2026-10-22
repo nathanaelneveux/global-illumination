@@ -120,61 +120,76 @@ struct FarPixel {
 }
 struct FarOutput {
     viewport: vec4<u32>, shape: vec4<u32>, optical: array<vec4<f32>, 1024>,
-    keys: array<u32, 131072>, pixels: array<FarPixel>,
+    keys: array<u32, 131072>,
+    heads: array<u32, 32768>, links: array<u32, 65536>,
+    pixels: array<FarPixel>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(110)
 var<storage, read> far_view: FarOutput;
 
 // Geometry-aware upsampling only. No value is reused across an unrelated
 // face orientation or depth plane, even at foreground/background edges.
+fn far_face_index(voxel: vec3<i32>, face: u32) -> u32 {
+    var slot = (hash_voxel(voxel) ^ pcg(face + 1u)) & far_view.shape.w;
+    for (var step = 0u; step < 64u; step++) {
+        let entry = far_view.keys[slot];
+        if entry == 0u { break; }
+        let value = far_view.pixels[entry - 1u];
+        let donor = vec3<i32>(floor(value.surface - vec3<f32>(FACE_NORMALS[face]) * 0.01));
+        if value.face == face && all(donor == voxel) { return entry - 1u; }
+        slot = (slot + 1u) & far_view.shape.w;
+    }
+    return 0xffffffffu;
+}
+
+fn far_value(donor: FarPixel, position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec3<f32> {
+    if !sky { return donor.irradiance; }
+    let local = position - floor(donor.surface - normal * 0.01);
+    var uv = local.yz;
+    if donor.face / 2u == 1u { uv = local.xz; }
+    else if donor.face / 2u == 2u { uv = local.xy; }
+    return resolve_sky_corners(donor.sky, normal, uv).rgb;
+}
+
 fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec4<f32> {
     if far_view.shape.z == 0u { return vec4(0.0); }
     let uv = (pixel - vec2<f32>(far_view.viewport.xy)) / vec2<f32>(far_view.viewport.zw);
     if any(uv < vec2(0.0)) || any(uv >= vec2(1.0)) { return vec4(0.0); }
-    let grid = uv * vec2<f32>(far_view.shape.xy) - 0.5;
-    let base = vec2<i32>(floor(grid));
     let voxel = vec3<i32>(floor(position - normal * 0.01));
     let surface = vec3<f32>(voxel) + 0.5 + normal * 0.5;
+    let exact = far_face_index(voxel, face_index_of(normal));
+    if exact != 0xffffffffu {
+        let value = far_view.pixels[exact];
+        if (!sky && value.evidence > 0.0) || (sky && all(value.sky != vec4(0u))) {
+            return vec4(far_value(value, position, normal, sky), 1.0);
+        }
+    }
+    // Physical slots have no screen location. Search the four closest spatial
+    // bins, including the containing bin, with unchanged world geometry gates.
+    let tiles = (far_view.shape.xy + 1u) / 2u;
+    let base = vec2<i32>(floor(uv * vec2<f32>(far_view.shape.xy) * 0.5 - 0.5));
     var sum = vec3(0.0);
     var weight = 0.0;
-    // Discovery may move a representative to another slot in its tile. Only
-    // when the ordinary footprint is empty, search one surrounding ring (6x6
-    // slots total). Stop as soon as valid geometric support is available.
-    // Every ring uses identical world-space distance and plane gates.
-    for (var ring = 0; ring <= 1; ring++) {
-        for (var y = -1 - ring; y <= 2 + ring; y++) {
-            for (var x = -1 - ring; x <= 2 + ring; x++) {
-                if ring != 0 && x >= -ring && x <= 1 + ring && y >= -ring && y <= 1 + ring { continue; }
-                let q = base + vec2(x, y);
-                if any(q < vec2(0)) || any(q >= vec2<i32>(far_view.shape.xy)) { continue; }
-                let donor = far_view.pixels[u32(q.y) * far_view.shape.x + u32(q.x)];
+    for (var y = 0; y <= 1; y++) {
+        for (var x = 0; x <= 1; x++) {
+            let q = base + vec2(x, y);
+            if any(q < vec2(0)) || any(q >= vec2<i32>(tiles)) { continue; }
+            var entry = far_view.heads[u32(q.y) * tiles.x + u32(q.x)];
+            for (var visited = 0u; entry != 0u && visited < far_view.shape.x * far_view.shape.y; visited++) {
+                let index = entry - 1u;
+                entry = far_view.links[index];
+                let donor = far_view.pixels[index];
                 if donor.face >= 6u { continue; }
                 if !sky && donor.evidence == 0.0 { continue; }
                 if sky && any(donor.sky == vec4(0u)) { continue; }
                 if dot(vec3<f32>(FACE_NORMALS[donor.face]), normal) < 0.99 { continue; }
                 let delta = donor.surface - surface;
                 if abs(dot(delta, normal)) > 0.05 || dot(delta, delta) > 256.0 { continue; }
-                // Discovery redistributes representatives between grid slots.
-                // A slot is not the sample position: screen-slot weights change
-                // under camera motion even when receiver and donors do not.
                 let w = 1.0 / (0.25 + dot(delta, delta));
-                var value = donor.irradiance;
-                if sky {
-                    let voxel = floor(donor.surface - normal * 0.01);
-                    let local = position - voxel;
-                    var uv = local.yz;
-                    if donor.face / 2u == 1u { uv = local.xz; }
-                    else if donor.face / 2u == 2u { uv = local.xy; }
-                    value = resolve_sky_corners(donor.sky, normal, uv).rgb;
-                    // An exact face needs no screen-space blur: keep the same
-                    // bilinear corner interpolation as the near material.
-                    if all(abs(delta) < vec3(0.01)) { return vec4(value, 1.0); }
-                }
-                sum += value * w;
+                sum += far_value(donor, position, normal, sky) * w;
                 weight += w;
             }
         }
-        if weight > 0.0 { break; }
     }
     return vec4(sum / max(weight, 1e-8), select(0.0, 1.0, weight > 0.0));
 }
@@ -364,16 +379,10 @@ fn corner_value(center: vec4<f32>, edge_u: vec4<f32>, edge_v: vec4<f32>, diagona
 
 fn display_face(voxel: vec3<i32>, face: u32, view_owned: bool) -> vec4<f32> {
     if !view_owned { return lookup_face(voxel, face); }
-    var slot = (hash_voxel(voxel) ^ pcg(face + 1u)) & far_view.shape.w;
-    for (var step = 0u; step < 64u; step++) {
-        let entry = far_view.keys[slot];
-        if entry == 0u { break; }
-        let value = far_view.pixels[entry - 1u];
-        let donor = vec3<i32>(floor(value.surface - vec3<f32>(FACE_NORMALS[face]) * 0.01));
-        if value.face == face && all(donor == voxel) {
-            return vec4(value.irradiance, min(value.evidence, 1.0));
-        }
-        slot = (slot + 1u) & far_view.shape.w;
+    let index = far_face_index(voxel, face);
+    if index != 0xffffffffu {
+        let value = far_view.pixels[index];
+        return vec4(value.irradiance, min(value.evidence, 1.0));
     }
     return vec4(0.0);
 }

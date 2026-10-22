@@ -32,6 +32,8 @@ struct FarOutput {
     shape: vec4<u32>,
     optical: array<vec4<f32>, 1024>,
     keys: array<u32, 131072>, // visible face -> owner pixel + 1; zero is empty
+    heads: array<u32, 32768>, // projected 2x2-cell tile -> first pool slot + 1
+    links: array<u32, 65536>, // spatial list, independent of physical slot order
     pixels: array<FarPixel>,
 }
 @group(2) @binding(0) var<uniform> view: ViewControl;
@@ -51,9 +53,6 @@ struct FarOutput {
 @group(2) @binding(14) var<storage, read_write> shared_state: array<vec4<u32>>;
 @group(2) @binding(15) var<storage, read_write> shared_meta: array<vec4<u32>>;
 @group(2) @binding(16) var<storage, read> cache_guard: array<u32>;
-// Two words per tile: fingerprint/flags/scan frame, then four face-local
-// UNORM16x2 visibility witnesses. Each workgroup exclusively owns one tile.
-@group(2) @binding(17) var<storage, read_write> discovery_tiles: array<vec4<u32>>;
 
 // #include voxel_retention.wgsl
 // #include voxel_view_cache.wgsl
@@ -242,17 +241,22 @@ fn reconstruct_view(@builtin(global_invocation_id) id: vec3<u32>) {
     if receiver.face >= 6u || owner_of(receiver) != id.x { return; }
     let center = estimates[id.x];
     let normal = face_normal(receiver.face);
-    let xy = vec2<i32>(i32(id.x % view.grid.x), i32(id.x / view.grid.x));
-    let radius = i32(clamp(ceil(sqrt(view.display.x / max(center.mean.w, 1.0) / 3.14159)), 1.0, 8.0));
+    let tiles = tile_shape();
+    let tile = pool.slots[id.x].tile;
+    let xy = vec2<i32>(i32(tile % tiles.x), i32(tile / tiles.x));
+    let radius = i32(clamp(ceil(sqrt(view.display.x / max(center.mean.w, 1.0) / 3.14159) * 0.5), 1.0, 4.0));
     var sum = center.mean.rgb * center.mean.w;
     var weight = center.mean.w;
     if center.mean.w < view.display.x && view.display.y > 0.0 {
         for (var y = -radius; y <= radius; y++) {
             for (var x = -radius; x <= radius; x++) {
-                if x == 0 && y == 0 { continue; }
                 let q = xy + vec2(x, y);
-                if any(q < vec2(0)) || any(q >= vec2<i32>(view.grid.xy)) { continue; }
-                let candidate = u32(q.y) * view.grid.x + u32(q.x);
+                if any(q < vec2(0)) || any(q >= vec2<i32>(tiles)) { continue; }
+                var entry = atomicLoad(&pool.tiles[u32(q.y) * tiles.x + u32(q.x)].head);
+                for (var visited = 0u; entry != 0u && visited < view.grid.z; visited++) {
+                let candidate = entry - 1u;
+                entry = pool.slots[candidate].next;
+                if candidate == id.x { continue; }
                 let donor = receivers[candidate];
                 if donor.face != receiver.face { continue; }
                 let delta = donor.surface - receiver.surface;
@@ -262,6 +266,7 @@ fn reconstruct_view(@builtin(global_invocation_id) id: vec3<u32>) {
                 let w = min(value.w, 1024.0) / (1.0 + d2 * 0.0625);
                 sum += value.rgb * w;
                 weight += w;
+                }
             }
         }
     }
@@ -278,19 +283,20 @@ fn publish_view(@builtin(global_invocation_id) id: vec3<u32>) {
         far_output.viewport = view.viewport;
         far_output.shape = vec4(view.grid.xy, 1u | (view.history.w << 1u), view.grid.w);
     }
+    let tiles = tile_shape();
+    if id.x < tiles.x * tiles.y { far_output.heads[id.x] = atomicLoad(&pool.tiles[id.x].head); }
+    far_output.links[id.x] = pool.slots[id.x].next;
     // Publish the already-built GPU index, not a second CPU world directory.
     // Striding covers its power-of-two padding even for non-power-of-two grids.
-    if view.history.w != 0u {
-        for (var slot = id.x; slot <= view.grid.w; slot += view.grid.z) {
-            far_output.keys[slot] = atomicLoad(&current_hash[slot]);
-        }
+    for (var slot = id.x; slot <= view.grid.w; slot += view.grid.z) {
+        far_output.keys[slot] = atomicLoad(&current_hash[slot]);
     }
     let receiver = receivers[id.x];
     var output: FarPixel;
     output.face = 0xffffffffu;
     if receiver.face < 6u {
         let owner = owner_of(receiver);
-        if owner != 0xffffffffu {
+        if owner == id.x {
             let value = estimates[owner];
             output.surface = receiver.surface;
             output.face = receiver.face;

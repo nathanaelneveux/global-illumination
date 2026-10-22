@@ -1,6 +1,6 @@
-// Surface-aware downsampling. Four neighbouring screen cells keep their normal
-// centre samples, but redundant coplanar samples make room for thin surfaces in
-// their shared footprint. No additional lighting receivers or rays are needed.
+// Surface-aware discovery backed by a shared receiver pool. Screen tiles index
+// projected faces but do not reserve physical slots. Receiver and ray budgets
+// remain bounded independently of the number of planes in a particular tile.
 fn prepass_face(pixel: vec2<i32>) -> u32 {
     let decoded = textureLoad(normals, pixel, 0).xyz * 2.0 - 1.0;
     if max(max(abs(decoded.x), abs(decoded.y)), abs(decoded.z)) < 0.99 { return 0xffffffffu; }
@@ -15,24 +15,6 @@ fn prepass_position(pixel: vec2<i32>, z: f32) -> vec3<f32> {
     let clip = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0);
     let homogeneous = view.world_from_clip * clip;
     return homogeneous.xyz / homogeneous.w;
-}
-
-// Coverage needs only orientation and plane, not a complete receiver or a
-// transport lookup. Cache four compact keys per round in invocation registers.
-fn receiver_plane(receiver: ViewReceiver) -> vec2<i32> {
-    if receiver.face >= 6u { return vec2(-1); }
-    return vec2(i32(receiver.face), receiver.voxel[receiver.face / 2u]);
-}
-
-fn prepass_plane(pixel: vec2<i32>) -> vec2<i32> {
-    let z = textureLoad(depth, pixel, 0);
-    if z <= 0.0 { return vec2(-1); }
-    let face = prepass_face(pixel);
-    if face >= 6u { return vec2(-1); }
-    let position = prepass_position(pixel, z);
-    if view.camera.w > 0.0 && distance(position, view.camera.xyz) < view.camera.w { return vec2(-1); }
-    let plane = i32(floor(round(position[face / 2u]) - select(-0.01, 0.01, (face & 1u) == 0u)));
-    return vec2(i32(face), plane);
 }
 
 fn prepass_receiver(pixel: vec2<i32>) -> ViewReceiver {
@@ -59,15 +41,29 @@ fn same_plane(a: ViewReceiver, b: ViewReceiver) -> bool {
     return a.voxel[a.face / 2u] == b.voxel[b.face / 2u];
 }
 
-var<workgroup> discovery_chosen: array<ViewReceiver, 4>;
-var<workgroup> discovery_centers: array<vec2<i32>, 4>;
-var<workgroup> discovery_witnesses: array<u32, 4>;
-var<workgroup> discovery_winner: atomic<u32>;
-var<workgroup> discovery_hash_xor: atomic<u32>;
-var<workgroup> discovery_hash_sum: atomic<u32>;
-var<workgroup> discovery_pending: atomic<u32>;
-var<workgroup> discovery_reuse: u32;
-const DISCOVERY_PERIOD: u32 = 4u;
+// Receiver slots are global; screen tiles only own linked spatial indices.
+// A separate dispatch validates retained witnesses and publishes the free list
+// before any tile allocates. No cross-workgroup spin or partially written key.
+struct PoolTile {
+    head: atomic<u32>, dirty: atomic<u32>,
+    fingerprint_xor: u32, fingerprint_sum: u32, pending: atomic<u32>,
+}
+struct PoolSlot { witness: u32, tile: u32, next: u32, free: u32, }
+struct ReceiverPool {
+    free_count: atomic<u32>, claimed: atomic<u32>,
+    exhausted: atomic<u32>, retained: atomic<u32>,
+    tiles: array<PoolTile, 32768>,
+    slots: array<PoolSlot>,
+}
+@group(2) @binding(17) var<storage, read_write> pool: ReceiverPool;
+@group(2) @binding(18) var<storage, read_write> previous_pool: ReceiverPool;
+
+fn tile_shape() -> vec2<u32> { return (view.grid.xy + 1u) / 2u; }
+fn tile_of_pixel(pixel: vec2<i32>) -> u32 {
+    let cell = (vec2<u32>(pixel) - view.viewport.xy) * view.grid.xy / view.viewport.zw;
+    let tile = min(cell, view.grid.xy - 1u) / 2u;
+    return tile.y * tile_shape().x + tile.x;
+}
 
 // Reproject the visible point, not the voxel centre: a partially occluded or
 // grazing face's centre may never have been visible. Face-local coordinates
@@ -94,11 +90,6 @@ fn pack_witness(receiver: ViewReceiver, pixel: vec2<i32>) -> u32 {
     return pack2x16unorm(clamp(uv, vec2(1.0 / 65535.0), vec2(1.0 - 1.0 / 65535.0)));
 }
 
-fn save_witnesses(tile: u32) {
-    discovery_tiles[tile * 2u + 1u] = vec4(discovery_witnesses[0],
-        discovery_witnesses[1], discovery_witnesses[2], discovery_witnesses[3]);
-}
-
 fn receiver_exists(receiver: ViewReceiver) -> bool {
     if receiver.face >= 6u { return false; }
     let voxel = vec3<i32>(receiver.voxel.x, receiver.voxel.y, receiver.voxel.z);
@@ -106,192 +97,207 @@ fn receiver_exists(receiver: ViewReceiver) -> bool {
         && voxel_material(voxel + vec3<i32>(face_normal(receiver.face))) == 256u;
 }
 
-fn publish_discovery(index: u32, receiver: ViewReceiver) {
+
+fn publish_receiver(index: u32, receiver: ViewReceiver) {
     var estimate: ViewEstimate;
     if receiver.face < 6u { estimate.identity.y = voxel_material(receiver.voxel); }
     receivers[index] = receiver;
     estimates[index] = estimate;
 }
 
+// All old slots are classified before discovery. Surviving faces keep their
+// physical slot even when they cross tile boundaries; face-keyed reprojection
+// still owns raw moments, QMC indices and unfinished paths.
+@compute @workgroup_size(64)
+fn prepare_receiver_pool(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= view.grid.z { return; }
+    let tiles = tile_shape();
+    if id.x < tiles.x * tiles.y && view.discovery.y != 0u {
+        pool.tiles[id.x].fingerprint_xor = previous_pool.tiles[id.x].fingerprint_xor;
+        pool.tiles[id.x].fingerprint_sum = previous_pool.tiles[id.x].fingerprint_sum;
+        if atomicLoad(&previous_pool.tiles[id.x].pending) != 0u {
+            atomicOr(&pool.tiles[id.x].dirty, 1u);
+        }
+    }
+    var receiver: ViewReceiver;
+    receiver.face = 0xffffffffu;
+    if view.history.x != 0u && view.discovery.y != 0u {
+        let old = previous_receivers[id.x];
+        if old.face < 6u && previous_owner(old) != id.x {
+            // Removing a duplicate also changes its old spatial bin. The
+            // surviving face key remains globally addressable, but that bin
+            // may need another representative for neighbouring surfaces.
+            atomicOr(&pool.tiles[previous_pool.slots[id.x].tile].dirty, 1u);
+        }
+        if old.face < 6u && previous_owner(old) == id.x {
+            let pixel = reproject_witness(old, previous_pool.slots[id.x].witness);
+            let in_view = all(pixel >= vec2<i32>(view.viewport.xy))
+                && all(pixel < vec2<i32>(view.viewport.xy + view.viewport.zw));
+            var valid = false;
+            if in_view { valid = same_receiver(old, prepass_receiver(pixel)) && receiver_exists(old); }
+            let old_tile = previous_pool.slots[id.x].tile;
+            if valid {
+                receiver = old;
+                let tile = tile_of_pixel(pixel);
+                pool.slots[id.x].witness = previous_pool.slots[id.x].witness;
+                pool.slots[id.x].tile = tile;
+                pool.slots[id.x].next = atomicExchange(&pool.tiles[tile].head, id.x + 1u);
+                atomicAdd(&pool.retained, 1u);
+                if old_tile != tile {
+                    atomicOr(&pool.tiles[old_tile].dirty, 1u);
+                    atomicOr(&pool.tiles[tile].dirty, 1u);
+                }
+            } else { atomicOr(&pool.tiles[old_tile].dirty, 1u); }
+        }
+    }
+    publish_receiver(id.x, receiver);
+    if receiver.face >= 6u {
+        let free = atomicAdd(&pool.free_count, 1u);
+        pool.slots[free].free = id.x;
+    }
+}
+
+fn pool_covers(tile: u32, receiver: ViewReceiver) -> bool {
+    var entry = atomicLoad(&pool.tiles[tile].head);
+    for (var visited = 0u; entry != 0u && visited < view.grid.z; visited++) {
+        let other = receivers[entry - 1u];
+        let delta = other.surface - receiver.surface;
+        if same_plane(other, receiver) && dot(delta, delta) <= 256.0 { return true; }
+        entry = pool.slots[entry - 1u].next;
+    }
+    return false;
+}
+
+fn occupied_cell(tile: u32, cell: vec2<u32>) -> bool {
+    var entry = atomicLoad(&pool.tiles[tile].head);
+    for (var visited = 0u; entry != 0u && visited < view.grid.z; visited++) {
+        let index = entry - 1u;
+        let pixel = reproject_witness(receivers[index], pool.slots[index].witness);
+        let q = (vec2<u32>(pixel) - view.viewport.xy) * view.grid.xy / view.viewport.zw;
+        if all(q == cell) { return true; }
+        entry = pool.slots[index].next;
+    }
+    return false;
+}
+
+// Called by one invocation per tile. Free slots are from the completed prepare
+// pass; the slot's identity and links are visible to this tile after a barrier.
+fn allocate_receiver(tile: u32, pixel: vec2<i32>, receiver: ViewReceiver) -> bool {
+    let claim = atomicAdd(&pool.claimed, 1u);
+    if claim >= atomicLoad(&pool.free_count) {
+        atomicAdd(&pool.exhausted, 1u);
+        return false;
+    }
+    let index = pool.slots[claim].free;
+    publish_receiver(index, receiver);
+    pool.slots[index].witness = pack_witness(receiver, pixel);
+    pool.slots[index].tile = tile;
+    pool.slots[index].next = atomicLoad(&pool.tiles[tile].head);
+    atomicStore(&pool.tiles[tile].head, index + 1u);
+    return true;
+}
+
+var<workgroup> pool_winner: atomic<u32>;
+var<workgroup> pool_hash_xor: atomic<u32>;
+var<workgroup> pool_hash_sum: atomic<u32>;
+var<workgroup> pool_done: u32;
+var<workgroup> pool_dirty: u32;
+
 @compute @workgroup_size(32)
 fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invocation_index) thread: u32) {
-    let tiles = (view.grid.xy + 1u) / 2u;
+    let tiles = tile_shape();
     if id.x >= tiles.x * tiles.y { return; }
     let cell = vec2(id.x % tiles.x, id.x / tiles.x) * 2u;
     let begin = view.viewport.xy + cell * view.viewport.zw / view.grid.xy;
     let end = view.viewport.xy + min(cell + 2u, view.grid.xy) * view.viewport.zw / view.grid.xy;
     let extent = end - begin;
     let pixels = extent.x * extent.y;
+    let check = (view.history.z + id.x) % 4u == 0u;
+    if thread == 0u {
+        pool_dirty = u32(atomicLoad(&pool.tiles[id.x].dirty) != 0u);
+        if view.discovery.x == 0u && atomicLoad(&pool.tiles[id.x].head) == 0u {
+            for (var lane = 0u; lane < 4u; lane++) {
+                let q = cell + vec2(lane & 1u, lane >> 1u);
+                if any(q >= view.grid.xy) { continue; }
+                let uv = (vec2<f32>(q) + 0.5) / vec2<f32>(view.grid.xy);
+                let pixel = vec2<i32>(view.viewport.xy + min(vec2<u32>(uv * vec2<f32>(view.viewport.zw)), view.viewport.zw - 1u));
+                if prepass_receiver(pixel).face < 6u { pool_dirty = 1u; break; }
+            }
+        }
+        pool_done = u32(view.history.x != 0u && view.discovery.y != 0u && pool_dirty == 0u && !check);
+    }
+    if workgroupUniformLoad(&pool_done) != 0u { return; }
+    let dirty = workgroupUniformLoad(&pool_dirty) != 0u;
 
-    let check = (view.history.z + id.x) % DISCOVERY_PERIOD == 0u;
-    let compatible = view.discovery.x != 0u || view.discovery.y != 0u;
-    if thread == 0u { atomicStore(&discovery_pending, 0u); }
-    if thread < 4u {
-        let q = cell + vec2(thread & 1u, thread >> 1u);
-        discovery_chosen[thread].face = 0xffffffffu;
-        if all(q < view.grid.xy) {
-            let uv = (vec2<f32>(q) + 0.5) / vec2<f32>(view.grid.xy);
-            discovery_centers[thread] = vec2<i32>(view.viewport.xy + min(vec2<u32>(uv * vec2<f32>(view.viewport.zw)), view.viewport.zw - 1u));
-        }
+    if thread == 0u {
+        atomicStore(&pool_hash_xor, 0u);
+        atomicStore(&pool_hash_sum, 0u);
     }
     workgroupBarrier();
-    if compatible && thread < 4u {
-        let q = cell + vec2(thread & 1u, thread >> 1u);
-        if all(q < view.grid.xy) {
-            let receiver = previous_receivers[q.y * view.grid.x + q.x];
-            if receiver.face < 6u {
-                let packed = discovery_tiles[id.x * 2u + 1u][thread];
-                var valid = true;
-                if check || view.discovery.x == 0u {
-                    let witness = reproject_witness(receiver, packed);
-                    valid = all(witness >= vec2<i32>(begin)) && all(witness < vec2<i32>(end));
-                    if valid { valid = same_receiver(receiver, prepass_receiver(witness)); }
-                }
-                if valid && receiver_exists(receiver) {
-                    discovery_chosen[thread] = receiver;
-                    discovery_witnesses[thread] = packed;
-                } else { atomicOr(&discovery_pending, 1u); }
-            } else if view.discovery.x == 0u {
-                // A sky tile has no old witness to reject on a camera turn.
-                // Check its vacant centres so newly exposed terrain starts now.
-                if prepass_receiver(discovery_centers[thread]).face < 6u {
-                    atomicOr(&discovery_pending, 1u);
-                }
-            }
-        }
-    }
-    workgroupBarrier();
-    // Reuse selection, never stale lighting. Motion validates projected witness
-    // pixels each frame. Static views also fingerprint their footprint; moving
-    // views search it once per four-frame phase, or immediately on lost witnesses.
-    if compatible {
-        if thread == 0u {
-            atomicStore(&discovery_hash_xor, 0u);
-            atomicStore(&discovery_hash_sum, 0u);
-        }
-        workgroupBarrier();
-        if check && view.discovery.x != 0u {
-            var xor = 0u;
-            var sum = 0u;
-            for (var offset = thread; offset < pixels; offset += 32u) {
-                let pixel = vec2<i32>(begin + vec2(offset % extent.x, offset / extent.x));
-                let z = textureLoad(depth, pixel, 0);
-                let face = select(0xffffffffu, prepass_face(pixel), z > 0.0);
-                let value = pcg(bitcast<u32>(z) ^ pcg(offset * 7u + face));
-                xor ^= value;
-                sum += pcg(value ^ 0x9e3779b9u);
-            }
-            atomicXor(&discovery_hash_xor, xor);
-            atomicAdd(&discovery_hash_sum, sum);
-        }
-        workgroupBarrier();
-        if thread == 0u {
-            let cached = discovery_tiles[id.x * 2u];
-            let matched = (cached.z & 2u) != 0u
-                && cached.x == atomicLoad(&discovery_hash_xor)
-                && cached.y == atomicLoad(&discovery_hash_sum);
-            discovery_reuse = u32((cached.z & 1u) != 0u && (!check || (view.discovery.x != 0u && matched))
-                && (view.history.z + id.x) % 64u != 0u);
-        }
-        if workgroupUniformLoad(&discovery_reuse) != 0u {
-            if thread == 0u { discovery_reuse = u32(atomicLoad(&discovery_pending) == 0u); }
-            if workgroupUniformLoad(&discovery_reuse) != 0u {
-                if thread == 0u { save_witnesses(id.x); }
-                if thread < 4u {
-                    let q = cell + vec2(thread & 1u, thread >> 1u);
-                    if all(q < view.grid.xy) {
-                        let index = q.y * view.grid.x + q.x;
-                        publish_discovery(index, discovery_chosen[thread]);
-                    }
-                }
-                return;
-            }
-        }
-    }
-
-    if thread == 0u { atomicStore(&discovery_pending, 0u); }
-    workgroupBarrier();
-    if thread < 4u {
-        let q = cell + vec2(thread & 1u, thread >> 1u);
-        if all(q < view.grid.xy) && discovery_chosen[thread].face >= 6u {
-            let receiver = prepass_receiver(discovery_centers[thread]);
-            if receiver_exists(receiver) {
-                discovery_chosen[thread] = receiver;
-                discovery_witnesses[thread] = pack_witness(receiver, discovery_centers[thread]);
-            }
-            else if receiver.face < 6u { atomicOr(&discovery_pending, 1u); }
-        }
-    }
-    workgroupBarrier();
-    // Parallel prepass classification, with one deterministic replacement per
-    // round. Coordinated selection cannot evict every copy of the background
-    // for the same thin plane. Flat tiles finish after one scan.
-    for (var round = 0u; round < 4u; round++) {
-        if thread == 0u { atomicStore(&discovery_winner, 0xffffffffu); }
-        workgroupBarrier();
-        let p0 = receiver_plane(discovery_chosen[0]);
-        let p1 = receiver_plane(discovery_chosen[1]);
-        let p2 = receiver_plane(discovery_chosen[2]);
-        let p3 = receiver_plane(discovery_chosen[3]);
+    if view.discovery.x != 0u {
+        var xor = 0u;
+        var sum = 0u;
         for (var offset = thread; offset < pixels; offset += 32u) {
             let pixel = vec2<i32>(begin + vec2(offset % extent.x, offset / extent.x));
-            let plane = prepass_plane(pixel);
-            if plane.x < 0 || all(p0 == plane) || all(p1 == plane) || all(p2 == plane) || all(p3 == plane) { continue; }
-            let orientation = any(vec4(p0.x, p1.x, p2.x, p3.x) == vec4(plane.x));
-            var replace = 4u;
-            var distance = 0x7fffffffu;
-            for (var lane = 0u; lane < 4u; lane++) {
-                if any(cell + vec2(lane & 1u, lane >> 1u) >= view.grid.xy) { continue; }
-                var redundant = discovery_chosen[lane].face >= 6u;
-                for (var other = 0u; other < 4u; other++) {
-                    if other == lane { continue; }
-                    redundant = redundant || same_plane(discovery_chosen[lane], discovery_chosen[other])
-                        || (!orientation && discovery_chosen[lane].face < 6u
-                            && discovery_chosen[lane].face == discovery_chosen[other].face);
-                }
-                let delta = pixel - discovery_centers[lane];
-                let d2 = u32(dot(delta, delta));
-                if redundant && d2 < distance { replace = lane; distance = d2; }
-            }
-            // A raster/transport geometry lag must not displace a valid owner.
-            if replace < 4u {
-                if receiver_exists(prepass_receiver(pixel)) {
-                    // Lexicographic distance/slot/pixel ordering, independent of
-                    // thread arrival order. The rank fits u32 for 16K viewports.
-                    atomicMin(&discovery_winner, (distance * 4u + replace) * pixels + offset);
-                } else {
-                    // Geometry uploads can catch up without changing the
-                    // prepass. Do not memoize a selection that excluded them.
-                    atomicOr(&discovery_pending, 1u);
-                }
-            }
+            let z = textureLoad(depth, pixel, 0);
+            let face = select(0xffffffffu, prepass_face(pixel), z > 0.0);
+            let value = pcg(bitcast<u32>(z) ^ pcg(offset * 7u + face));
+            xor ^= value;
+            sum += pcg(value ^ 0x9e3779b9u);
+        }
+        atomicXor(&pool_hash_xor, xor);
+        atomicAdd(&pool_hash_sum, sum);
+    }
+    workgroupBarrier();
+    if thread == 0u {
+        let matched = pool.tiles[id.x].fingerprint_xor == atomicLoad(&pool_hash_xor)
+            && pool.tiles[id.x].fingerprint_sum == atomicLoad(&pool_hash_sum);
+        pool_done = u32(view.discovery.x != 0u && !dirty && matched
+            && (view.history.z + id.x) % 64u != 0u);
+        pool.tiles[id.x].fingerprint_xor = atomicLoad(&pool_hash_xor);
+        pool.tiles[id.x].fingerprint_sum = atomicLoad(&pool_hash_sum);
+    }
+    if workgroupUniformLoad(&pool_done) != 0u { return; }
+
+    // Keep the original coarse density where useful, without tying storage to
+    // those cells. Existing projected witnesses satisfy their current cell.
+    if thread == 0u {
+        pool_done = 0u;
+        for (var lane = 0u; lane < 4u; lane++) {
+            let q = cell + vec2(lane & 1u, lane >> 1u);
+            if any(q >= view.grid.xy) || occupied_cell(id.x, q) { continue; }
+            let uv = (vec2<f32>(q) + 0.5) / vec2<f32>(view.grid.xy);
+            let pixel = vec2<i32>(view.viewport.xy + min(vec2<u32>(uv * vec2<f32>(view.viewport.zw)), view.viewport.zw - 1u));
+            let receiver = prepass_receiver(pixel);
+            if receiver.face >= 6u { continue; }
+            if receiver_exists(receiver) {
+                if !allocate_receiver(id.x, pixel, receiver) { pool_done = 1u; break; }
+            } else { atomicStore(&pool.tiles[id.x].pending, 1u); }
+        }
+    }
+    storageBarrier();
+    if workgroupUniformLoad(&pool_done) != 0u { return; }
+
+    // Every newly represented plane removes its candidates from the next round.
+    // The bound is the actual footprint, not a per-tile receiver quota.
+    for (var round = 0u; round < pixels; round++) {
+        if thread == 0u { atomicStore(&pool_winner, 0xffffffffu); }
+        workgroupBarrier();
+        for (var offset = thread; offset < pixels; offset += 32u) {
+            let pixel = vec2<i32>(begin + vec2(offset % extent.x, offset / extent.x));
+            let receiver = prepass_receiver(pixel);
+            if receiver.face >= 6u || pool_covers(id.x, receiver) { continue; }
+            if receiver_exists(receiver) { atomicMin(&pool_winner, offset); }
+            else { atomicStore(&pool.tiles[id.x].pending, 1u); }
         }
         workgroupBarrier();
-        let winner = atomicLoad(&discovery_winner);
+        let winner = atomicLoad(&pool_winner);
         if winner == 0xffffffffu { break; }
         if thread == 0u {
-            let offset = winner % pixels;
-            let lane = (winner / pixels) % 4u;
-            discovery_chosen[lane] = prepass_receiver(vec2<i32>(begin + vec2(offset % extent.x, offset / extent.x)));
-            discovery_witnesses[lane] = pack_witness(discovery_chosen[lane], vec2<i32>(begin + vec2(offset % extent.x, offset / extent.x)));
+            let pixel = vec2<i32>(begin + vec2(winner % extent.x, winner / extent.x));
+            pool_done = u32(!allocate_receiver(id.x, pixel, prepass_receiver(pixel)));
         }
-        workgroupBarrier();
-    }
-    if thread == 0u {
-        let ready = u32(atomicLoad(&discovery_pending) == 0u);
-        var cached = vec4(0u, 0u, ready, view.history.z + 1u);
-        if view.discovery.x != 0u && check {
-            cached = vec4(atomicLoad(&discovery_hash_xor), atomicLoad(&discovery_hash_sum),
-                ready | 2u, view.history.z + 1u);
-        }
-        discovery_tiles[id.x * 2u] = cached;
-        save_witnesses(id.x);
-    }
-    if thread < 4u {
-        let q = cell + vec2(thread & 1u, thread >> 1u);
-        if any(q >= view.grid.xy) { return; }
-        let index = q.y * view.grid.x + q.x;
-        let receiver = discovery_chosen[thread];
-        publish_discovery(index, receiver);
+        storageBarrier();
+        if workgroupUniformLoad(&pool_done) != 0u { break; }
     }
 }

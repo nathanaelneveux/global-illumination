@@ -23,6 +23,7 @@ use bevy::{
 };
 
 const MAX_PIXELS: u32 = 65536;
+const POOL_PREFIX_BYTES: usize = 16 + 32768 * 20;
 const DISPLAY_BYTES: u64 = OUTPUT_PREFIX_BYTES + MAX_PIXELS as u64 * 48;
 #[derive(Resource, Clone, ExtractResource)]
 struct ViewSettings {
@@ -178,6 +179,7 @@ struct History {
     tails: UploadBuffer,
     estimates: UploadBuffer,
     hash: UploadBuffer,
+    pool: UploadBuffer,
 }
 impl History {
     fn new(device: &RenderDevice, count: u32) -> Self {
@@ -191,6 +193,7 @@ impl History {
                 "Far reprojection index",
                 (count * 2).next_power_of_two() as usize * 4,
             ),
+            pool: storage(device, "Far shared receiver pool and spatial index", POOL_PREFIX_BYTES + count as usize * 16),
         }
     }
 }
@@ -198,7 +201,6 @@ struct CameraState {
     history: [History; 2],
     current: usize,
     grid: UVec2,
-    discovery_tiles: UploadBuffer,
     discovery_view: Option<(Mat4, UVec4, f32, u32)>,
     valid: bool,
     control: UploadBuffer,
@@ -223,14 +225,12 @@ struct BindingKey {
 impl CameraState {
     fn new(device: &RenderDevice, grid: UVec2) -> Self {
         let count = grid.element_product();
-        let tiles = grid.x.div_ceil(2) * grid.y.div_ceil(2);
         let uniform =
             |name| UploadBuffer::new(device, name, BufferUsages::UNIFORM | BufferUsages::COPY_DST);
         Self {
             history: [History::new(device, count), History::new(device, count)],
             current: 0,
             grid,
-            discovery_tiles: storage(device, "Far discovery fingerprints and witnesses", tiles as usize * 32),
             discovery_view: None,
             valid: false,
             control: uniform("Far view control"),
@@ -275,6 +275,7 @@ fn shader(multisampled: bool) -> String {
 
 #[derive(Resource)]
 struct ViewRenderer {
+    prepare_pool: [Kernel; 2],
     discover: [Kernel; 2],
     index: Kernel,
     reproject: Kernel,
@@ -316,12 +317,14 @@ impl FromWorld for ViewRenderer {
             bindings: bindings.map(|indices| indices.to_vec()),
         };
         Self {
+            prepare_pool: [0, 1].map(|m| make("prepare_receiver_pool", m, false,
+                [&[0, 1, 2, 3, 6], &[], &[0, 1, 5, 6, 8, 9, 17, 18]])),
             discover: [0, 1].map(|m| {
                 make(
                     "discover_receivers",
                     m,
                     false,
-                    [&[0, 1, 2, 3, 6], &[], &[0, 1, 5, 8, 9, 17]],
+                    [&[0, 1, 2, 3, 6], &[], &[0, 5, 8, 9, 17]],
                 )
             }),
             index: make("index_receivers", 0, false, [&[6], &[], &[0, 7, 10]]),
@@ -349,8 +352,8 @@ impl FromWorld for ViewRenderer {
                 [&[6, 7, 10], &[0, 1], &[0, 5, 7, 10, 14, 15, 16]]),
             store_cache: make("store_shared_faces", 0, false,
                 [&[6, 10], &[], &[0, 5, 7, 10, 14, 15, 16]]),
-            reconstruct: make("reconstruct_view", 0, false, [&[6], &[], &[0, 5, 7]]),
-            publish: make("publish_view", 0, false, [&[0, 1, 2, 3, 5, 6], &[0], &[0, 5, 7, 10, 11]]),
+            reconstruct: make("reconstruct_view", 0, false, [&[6], &[], &[0, 5, 7, 17]]),
+            publish: make("publish_view", 0, false, [&[0, 1, 2, 3, 5, 6], &[0], &[0, 5, 7, 10, 11, 17]]),
             cameras: default(),
             frame: 0,
             at: Instant::now(),
@@ -363,7 +366,7 @@ impl FromWorld for ViewRenderer {
 
 fn grid_size(viewport: UVec2) -> UVec2 {
     // Nominal four-pixel cells, capped storage at larger viewports. Discovery
-    // redistributes each 2x2 group across visible planes within its footprint.
+    // uses 2x2-cell spatial bins; physical receiver slots are shared globally.
     let mut grid = UVec2::new(viewport.x.div_ceil(4), viewport.y.div_ceil(4)).max(UVec2::ONE);
     if grid.x * grid.y > MAX_PIXELS {
         let scale = (MAX_PIXELS as f32 / (grid.x * grid.y) as f32).sqrt();
@@ -599,6 +602,7 @@ fn render_view(
     let encoder = ctx.command_encoder();
     encoder.copy_buffer_to_buffer(&scene.buffers[3], 0, &output.buffer, 32, 16384);
     encoder.clear_buffer(&current.hash.buffer, 0, None);
+    encoder.clear_buffer(&current.pool.buffer, 0, Some(POOL_PREFIX_BYTES as u64));
     encoder.clear_buffer(&camera.queue.buffer, 0, Some(48));
     let multisampled = msaa.samples() > 1;
     let limited = scene.params.transport.x < crate::voxel_gi::tracer::MAX_PATH_DISTANCE;
@@ -611,6 +615,7 @@ fn render_view(
         &renderer.reconstruct,
         &renderer.store_cache,
         &renderer.publish,
+        &renderer.prepare_pool[usize::from(multisampled)],
     ];
     let make_groups = |kernel: &Kernel, change: Option<&ViewChange>| -> Vec<BindGroup> {
         kernel
@@ -634,7 +639,8 @@ fn render_view(
                                 14 => scene.buffers[6].as_entire_binding(),
                                 15 => scene.cache.as_ref().map_or(&scene.buffers[6], |cache| &cache.meta).as_entire_binding(),
                                 16 => scene.cache.as_ref().map_or(&scene.buffers[6], |cache| &cache.guard).as_entire_binding(),
-                                17 => camera.discovery_tiles.buffer.as_entire_binding(),
+                                17 => current.pool.buffer.as_entire_binding(),
+                                18 => previous.pool.buffer.as_entire_binding(),
                                 _ => group2[binding as usize].as_entire_binding(),
                             },
                         };
@@ -707,6 +713,16 @@ fn render_view(
             label: Some("Far view GI"),
             timestamp_writes: timestamps,
         });
+        if stage == 0 {
+            // Dispatch ordering publishes the complete free list and retained
+            // spatial lists before any tile borrows a slot. Both passes are
+            // included in the existing discovery timestamp pair.
+            pass.set_pipeline(&renderer.prepare_pool[usize::from(multisampled)].pipeline);
+            for (group, binding) in camera.groups[camera.current][8].iter().enumerate() {
+                pass.set_bind_group(group as u32, &**binding, &[]);
+            }
+            pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
+        }
         pass.set_pipeline(&kernel.pipeline);
         if retained {
             for groups in &changes {

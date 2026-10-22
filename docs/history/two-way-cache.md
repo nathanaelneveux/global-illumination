@@ -402,3 +402,36 @@ retained one-ring material (`target/moving-ring1-material.log`). Production
 Clippy passed on the unchanged Rust (`target/moving-clippy-final.log`).
 The final `cargo build --release --locked --offline` passes with the existing
 release-only unused/dead-code warnings (`target/moving-final-release.log`).
+
+## Shared receiver pool experiment (2026-10-22)
+
+Branch `codex/shared-view-receiver-pool` starts from `9950a99`; the clean control
+is `codex/shared-pool-baseline` at that commit in the existing baseline worktree.
+This checkpoint proves native allocation/identity correctness, not gameplay
+performance or a promotion decision.
+
+Storage slots no longer encode screen coordinates. A preparation dispatch
+validates and reprojects old visibility witnesses, keeps surviving slots across
+tile boundaries, publishes per-tile linked spatial lists and collects a global
+free list. After that dispatch completes, discovery tiles borrow free slots for
+new representatives, without cross-workgroup spinning or publishing partial
+identities. Tile scans remain phased and fingerprinted. Occluded, invalid and
+duplicate slots are reclaimed; transport history remains face-keyed. Pool
+exhaustion is bounded, never an out-of-bounds allocation. The ordinary receiver
+and ray ceilings are unchanged; the spatial/free-list metadata is additional.
+
+Reconstruction and raster upsampling consume the spatial index rather than
+physical slot coordinates. Exact faces remain hash-addressed, including corner
+sunlight. The material checks the nearest four spatial bins for coplanar donors
+under the existing 16-voxel gate. Raw moments, QMC sequences, unfinished paths,
+retention and cache exchange are unchanged.
+
+Native test `native_view_discovery_keeps_thin_surfaces_without_growing_storage`
+now puts six depth planes plus one-pixel X/Y grazing faces in one crowded tile,
+with empty tiles elsewhere. It verifies borrowing beyond four local slots,
+stable stationary identities, cross-tile reprojection, occlusion/reappearance,
+odd grid edges and bounded exhaustion with nine total slots. Real transport
+geometry backs the synthetic prepass. Native single/MSAA pipelines, shader
+layout validation and full Bevy material composition pass. Logs are
+`target/pool-{native,pipelines,shader,material}.log`; the final cleanup only
+removes unused helpers and shares the existing exact-face lookup.

@@ -1,5 +1,5 @@
-//! Synthetic prepass coverage, not a lighting-quality screenshot. Single-pixel
-//! side faces between coarse sample centres must get real receiver identities.
+//! Native shared-pool coverage. Crowded tiles borrow physically unrelated slots;
+//! retained witnesses can cross tile boundaries without losing face identity.
 use super::*;
 use crate::voxel_gi::{
     emission::EmissionDistribution,
@@ -7,384 +7,184 @@ use crate::voxel_gi::{
     work::TraceWork,
     world::{AIR, PAGE_SIZE},
 };
+use std::collections::BTreeSet;
 
 #[test]
-fn discovery_rank_fits_the_supported_viewport_range() {
-    for width in [1u32, 3, 720, 1280, 1440, 2560, 3840, 8192, 16384] {
-        for height in [1u32, 3, 720, 1280, 1440, 2560, 3840, 8192, 16384] {
-            let viewport = UVec2::new(width, height);
-            let grid = grid_size(viewport);
-            let extent = UVec2::new((width * 2).div_ceil(grid.x), (height * 2).div_ceil(grid.y));
-            let pixels = extent.as_u64vec2().element_product();
-            let distance_bound = extent.as_u64vec2().length_squared();
-            assert!((distance_bound * 4 + 3) * pixels + pixels - 1 < u64::from(u32::MAX));
+fn pool_tile_directory_covers_supported_viewports() {
+    for width in [1, 3, 720, 1280, 2560, 3840, 8192, 16384] {
+        for height in [1, 3, 720, 1280, 1440, 2560, 8192, 16384] {
+            let grid = grid_size(UVec2::new(width, height));
+            assert!(grid.element_product() <= MAX_PIXELS);
+            assert!(grid.x.div_ceil(2) * grid.y.div_ceil(2) <= 32768);
         }
     }
 }
 
 #[test]
-#[ignore = "native thin-surface discovery with real transport geometry"]
+#[ignore = "native global receiver-pool and grazing-plane coverage"]
 fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
     let mut gpu = crate::voxel_gi::gpu::tests::native_tracer();
     let mut page = vec![AIR; volume_len(PAGE_SIZE)];
-    for a in 8..24 {
-        for b in 8..24 {
-            page[linear_index(UVec3::new(a, b, 7), PAGE_SIZE)] = 2;
+    for x in 8..24 {
+        for y in 8..24 {
+            page[linear_index(UVec3::new(x, y, 7 + (x - 8) % 6), PAGE_SIZE)] = 2;
         }
-        page[linear_index(UVec3::new(7, a, 8), PAGE_SIZE)] = 2;
-        page[linear_index(UVec3::new(a, 7, 8), PAGE_SIZE)] = 2;
+        page[linear_index(UVec3::new(7, x, 14), PAGE_SIZE)] = 2;
+        page[linear_index(UVec3::new(x, 7, 14), PAGE_SIZE)] = 2;
     }
     let scene = Arc::new(TransportScene::with_page_delta(
-        &TransportScene::default(),
-        vec![(IVec3::ZERO, page)],
-        &[],
+        &TransportScene::default(), vec![(IVec3::ZERO, page)], &[],
     ));
     let materials = VoxelMaterialTransportTable::default();
     let emitters = Arc::new(EmissionDistribution::with_importance(
-        &scene,
-        &materials,
-        VoxelGiSettings::default().sampling_importance(),
+        &scene, &materials, VoxelGiSettings::default().sampling_importance(),
     ));
-    gpu.submit_compact(
-        scene,
-        &TransportSources::default(),
-        &materials,
-        &mut TraceWork::default(),
-        0,
-        &emitters,
-        true,
-    )
-    .unwrap();
+    gpu.submit_compact(scene, &TransportSources::default(), &materials,
+        &mut TraceWork::default(), 0, &emitters, true).unwrap();
     let scene = gpu.view_scene().unwrap();
     let device = &gpu.context.device;
     let queue = &gpu.context.queue;
-    // Upload the exact depth values through R32Float in this synthetic fixture.
-    // Production depth/MSAA types are separately pipeline/composition tested.
-    let source = shader(false);
-    let mut sources = vec![("surface-aware", source.clone())];
-    if let Some(path) = std::env::var_os("VOXEL_GI_DISCOVERY_BASELINE") {
-        let old = std::fs::read_to_string(path).unwrap();
-        let (label, old) = if old.contains("// Receiver keys") {
-            let start = old
-                .find("@compute @workgroup_size(64)\nfn discover_receivers")
-                .unwrap();
-            let end = old[start..].find("// Receiver keys").unwrap() + start;
-            ("fixed-centre control", old[start..end].to_owned())
-        } else {
-            ("surface-aware control", old)
-        };
-        assert!(source.contains(include_str!(
-            "../../../../assets/shaders/voxel_view_discovery.wgsl"
-        )));
-        sources.push((
-            label,
-            source.replace(
-                include_str!("../../../../assets/shaders/voxel_view_discovery.wgsl"),
-                &old,
-            ),
-        ));
-    }
-    let size = wgpu::Extent3d {
-        width: 16,
-        height: 16,
-        depth_or_array_layers: 1,
-    };
-    let texture = |format| {
-        device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("coverage prepass"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        })
-    };
+    // Synthetic depth uploads use R32Float. The ordinary/MSAA depth pipeline
+    // layouts are separately covered by native_view_runtime_pipelines.
+    let source = shader(false).replace("texture_depth_2d", "texture_2d<f32>")
+        .replace("let z = textureLoad(depth, pixel, 0);",
+                 "let z = textureLoad(depth, pixel, 0).x;");
+    let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
+        label: Some("Shared pool coverage"), source: ShaderSource::Wgsl(source.into()),
+    });
+    let specs: [(&str, [&[u32]; 3]); 3] = [
+        ("prepare_receiver_pool", [&[0, 1, 2, 3, 6], &[], &[0, 1, 5, 6, 8, 9, 17, 18]]),
+        ("discover_receivers", [&[0, 1, 2, 3, 6], &[], &[0, 5, 8, 9, 17]]),
+        ("index_receivers", [&[6], &[], &[0, 7, 10]]),
+    ];
+    let kernels = specs.map(|(name, bindings)| Kernel {
+        pipeline: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(name), layout: None, module: &module, entry_point: Some(name),
+            compilation_options: default(), cache: None,
+        }),
+        bindings: bindings.map(|b| b.to_vec()),
+    });
+    let size = wgpu::Extent3d { width: 16, height: 16, depth_or_array_layers: 1 };
+    let texture = |format| device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("pool coverage prepass"), size, mip_level_count: 1, sample_count: 1,
+        dimension: wgpu::TextureDimension::D2, format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
     let depth = texture(wgpu::TextureFormat::R32Float);
     let normals = texture(wgpu::TextureFormat::Rgba32Float);
     let depth_view = depth.create_view(&default());
     let normal_view = normals.create_view(&default());
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &depth,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &vec![0.5f32; 256]
-            .into_iter()
-            .flat_map(f32::to_le_bytes)
-            .collect::<Vec<_>>(),
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(64),
-            rows_per_image: Some(16),
-        },
-        size,
-    );
-    let mut expected = Vec::new();
-    for (label, source) in sources {
-        let memoized = label == "surface-aware" || source.contains("let cached = discovery_tiles[id.x];");
-        let source = source
-            .replace("texture_depth_2d", "texture_2d<f32>")
-            .replace(
-                "let z = textureLoad(depth, pixel, 0);",
-                "let z = textureLoad(depth, pixel, 0).x;",
-            );
-        let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-            label: Some(label),
-            source: ShaderSource::Wgsl(source.into()),
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(label),
-            layout: None,
-            module: &module,
-            entry_point: Some("discover_receivers"),
-            compilation_options: default(),
-            cache: None,
-        });
-        for grid in [4u32, 3] {
+    for grid in [4u32, 3] {
+        for thin in [false, true] {
             let mut camera = CameraState::new(device, UVec2::splat(grid));
-            camera
-                .params
-                .upload(
-                    device,
-                    queue,
-                    &ShaderBuffer::from(vec![scene.params]).data.unwrap(),
-                )
-                .unwrap();
-            let mut control = Control {
-                world_from_clip: Mat4::from_cols(
-                    Vec4::new(8., 0., 0., 0.),
-                    Vec4::new(0., -8., 0., 0.),
-                    Vec4::new(0., 0., 1., 0.),
-                    Vec4::new(15.5, 15.5, 7.5, 1.),
-                ),
-                viewport: UVec4::new(0, 0, 16, 16),
-                grid: UVec4::new(grid, grid, grid * grid, 0),
-                ..default()
-            };
-            camera
-                .control
-                .upload(
-                    device,
-                    queue,
-                    &ShaderBuffer::from(vec![control]).data.unwrap(),
-                )
-                .unwrap();
-            let view_bindings: &[u32] = if memoized {
-                &[0, 1, 5, 8, 9, 17]
-            } else {
-                &[0, 5, 8, 9]
-            };
-            let groups: Vec<_> = [&[0u32, 1, 2, 3, 6][..], &[], view_bindings]
-                .iter()
-                .enumerate()
-                .map(|(group, bindings)| {
-                    let entries: Vec<_> = bindings
-                        .iter()
-                        .map(|&binding| {
+            let count = grid * grid;
+            let mask = camera.history[0].hash.capacity as u32 / 4 - 1;
+            camera.params.upload(device, queue, &ShaderBuffer::from(vec![scene.params]).data.unwrap()).unwrap();
+            let mut previous_keys = BTreeSet::new();
+            let mut previous_shift = 0.;
+            for (frame, shift) in [0., 0., 0.1, -4., -4., -4., 0.].into_iter().enumerate() {
+                let hidden = frame == 5;
+                let world = Mat4::from_cols(Vec4::new(8., 0., 0., 0.),
+                    Vec4::new(0., -8., 0., 0.), Vec4::new(0., 0., 16., 0.),
+                    Vec4::new(15.5 + shift, 15.5, 7.5, 1.));
+                let mut depths = Vec::new();
+                let mut normal_bytes = Vec::new();
+                for y in 0..16 {
+                    for x in 0..16 {
+                        let wx = (8. + x as f32 + shift).floor() as i32;
+                        let visible = !hidden && (8..16).contains(&wx) && y < 8;
+                        let (normal, z) = if !visible { ([0.5f32; 4], 0.) }
+                            else if thin && wx == 8 { ([1., 0.5, 0.5, 1.], 14.5) }
+                            else if thin && y == 0 { ([0.5, 1., 0.5, 1.], 14.5) }
+                            else { ([0.5, 0.5, 1., 1.], 8. + ((wx - 8) % 6) as f32) };
+                        let z = if visible { (z - 7.5) / 16. } else { 0. };
+                        depths.extend(z.to_le_bytes());
+                        normal_bytes.extend(normal.into_iter().flat_map(f32::to_le_bytes));
+                    }
+                }
+                for (texture, bytes, row) in [(&depth, &depths, 64), (&normals, &normal_bytes, 256)] {
+                    queue.write_texture(wgpu::TexelCopyTextureInfo { texture, mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, bytes,
+                        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(16) }, size);
+                }
+                let control = Control {
+                    world_from_clip: world, clip_from_world: world.inverse(),
+                    viewport: UVec4::new(0, 0, 16, 16),
+                    grid: UVec4::new(grid, grid, count, mask),
+                    history: UVec4::new(if frame == 0 { 0 } else { count }, mask, frame as u32, 1),
+                    discovery: UVec4::new(u32::from(frame > 0 && shift == previous_shift),
+                        u32::from(frame > 0), 0, 0), ..default()
+                };
+                previous_shift = shift;
+                camera.control.upload(device, queue, &ShaderBuffer::from(vec![control]).data.unwrap()).unwrap();
+                let current = &camera.history[frame % 2];
+                let previous = &camera.history[1 - frame % 2];
+                let mut encoder = device.create_command_encoder(&default());
+                encoder.clear_buffer(&current.pool.buffer, 0, Some(POOL_PREFIX_BYTES as u64));
+                encoder.clear_buffer(&current.hash.buffer, 0, None);
+                encoder.clear_buffer(&camera.queue.buffer, 0, Some(48));
+                for (stage, kernel) in kernels.iter().enumerate() {
+                    let groups: Vec<_> = kernel.bindings.iter().enumerate().map(|(group, bindings)| {
+                        let entries: Vec<_> = bindings.iter().map(|&binding| {
                             let resource = match (group, binding) {
                                 (0, 0) => camera.params.buffer.as_entire_binding(),
-                                (0, 1..=3) => {
-                                    scene.buffers[binding as usize - 1].as_entire_binding()
-                                }
-                                (0, 6) => camera.history[0].receivers.buffer.as_entire_binding(),
+                                (0, 1..=3) => scene.buffers[binding as usize - 1].as_entire_binding(),
+                                (0, 6) => current.receivers.buffer.as_entire_binding(),
                                 (2, 0) => camera.control.buffer.as_entire_binding(),
-                                (2, 1) => camera.history[1].receivers.buffer.as_entire_binding(),
-                                (2, 5) => camera.history[0].estimates.buffer.as_entire_binding(),
+                                (2, 1) => previous.receivers.buffer.as_entire_binding(),
+                                (2, 5) => current.estimates.buffer.as_entire_binding(),
+                                (2, 6) => previous.hash.buffer.as_entire_binding(),
+                                (2, 7) => current.hash.buffer.as_entire_binding(),
                                 (2, 8) => wgpu::BindingResource::TextureView(&depth_view),
                                 (2, 9) => wgpu::BindingResource::TextureView(&normal_view),
-                                (2, 17) => camera.discovery_tiles.buffer.as_entire_binding(),
+                                (2, 10) => camera.queue.buffer.as_entire_binding(),
+                                (2, 17) => current.pool.buffer.as_entire_binding(),
+                                (2, 18) => previous.pool.buffer.as_entire_binding(),
                                 _ => unreachable!(),
                             };
                             BindGroupEntry { binding, resource }
-                        })
-                        .collect();
-                    device.create_bind_group(
-                        label,
-                        &pipeline.get_bind_group_layout(group as u32).into(),
-                        &entries,
-                    )
-                })
-                .collect();
-            // Case 3 has raster-only geometry; case 4 hides the old surfaces
-            // in the prepass while they still exist in transport geometry.
-            for strips in 0..=4 {
-                let pixels: Vec<u8> = (0..256)
-                    .flat_map(|i| {
-                        let normal = if strips == 4 {
-                            [0.5f32, 0.5, 0.5, 1.]
-                        } else if strips == 3 && i % 16 == 0 {
-                            [0f32, 0.5, 0.5, 1.]
-                        } else if strips >= 1 && i % 16 == 0 {
-                            [1f32, 0.5, 0.5, 1.]
-                        } else if strips == 2 && i / 16 == 0 {
-                            [0.5, 1., 0.5, 1.]
-                        } else {
-                            [0.5, 0.5, 1., 1.]
-                        };
-                        normal.into_iter().flat_map(f32::to_le_bytes)
-                    })
-                    .collect();
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &normals,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &pixels,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(256),
-                        rows_per_image: Some(16),
-                    },
-                    size,
-                );
-                let mut original = Vec::new();
-                let mut previous_refresh = 0;
-                for frame in 0u32..12 {
-                    control.world_from_clip.w_axis.x = 15.5 + 0.1 * frame.saturating_sub(8) as f32;
-                    control.clip_from_world = control.world_from_clip.inverse();
-                    control.history.z = strips * 128
-                        + match frame {
-                            7 => 64,
-                            8 => 65,
-                            9.. => frame + 57,
-                            _ => frame + 1,
-                        };
-                    control.discovery.x = u32::from(control.history.z > 1 && frame < 8);
-                    control.discovery.y = u32::from(frame >= 9);
-                    camera
-                        .control
-                        .upload(
-                            device,
-                            queue,
-                            &ShaderBuffer::from(vec![control]).data.unwrap(),
-                        )
-                        .unwrap();
-                    let mut encoder = device.create_command_encoder(&default());
-                    encoder.copy_buffer_to_buffer(
-                        &camera.history[0].receivers.buffer,
-                        0,
-                        &camera.history[1].receivers.buffer,
-                        0,
-                        u64::from(grid * grid) * 32,
-                    );
-                    {
-                        let mut pass = encoder.begin_compute_pass(&default());
-                        pass.set_pipeline(&pipeline);
-                        for (i, group) in groups.iter().enumerate() {
-                            pass.set_bind_group(i as u32, &**group, &[]);
-                        }
-                        let groups = if label != "fixed-centre control" {
-                            grid.div_ceil(2).pow(2)
-                        } else {
-                            1
-                        };
-                        pass.dispatch_workgroups(groups, 1, 1);
+                        }).collect();
+                        device.create_bind_group("Pool coverage", &kernel.pipeline.get_bind_group_layout(group as u32).into(), &entries)
+                    }).collect();
+                    let mut pass = encoder.begin_compute_pass(&default());
+                    pass.set_pipeline(&kernel.pipeline);
+                    for (i, group) in groups.iter().enumerate() { pass.set_bind_group(i as u32, &**group, &[]); }
+                    pass.dispatch_workgroups(if stage == 1 { grid.div_ceil(2).pow(2) } else { count.div_ceil(64) }, 1, 1);
+                }
+                queue.submit([encoder.finish()]);
+                let words = crate::voxel_gi::gpu::maintenance_tests::read_words(
+                    &gpu.context, &current.receivers.buffer, u64::from(count) * 32);
+                let metadata = crate::voxel_gi::gpu::maintenance_tests::read_words(
+                    &gpu.context, &current.pool.buffer, (POOL_PREFIX_BYTES + count as usize * 16) as u64);
+                let keys: BTreeSet<_> = words.chunks_exact(8).filter(|w| w[3] < 6)
+                    .map(|w| (w[3], [w[4], w[5], w[6]])).collect();
+                let planes: BTreeSet<_> = keys.iter().map(|(face, voxel)| (*face, voxel[*face as usize / 2])).collect();
+                eprintln!("shared pool grid={grid} thin={thin} frame={frame}: {} keys, {planes:?}, counters {:?}", keys.len(), &metadata[..4]);
+                assert!(keys.len() <= count as usize);
+                if hidden { assert!(keys.is_empty(), "occluded geometry cannot retain a receiver"); }
+                else {
+                    for z in 7..13 { assert!(planes.contains(&(4, z)), "all six crowded planes need support"); }
+                    if thin {
+                        assert!(planes.contains(&(0, 7)), "one-pixel grazing X face");
+                        assert!(planes.contains(&(2, 7)), "one-pixel grazing Y face");
                     }
-                    queue.submit([encoder.finish()]);
-                    let words = crate::voxel_gi::gpu::maintenance_tests::read_words(
-                        &gpu.context,
-                        &camera.history[0].receivers.buffer,
-                        u64::from(grid * grid) * 32,
-                    );
-                    let faces: Vec<_> = words.chunks_exact(8).map(|w| w[3]).collect();
-                    if strips == 4 {
-                        if frame >= 3 {
-                            assert!(faces.iter().all(|&face| face >= 6),
-                                "reprojection must discard faces absent from the current prepass");
-                        }
-                        continue;
-                    }
+                    if frame == 1 { assert_eq!(keys, previous_keys, "stationary witnesses stay stable"); }
                     if frame == 3 {
-                        original = words.clone();
-                    } else if (4..8).contains(&frame) || (frame >= 9 && strips == 0) {
-                        assert_eq!(
-                            words, original,
-                            "coverage must remain identical between scans"
-                        );
+                        assert!(previous_keys.is_subset(&keys), "cross-tile reprojection keeps all visible old identities");
+                        assert!(metadata[3] >= previous_keys.len() as u32);
                     }
-                    if label == "surface-aware" {
-                        let metadata = crate::voxel_gi::gpu::maintenance_tests::read_words(
-                            &gpu.context,
-                            &camera.discovery_tiles.buffer,
-                            16,
-                        );
-                        if frame == 6 && strips < 3 {
-                            assert_eq!(metadata[2] & 1, 1, "valid footprint is reusable");
-                            assert_eq!(
-                                metadata[3], previous_refresh,
-                                "unchanged footprint must take the reuse path"
-                            );
+                    if frame == 0 {
+                        let mut entry = metadata[4]; // first tile head
+                        let mut slots = BTreeSet::new();
+                        while entry != 0 {
+                            assert!(entry <= count && slots.insert(entry - 1), "unique, in-bounds spatial links");
+                            entry = metadata[POOL_PREFIX_BYTES / 4 + (entry as usize - 1) * 4 + 2];
                         }
-                        if strips == 3 && frame >= 3 {
-                            assert_eq!(
-                                metadata[2] & 1,
-                                0,
-                                "pending geometry must remain discoverable"
-                            );
-                        }
-                        if (7..=8).contains(&frame) {
-                            assert_eq!(
-                                metadata[3],
-                                control.history.z + 1,
-                                "periodic refresh and camera change must perform a full scan"
-                            );
-                        }
-                        if frame == 9 && strips == 0 {
-                            assert_eq!(metadata[3], previous_refresh,
-                                "small camera motion must reuse validated face witnesses");
-                        }
-                        previous_refresh = metadata[3];
-                    }
-                    if label == "surface-aware" {
-                        if frame == 3 {
-                            expected.push(words.clone());
-                        }
-                    } else if label == "surface-aware control" && frame >= 3 && strips == 0 {
-                        let case = usize::from(grid == 3) * 4 + strips as usize;
-                        assert_eq!(
-                            words, expected[case],
-                            "optimized discovery must preserve exact receiver records"
-                        );
-                    }
-                    eprintln!("{label} grid={grid} strips={strips} frame={frame}: {faces:?}");
-                    assert!(faces.iter().all(|&face| face < 6));
-                    assert!(faces.contains(&4), "the background must remain represented");
-                    if strips == 2 && label != "fixed-centre control" {
-                        assert!(
-                            faces.contains(&0),
-                            "existing thin planes must not blink between checks"
-                        );
-                    }
-                    if frame < 3 {
-                        continue;
-                    }
-                    if label == "fixed-centre control" || strips == 0 || strips == 3 {
-                        assert!(faces.iter().all(|&face| face == 4));
-                        for (i, words) in words.chunks_exact(8).enumerate() {
-                            let center = |q: u32| ((q as f32 + 0.5) / grid as f32 * 16.) as u32;
-                            assert_eq!(
-                                &words[4..7],
-                                &[center(i as u32 % grid) + 8, center(i as u32 / grid) + 8, 7],
-                                "flat surfaces retain the original centre identities"
-                            );
-                        }
-                    } else {
-                        assert!(
-                            faces.contains(&0),
-                            "one-pixel side face must receive a real sample"
-                        );
-                        assert!(faces.contains(&4), "the background must remain represented");
-                        if strips == 2 {
-                            assert!(faces.contains(&2));
-                        }
+                        assert!(slots.len() > 4, "crowded tile must borrow from empty tiles");
                     }
                 }
+                previous_keys = keys;
             }
         }
     }
