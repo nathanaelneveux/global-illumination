@@ -143,10 +143,10 @@ fn prepare_receiver_pool(@builtin(global_invocation_id) id: vec3<u32>) {
                 pool.slots[id.x].tile = tile;
                 pool.slots[id.x].next = atomicExchange(&pool.tiles[tile].head, id.x + 1u);
                 atomicAdd(&pool.retained, 1u);
-                if old_tile != tile {
-                    atomicOr(&pool.tiles[old_tile].dirty, 1u);
-                    atomicOr(&pool.tiles[tile].dirty, 1u);
-                }
+                // Crossing a spatial-bin boundary is not lost visibility.
+                // Both bins keep the normal four-phase discovery cadence;
+                // an empty bin checks its centres below. Only an actually
+                // rejected witness forces an immediate footprint search.
             } else { atomicOr(&pool.tiles[old_tile].dirty, 1u); }
         }
     }
@@ -165,7 +165,9 @@ fn pool_covers(tile: u32, receiver: ViewReceiver) -> bool {
         if same_plane(other, receiver) && dot(delta, delta) <= 256.0 { return true; }
         entry = pool.slots[entry - 1u].next;
     }
-    return false;
+    // Only a missing local plane needs a global lookup. This immutable index
+    // contains fully prepared retained faces, never concurrent allocations.
+    return owner_of(receiver) != 0xffffffffu;
 }
 
 fn occupied_cell(tile: u32, cell: vec2<u32>) -> bool {
@@ -270,6 +272,7 @@ fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invoc
             let pixel = vec2<i32>(view.viewport.xy + min(vec2<u32>(uv * vec2<f32>(view.viewport.zw)), view.viewport.zw - 1u));
             let receiver = prepass_receiver(pixel);
             if receiver.face >= 6u { continue; }
+            if owner_of(receiver) != 0xffffffffu { continue; }
             if receiver_exists(receiver) {
                 if !allocate_receiver(id.x, pixel, receiver) { pool_done = 1u; break; }
             } else { atomicStore(&pool.tiles[id.x].pending, 1u); }

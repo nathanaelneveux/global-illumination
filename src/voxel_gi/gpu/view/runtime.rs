@@ -324,7 +324,7 @@ impl FromWorld for ViewRenderer {
                     "discover_receivers",
                     m,
                     false,
-                    [&[0, 1, 2, 3, 6], &[], &[0, 5, 8, 9, 17]],
+                    [&[0, 1, 2, 3, 6], &[], &[0, 5, 7, 8, 9, 17]],
                 )
             }),
             index: make("index_receivers", 0, false, [&[6], &[], &[0, 7, 10]]),
@@ -737,6 +737,16 @@ fn render_view(
                 dispatch_count.div_ceil(64)
             };
             pass.dispatch_workgroups(groups, 1, 1);
+            if stage == 9 {
+                // Publish only fully initialized retained identities. Discovery
+                // reads this immutable index while writing unrelated free slots;
+                // the ordinary index stage publishes additions afterwards.
+                pass.set_pipeline(&renderer.index.pipeline);
+                for (group, binding) in camera.groups[camera.current][1].iter().enumerate() {
+                    pass.set_bind_group(group as u32, &**binding, &[]);
+                }
+                pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
+            }
         }
     }
     if let Some(ticket) = ticket {
