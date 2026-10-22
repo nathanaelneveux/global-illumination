@@ -69,12 +69,26 @@ redundant coplanar slots make room for thin planes between those centres. Select
 is deterministic and geometry-validated before replacement, including when raster
 geometry leads transport uploads. There are still only four slots per full tile:
 this improves grazing coverage, not unlimited coverage of arbitrarily dense
-subpixel geometry. It adds prepass classification, not rays, persistent storage,
-or CPU readback. Quantized normals select their dominant axis; depth is snapped
-to the voxel plane before the geometry identity check. Duplicate pixels
+subpixel geometry. It adds prepass classification, not rays, persistent lighting
+histories or CPU readback. Quantized normals select their dominant axis; depth
+is snapped to the voxel plane before the geometry identity check. Duplicate pixels
 share one face owner. A ping-pong hash reprojects the exact same face, its raw
 mean/second moment, sequence, retained path and any unfinished continuation.
 No filtered image is ever treated as a new transport measurement.
+
+Discovery selection is now memoized separately from lighting. Moving cameras
+perform the full scan. With an identical camera, viewport, overlap radius and
+MSAA mode, tiles check their depth/normal footprint in four staggered phases.
+Unchanged tiles retain their exact previous receiver identities between checks;
+every retained receiver is still geometry-validated each frame. Missing transport
+geometry keeps the tile eligible for immediate rescanning, so a later upload
+cannot strand a raster-only face. Changed footprints rescan on their next check:
+at most three intervening frames for a newly exposed plane while the camera is
+still. A 64-frame periodic full scan bounds fingerprint-collision lifetime.
+World edits remain immediate; existing receivers' transport, sunlight, retention
+and presentation continue every frame. It does not jitter receivers
+in and out of the one-frame history. Per-camera metadata is 16 bytes per 2x2
+tile (512 KiB allocated at 1440p with buffer growth rounding); it stays on the GPU.
 
 Each owner advances one path at a time, at most three intersections per wave.
 Long paths remain pending; their partial energy is not published. Finishing
@@ -104,7 +118,8 @@ receipts return to the CPU; callbacks are polled without waiting. Far receives
 25% of the existing transport time share and near the rest. Prepass, discovery,
 corner sunlight and reconstruction are separately measured presentation costs,
 not hidden in the transport quota. Current view state is about 48.75 MiB at
-2560x1440; it is bounded by viewport capacity, not loaded world size.
+2560x1440 before the 512-KiB discovery metadata; it is bounded by viewport
+capacity, not loaded world size.
 
 ### Experimental two-way face cache
 

@@ -167,8 +167,12 @@ contain one-pixel side planes missed by the old fixed centres, backed by real
 transport geometry. It checks even/odd tile edges, retained background coverage,
 unchanged flat-surface identities, and rejection of raster-only geometry. Set
 `VOXEL_GI_DISCOVERY_BASELINE` to the old `voxel_view_runtime.wgsl` in a baseline
-worktree to run the identical fixture against its discovery kernel. This is a
-coverage test, not rendered quality evidence. Pair it with cave/streaming captures
+worktree to run the identical fixture against its discovery kernel. A path to
+the newer `voxel_view_discovery.wgsl` instead runs exact record parity against
+full surface-aware discovery. The multi-frame gate checks the four-frame bound
+for new planes, persistent thin-face coverage between checks, unchanged receiver
+identities, missing-geometry retry, periodic refresh and forced camera refresh.
+This is a coverage test, not rendered quality evidence. Pair it with cave/streaming captures
 and presentation GPU cost before changing discovery.
 
 For the opt-in `view_cache_exchange`, run `native_two_way_cache` with

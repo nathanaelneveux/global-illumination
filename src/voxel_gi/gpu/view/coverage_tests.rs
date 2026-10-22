@@ -242,9 +242,14 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                 );
                 let mut original = Vec::new();
                 let mut previous_refresh = 0;
-                for frame in 0..3 {
-                    control.history.z = strips * 3 + frame + 1;
-                    control.discovery.x = u32::from(control.history.z > 1);
+                for frame in 0..9 {
+                    control.history.z = strips * 128
+                        + match frame {
+                            7 => 64,
+                            8 => 65,
+                            _ => frame + 1,
+                        };
+                    control.discovery.x = u32::from(control.history.z > 1 && frame != 8);
                     camera
                         .control
                         .upload(
@@ -281,9 +286,9 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                         u64::from(grid * grid) * 32,
                     );
                     let faces: Vec<_> = words.chunks_exact(8).map(|w| w[3]).collect();
-                    if frame == 0 {
+                    if frame == 3 {
                         original = words.clone();
-                    } else {
+                    } else if frame > 3 {
                         assert_eq!(
                             words, original,
                             "coverage must remain identical between scans"
@@ -295,23 +300,34 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                             &camera.discovery_tiles.buffer,
                             16,
                         );
-                        if frame == 2 && strips < 3 {
-                            assert_eq!(metadata[2], 1, "valid footprint is reusable");
+                        if frame == 6 && strips < 3 {
+                            assert_eq!(metadata[2] & 1, 1, "valid footprint is reusable");
                             assert_eq!(
                                 metadata[3], previous_refresh,
                                 "unchanged footprint must take the reuse path"
                             );
                         }
-                        if strips == 3 {
-                            assert_eq!(metadata[2], 0, "pending geometry must remain discoverable");
+                        if strips == 3 && frame >= 3 {
+                            assert_eq!(
+                                metadata[2] & 1,
+                                0,
+                                "pending geometry must remain discoverable"
+                            );
+                        }
+                        if frame >= 7 {
+                            assert_eq!(
+                                metadata[3],
+                                control.history.z + 1,
+                                "periodic refresh and camera change must perform a full scan"
+                            );
                         }
                         previous_refresh = metadata[3];
                     }
                     if label == "surface-aware" {
-                        if frame == 0 {
+                        if frame == 3 {
                             expected.push(words.clone());
                         }
-                    } else if label == "surface-aware control" {
+                    } else if label == "surface-aware control" && frame >= 3 {
                         let case = usize::from(grid == 3) * 4 + strips as usize;
                         assert_eq!(
                             words, expected[case],
@@ -320,6 +336,16 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                     }
                     eprintln!("{label} grid={grid} strips={strips} frame={frame}: {faces:?}");
                     assert!(faces.iter().all(|&face| face < 6));
+                    assert!(faces.contains(&4), "the background must remain represented");
+                    if strips == 2 && label != "fixed-centre control" {
+                        assert!(
+                            faces.contains(&0),
+                            "existing thin planes must not blink between checks"
+                        );
+                    }
+                    if frame < 3 {
+                        continue;
+                    }
                     if label == "fixed-centre control" || strips == 0 || strips == 3 {
                         assert!(faces.iter().all(|&face| face == 4));
                         for (i, words) in words.chunks_exact(8).enumerate() {

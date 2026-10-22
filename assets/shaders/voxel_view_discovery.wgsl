@@ -1,6 +1,6 @@
 // Surface-aware downsampling. Four neighbouring screen cells keep their normal
 // centre samples, but redundant coplanar samples make room for thin surfaces in
-// their shared footprint. The receiver/storage/ray budgets do not grow.
+// their shared footprint. No additional lighting receivers or rays are needed.
 fn prepass_face(pixel: vec2<i32>) -> u32 {
     let decoded = textureLoad(normals, pixel, 0).xyz * 2.0 - 1.0;
     if max(max(abs(decoded.x), abs(decoded.y)), abs(decoded.z)) < 0.99 { return 0xffffffffu; }
@@ -66,6 +66,7 @@ var<workgroup> discovery_hash_xor: atomic<u32>;
 var<workgroup> discovery_hash_sum: atomic<u32>;
 var<workgroup> discovery_pending: atomic<u32>;
 var<workgroup> discovery_reuse: u32;
+const DISCOVERY_PERIOD: u32 = 4u;
 
 fn receiver_exists(receiver: ViewReceiver) -> bool {
     if receiver.face >= 6u { return false; }
@@ -91,9 +92,11 @@ fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invoc
     let extent = end - begin;
     let pixels = extent.x * extent.y;
 
-    // Reuse selection, never stale lighting. Every pixel still participates in
-    // a compact depth/normal fingerprint; changed footprints scan immediately.
-    // Moving cameras use the full scan without this additional fingerprint pass.
+    let check = (view.history.z + id.x) % DISCOVERY_PERIOD == 0u;
+    // Reuse selection, never stale lighting. Stagger footprint checks while the
+    // camera is still, retaining receivers and checking their geometry every
+    // frame. A newly exposed plane waits at most three frames for discovery.
+    // Moving cameras scan immediately without the fingerprint pass.
     if view.discovery.x != 0u {
         if thread == 0u {
             atomicStore(&discovery_hash_xor, 0u);
@@ -101,24 +104,27 @@ fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invoc
             atomicStore(&discovery_pending, 0u);
         }
         workgroupBarrier();
-        var xor = 0u;
-        var sum = 0u;
-        for (var offset = thread; offset < pixels; offset += 32u) {
-            let pixel = vec2<i32>(begin + vec2(offset % extent.x, offset / extent.x));
-            let z = textureLoad(depth, pixel, 0);
-            let face = select(0xffffffffu, prepass_face(pixel), z > 0.0);
-            let value = pcg(bitcast<u32>(z) ^ pcg(offset * 7u + face));
-            xor ^= value;
-            sum += pcg(value ^ 0x9e3779b9u);
+        if check {
+            var xor = 0u;
+            var sum = 0u;
+            for (var offset = thread; offset < pixels; offset += 32u) {
+                let pixel = vec2<i32>(begin + vec2(offset % extent.x, offset / extent.x));
+                let z = textureLoad(depth, pixel, 0);
+                let face = select(0xffffffffu, prepass_face(pixel), z > 0.0);
+                let value = pcg(bitcast<u32>(z) ^ pcg(offset * 7u + face));
+                xor ^= value;
+                sum += pcg(value ^ 0x9e3779b9u);
+            }
+            atomicXor(&discovery_hash_xor, xor);
+            atomicAdd(&discovery_hash_sum, sum);
         }
-        atomicXor(&discovery_hash_xor, xor);
-        atomicAdd(&discovery_hash_sum, sum);
         workgroupBarrier();
         if thread == 0u {
             let cached = discovery_tiles[id.x];
-            discovery_reuse = u32(cached.z != 0u
+            let matched = (cached.z & 2u) != 0u
                 && cached.x == atomicLoad(&discovery_hash_xor)
-                && cached.y == atomicLoad(&discovery_hash_sum)
+                && cached.y == atomicLoad(&discovery_hash_sum);
+            discovery_reuse = u32((cached.z & 1u) != 0u && (!check || matched)
                 && (view.history.z + id.x) % 64u != 0u);
         }
         if workgroupUniformLoad(&discovery_reuse) != 0u {
@@ -214,10 +220,11 @@ fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invoc
         workgroupBarrier();
     }
     if thread == 0u {
-        var cached = vec4(0u);
-        if view.discovery.x != 0u {
+        let ready = u32(atomicLoad(&discovery_pending) == 0u);
+        var cached = vec4(0u, 0u, ready, view.history.z + 1u);
+        if view.discovery.x != 0u && check {
             cached = vec4(atomicLoad(&discovery_hash_xor), atomicLoad(&discovery_hash_sum),
-                u32(atomicLoad(&discovery_pending) == 0u), view.history.z + 1u);
+                ready | 2u, view.history.z + 1u);
         }
         discovery_tiles[id.x] = cached;
     }

@@ -50,6 +50,8 @@ struct FarOutput {
 @group(2) @binding(14) var<storage, read_write> shared_state: array<vec4<u32>>;
 @group(2) @binding(15) var<storage, read_write> shared_meta: array<vec4<u32>>;
 @group(2) @binding(16) var<storage, read> cache_guard: array<u32>;
+// xy: footprint fingerprint; z bits: selection reusable, fingerprint valid;
+// w: last full-scan frame + 1. Each workgroup exclusively owns one tile.
 @group(2) @binding(17) var<storage, read_write> discovery_tiles: array<vec4<u32>>;
 
 // #include voxel_retention.wgsl

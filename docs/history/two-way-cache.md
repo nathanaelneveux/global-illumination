@@ -202,3 +202,72 @@ Native logs: `target/grazing-{native,pipelines,rank,clippy,shader}.log`.
 Cave logs: `target/grazing-baseline-cave.log` in the control worktree and
 `target/grazing-parallel-cave.log` here. The initial serial attempt remains in
 `target/grazing-candidate-cave.log`; do not substitute it for the retained design.
+
+## Amortized discovery (2026-10-22)
+
+Keep compact plane classification plus memoized, four-phase footprint checks.
+The grid may move receivers between slots because transport history is keyed by
+exact face, but simply jittering away from a thin face would drop its one-frame
+view history. Instead, retain discovered receivers between checks and keep every
+lighting stage running. Moving cameras still scan immediately; a new plane in a
+stationary view waits at most three intervening frames (50 ms at 60 Hz). Existing
+faces do not disappear between phases. Geometry-invalid selections and pending
+transport uploads force a retry, independently of the cadence. This is not an
+edit debounce or a lighting sample-count change. See the architectural contract.
+
+Control: `7634ddc` = `8022e73` plus discovery timestamp reporting only. Its cave
+run was made before that instrumentation-only commit, with the identical diff.
+Candidate: `b56fd89` plus the four-phase shader/test changes in this section's
+commit. Same M4/Metal, 16 GB, development profile, 2560x1440 offscreen +cache,
+background terrain, corner look and 1024-evidence reconstruction. No other game,
+build or image-analysis job ran during measured phases. Captures are valid,
+inspected, and render logs are clean.
+
+| Cave logged GPU median, ms | Full scan | Every-frame fingerprint | Four-phase |
+| --- | ---: | ---: | ---: |
+| Discovery only | 1.280 | .701 | .402 |
+| All view presentation | 2.677 | 1.589 | .913 |
+
+The targeted discovery saving is .878 ms / 69%. Presentation includes other
+stages and more scheduling noise; it is not all attributable to discovery.
+The intermediate smaller-workgroup/compact-classification run alone cost
+1.065 ms discovery, so it was not the principal win. Lighting ray allowance
+and receiver capacity are unchanged. Added metadata occupies 512 KiB per 1440p
+camera (16 bytes per tile, rounded by the existing allocator), with no new GPU
+readback. Discovery uses the already-recorded timestamps, not new timing trips.
+
+Cave early-to-own-60s mean FLIP: at 15s .01059 -> .01056; at 30s .00615 -> .00613.
+Final cross-run mean FLIP .00234, display luminance ratio .999985. This is visible
+stability, not raw sampler accuracy. Offscreen cadence p95/p99: 25.53/26.59 ->
+24.88/25.80 ms; no frame-pacing speedup is claimed from one pair. Peak process
+allocation 985 -> 951 MB is affected by streaming, not a metadata memory saving.
+
+Cave run IDs: control `cave-1792688495858814000-30220` in the control worktree;
+every-frame fingerprint `cave-1792688839548175000-30598`; retained four-phase
+`cave-1792689209820987000-31045`. Logs are `target/discovery-{control,reuse,stagger}-cave.log`
+in their respective worktrees. Paired images and FLIP JSON are under
+`target/discovery-comparison/`. Earlier `discovery-fast{,32}-cave.log` attempts
+are retained but are not the final result.
+
+Native tests compare exact receiver records with the full-scan control after
+the bounded discovery interval, and prove unchanged thin-face coverage between
+checks. They also exercise odd edges, raster-only geometry, periodic refresh,
+forced camera refresh, single/MSAA pipelines and unchanged raw batching/pending
+tails. Production Clippy passes. Relevant logs are
+`target/discovery-stagger-{native,pipelines,batch,clippy}.log`.
+
+The same control/candidate pair also passed the 35-second streaming workload
+(turn 180 degrees, walk, stop), with three valid captures per run and clean render
+logs. Final captures were visually compared. Moving cameras intentionally keep
+full discovery: six logged moving-phase samples range from .867–1.539 ms for the
+control and .755–1.249 ms for the candidate, insufficient for a precise
+performance-gain claim. After stopping,
+the candidate's two logged discovery costs are .426/.429 ms, confirming reuse
+also engages after ordinary player movement. After 15s, excluding capture frames,
+offscreen cadence p95/p99 is 24.86/25.57 -> 24.79/25.54 ms. Final visible owners
+are 2459 -> 2454; slightly different camera positions preclude exact pixel parity.
+Runs: `streaming-1792689433194498000-31550` (control worktree) and
+`streaming-1792689513079108000-31692` (candidate). Logs:
+`target/discovery-{control,stagger}-streaming.log` in the respective worktrees.
+Release build passes with the existing 33 release-only unused/dead-code warnings
+(`target/discovery-stagger-release.log`).
