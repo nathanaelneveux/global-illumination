@@ -443,7 +443,7 @@ fn render_view(
         renderer
             .budget
             .begin_frame(&device, elapsed, settings.share, settings.view_first);
-        if frame.0 % 120 == 0 {
+        if frame.0.is_multiple_of(120) {
             info!(
                 far_active = renderer.budget.active,
                 far_trace_ms = renderer.budget.trace_ms,
