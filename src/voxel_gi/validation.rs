@@ -389,7 +389,9 @@ pub(super) fn run_validation(
         let yaw = if (15.0..30.0).contains(&elapsed) && elapsed as u32 % 2 == 1 {
             0.15f32.to_radians()
         } else { 0.0 };
-        let eye = run.center + Vec3::Y * 1.62;
+        // Use the generator's fixed spawn, not the physics body's position
+        // during asynchronous startup (which can still be falling).
+        let eye = generator.player_spawn_position() + Vec3::Y * 1.62;
         let transform = Transform::from_translation(eye).with_rotation(
             Quat::from_rotation_y(std::f32::consts::PI + yaw) * Quat::from_rotation_x(-0.12));
         for camera in &cameras {
