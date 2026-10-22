@@ -151,6 +151,7 @@ struct Control {
     grid: UVec4,
     history: UVec4,
     display: Vec4,
+    cache: UVec4,
 }
 #[derive(Clone, Copy, Default, ShaderType)]
 struct Wave {
@@ -208,6 +209,7 @@ struct CameraState {
 #[derive(PartialEq, Eq)]
 struct BindingKey {
     scene: [BufferId; 8],
+    cache: [BufferId; 2],
     depth: bevy::render::render_resource::TextureViewId,
     normals: bevy::render::render_resource::TextureViewId,
     output: BufferId,
@@ -247,6 +249,8 @@ fn shader(multisampled: bool) -> String {
         include_str!("../../../../assets/shaders/voxel_view_trace.wgsl"),
     );
     let source = include_retention(&include_paths(&source));
+    let source = source.replace("// #include voxel_view_cache.wgsl\n",
+        include_str!("../../../../assets/shaders/voxel_view_cache.wgsl"));
     if multisampled {
         source
             .replace("texture_depth_2d", "texture_depth_multisampled_2d")
@@ -266,6 +270,8 @@ struct ViewRenderer {
     reproject: Kernel,
     trace: [Kernel; 2],
     retain: Kernel,
+    load_cache: Kernel,
+    store_cache: Kernel,
     reconstruct: Kernel,
     publish: Kernel,
     cameras: HashMap<RetainedViewEntity, CameraState>,
@@ -327,8 +333,12 @@ impl FromWorld for ViewRenderer {
                 "retain_view_history",
                 0,
                 false,
-                [&[6], &[0], &[0, 5, 7, 12, 13]],
+                [&[6, 10], &[0], &[0, 5, 7, 12, 13, 15, 16]],
             ),
+            load_cache: make("load_shared_faces", 0, false,
+                [&[6, 10], &[], &[0, 5, 7, 14, 15, 16]]),
+            store_cache: make("store_shared_faces", 0, false,
+                [&[6, 10], &[], &[0, 5, 7, 14, 15, 16]]),
             reconstruct: make("reconstruct_view", 0, false, [&[6], &[], &[0, 5, 7]]),
             publish: make("publish_view", 0, false, [&[0, 1, 2, 3, 5, 6], &[0], &[0, 5, 7, 10, 11]]),
             cameras: default(),
@@ -355,6 +365,10 @@ fn grid_size(viewport: UVec2) -> UVec2 {
 #[cfg(test)]
 #[path = "batch_tests.rs"]
 mod batch_tests;
+
+#[cfg(test)]
+#[path = "cache_tests.rs"]
+mod cache_tests;
 
 #[cfg(test)]
 mod tests {
@@ -493,6 +507,9 @@ fn render_view(
             1.0 - (-renderer.frame_seconds.max(1.0 / 240.0) / settings.response).exp(),
             settings.measured_retention,
         ),
+        cache: scene.cache.as_ref().map_or(UVec4::ZERO, |cache|
+            UVec4::new(cache.epoch, cache.origin.elapsed().as_millis() as u32,
+                u32::from(cache.enabled && settings.view_first), 0)),
     };
     camera
         .control
@@ -560,8 +577,10 @@ fn render_view(
         &renderer.discover[usize::from(multisampled)],
         &renderer.index,
         &renderer.reproject,
+        &renderer.load_cache,
         &renderer.trace[usize::from(limited)],
         &renderer.reconstruct,
+        &renderer.store_cache,
         &renderer.publish,
     ];
     let make_groups = |kernel: &Kernel, change: Option<&ViewChange>| -> Vec<BindGroup> {
@@ -583,6 +602,9 @@ fn render_view(
                                 11 => output.buffer.as_entire_binding(),
                                 12 => change.unwrap().events.as_entire_binding(),
                                 13 => change.unwrap().control.as_entire_binding(),
+                                14 => scene.buffers[6].as_entire_binding(),
+                                15 => scene.cache.as_ref().map_or(&scene.buffers[6], |cache| &cache.meta).as_entire_binding(),
+                                16 => scene.cache.as_ref().map_or(&scene.buffers[6], |cache| &cache.guard).as_entire_binding(),
                                 _ => group2[binding as usize].as_entire_binding(),
                             },
                         };
@@ -599,6 +621,7 @@ fn render_view(
     };
     let key_bindings = BindingKey {
         scene: scene.buffers.each_ref().map(Buffer::id),
+        cache: scene.cache.as_ref().map_or([scene.buffers[6].id(); 2], |cache| [cache.meta.id(), cache.guard.id()]),
         depth: depth.id(),
         normals: normals.id(),
         output: output.buffer.id(),
@@ -620,10 +643,12 @@ fn render_view(
     let mut executed = 0u32;
     // Each phase has a timestamp pair in the SAME pass. Cross-pass timestamp
     // pairs can collapse on Metal and falsely report zero or negative costs.
-    for stage in 0..7usize {
+    for stage in 0..9usize {
         let retained = stage == 3;
-        let dispatch_count = if stage == 4 { work } else { count };
-        if dispatch_count == 0 || (retained && changes.is_empty()) {
+        let dispatch_count = if stage == 5 { work } else { count };
+        if dispatch_count == 0 || (retained && changes.is_empty())
+            || ((stage == 4 || stage == 7) && control.cache.z == 0)
+        {
             continue;
         }
         executed |= 1 << stage;

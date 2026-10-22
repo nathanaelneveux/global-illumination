@@ -111,6 +111,9 @@ pub struct VoxelGiSettings {
     /// Experimental ownership policy. The default remains the qualified hybrid.
     /// In view mode `receiver_radius` is unused; cache residency is explicit.
     pub receiver_strategy: ReceiverStrategy,
+    /// Experimental RGB history handoff between view receivers and their
+    /// persistent bounce-cache faces. Only active for view-first ownership.
+    pub view_cache_exchange: bool,
 }
 
 impl Default for VoxelGiSettings {
@@ -138,6 +141,7 @@ impl Default for VoxelGiSettings {
             cpu_statistics: false,
             receiver_radius: 64.0,
             receiver_strategy: ReceiverStrategy::Hybrid,
+            view_cache_exchange: false,
         }
     }
 }
@@ -195,6 +199,10 @@ impl VoxelGiSettings {
     }
     pub(super) fn view_first(&self) -> bool {
         matches!(self.receiver_strategy, ReceiverStrategy::View { .. })
+    }
+    pub(super) fn shared_view_cache(&self) -> bool {
+        self.view_cache_exchange && self.view_first()
+            && self.receiver_residency() != ReceiverResidency::Disabled
     }
     pub(super) fn receiver_residency(&self) -> ReceiverResidency {
         match self.receiver_strategy {

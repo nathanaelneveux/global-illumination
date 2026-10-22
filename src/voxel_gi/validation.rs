@@ -648,6 +648,7 @@ pub(super) fn run_validation(
         "spatial_retention": super::retention::POLICY_NAME,
         "settings": {"transport": settings.transport, "receiver_radius": settings.receiver_radius,
             "receiver_strategy": settings.receiver_strategy,
+            "view_cache_exchange": settings.shared_view_cache(),
             "samples_per_dispatch": settings.batch_samples(),
             "simulation_sampling_importance": settings.sampling_importance().infrared,
             "spatial_reconstruction": settings.spatial_reconstruction,

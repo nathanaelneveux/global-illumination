@@ -1,4 +1,4 @@
-//! Bounded asynchronous timing receipts. Only 160 bytes per view dispatch cross
+//! Bounded asynchronous timing receipts. Only 192 bytes per view dispatch cross
 //! back to the CPU: timestamps and queue counters, never lighting.
 use super::*;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -77,7 +77,7 @@ impl Budget {
                     .create_query_set(&wgpu::QuerySetDescriptor {
                         label: Some("Far GI GPU cost"),
                         ty: wgpu::QueryType::Timestamp,
-                        count: 14,
+                        count: 18,
                     })
             });
         let resolve = device.create_buffer(&BufferDescriptor {
@@ -90,7 +90,7 @@ impl Budget {
             .map(|_| {
                 device.create_buffer(&BufferDescriptor {
                     label: Some("Far GI asynchronous timing receipt"),
-                    size: 160,
+                    size: 192,
                     usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
                     mapped_at_creation: false,
                 })
@@ -138,9 +138,9 @@ impl Budget {
                 _ => panic!("far GPU timing mapping failed"),
             }
             let ticket = self.pending.swap_remove(index);
-            let bytes = ticket.buffer.slice(..160).get_mapped_range();
+            let bytes = ticket.buffer.slice(..192).get_mapped_range();
             let stamp = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
-            let costs: [f32; 7] = std::array::from_fn(|stage| {
+            let costs: [f32; 9] = std::array::from_fn(|stage| {
                 if ticket.stages & (1 << stage) == 0 {
                     return 0.0;
                 }
@@ -148,9 +148,9 @@ impl Budget {
                     as f32
             });
             let total: f32 = costs.iter().sum();
-            let trace = costs[4];
+            let trace = costs[5];
             let counter =
-                |i: usize| u32::from_le_bytes(bytes[112 + i * 4..116 + i * 4].try_into().unwrap());
+                |i: usize| u32::from_le_bytes(bytes[144 + i * 4..148 + i * 4].try_into().unwrap());
             let active = counter(0);
             assert_eq!(
                 counter(1),
@@ -213,11 +213,11 @@ impl Budget {
         stages: u32,
     ) {
         ticket.stages = stages;
-        encoder.resolve_query_set(self.queries.as_ref().unwrap(), 0..14, &self.resolve, 0);
-        encoder.copy_buffer_to_buffer(&self.resolve, 0, &ticket.buffer, 0, 112);
-        encoder.copy_buffer_to_buffer(counters, 0, &ticket.buffer, 112, 48);
+        encoder.resolve_query_set(self.queries.as_ref().unwrap(), 0..18, &self.resolve, 0);
+        encoder.copy_buffer_to_buffer(&self.resolve, 0, &ticket.buffer, 0, 144);
+        encoder.copy_buffer_to_buffer(counters, 0, &ticket.buffer, 144, 48);
         let ready = ticket.ready.clone();
-        encoder.map_buffer_on_submit(&ticket.buffer, wgpu::MapMode::Read, ..160, move |result| {
+        encoder.map_buffer_on_submit(&ticket.buffer, wgpu::MapMode::Read, ..192, move |result| {
             ready.store(if result.is_ok() { 1 } else { 2 }, Ordering::Release)
         });
         self.pending.push(ticket);

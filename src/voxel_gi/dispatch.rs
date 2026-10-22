@@ -142,6 +142,7 @@ pub(super) fn start_trace_task(
     };
     selected.transport = runtime.transport;
     selected.view_transport = settings.view_enabled();
+    selected.shared_view_cache = settings.shared_view_cache();
     selected.response_seconds = settings.display_response_seconds();
     selected.measured_retention = settings.measured_retention();
     selected.display_frame = frame.as_ref().map_or(0, |frame| frame.0);

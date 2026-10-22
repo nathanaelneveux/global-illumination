@@ -14,6 +14,8 @@ pub(crate) struct TraceWork {
     pub transport: super::TransportSettings,
     /// Retain measured GPU change packets for the view-owned receiver domain.
     pub view_transport: bool,
+    /// RGB-only resident statistics can also be advanced by the render queue.
+    pub shared_view_cache: bool,
     pub response_seconds: f32,
     /// Resident history ceiling and recency weighting for tests and harnesses;
     /// zero selects the gameplay defaults (65,536 and a plain running mean).

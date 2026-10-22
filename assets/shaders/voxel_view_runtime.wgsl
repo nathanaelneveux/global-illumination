@@ -10,12 +10,13 @@ struct ViewControl {
     grid: vec4<u32>, // xy reduced dimensions, z count, w hash mask
     history: vec4<u32>, // previous grid count, previous hash mask, frame, view-first
     display: vec4<f32>, // evidence goal, strength, temporal blend, measured retention
+    cache: vec4<u32>, // writable epoch, worker-clock milliseconds, enabled, reserved
 }
 struct ViewEstimate {
     mean: vec4<f32>, // raw RGB, physical history weight
     moment: vec4<f32>, // raw second moment, pending predicted change
     shown: vec4<f32>, // reconstructed presentation, valid support
-    identity: vec4<u32>, // next path sequence, material, reserved, reserved
+    identity: vec4<u32>, // next path sequence, material, sunlight, resident incarnation
 }
 struct FarPixel {
     surface: vec3<f32>,
@@ -45,8 +46,12 @@ struct FarOutput {
 @group(2) @binding(11) var<storage, read_write> far_output: FarOutput;
 @group(2) @binding(12) var<storage, read> events: array<vec4<u32>>;
 @group(2) @binding(13) var<uniform> event_control: vec4<u32>;
+@group(2) @binding(14) var<storage, read_write> shared_state: array<vec4<u32>>;
+@group(2) @binding(15) var<storage, read_write> shared_meta: array<vec4<u32>>;
+@group(2) @binding(16) var<storage, read> cache_guard: array<u32>;
 
 // #include voxel_retention.wgsl
+// #include voxel_view_cache.wgsl
 
 fn receiver_hash(r: ViewReceiver) -> u32 {
     return hash_voxel(r.voxel) ^ pcg(r.face + 1u);
@@ -229,8 +234,12 @@ fn retain_view_history(@builtin(global_invocation_id) id: vec3<u32>) {
     if receiver.face >= 6u || owner_of(receiver) != id.x { return; }
     let change = resolve_retention(receiver.voxel, event_control.x, event_control.y,
         view.display.w > 0.0, 0u, 0u);
-    if change.limit != NO_LIMIT { estimates[id.x].mean.w = min(estimates[id.x].mean.w, f32(change.limit)); }
-    if change.measured { estimates[id.x].moment.w += change.change; }
+    // Resident events already changed the authority. Its snapshot is loaded
+    // after this pass; applying them again would halve history twice.
+    if estimates[id.x].identity.w == 0u || shared_slot(receiver, estimates[id.x].identity.y) == 0xffffffffu {
+        if change.limit != NO_LIMIT { estimates[id.x].mean.w = min(estimates[id.x].mean.w, f32(change.limit)); }
+        if change.measured { estimates[id.x].moment.w += change.change; }
+    }
     // A pending tail through changed geometry is not a sample of either
     // scene. Discard only that attempt, preserving accumulated measurements,
     // its display prior and all unrelated receivers' in-flight paths.

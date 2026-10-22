@@ -29,6 +29,16 @@ pub(crate) struct SceneBindings {
     pub(super) params: GpuParams,
     /// Directory, regions, cells, materials, lights, emitters, cache, index.
     pub(super) buffers: [Buffer; 8],
+    pub(super) cache: Option<CacheBinding>,
+}
+
+#[derive(Clone)]
+pub(super) struct CacheBinding {
+    pub meta: Buffer,
+    pub guard: Buffer,
+    pub epoch: u32,
+    pub enabled: bool,
+    pub origin: Instant,
 }
 
 impl GpuTracer {
@@ -60,6 +70,7 @@ impl GpuTracer {
             |resident| resident.cache_buffers(),
         );
         Some(SceneBindings {
+            cache: self.resident.as_ref().map(|resident| resident.view_cache()),
             params: GpuParams {
                 counts: UVec4::new(
                     0,

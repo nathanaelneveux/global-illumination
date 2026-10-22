@@ -60,6 +60,12 @@ pub(super) struct ResidentAccumulator {
     task_epoch: u64,
     scene: Option<Arc<TransportScene>>,
     origin: Instant,
+    shared_view_cache: bool,
+    /// Revokes writable render snapshots before ownership/scene maintenance.
+    /// Ordinary sampling leaves the epoch alone: both command buffers advance
+    /// the same statistics in GPU queue order.
+    cache_epoch: u32,
+    cache_guard: UploadBuffer,
     #[cfg(test)]
     clock_ms: Option<u32>,
     state: UploadBuffer,
@@ -199,6 +205,9 @@ impl ResidentAccumulator {
             task_epoch: 0,
             scene: None,
             origin: Instant::now(),
+            shared_view_cache: false,
+            cache_epoch: 0,
+            cache_guard: UploadBuffer::new(device, "GI cache write epoch", storage),
             #[cfg(test)]
             clock_ms: None,
             state: UploadBuffer::new(
@@ -335,6 +344,18 @@ impl ResidentAccumulator {
         samples: u32,
     ) -> Result<(), String> {
         let _span = info_span!("gi_prepare_inputs").entered();
+        let changed_scene = self.scene.as_ref().is_none_or(|old| !Arc::ptr_eq(old, scene));
+        if changed_scene || self.shared_view_cache != work.shared_view_cache
+            || !work.ensure.is_empty() || !work.retire_pages.is_empty()
+            || !work.retention_events.is_empty() || !self.events.is_empty()
+            || work.probes.iter().any(|probe| probe.restart || work.faces[probe.faces()].iter().any(|face|
+                self.slots.get(&(face.voxel, face.face)).is_none_or(|slot|
+                    slot.revision != probe.revision || slot.material != face.material)))
+        {
+            self.cache_epoch = self.cache_epoch.checked_add(1).ok_or("cache write epoch exhausted")?;
+            self.cache_guard.upload(&context.device, &context.queue, &self.cache_epoch.to_le_bytes())?;
+        }
+        self.shared_view_cache = work.shared_view_cache;
         let indexed_spatial = work.spatial_evidence_target > 0
             && work.spatial_reconstruction.is_finite()
             && work.spatial_reconstruction > 0.0;
@@ -491,7 +512,11 @@ impl ResidentAccumulator {
                     seed = NO_SEED | face.revision_cap.min(NO_CAP);
                 }
                 face.resident = UVec2::new(slot.index, slot.incarnation);
-                if seed >= NO_SEED && face.rollback {
+                if seed >= NO_SEED && face.rollback && !work.shared_view_cache {
+                    // Shared RGB history has additional render-queue merges.
+                    // Its GPU edit events, not a lagging CPU snapshot, own
+                    // retention; rolling back a worker checkpoint would erase
+                    // newer visible samples as well as the rejected batch.
                     seed |= ROLLBACK;
                 }
                 if seed < NO_SEED {
@@ -1073,6 +1098,16 @@ impl ResidentAccumulator {
     /// allocation changes freeze an old pair; this is not a per-batch snapshot.
     pub(super) fn cache_buffers(&self) -> (&UploadBuffer, &UploadBuffer) {
         (&self.state, &self.face_index_buffer)
+    }
+
+    pub(super) fn view_cache(&self) -> super::view::CacheBinding {
+        super::view::CacheBinding {
+            meta: self.meta.buffer.clone(),
+            guard: self.cache_guard.buffer.clone(),
+            epoch: self.cache_epoch,
+            enabled: self.shared_view_cache,
+            origin: self.origin,
+        }
     }
 
     pub(super) fn dispatch_prepare(
