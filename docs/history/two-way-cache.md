@@ -435,3 +435,116 @@ geometry backs the synthetic prepass. Native single/MSAA pipelines, shader
 layout validation and full Bevy material composition pass. Logs are
 `target/pool-{native,pipelines,shader,material}.log`; the final cleanup only
 removes unused helpers and shares the existing exact-face lookup.
+
+### Pool qualification and benchmark correction
+
+`75e9988` splits preparation and scanning into separately timed passes and adds
+free/claimed/exhausted/retained counters to the existing receipt (224 bytes, not
+192; no new callback or lighting readback). `5b99afe` builds the retained-face
+index before discovery, avoids recreating globally represented faces, and treats
+cross-bin motion separately from actual loss of visibility. `02ae4a8` tests raw
+mean/weight and QMC-sequence preservation across motion, plus clean history when
+a physical slot is recycled for an unrelated face.
+
+Camera-position review caught a harness defect: translating only the character
+Transform could be overwritten by controller synchronization. Some old streaming
+runs moved 32 or 64 voxels while others remained near spawn. **Treat earlier
+streaming cost comparisons as provisional, not matched-path qualification.**
+The fixed-eye motion/coverage and fixed cave captures are unaffected. `711f247`
+replays a detached absolute path; `710e066` only removes the now-unused mutable
+look-component borrow. The same camera-path fix is `933909f` on the control.
+
+Matched-path pair, M4/Metal 16 GB, development profile, 2560x1440 offscreen,
+`config/gi-view-cached.json`, background terrain, preferred look and frame timing:
+
+| Fully moving intervals ending 18–30s | `933909f` control | `711f247` shared pool |
+| --- | ---: | ---: |
+| Mean total discovery, 480 receipts each | .7925 ms | .9605 ms |
+| Offscreen cadence p50 / p95 / p99 after 15s, capture frames excluded | 23.077 / 25.367 / 27.134 ms | 23.145 / 25.419 / 26.826 ms |
+| Peak process footprint | 908 MB | 911 MB |
+
+The pooled design still costs .168 ms more for discovery; it is not a discovery
+speedup. Both cameras start at `(0,19.62,0)` and end at `(0,19.62,64.8)`, with
+intermediate capture positions agreeing within .011 voxels. Runs are
+`streaming-1792696118125527000-44446` in the control worktree and
+`streaming-1792696193763104000-44583` here; logs are
+`target/pool-{control,candidate}-fixed-streaming.log`. Candidate's dirty diff
+at capture is the later `02ae4a8` native tests only, not gameplay code.
+These timings do not establish windowed FPS. No other game/build/analysis ran
+during the measured phases.
+
+`codex/pool-batched-reclaim` / `18ecfe1` tries workgroup-batched free-list
+compaction. Native history/coverage checks pass, but the same path measures
+.9563 ms versus .9605 ms: no meaningful gain. The simpler reclamation stays in
+the main pool experiment. Its run is `streaming-1792696345525913000-44847`, with
+the shader diff against `02ae4a8`; log `target/pool-compact-streaming.log`.
+
+The first pool's fixed-eye mask (`48f204d`,
+`motion-1792695603142721000-43371`) reduced turned-view unsupported pixels from
+2965 to 560 versus control `motion-1792694916580032000-42797`. This early 81%
+reduction qualifies coverage only, not the later retained-index revision or
+ordinary material cost. Final appearance and edit checks are recorded below.
+
+### Final pool coverage and appearance
+
+Final captures use `710e066` plus a shader-only cleanup (indentation and removal
+of an already-true nested owner check), a Rust comment and the documentation
+diff. The tested runtime cleanup is committed as `579a8c5`. Hardware, viewport,
+profile and settings match the pair above. Control
+appearance runs use `933909f`; its rendering remains `9950a99`. All runs completed
+with valid, varied 2560x1440 offscreen targets and no render errors. The cave,
+normal motion and emitter-response comparisons were visually inspected.
+
+The final coverage-mask run `motion-1792696800868052000-45670` has **2 / 0 / 2**
+unsupported pixels in `base-1 / turned-1 / base-2`, versus **2982 / 2965 / 2982**
+in control `motion-1792694916580032000-42797`. The diagnostic counts strict red
+pixels (`R > 240, G < 15, B < 15`) before tone mapping/fog. Green means corner
+support and yellow means valid geometric upsampling; neither is missing light.
+This is a coverage result in the tested views, not a claim of universal coverage.
+
+Normal-motion runs are `motion-1792696473251582000-45154` (control) and
+`motion-1792696834219473000-45869` (pool). Exact-return mean FLIP is .000213 ->
+.000240. Aligned small-turn mean absolute display-luminance residual is
+.007118 -> .007111. These are essentially unchanged; removing unsupported pixels
+does not establish an overall motion-flicker improvement in this diagnostic.
+
+| Appearance measurement, control -> pool | Result |
+| --- | --- |
+| Cave 15s versus own 60s, mean FLIP | .009672 -> .010683 |
+| Cave 30s versus own 60s, mean FLIP | .005806 -> .006429 |
+| Cave 60s cross-run mean FLIP / display-luminance ratio | .005079 / .999854 |
+| Emitter add 200ms versus own settled, mean FLIP | .287266 -> .319604 |
+| Emitter add 1000ms versus own settled, mean FLIP | .014213 -> .016574 |
+| Emitter removal 600ms versus own recovered, mean FLIP | .019116 -> .017093 |
+| Emitter removal 1000ms versus own recovered, mean FLIP | .007034 -> .008889 |
+
+Early addition is slightly darker in this pair; removal recovers on the same
+observed timescale. Cave appearance remains close, with a small increase in
+early-to-late change rather than a quality gain. These self-change measurements
+are not reference accuracy or evidence that the sampler improved. Near-steady
+cave discovery is about .43 ms versus .46 ms control. Late cave pool counters
+show 5982 retained faces, 59490 free slots and no allocation exhaustion: the
+unused-capacity premise holds in the actual scene as well as the native fixture.
+
+Cave runs are `cave-1792696506631858000-45280` / `cave-1792696867547930000-46042`;
+response runs are `response-1792696570147438000-45143` /
+`response-1792696931083513000-45653`. JSON and paired images are in
+`target/pool-final-quality/`, motion analysis in
+`target/pool-final-motion-quality.json`. Run logs are
+`target/pool-{control,final}-{mask,motion,cave,response}.log`.
+
+Qualification: keep this as a **coverage-winning experiment**, not a performance
+win or an automatic merge. Moving discovery costs an additional .168 ms; added
+GPU metadata is about 3.375 MiB at this viewport (4 MiB pool buffers versus 1 MiB
+old tile metadata, plus 384 KiB published spatial lists). Receiver/path capacity
+and transport budgets did not grow. Total capacity exhaustion is safety-tested,
+but fairness between competing tiles under sustained full-pool pressure is not
+qualified; ordinary scene tests had ample spare capacity. General motion flicker
+remains an open target. The main branch and default hybrid mode are unchanged.
+
+Focused native coverage/raw-history/QMC checks, raw-prefix/pending-tail parity,
+single/MSAA layouts and full Bevy material composition pass. Final production
+Clippy passes with warnings denied. Logs: `target/pool-history-native.log`,
+`target/pool-batch.log`, `target/pool-final-{layout,pipelines,clippy}.log` and
+`target/pool-material.log`. `cargo build --release --locked --offline` passes
+with 33 existing unused/dead-code warnings (`target/pool-final-release.log`).

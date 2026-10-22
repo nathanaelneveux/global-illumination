@@ -62,17 +62,22 @@ interpolation, not a second production reconstruction path.
 ### View-owned far lighting
 
 After Bevy's depth/normal prepass and before opaque rendering, each active view
-discovers voxel-face identities on a reduced grid (nominal four-pixel cells,
-at most 65,536 entries). Each 2x2-cell tile cooperatively scans its full-resolution
-prepass footprint. It keeps the original centre identities on flat surfaces;
-redundant coplanar slots make room for thin planes between those centres. Selection
-is deterministic and geometry-validated before replacement, including when raster
-geometry leads transport uploads. There are still only four slots per full tile:
-this improves grazing coverage, not unlimited coverage of arbitrarily dense
-subpixel geometry. It adds prepass classification, not rays, persistent lighting
-histories or CPU readback. Quantized normals select their dominant axis; depth
-is snapped to the voxel plane before the geometry identity check. Duplicate pixels
-share one face owner. A ping-pong hash reprojects the exact same face, its raw
+discovers voxel-face identities using a reduced spatial grid (nominal four-pixel
+cells, at most 65,536 receiver slots). On the experimental shared-pool branch,
+physical receiver slots are independent of grid coordinates. Each 2x2-cell tile
+indexes a linked list of projected receivers and can borrow unused slots from
+anywhere in the view. A preparation dispatch validates old witnesses, retains
+surviving slots and completes the free list before discovery allocates from it.
+An index of the retained identities prevents a tile from recreating a face that
+is already represented elsewhere. New keys are indexed only after initialization
+finishes; no workgroup spins on another group's partially published data.
+
+Discovery retains useful coarse coverage and scans full-resolution footprints
+for missing planes under the same world-distance gate as presentation. There is
+no four-receiver tile quota. Total pool exhaustion is bounded and explicitly
+counted, not an alias or an out-of-bounds write. Quantized normals select their
+dominant axis; depth is snapped to the voxel plane before the geometry identity
+check. Duplicate pixels share one face owner. A ping-pong hash reprojects the exact same face, its raw
 mean/second moment, sequence, retained path and any unfinished continuation.
 No filtered image is ever treated as a new transport measurement.
 
@@ -80,7 +85,8 @@ Discovery selection is memoized separately from lighting. Each slot retains a
 face-local UNORM16x2 point that was actually visible; the voxel centre may be
 hidden on a partially occluded or grazing face. Camera motion projects that fixed
 world point and checks current depth, normal, voxel identity and geometry. Valid
-selections remain in the tile; lost witnesses trigger immediate discovery. Vacant
+selections follow their world points across tile boundaries; a bin crossing alone
+does not force rediscovery. Lost witnesses trigger immediate discovery. Vacant
 centres check for newly exposed terrain. A viewport, overlap or MSAA change
 disables reuse. Static tiles additionally fingerprint their depth/normal footprint.
 Footprint searches are staggered over four frames, so a new thin plane can wait
@@ -88,10 +94,11 @@ three intervening frames. Missing transport geometry forces retries independentl
 of this cadence. Full scans preserve valid selections instead of reanchoring them
 at screen centres. A 64-frame refresh bounds fingerprint-collision lifetime.
 World edits and all existing receivers' lighting stages continue every frame.
-Per-camera metadata is 32 bytes per 2x2 tile (1 MiB allocated at 1440p with buffer
-growth rounding); it stays on the GPU. Four local slots remain a coverage limit,
-not a promise that all visible faces have an owner; use the raster coverage mask
-in validation rather than the selected-owner counter to measure those holes.
+The two pool/index buffers round to 4 MiB at 1440p, versus the earlier 1-MiB
+tile metadata, with another 384 KiB in the published spatial index. Receiver/path
+capacity and transport budgets are unchanged. All metadata stays on the GPU.
+Use the raster coverage mask, not the selected-owner counter, to measure visible
+holes; global capacity and raster/subpixel visibility still bound coverage.
 
 Each owner advances one path at a time, at most three intersections per wave.
 Long paths remain pending; their partial energy is not published. Finishing
@@ -107,9 +114,10 @@ silently missing events. Near residency is driven only by active cameras;
 inactive terrain-loading cameras do not allocate lighting receivers.
 
 Display reconstruction borrows unique coplanar owners within a bounded screen
-and world radius; it does not alter raw moments. Raster upsampling first searches
-4x4 slots and expands only an empty lookup to its surrounding ring (6x6). Both
-footprints retain the same coplanarity and 16-voxel distance gates. Donor weights use
+and world radius; it does not alter raw moments. Both reconstruction and raster
+upsampling use the spatial index, never physical slot coordinates. Exact faces
+are hash-addressed; otherwise raster upsampling searches the four closest bins,
+including the containing bin, with the same coplanarity and 16-voxel gates. Donor weights use
 actual world-space positions, not reassigned screen-slot coordinates; camera
 motion alone cannot change those weights for a fixed receiver/donor set.
 This is presentation smoothing,
@@ -121,13 +129,13 @@ looked up per fragment so a subpixel emitter does not disappear.
 Per-camera state stays on the GPU. The material reads a shared output scratch
 buffer overwritten in camera encoder order, with validity cleared before each
 camera. Immutable optical-table generations and coherent geometry/cache buffer
-pairs are shared with the worker. Only 192-byte asynchronous timestamp/counter
+pairs are shared with the worker. Only 224-byte asynchronous timestamp/counter
 receipts return to the CPU; callbacks are polled without waiting. Far receives
 25% of the existing transport time share and near the rest. Prepass, discovery,
 corner sunlight and reconstruction are separately measured presentation costs,
-not hidden in the transport quota. Current view state is about 48.75 MiB at
-2560x1440 before the 1-MiB discovery metadata; it is bounded by viewport
-capacity, not loaded world size.
+not hidden in the transport quota. Preparation and scanning have separate
+timestamps and their sum is the comparable discovery cost. State is bounded by
+viewport capacity, not loaded world size.
 
 ### Experimental two-way face cache
 

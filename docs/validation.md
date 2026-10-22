@@ -163,21 +163,18 @@ known completions, history, pending tails and display coverage separately.
 
 `native_view_discovery_keeps_thin_surfaces_without_growing_storage` is the focused
 native coverage gate (`--ignored --nocapture`). Synthetic depth/normal prepasses
-contain one-pixel side planes missed by the old fixed centres, backed by real
-transport geometry. It checks even/odd tile edges, retained background coverage,
-unchanged flat-surface identities, and rejection of raster-only geometry. Set
-`VOXEL_GI_DISCOVERY_BASELINE` to the old `voxel_view_runtime.wgsl` in a baseline
-worktree to run the identical fixture against its discovery kernel. A path to
-the newer `voxel_view_discovery.wgsl` compares retained coverage against
-full surface-aware discovery. The multi-frame gate checks the four-frame bound
-for new planes, persistent thin-face coverage between checks, unchanged receiver
-identities, missing-geometry retry, periodic refresh and forced camera refresh.
-It also checks small-motion witness reuse and rejects surfaces that disappear
-from the prepass even when their transport geometry still exists. Exact slot
-parity against a full-scan control applies to flat scenes; different valid
-representatives are intentional when retaining thin surfaces across scans.
-This is a coverage test, not rendered quality evidence. Pair it with cave/streaming captures
-and presentation GPU cost before changing discovery.
+contain six depth planes plus one-pixel side planes in one crowded tile, backed
+by real transport geometry. Empty tiles elsewhere provide spare slots. It checks
+borrowing beyond four local slots, even/odd grid edges, stable stationary face
+identities, cross-tile motion and removal/reappearance in the prepass. A nine-slot
+case exercises bounded global exhaustion. The actual path-reprojection stage
+checks that tagged raw means and QMC indices follow retained faces, while newly
+allocated faces do not inherit a recycled slot's unrelated history. Pool/output
+layout assertions and single/MSAA pipeline tests cover the binding contract.
+This is a coverage/identity test, not rendered quality evidence. Pair it with
+cave/streaming captures and total preparation-plus-discovery cost. The older
+fixed-tile baseline injection fixture remains in its historical branch, not as
+a second runtime implementation.
 
 For the opt-in `view_cache_exchange`, run `native_two_way_cache` with
 `--ignored --test-threads=1 --nocapture`. It checks raw transfers (not summed
@@ -420,6 +417,13 @@ diagnostic, not the calibrated raw-reference FLIP threshold. Run analysis outsid
 timed gameplay. Interval `far_discovery_mean_ms` and `far_discovery_receipts`
 aggregate every existing GPU receipt; prefer them over sparsely logged last-frame
 costs for moving/staggered workloads.
+
+The `streaming` profile now detaches the camera from the character controller
+and replays the generator's spawn eye, a 180-degree turn at 15s and 64.8 voxels
+of absolute travel over the next 15s. It still streams normal/background terrain;
+it is not a controller/collision test. Verify the recorded camera positions in
+paired runs. Older Transform-only body motion could be overwritten by physics,
+so those runs are not a reliable matched-path performance baseline.
 
 For unattended lighting/capture checks, use Bevy's offscreen target:
 

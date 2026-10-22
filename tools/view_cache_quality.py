@@ -75,7 +75,7 @@ def main():
     for capture in selected:
         sheet = Image.new("RGB", (1536, 464), "#202020")
         draw = ImageDraw.Draw(sheet)
-        for column, (label, run) in enumerate([("baseline", args.baseline), ("two-way", args.candidate)]):
+        for column, (label, run) in enumerate([("baseline", args.baseline), ("candidate", args.candidate)]):
             im = Image.open(run / f"{capture}.png").convert("RGB")
             sheet.paste(im.resize((768, 432), Image.Resampling.LANCZOS), (column * 768, 32))
             draw.text((column * 768 + 8, 8), f"{label}: {capture}", fill="white")
