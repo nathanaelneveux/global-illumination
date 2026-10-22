@@ -318,9 +318,35 @@ impl Profile {
     }
 }
 
+// Shader diagnostic modes are a material contract: 0 appearance, 1 combined
+// irradiance, 2 coverage, 3 indirect, 4 direct sunlight. These are capture-only
+// controls; ordinary gameplay and performance comparisons retain mode zero.
+pub(super) fn motion_diagnostic(coverage: bool, component: Option<&str>) -> Result<u32, &'static str> {
+    if coverage && component.is_some() {
+        return Err("Choose VIEW_COVERAGE or LIGHT_COMPONENT, not both.");
+    }
+    match component {
+        None => Ok(if coverage { 2 } else { 0 }),
+        Some("combined") => Ok(1),
+        Some("indirect") => Ok(3),
+        Some("sun") => Ok(4),
+        _ => Err("VOXEL_GI_VALIDATE_LIGHT_COMPONENT must be combined, indirect or sun."),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn motion_diagnostics_are_explicit_and_exclusive() {
+        for (component, expected) in [(None, 0), (Some("combined"), 1), (Some("indirect"), 3), (Some("sun"), 4)] {
+            assert_eq!(motion_diagnostic(false, component), Ok(expected));
+        }
+        assert_eq!(motion_diagnostic(true, None), Ok(2));
+        assert!(motion_diagnostic(true, Some("sun")).is_err());
+        assert!(motion_diagnostic(false, Some("unknown")).is_err());
+    }
 
     #[test]
     fn gameplay_and_sources_never_switch_away_from_preferred_look() {

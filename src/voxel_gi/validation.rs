@@ -108,6 +108,7 @@ pub(super) struct ValidationRun {
     startup: Option<Instant>,
     started: Option<Instant>,
     profile: Profile,
+    motion_diagnostic: u32,
     metrics: Metrics,
     captures: usize,
     edits: u32,
@@ -214,6 +215,20 @@ pub(super) fn run_validation(
             return;
         }
         run.profile = profile;
+        if profile == Profile::Motion {
+            let component = std::env::var("VOXEL_GI_VALIDATE_LIGHT_COMPONENT").ok();
+            run.motion_diagnostic = match profiles::motion_diagnostic(
+                std::env::var_os("VOXEL_GI_VALIDATE_VIEW_COVERAGE").is_some(), component.as_deref(),
+            ) {
+                Ok(mode) => mode,
+                Err(message) => {
+                    error!(message);
+                    run.done = true;
+                    commands.write_message(AppExit::error());
+                    return;
+                }
+            };
+        }
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -409,8 +424,8 @@ pub(super) fn run_validation(
     {
         let mut next = material.extension.settings;
         profile.configure(elapsed, &mut next);
-        if profile == Profile::Motion && std::env::var_os("VOXEL_GI_VALIDATE_VIEW_COVERAGE").is_some() {
-            next.debug_irradiance = 2;
+        if profile == Profile::Motion {
+            next.debug_irradiance = run.motion_diagnostic;
         }
         if next != material.extension.settings {
             materials
@@ -671,6 +686,7 @@ pub(super) fn run_validation(
             "moves": run.background.moves, "speed_voxels_per_second": 4.32,
             "note": "Inactive BVW loader walks from (-96,40,0) toward -Z. Does not render or alter GI view priority. Loaded terrain participates in transport."},
         "presentation": "shared-corner sun + corner-reconstructed indirect; preferred modes except compare/stress",
+        "view_diagnostic": run.motion_diagnostic,
         "spatial_retention": super::retention::POLICY_NAME,
         "settings": {"transport": settings.transport, "receiver_radius": settings.receiver_radius,
             "receiver_strategy": settings.receiver_strategy,

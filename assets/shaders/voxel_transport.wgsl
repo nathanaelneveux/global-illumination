@@ -560,7 +560,10 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
     );
     if transport_settings.debug_irradiance != 0u {
         var diagnostic_light = indirect;
-        if use_voxel_sky() {
+        // Component captures isolate motion-induced lighting changes from
+        // textured appearance. Normal presentation never enters this branch.
+        if transport_settings.debug_irradiance == 4u { diagnostic_light = vec3(0.0); }
+        if transport_settings.debug_irradiance != 3u && use_voxel_sky() {
             diagnostic_light += probe_irradiance(in.world_position.xyz, normalize(in.world_normal), true)
                 * (10000.0 / 3.14159265359) * mesh_view_bindings::view.exposure;
         }

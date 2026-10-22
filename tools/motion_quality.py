@@ -16,7 +16,7 @@ from PIL import Image, ImageFilter
 from view_cache_quality import compare, image
 
 
-def aligned_turn(base_path, turned_path, turn_degrees=.15):
+def aligned_turn(base_path, turned_path, turn_degrees=.15, appearance=True):
     base = np.asarray(Image.open(base_path).convert("RGB").filter(ImageFilter.GaussianBlur(2)), dtype=np.float32) / 255
     turned = np.asarray(Image.open(turned_path).convert("RGB").filter(ImageFilter.GaussianBlur(2)), dtype=np.float32) / 255
     h, w, _ = base.shape
@@ -41,11 +41,13 @@ def aligned_turn(base_path, turned_path, turn_degrees=.15):
     fx, fy = (u - ix)[..., None], (v - iy)[..., None]
     aligned = ((turned[iy, ix] * (1 - fx) + turned[iy, ix + 1] * fx) * (1 - fy)
                + (turned[iy + 1, ix] * (1 - fx) + turned[iy + 1, ix + 1] * fx) * fy)
-    # Sky is blue in this profile. Restrict errors to terrain in both views.
-    terrain = valid & (base[..., 1] > base[..., 2]) & (aligned[..., 1] > aligned[..., 2])
+    # The green-terrain heuristic only applies to textured appearance, never
+    # white/blue irradiance. Components use the complete valid overlap, including
+    # unchanged sky; compare like component captures, not their mean to appearance.
+    terrain = valid & (base[..., 1] > base[..., 2]) & (aligned[..., 1] > aligned[..., 2]) if appearance else valid
     error = np.abs((aligned - base) @ np.array([.2126, .7152, .0722]))[terrain]
     assert error.size, "No terrain pixels in the fixed-eye motion comparison"
-    return {"terrain_pixels": int(terrain.sum()), "mean_abs_display_luminance": float(error.mean()),
+    return {"mask": "green terrain" if appearance else "valid image overlap", "compared_pixels": int(terrain.sum()), "mean_abs_display_luminance": float(error.mean()),
             "p95_p99_p999_abs_display_luminance": np.percentile(error, [95, 99, 99.9]).tolist(),
             "pixels_over_002": int((error > .02).sum())}
 
@@ -56,9 +58,12 @@ def evaluate(run):
     captures = report["capture_windows"]
     assert captures and all(c["target_valid"] and c["varied"] and c["width"] == 2560
                             and c["height"] == 1440 for c in captures)
-    return {"run": str(run), "build": report["build"],
+    mode = report.get("view_diagnostic", 0)
+    assert mode != 2, "Coverage colors are not lighting-stability evidence"
+    return {"run": str(run), "build": report["build"], "view_diagnostic": mode,
             "return_flip": compare(image(run / "base-1.png"), image(run / "base-2.png")),
-            "aligned_small_turn": aligned_turn(run / "base-1.png", run / "turned-1.png")}
+            "turned_repeat_flip": compare(image(run / "turned-1.png"), image(run / "turned-2.png")),
+            "aligned_small_turn": aligned_turn(run / "base-1.png", run / "turned-1.png", appearance=mode == 0)}
 
 
 if __name__ == "__main__":
