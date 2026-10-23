@@ -210,7 +210,7 @@ pub(super) fn run_validation(
             return;
         }
         run.profile = profile;
-        if matches!(profile, Profile::Motion | Profile::Tunnel) {
+        if matches!(profile, Profile::Motion | Profile::Tunnel | Profile::Streaming) {
             run.motion_static = std::env::var_os("VOXEL_GI_VALIDATE_MOTION_STATIC").is_some();
             run.motion_walk = profiles::motion_walk();
             let component = std::env::var("VOXEL_GI_VALIDATE_LIGHT_COMPONENT").ok();
@@ -388,7 +388,7 @@ pub(super) fn run_validation(
         // Replay an absolute path, independent of asynchronous startup physics
         // and controller synchronization. Mutating the body Transform alone can
         // be overwritten by the KCC and silently turn this into a static test.
-        let distance = 4.32 * (elapsed - 15.0).clamp(0.0, 15.0);
+        let distance = if profiles::turn_burst() { 0.0 } else { 4.32 * (elapsed - 15.0).clamp(0.0, 15.0) };
         let eye = generator.player_spawn_position() + Vec3::Y * 1.62 + Vec3::Z * distance;
         let yaw = if elapsed >= 15.0 { std::f32::consts::PI } else { 0.0 };
         let transform = Transform::from_translation(eye).with_rotation(Quat::from_rotation_y(yaw));
@@ -426,7 +426,7 @@ pub(super) fn run_validation(
     {
         let mut next = material.extension.settings;
         profile.configure(elapsed, &mut next);
-        if matches!(profile, Profile::Motion | Profile::Tunnel) {
+        if matches!(profile, Profile::Motion | Profile::Tunnel | Profile::Streaming) {
             next.debug_irradiance = run.motion_diagnostic;
         }
         if next != material.extension.settings {

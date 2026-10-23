@@ -36,6 +36,22 @@ pub(super) fn motion_walk() -> Option<f32> {
     })
 }
 
+/// `streaming` turns 180 degrees at 15 s and stands still, capturing 24
+/// consecutive frames from the turn (VOXEL_GI_VALIDATE_TURN_BURST=1).
+pub(super) fn turn_burst() -> bool {
+    static TURN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TURN.get_or_init(|| std::env::var_os("VOXEL_GI_VALIDATE_TURN_BURST").is_some())
+}
+
+static TURN_CAPTURES: std::sync::LazyLock<Vec<(f32, &'static str)>> = std::sync::LazyLock::new(|| {
+    let mut captures = vec![(14.5, "before-turn")];
+    for frame in 0..24 {
+        captures.push((15.0, &*Box::leak(format!("turn-{frame:02}").into_boxed_str())));
+    }
+    captures.extend([(16.0, "turn-1s"), (18.0, "turn-3s")]);
+    captures
+});
+
 /// `edits` places an emitter instead of rock at 19 s and captures 16
 /// consecutive frames from the edit (VOXEL_GI_VALIDATE_PLACE_EMITTER=1).
 pub(super) fn place_emitter() -> bool {
@@ -150,6 +166,9 @@ impl Profile {
                 (37.05, "depth12-0050ms"), (37.4, "depth12-0400ms"), (38.7, "depth12-1700ms"),
                 (53.05, "depth20-0050ms"), (53.4, "depth20-0400ms"), (54.7, "depth20-1700ms"),
                 (59.0, "tunnel-later")];
+        }
+        if self == Self::Streaming && turn_burst() {
+            return &TURN_CAPTURES;
         }
         if self == Self::Motion {
             if motion_walk().is_some() {

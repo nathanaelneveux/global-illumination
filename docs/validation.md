@@ -395,6 +395,12 @@ headless response, house-edits and day-cycle with fixed-sun references for
 lighting and memory) and archives the results to copy back; `BASE_SPEC_ONLY`
 selects runs by name.
 
+`VOXEL_GI_VALIDATE_TURN_BURST=1` makes `streaming` turn 180 degrees at 15 s
+and stand still, capturing 24 consecutive frames (`turn-*`) plus `turn-1s` and
+`turn-3s`; light-component captures (`VOXEL_GI_VALIDATE_LIGHT_COMPONENT`) also
+apply to `streaming`. Count pure-black pixels per frame to see how long newly
+viewed terrain waits for GI geometry.
+
 `VOXEL_GI_VALIDATE_PLACE_EMITTER=1` makes `edits` place an emitter instead of
 rock at 19 s and capture 16 consecutive frames from the edit
 (`emitter-place-*`), to count frames a newly drawn block lags the GI geometry.
