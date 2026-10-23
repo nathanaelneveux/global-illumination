@@ -538,7 +538,7 @@ Each change event carries a flux bound. A face whose MSE-optimal history
 `c sigma^2 / D^2` (with `D = flux / (pi d^2)`) would bind keeps that much. The
 face is not read as a cache source for one batch, and uses the fresh batch's
 noise if it was dark. Changes of unknown flux keep the distance curve below.
-`config/gi-retention-curve.json` restores the curve everywhere.
+`config/gi-retention-curve.ron` restores the curve everywhere.
 
 Retention is applied **on the GPU, to every resident face in range, when the
 change publishes** (`apply_events` in `voxel_accumulate.wgsl`; `retention.rs`
@@ -749,7 +749,7 @@ its face's mirror stale, and selection emits at most
 `statistics_mirror_per_batch` (default 1,024) stale faces' full state per
 batch; the CPU merges those records unless the probe changed since. The
 per-pick merge was most of the main-thread GI cost (gameplay Tracy, 59e7346:
-~1.4 of 2.9 ms/frame). `config/gi-mirror-full.json` mirrors every pick, for
+~1.4 of 2.9 ms/frame). `config/gi-mirror-full.ron` mirrors every pick, for
 validation recorders that need current CPU statistics (house-edits, cave):
 recorder metrics of other profiles read a lagging mirror, so rendered frames
 (FLIP) judge them. The first bounded mirror was shelved because CPU code still
@@ -819,7 +819,7 @@ View presentation reconstructs each virtual unit-face corner from up to four
 coplanar view-owned faces, excluding disconnected diagonals, then bilinearly
 interpolates across the face. `spatial_reconstruction` and
 `spatial_evidence_target` configure the view tier's nonrecursive coplanar
-filter (`config/gi-display-unfiltered.json` turns it off). Direct sun uses the
+filter (`config/gi-display-unfiltered.ron` turns it off). Direct sun uses the
 same four-corner visibility, from the view tier's corners or, for faces the
 reduced grid missed, traced directly.
 
@@ -974,10 +974,10 @@ to settle in that many milliseconds. Display gain/toggles do not change energy
 returned to simulation readers.
 
 `diagnostics/tuning.rs` is the optional host UI: staged model Apply, live work and
-display sliders, session A/B presets, and explicit JSON import/export. Presets
+display sliders, session A/B presets, and explicit RON import/export. Presets
 copy only presentation fields, never GPU addressing/generation state. Opening an
 idle panel does not mark settings or material assets changed every frame. The
-demo's `VOXEL_GI_SETTINGS` file loader is opt-in and fails visibly on invalid JSON;
+demo's `VOXEL_GI_SETTINGS` file loader is opt-in and fails visibly on invalid RON;
 the reusable plugin still accepts a host-provided settings resource directly.
 
 ### Host integration

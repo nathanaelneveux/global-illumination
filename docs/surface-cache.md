@@ -56,7 +56,7 @@ receivers, not accuracy against a reference:
 | Traced paths | 464M | 565M | | |
 | Frame p95 (offscreen) | 24.2 ms | 24.5 ms | | |
 
-The unfiltered pair uses `config/gi-display-unfiltered.json` and repeats the
+The unfiltered pair uses `config/gi-display-unfiltered.ron` and repeats the
 default-display result. Median floor luminance is 1.9x higher with the cache:
 light carried down the corridor by bounces beyond the third was previously
 truncated.
@@ -109,7 +109,7 @@ target 256 1.36, 512 1.04, **1024 0.93**.
 1024 meets both calibrations: the raw count that passes FLIP, and
 smoothness inside the envelope at every prefix. It is the branch default.
 Its footprint is about 1/sqrt(2) of 2048's, so less detail is smeared.
-`config/gi-display-evidence-2048.json` restores the old target.
+`config/gi-display-evidence-2048.ron` restores the old target.
 `tools/cache_flip_gate.py` reproduces the FLIP table.
 
 ## Rejected: 256-sample gameplay history

@@ -194,7 +194,7 @@ literature search (Google Scholar citations of Gautron 2007 and Myszkowski
 
 ## Gameplay integration and validation
 
-`measured_retention` (c, default 1 on this branch; `config/gi-retention-curve.json`
+`measured_retention` (c, default 1 on this branch; `config/gi-retention-curve.ron`
 restores the whole-range curve). Journal events carry a flux bound per change:
 
 - **Edits:** emission delta, plus the brightest outgoing light around the edit
@@ -231,7 +231,7 @@ region (no top voxel); that is fixed and unit-tested.
 `8cab848` claimed to remove a 2-3 ms frame p95 cost in the `sources` profile's
 light-change and streaming phases. That claim compared runs from different
 sessions and does not reproduce. On 2026-10-18, same build, interleaved
-(headless, Apple M4), measured retention vs `config/gi-retention-curve.json`,
+(headless, Apple M4), measured retention vs `config/gi-retention-curve.ron`,
 frame p95 over four pairs:
 
 | Phase | Curve | Measured |

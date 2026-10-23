@@ -40,7 +40,7 @@ study harnesses the [historical records](history/README.md) use: near-history
 calibration, model comparison, footprint replay, the retain-all ablation and
 their Python analyses. Check out that commit to reproduce them. Check
 `spatial_retention` and `measured_retention` in the report;
-`config/gi-retention-curve.json` selects the whole-range curve without measured
+`config/gi-retention-curve.ron` selects the whole-range curve without measured
 flux. Coverage and retained weight are still not convergence.
 The blocked windowed capture is not a frame-pacing qualification.
 
@@ -123,7 +123,7 @@ Do not let that hide estimator regressions or inflate apparent sample efficiency
   Borrowed evidence does not increase the physical sample count. A smoother image
   alone cannot lower the calibrated raw-sampler threshold.
 - **Gameplay cost:** compare full presentation with matched settings and background
-  loading. `config/gi-display-unfiltered.json` explicitly disables adaptive spatial
+  loading. `config/gi-display-unfiltered.ron` explicitly disables adaptive spatial
   reconstruction; unlike frozen prefixes it retains normal temporal response.
   Omitting `VOXEL_GI_SETTINGS` now enables reconstruction and is no longer an off
   control. Report cadence/freshness separately from fixed-prefix accuracy.
@@ -340,12 +340,12 @@ history progressively but preserves display history, so a screenshot immediately
 after loading is not an independent candidate result. Compare settled appearance
 and edit response as well as cost; a dark field or starved transport is not a win.
 
-For repeatable starts, export applied JSON, save it outside tracked source (for
-example `target/reach16.json`), and set `VOXEL_GI_SETTINGS` for either interactive
+For repeatable starts, export applied RON, save it outside tracked source (for
+example `target/reach16.ron`), and set `VOXEL_GI_SETTINGS` for either interactive
 or scripted runs. Partial files are supported:
 
-```json
-{"transport":{"reach":16,"bounces":3}}
+```ron
+(transport: (reach: 16.0, bounces: 3))
 ```
 
 The report records reach, depth, batch samples and existing work settings. Keep
@@ -522,7 +522,7 @@ compares them.
 Captures come in pairs one second apart (30/31 ... 180/181 s): the sun moves a
 fraction of a degree between them, so their FLIP is mostly flicker. `day.json`
 records per-second history percentiles (CPU mirror: use
-`config/gi-mirror-full.json`), traced paths, sky-corner retraces and revisions.
+`config/gi-mirror-full.ron`), traced paths, sky-corner retraces and revisions.
 
 First results (gi-day-night on 4915387, Apple M4, headless, full mirror). A
 fixed sun settles to median history ~1,000 samples by 180 s at ~4.3M paths/s,
@@ -582,7 +582,7 @@ forces uniform histories, or replaces scheduling with an offline prefix bake.
 Temporal records are still **pre-spatial** CPU feedback, not final rendered RGB.
 These views diagnose live publication and sampling; they do not supersede the
 raw matched-prefix sampler controls or establish windowed frame pacing.
-The explicit `gi-display-unfiltered.json` control also disables the final
+The explicit `gi-display-unfiltered.ron` control also disables the final
 render-frame transition. Physical prefix exports are unchanged by that
 transition; it must not be mistaken for improved sampler accuracy.
 
@@ -744,7 +744,7 @@ or editing normally. **F9** saves `temporal.json`, `watch.json` and `saved.png`
 under ignored `target/gi-face-watch/<timestamp>-<pid>/`; normal exit and selecting
 another face also save the trace. These controls work without validation mode,
 reference baking or a special scene. The existing unfiltered preset remains
-`VOXEL_GI_SETTINGS=config/gi-display-unfiltered.json`.
+`VOXEL_GI_SETTINGS=config/gi-display-unfiltered.ron`.
 
 The watch does not request rays, refresh a receiver, move a camera, add residency,
 change lighting settings, or stop streaming. With no watch, the recorder does
@@ -760,7 +760,7 @@ Probes keep no CPU statistics by default (`cpu_statistics` off), so the watch
 and the validation recorders (live-site, house, response timing, day-cycle
 history) read zeros, and when statistics are on, the mirror is bounded to
 `statistics_mirror_per_batch` faces per batch. Run with
-`VOXEL_GI_SETTINGS=config/gi-mirror-full.json` (statistics on, full mirror)
+`VOXEL_GI_SETTINGS=config/gi-mirror-full.ron` (statistics on, full mirror)
 when those numbers matter, and judge default-setting runs by their rendered
 captures. Memory measurements should use default settings.
 

@@ -1,7 +1,7 @@
 //! Day cycle: the canyon under a slowly rotating sun. Records how much
 //! history the moving sun leaves and what it costs; the paired captures show
 //! flicker. Sample counts are the CPU mirror: run with
-//! `config/gi-mirror-full.json` when they must be current.
+//! `config/gi-mirror-full.ron` when they must be current.
 use super::*;
 use crate::world_environment::SunAngle;
 

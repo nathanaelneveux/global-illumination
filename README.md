@@ -49,8 +49,8 @@ depth/normal prepass and traces them with the shared estimator, with exact-face
 reprojection and resumable paths. A persistent world cache within **64 voxels**
 of active cameras (`cache_radius`; page bounds, 32-voxel retirement hysteresis)
 terminates secondary rays and exchanges RGB history with visible faces, so
-reveals, returns and offscreen edits stay warm. `config/gi-cache-32.json` and
-`config/gi-cacheless.json` trade that cache for memory. Geometry remains
+reveals, returns and offscreen edits stay warm. `config/gi-cache-32.ron` and
+`config/gi-cacheless.ron` trade that cache for memory. Geometry remains
 available across all loaded terrain. The hybrid near/far and all-near strategies
 were removed after [the 2026-10-23 comparison](docs/history/option-comparison-2026-10-23.md);
 see also [view-first](docs/history/view-first-transport.md) and
@@ -75,9 +75,9 @@ CPU tracer remains as a test oracle.
 The view tier's spatial RGB filter uses a **1024 evidence target**, the value
 chosen with the user-calibrated FLIP gate for the former resident display (see
 [surface cache](docs/surface-cache.md#display-evidence-target)); it has not been
-re-qualified for the view filter. `config/gi-display-evidence-2048.json` raises
+re-qualified for the view filter. `config/gi-display-evidence-2048.ron` raises
 it. It filters presentation only, never physical samples. Use
-`VOXEL_GI_SETTINGS=config/gi-display-unfiltered.json` for the unfiltered
+`VOXEL_GI_SETTINGS=config/gi-display-unfiltered.ron` for the unfiltered
 control; sampler accuracy must be qualified separately from this reconstruction.
 
 The many-emitter cave is now in the regular world. Walk toward the house, then
@@ -112,7 +112,7 @@ CPU and GPU work overlap, so their displayed costs must not be added.
 | Left / right click | Remove / place a voxel |
 | E / Add emitting block button | Place a warm emitting voxel at the aimed-at face |
 | B / Bomb button | Immediately remove a radius-5 sphere centered on the aimed-at voxel; left-click remains single-block digging. |
-| Lighting controls… button | Quality/work sliders, A/B settings, defaults reset and JSON export |
+| Lighting controls… button | Quality/work sliders, A/B settings, defaults reset and RON export |
 | F3 | Mesh debug overlay |
 | F4 | Toggle indirect GI display |
 | F5 | Flat faces / virtual-corner interpolation |
@@ -204,9 +204,9 @@ measured retention ([research](docs/retention-research.md)) is the default. The
 previous calibrated runtime is preserved at `5381c17`. See the
 [integration record](docs/history/whole-range-history.md#runtime-integration).
 
-**Copy applied JSON** exports transport/work settings (not display toggles/gain).
-Paste JSON into the same panel to import, or save it to a file and launch with
-`VOXEL_GI_SETTINGS=path.json cargo run --locked`. Omitted fields use defaults;
+**Copy applied RON** exports transport/work settings (not display toggles/gain).
+Paste RON into the same panel to import, or save it to a file and launch with
+`VOXEL_GI_SETTINGS=path.ron cargo run --locked`. Omitted fields use defaults;
 unknown fields or malformed files are errors, and numeric values are clamped to
 supported ranges. A/B slots are session-only and include presentation.
 

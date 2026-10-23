@@ -62,12 +62,12 @@ pub struct VoxelGiSettings {
     /// Faces whose CPU statistics mirror the GPU merges per batch (the GPU
     /// state is the authority; GPU-picked faces' mirror lags under heavy
     /// refinement). Bounds the main-thread merge. Validation of display
-    /// quality from CPU recorders raises it (config/gi-mirror-full.json).
+    /// quality from CPU recorders raises it (config/gi-mirror-full.ron).
     pub statistics_mirror_per_batch: u32,
     /// Keep a CPU copy of every probe's statistics (~600 B each): validation
     /// recorders, diagnostics and simulation-style queries read it. Off by
     /// default, since the GPU state is the authority and the renderer reads it
-    /// directly; config/gi-mirror-full.json turns it on with the full mirror.
+    /// directly; config/gi-mirror-full.ron turns it on with the full mirror.
     pub cpu_statistics: bool,
     /// Persistent world cache: receivers (probes, resident slots, sun corners)
     /// for pages within this many voxels of an active camera (page nearest
@@ -259,13 +259,13 @@ mod tests {
         assert_eq!(cached.cache_radius(), Some(64.0));
         assert_eq!(cached.world_budget_fraction(), 0.25);
         let cacheless: VoxelGiSettings =
-            serde_json::from_str(include_str!("../../config/gi-cacheless.json")).unwrap();
+            ron::from_str(include_str!("../../config/gi-cacheless.ron")).unwrap();
         assert_eq!(cacheless.cache_radius(), None);
         assert_eq!(cacheless.world_budget_fraction(), 0.0);
         assert_eq!(cacheless.transport, cached.transport);
         assert_eq!(cacheless.gpu_share(), cached.gpu_share());
         let small: VoxelGiSettings =
-            serde_json::from_str(include_str!("../../config/gi-cache-32.json")).unwrap();
+            ron::from_str(include_str!("../../config/gi-cache-32.ron")).unwrap();
         assert_eq!(small.cache_radius(), Some(32.0));
         assert_eq!(small.world_budget_fraction(), 0.25);
     }
@@ -274,13 +274,13 @@ mod tests {
     fn preferred_spatial_default_has_explicit_unfiltered_control() {
         let settings = VoxelGiSettings::default();
         let preset: VoxelGiSettings =
-            serde_json::from_str(include_str!("../../config/gi-display-evidence-1024.json"))
+            ron::from_str(include_str!("../../config/gi-display-evidence-1024.ron"))
                 .unwrap();
         assert_eq!(settings, preset);
         assert_eq!(settings.spatial_reconstruction, 1.0);
         assert_eq!(settings.spatial_evidence_target, 1024);
         let control: VoxelGiSettings =
-            serde_json::from_str(include_str!("../../config/gi-display-unfiltered.json")).unwrap();
+            ron::from_str(include_str!("../../config/gi-display-unfiltered.ron")).unwrap();
         assert_eq!(control.spatial_reconstruction, 0.0);
         assert_eq!(control.spatial_evidence_target, 0);
         assert_eq!(control.transport, settings.transport);
@@ -312,13 +312,13 @@ mod tests {
             }
         );
         let settings = VoxelGiSettings::default();
-        let encoded = serde_json::to_string(&settings).unwrap();
+        let encoded = ron::to_string(&settings).unwrap();
         assert_eq!(
-            serde_json::from_str::<VoxelGiSettings>(&encoded).unwrap(),
+            ron::from_str::<VoxelGiSettings>(&encoded).unwrap(),
             settings
         );
         assert_eq!(
-            serde_json::from_str::<VoxelGiSettings>("{}").unwrap(),
+            ron::from_str::<VoxelGiSettings>("()").unwrap(),
             settings
         );
     }
@@ -329,7 +329,7 @@ mod tests {
         let expected = super::super::EnergySpectrum::new(Vec3::ONE, 0.0, 0.0);
         assert_eq!(settings.sampling_importance(), expected);
         assert_eq!(
-            serde_json::from_str::<VoxelGiSettings>("{}").unwrap().sampling_importance(),
+            ron::from_str::<VoxelGiSettings>("()").unwrap().sampling_importance(),
             expected
         );
         for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {

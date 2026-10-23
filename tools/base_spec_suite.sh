@@ -52,7 +52,7 @@ run window gameplay window-gameplay
 run window day-cycle window-day-cycle
 # Lighting response and memory, offscreen.
 run headless response headless-response
-run headless house-edits headless-house-edits VOXEL_GI_SETTINGS=config/gi-mirror-full.json
+run headless house-edits headless-house-edits VOXEL_GI_SETTINGS=config/gi-mirror-full.ron
 run headless day-cycle headless-day-cycle
 # Fixed-sun references for the day-cycle comparison (angles at 60/120/180 s).
 for angle in 18 36 54; do

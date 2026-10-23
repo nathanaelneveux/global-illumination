@@ -1,5 +1,5 @@
 //! Demo tuning surface. The reusable solver owns settings and invalidation;
-//! this adapter owns widgets, session comparisons and opt-in JSON import/export.
+//! this adapter owns widgets, session comparisons and opt-in RON import/export.
 use super::*;
 use crate::voxel_gi::{TransportSettings, VoxelGiSettings, render::GpuTransportSettings};
 
@@ -12,7 +12,7 @@ pub(super) struct TuningPanel {
     pub open: bool,
     draft: Option<TransportSettings>,
     saved: [Option<Preset>; 2],
-    json: String,
+    text: String,
     status: String,
 }
 
@@ -58,14 +58,14 @@ pub(super) fn load_launch_settings(app: &mut App) {
     };
     let settings = std::fs::read_to_string(&path)
         .map_err(|error| error.to_string())
-        .and_then(|json| parse_settings(&json))
+        .and_then(|text| parse_settings(&text))
         .unwrap_or_else(|error| panic!("Cannot load VOXEL_GI_SETTINGS={path:?}: {error}"));
     // Fail visibly on invalid files rather than benchmarking a silent fallback.
     app.insert_resource(settings);
 }
 
-fn parse_settings(json: &str) -> Result<VoxelGiSettings, String> {
-    let mut settings: VoxelGiSettings = serde_json::from_str(json).map_err(|e| e.to_string())?;
+fn parse_settings(text: &str) -> Result<VoxelGiSettings, String> {
+    let mut settings: VoxelGiSettings = ron::from_str(text).map_err(|e| e.to_string())?;
     settings.transport = settings.transport.normalized();
     settings.samples_per_dispatch = settings.batch_samples();
     settings.simulation_sampling_importance = settings.sampling_importance().infrared;
@@ -222,15 +222,15 @@ fn contents(
             });
         });
     ui.collapsing("Export / import transport & work settings", |ui| {
-        ui.small("JSON excludes presentation toggles/gain. Save copied text to a file and launch with VOXEL_GI_SETTINGS=path.json. A/B slots above include presentation but last only this session.");
+        ui.small("RON excludes presentation toggles/gain. Save copied text to a file and launch with VOXEL_GI_SETTINGS=path.ron. A/B slots above include presentation but last only this session.");
         ui.horizontal(|ui| {
-            if ui.button("Copy applied JSON").clicked() {
-                panel.json = serde_json::to_string_pretty(settings).expect("finite GI settings");
-                ui.ctx().copy_text(panel.json.clone());
+            if ui.button("Copy applied RON").clicked() {
+                panel.text = ron::ser::to_string_pretty(settings, ron::ser::PrettyConfig::default()).expect("finite GI settings");
+                ui.ctx().copy_text(panel.text.clone());
                 panel.status = "Copied applied transport/work settings (not the model draft).".into();
             }
-            if ui.button("Apply pasted JSON").clicked() {
-                match parse_settings(&panel.json) {
+            if ui.button("Apply pasted RON").clicked() {
+                match parse_settings(&panel.text) {
                     Ok(next) => {
                         *settings = next;
                         panel.draft = Some(settings.transport);
@@ -240,7 +240,7 @@ fn contents(
                 }
             }
         });
-        ui.add(egui::TextEdit::multiline(&mut panel.json).code_editor().desired_rows(6));
+        ui.add(egui::TextEdit::multiline(&mut panel.text).code_editor().desired_rows(6));
     });
 }
 
@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn tuning_import_clamps_and_idle_panel_does_not_change_settings() {
         let imported =
-            parse_settings(r#"{"transport":{"reach":16,"bounces":0},"samples_per_dispatch":999}"#)
+            parse_settings("(transport: (reach: 16.0, bounces: 0), samples_per_dispatch: 999)")
                 .unwrap();
         assert_eq!(
             imported.transport,
@@ -372,13 +372,13 @@ mod tests {
         assert_eq!(imported.samples_per_dispatch, 64);
         for paths in [1, 8, 16, 32, 64] {
             let imported =
-                parse_settings(&format!("{{\"samples_per_dispatch\":{paths}}}")).unwrap();
+                parse_settings(&format!("(samples_per_dispatch: {paths})")).unwrap();
             assert_eq!(imported.batch_samples(), paths);
         }
         assert!(parse_settings("broken").is_err());
         let defaults = VoxelGiSettings::default();
         assert_eq!(
-            parse_settings(&serde_json::to_string(&defaults).unwrap()).unwrap(),
+            parse_settings(&ron::to_string(&defaults).unwrap()).unwrap(),
             defaults
         );
         let context = egui::Context::default();

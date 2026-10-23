@@ -644,7 +644,7 @@ pub(super) fn run_validation(
     if profile == Profile::DayCycle
         && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("day.json"),
             json!({"settings": run.day.settings(), "samples": run.day.samples,
-                "note": "Canyon, fixed camera, sun rotating about world Z. Sample counts are the CPU statistics mirror (current only with gi-mirror-full.json). Paired captures one second apart show flicker."}).to_string()) {
+                "note": "Canyon, fixed camera, sun rotating about world Z. Sample counts are the CPU statistics mirror (current only with gi-mirror-full.ron). Paired captures one second apart show flicker."}).to_string()) {
         evidence.fail(&format!("Could not save day sequence: {error}"));
         commands.write_message(AppExit::error());
         return;
