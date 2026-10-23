@@ -157,13 +157,11 @@ movement/edit qualification. CPU field diagnostics cover near receivers only;
 they cannot establish far-image stability. Far timing logs report raw owners,
 known completions, history, pending tails and display coverage separately.
 
-`native_view_discovery_keeps_identities_without_growing_storage` is the focused
-native discovery gate (`--ignored --nocapture`). Synthetic depth/normal prepasses
+`native_view_discovery_keeps_thin_surfaces_without_growing_storage` is the focused
+native coverage gate (`--ignored --nocapture`). Synthetic depth/normal prepasses
 contain six depth planes plus one-pixel side planes in one crowded tile, backed
-by real transport geometry; coarse cells own some of them and the material
-shades the rest. For persistent unsupported pixels at a fixed pose, count red
-in `face-validity` captures with `VOXEL_GI_VALIDATE_MOTION_STATIC=1`. It checks
-even/odd grid edges, stable stationary face
+by real transport geometry. Empty tiles elsewhere provide spare slots. It checks
+borrowing beyond four local slots, even/odd grid edges, stable stationary face
 identities, cross-tile motion and removal/reappearance in the prepass. A nine-slot
 case exercises bounded global exhaustion. The actual path-reprojection stage
 checks that tagged raw means and QMC indices follow retained faces, while newly

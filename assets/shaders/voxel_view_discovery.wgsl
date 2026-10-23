@@ -65,6 +65,11 @@ fn prepass_receiver(pixel: vec2<i32>) -> ViewReceiver {
     return best;
 }
 
+fn same_plane(a: ViewReceiver, b: ViewReceiver) -> bool {
+    if a.face >= 6u || a.face != b.face { return false; }
+    return a.voxel[a.face / 2u] == b.voxel[b.face / 2u];
+}
+
 // Receiver slots are global; screen tiles only own linked spatial indices.
 // A separate dispatch validates retained witnesses and publishes the free list
 // before any tile allocates. No cross-workgroup spin or partially written key.
@@ -203,6 +208,19 @@ fn prepare_receiver_pool(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 }
 
+fn pool_covers(tile: u32, receiver: ViewReceiver) -> bool {
+    var entry = atomicLoad(&pool.tiles[tile].head);
+    for (var visited = 0u; entry != 0u && visited < view.grid.z; visited++) {
+        let other = receivers[entry - 1u];
+        let delta = other.surface - receiver.surface;
+        if same_plane(other, receiver) && dot(delta, delta) <= 256.0 { return true; }
+        entry = pool.slots[entry - 1u].next;
+    }
+    // Only a missing local plane needs a global lookup. This immutable index
+    // contains fully prepared retained faces, never concurrent allocations.
+    return owner_of(receiver) != 0xffffffffu;
+}
+
 fn occupied_cell(tile: u32, cell: vec2<u32>) -> bool {
     var entry = atomicLoad(&pool.tiles[tile].head);
     for (var visited = 0u; entry != 0u && visited < view.grid.z; visited++) {
@@ -232,6 +250,7 @@ fn allocate_receiver(tile: u32, pixel: vec2<i32>, receiver: ViewReceiver) -> boo
     return true;
 }
 
+var<workgroup> pool_winner: atomic<u32>;
 var<workgroup> pool_hash_xor: atomic<u32>;
 var<workgroup> pool_hash_sum: atomic<u32>;
 var<workgroup> pool_done: u32;
@@ -310,8 +329,29 @@ fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invoc
             } else { atomicStore(&pool.tiles[id.x].pending, 1u); }
         }
     }
-    // Faces between cell centres (thin or grazing planes) are not scanned
-    // for: the material shades a missed face from its owned coplanar
-    // neighbours, nearby faces or its own voxel's other faces, which costs
-    // nothing per frame. A full-resolution footprint scan cost ~1 ms.
+    storageBarrier();
+    if workgroupUniformLoad(&pool_done) != 0u { return; }
+
+    // Every newly represented plane removes its candidates from the next round.
+    // The bound is the actual footprint, not a per-tile receiver quota.
+    for (var round = 0u; round < pixels; round++) {
+        if thread == 0u { atomicStore(&pool_winner, 0xffffffffu); }
+        workgroupBarrier();
+        for (var offset = thread; offset < pixels; offset += 32u) {
+            let pixel = vec2<i32>(begin + vec2(offset % extent.x, offset / extent.x));
+            let receiver = prepass_receiver(pixel);
+            if receiver.face >= 6u || pool_covers(id.x, receiver) { continue; }
+            if view.history.w != 0u || receiver_exists(receiver) { atomicMin(&pool_winner, offset); }
+            else { atomicStore(&pool.tiles[id.x].pending, 1u); }
+        }
+        workgroupBarrier();
+        let winner = atomicLoad(&pool_winner);
+        if winner == 0xffffffffu { break; }
+        if thread == 0u {
+            let pixel = vec2<i32>(begin + vec2(winner % extent.x, winner / extent.x));
+            pool_done = u32(!allocate_receiver(id.x, pixel, prepass_receiver(pixel)));
+        }
+        storageBarrier();
+        if workgroupUniformLoad(&pool_done) != 0u { break; }
+    }
 }
