@@ -816,3 +816,21 @@ p50/p95/p99: 23.08/25.23/26.33 ms control, 23.13/25.14/25.96 ms candidate.
 The final release build at `391ac9c` passes with the same 33 existing warnings
 (`target/bootstrap-release.log`). The comparison worktree is restored clean to
 `codex/shared-pool-baseline` at `933909f`; no GI test process is left running.
+
+### Discovery additions after the shared-corner sun fix (2026-10-23)
+
+With unowned faces taking sunlight from shared corners (`2d0e143`), each
+addition made while chasing the distant flicker was retested on `1c53aea`
+(M4, headless 2560x1440, default +cache 64). The sun component matched the
+exact corner reference (0 pixels off by >.1) in every variant.
+
+| Variant | Streaming presentation / discovery ms | Static combined vs HEAD | Walk black-flash px (indirect) | Decision |
+| --- | ---: | --- | --- | --- |
+| HEAD | 2.57 / 1.21 (cave .94 / .43) | — | 1414, 1389, 1714, 3344 | |
+| Footprint scan removed (coarse, `3fdc8ff` discovery only) | 1.48 / .58 (cave .90 / .37) | 74 px darker: specks on distant ledge tops; indirect-only 13.6k px darker | 7127, 8977 (all 28 frames) | Keep the scan: it is the indirect half of the flicker fix |
+| Four-phase stagger off | 2.79 / 1.68 (cave 1.30 / .73) | identical | 1954, 1385 | Keep: turn-burst black frames match HEAD across 3 runs each |
+| Lone-sample rule off | 2.38 / 1.28 (cave .94 / .43) | identical | 1298, 2027, 1544, 1061 | Removed: no longer reduces flashes |
+
+The footprint scan therefore still pays for itself, and memoization, the
+stagger and witnesses remain its cost controls. A cheaper scan would need a
+correct indirect fallback for missed tiny faces (not the any-orientation one).
