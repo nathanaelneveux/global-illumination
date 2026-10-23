@@ -404,6 +404,16 @@ headless response, house-edits and day-cycle with fixed-sun references for
 lighting and memory) and archives the results to copy back; `BASE_SPEC_ONLY`
 selects runs by name.
 
+The `tunnel` profile removes the upper block at each depth, then the lower block
+250 ms later, while advancing one depth every two seconds. Keep background
+streaming enabled. `tools/tunnel_quality.py BASE CANDIDATE OUT` compares the
+400 ms and 1700 ms views at six depths and generates a contact sheet. These are
+temporal-change measurements, not reference accuracy; inspect geometry before
+interpreting them. The 50 ms views still contain the lower block. The same
+`face-validity` diagnostic is available for separating absent lighting support
+from mesh/transport publication skew. Its blue 4x4 execution witness is excluded
+from mask counts and does not relax ordinary black-frame capture checks.
+
 The `motion` profile keeps the generator's spawn eye fixed (independent of
 startup physics), uses the ordinary terrain camera's 45° vertical FOV, and
 alternates two exact orientations 0.15° apart. `VOXEL_GI_VALIDATE_VIEW_COVERAGE=1`

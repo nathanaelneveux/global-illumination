@@ -803,3 +803,16 @@ logs `target/bootstrap-*.log` in the owning worktree. Native logs:
 `target/bootstrap-cache-ownership.log`. Baseline runs remain reproducible without
 the estimator change; no BVW changes, debounce, additional lighting readbacks or
 main-thread waits were introduced.
+
+Final retained handoff commit: `391ac9c`. The targeted `edits` pair also covers
+restoration, placement, removal and a surface opening: baseline worktree clean
+`473b90e`, `edits-1792719684926882000-63254`, versus main `215f905` plus the
+pending diff (and a profile-error-message-only correction),
+`edits-1792719606854339000-61673`. All eighteen captures per run are valid/varied,
+with clean render logs. At 150 ms the control's new cavity and placed block are
+black; the candidate has initialized lighting on both. These images were
+inspected directly, not inferred from the CPU world-field mirror. Offscreen
+p50/p95/p99: 23.08/25.23/26.33 ms control, 23.13/25.14/25.96 ms candidate.
+The final release build at `391ac9c` passes with the same 33 existing warnings
+(`target/bootstrap-release.log`). The comparison worktree is restored clean to
+`codex/shared-pool-baseline` at `933909f`; no GI test process is left running.
