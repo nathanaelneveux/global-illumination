@@ -893,7 +893,7 @@ fn cpu_selects_only_event_work_and_sky_requests() {
 }
 
 #[test]
-fn receiver_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
+fn cache_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
     use bevy::ecs::system::RunSystemOnce;
     let mut world = World::new();
     let mut runtime = VoxelGiRuntime::default();
@@ -905,7 +905,7 @@ fn receiver_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
     ]);
     world.insert_resource(runtime);
     world.insert_resource(VoxelGiSettings {
-        receiver_radius: 64.0,
+        cache_radius: 64.0,
         ..default()
     });
     let camera = world
@@ -925,7 +925,7 @@ fn receiver_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
     // Page 2 starts 48 voxels away (within 64); page 4 is 112 away.
     assert!(allowed.contains(&IVec3::ZERO) && allowed.contains(&IVec3::new(2, 0, 0)));
     assert!(!allowed.contains(&IVec3::new(4, 0, 0)));
-    // Switching from unlimited retires the far pages' existing receivers.
+    // Startup retires the far pages' existing receivers.
     assert!(runtime.receiver_retired.contains(&IVec3::new(9, 0, 0)));
     assert!(runtime.receiver_dirty.is_empty());
     // At 88 voxels page 0 stays (radius 64 + 32 hysteresis); at 108 it retires.
@@ -966,14 +966,6 @@ fn receiver_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
         runtime.receiver_retired.contains(&IVec3::ZERO),
         "beyond radius + hysteresis"
     );
-    // Unlimited again: pages without receivers rescan.
-    world.resource_mut::<VoxelGiSettings>().receiver_radius = 0.0;
-    world
-        .run_system_once(bvw::update_receiver_residency)
-        .unwrap();
-    let runtime = world.resource::<VoxelGiRuntime>();
-    assert!(runtime.receiver_pages.is_none());
-    assert!(runtime.receiver_dirty.contains(&IVec3::new(9, 0, 0)));
 }
 
 #[test]
@@ -984,7 +976,7 @@ fn cacheless_residency_retires_every_page_without_a_camera_or_geometry_changes()
     runtime.loaded_pages.extend([IVec3::ZERO, IVec3::new(1, 0, 0)]);
     world.insert_resource(runtime);
     world.insert_resource(VoxelGiSettings {
-        receiver_strategy: ReceiverStrategy::View { cache_radius: 0.0, cache_share: 0.0 },
+        cache_radius: 0.0,
         ..default()
     });
     world.run_system_once(bvw::update_receiver_residency).unwrap();

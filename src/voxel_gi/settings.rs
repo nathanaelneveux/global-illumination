@@ -3,31 +3,6 @@ use std::time::Duration;
 
 const DEFAULT_SIMULATION_SAMPLING_IMPORTANCE: f32 = 0.0;
 
-/// Visible receiver ownership is independent of the secondary-bounce cache.
-/// Hybrid preserves the qualified near/far presentation. View owns every
-/// visible face; its optional world cache only supplies ray termination.
-#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ReceiverStrategy {
-    #[default]
-    Hybrid,
-    View {
-        /// Page-nearest residency radius. Zero disables world receivers,
-        /// including their sampling and per-face storage, not just cache reads.
-        cache_radius: f32,
-        /// Fraction of the existing transport allowance reserved for cache
-        /// refresh. The visible domain gets the remainder; no extra budget.
-        cache_share: f32,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) enum ReceiverResidency {
-    All,
-    Radius(f32),
-    Disabled,
-}
-
 /// Quality and work limits. All loaded pages remain eligible.
 /// Insert before `VoxelGiPlugin` or change this resource at runtime.
 #[derive(Resource, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -103,17 +78,17 @@ pub struct VoxelGiSettings {
     /// default, since the GPU state is the authority and the renderer reads it
     /// directly; config/gi-mirror-full.json turns it on with the full mirror.
     pub cpu_statistics: bool,
-    /// World-space receivers (probes, display probes, resident slots, sun
-    /// corners) only for pages within this many voxels of an active camera.
-    /// Far receivers are view-owned; 0 selects the all-near control.
-    /// Geometry stays every loaded page: rays traverse it regardless.
-    pub receiver_radius: f32,
-    /// Experimental ownership policy. The default remains the qualified hybrid.
-    /// In view mode `receiver_radius` is unused; cache residency is explicit.
-    pub receiver_strategy: ReceiverStrategy,
-    /// Experimental RGB history handoff between view receivers and their
-    /// persistent bounce-cache faces. Only active for view-first ownership.
-    pub view_cache_exchange: bool,
+    /// Persistent world cache: receivers (probes, resident slots, sun corners)
+    /// for pages within this many voxels of an active camera (page nearest
+    /// point), kept until 32 voxels beyond it. Every visible face is
+    /// view-owned; the cache supplies secondary-ray termination, offscreen
+    /// history and edit-flux measurement, and exchanges RGB history with
+    /// visible faces. Zero disables it (cacheless). Geometry stays every
+    /// loaded page: rays traverse it regardless.
+    pub cache_radius: f32,
+    /// Fraction of the transport allowance spent refreshing the cache; the
+    /// visible faces get the remainder. Not extra budget.
+    pub cache_share: f32,
 }
 
 impl Default for VoxelGiSettings {
@@ -139,9 +114,8 @@ impl Default for VoxelGiSettings {
             stable_relative_error: 0.12,
             statistics_mirror_per_batch: 1024,
             cpu_statistics: false,
-            receiver_radius: 64.0,
-            receiver_strategy: ReceiverStrategy::Hybrid,
-            view_cache_exchange: false,
+            cache_radius: 64.0,
+            cache_share: 0.25,
         }
     }
 }
@@ -193,44 +167,15 @@ impl VoxelGiSettings {
             4.0
         }
     }
-    /// None: receivers for every loaded page.
-    pub(super) fn receiver_radius(&self) -> Option<f32> {
-        (self.receiver_radius.is_finite() && self.receiver_radius > 0.0).then_some(self.receiver_radius)
-    }
-    pub(super) fn view_first(&self) -> bool {
-        matches!(self.receiver_strategy, ReceiverStrategy::View { .. })
-    }
-    pub(super) fn shared_view_cache(&self) -> bool {
-        self.view_cache_exchange && self.view_first()
-            && self.receiver_residency() != ReceiverResidency::Disabled
-    }
-    pub(super) fn receiver_residency(&self) -> ReceiverResidency {
-        match self.receiver_strategy {
-            ReceiverStrategy::Hybrid => self.receiver_radius()
-                .map_or(ReceiverResidency::All, ReceiverResidency::Radius),
-            ReceiverStrategy::View { cache_radius, .. } => {
-                if cache_radius.is_finite() && cache_radius > 0.0 {
-                    ReceiverResidency::Radius(cache_radius)
-                } else {
-                    ReceiverResidency::Disabled
-                }
-            }
-        }
-    }
-    pub(super) fn view_enabled(&self) -> bool {
-        self.view_first() || self.receiver_radius().is_some()
-    }
-    pub(super) fn view_inner_radius(&self) -> f32 {
-        if self.view_first() { 0.0 } else { (self.receiver_radius - 48.0).max(0.0) }
+    /// The world cache residency radius; None: cacheless.
+    pub(super) fn cache_radius(&self) -> Option<f32> {
+        (self.cache_radius.is_finite() && self.cache_radius > 0.0).then_some(self.cache_radius)
     }
     pub(super) fn world_budget_fraction(&self) -> f32 {
-        match self.receiver_strategy {
-            ReceiverStrategy::Hybrid => if self.view_enabled() { 0.75 } else { 1.0 },
-            ReceiverStrategy::View { cache_share, .. } => {
-                if self.receiver_residency() == ReceiverResidency::Disabled { 0.0 }
-                else if cache_share.is_finite() { cache_share.clamp(0.01, 0.99) }
-                else { 0.25 }
-            }
+        match self.cache_radius() {
+            None => 0.0,
+            Some(_) if self.cache_share.is_finite() => self.cache_share.clamp(0.01, 0.99),
+            Some(_) => 0.25,
         }
     }
     pub(super) fn gpu_share(&self) -> f32 {
@@ -321,27 +266,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn receiver_strategy_separates_visibility_residency_and_one_shared_budget() {
-        let hybrid = VoxelGiSettings::default();
-        assert_eq!(hybrid.receiver_residency(), ReceiverResidency::Radius(64.0));
-        assert!(!hybrid.view_first());
-        assert_eq!(hybrid.world_budget_fraction(), 0.75);
-        let cached: VoxelGiSettings = serde_json::from_str(include_str!("../../config/gi-view-cached.json")).unwrap();
-        let cacheless: VoxelGiSettings = serde_json::from_str(include_str!("../../config/gi-view-cacheless.json")).unwrap();
-        for settings in [&cached, &cacheless] {
-            assert!(settings.view_enabled() && settings.view_first());
-            assert_eq!(settings.view_inner_radius(), 0.0);
-            assert_eq!(settings.transport, hybrid.transport);
-            assert_eq!(settings.gpu_share(), hybrid.gpu_share());
-        }
-        assert_eq!(cached.receiver_residency(), ReceiverResidency::Radius(32.0));
+    fn cache_radius_sets_residency_and_one_shared_budget() {
+        let cached = VoxelGiSettings::default();
+        assert_eq!(cached.cache_radius(), Some(64.0));
         assert_eq!(cached.world_budget_fraction(), 0.25);
-        assert_eq!(cacheless.receiver_residency(), ReceiverResidency::Disabled);
+        let cacheless: VoxelGiSettings =
+            serde_json::from_str(include_str!("../../config/gi-cacheless.json")).unwrap();
+        assert_eq!(cacheless.cache_radius(), None);
         assert_eq!(cacheless.world_budget_fraction(), 0.0);
-        let all = VoxelGiSettings { receiver_radius: 0.0, ..hybrid };
-        assert_eq!(all.receiver_residency(), ReceiverResidency::All);
-        assert!(!all.view_enabled());
-        assert_eq!(all.world_budget_fraction(), 1.0);
+        assert_eq!(cacheless.transport, cached.transport);
+        assert_eq!(cacheless.gpu_share(), cached.gpu_share());
+        let small: VoxelGiSettings =
+            serde_json::from_str(include_str!("../../config/gi-cache-32.json")).unwrap();
+        assert_eq!(small.cache_radius(), Some(32.0));
+        assert_eq!(small.world_budget_fraction(), 0.25);
     }
 
     #[test]

@@ -141,15 +141,15 @@ pub(super) fn start_trace_task(
         TraceWork::default()
     };
     selected.transport = runtime.transport;
-    selected.view_transport = settings.view_enabled();
-    selected.shared_view_cache = settings.shared_view_cache();
+    selected.view_transport = true;
+    selected.shared_view_cache = settings.cache_radius().is_some();
     selected.response_seconds = settings.display_response_seconds();
     selected.measured_retention = settings.measured_retention();
     selected.display_frame = frame.as_ref().map_or(0, |frame| frame.0);
     selected.display_transition_frames = settings.display_transition_frames.min(32);
-    // A bounce-only cache never builds presentation donor lists. Its raw
-    // estimator, sunlight and edit-flux measurements remain unchanged.
-    selected.spatial_reconstruction = if settings.view_first() { 0.0 } else { settings.spatial_reconstruction };
+    // The cache never builds presentation donor lists. Its raw estimator,
+    // sunlight and edit-flux measurements remain unchanged.
+    selected.spatial_reconstruction = 0.0;
     selected.spatial_evidence_target = settings.spatial_evidence_target.min(4096);
     selected.spatial_max_donors = settings.spatial_max_donors;
     // The rest of the face budget is the GPU's to pick.

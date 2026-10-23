@@ -96,7 +96,7 @@ fn configure_views(
     >,
     mut commands: Commands,
 ) {
-    let enabled = settings.view_enabled();
+    let enabled = true;
     if enabled != view.enabled {
         let mut asset = ShaderBuffer::default();
         asset.buffer_description.size = if enabled { DISPLAY_BYTES } else { EMPTY_OUTPUT_BYTES };
@@ -135,8 +135,8 @@ fn configure_views(
         }
     }
     view.enabled = enabled;
-    view.inner_radius = settings.view_inner_radius();
-    view.view_first = settings.view_first();
+    view.inner_radius = 0.0;
+    view.view_first = true;
     view.share = settings.gpu_share() * (1.0 - settings.world_budget_fraction());
     view.evidence = settings.spatial_evidence_target;
     view.spatial = settings.spatial_reconstruction.clamp(0.0, 1.0);

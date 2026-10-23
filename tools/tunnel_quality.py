@@ -31,7 +31,6 @@ def main():
         assert report["status"] == "completed" and report["profile"] == "tunnel"
         assert report["capture_mode"] == "offscreen"
         assert report["view_diagnostic"] == 0, "Diagnostic masks are not lighting quality"
-        assert report["settings"]["receiver_strategy"]["mode"] == "view"
         captures = report["capture_windows"]
         assert len(captures) == 20 and all(c["target_valid"] and c["varied"]
             and c["width"] == 2560 and c["height"] == 1440 for c in captures)

@@ -1,4 +1,0 @@
-{
-  "receiver_strategy": { "mode": "view", "cache_radius": 32.0, "cache_share": 0.25 },
-  "view_cache_exchange": true
-}

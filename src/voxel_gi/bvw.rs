@@ -23,32 +23,18 @@ const MAX_REBUILD_LATENCY: Duration = Duration::from_secs(1);
 /// camera moving back and forth across it does not churn pages.
 const RECEIVER_HYSTERESIS: f32 = PAGE_EDGE as f32;
 
-/// Which loaded pages have world-space receivers: those within
-/// `receiver_radius` of any active camera (distance to the page's nearest point),
+/// Which loaded pages have world-cache receivers: those within
+/// `cache_radius` of any active camera (distance to the page's nearest point),
 /// kept until beyond the radius plus a hysteresis. Geometry is unaffected.
 pub(super) fn update_receiver_residency(
     mut runtime: ResMut<VoxelGiRuntime>,
     settings: Res<super::VoxelGiSettings>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
 ) {
-    let policy = settings.receiver_residency();
-    if policy == super::settings::ReceiverResidency::Disabled {
+    let Some(radius) = settings.cache_radius() else {
         let left = runtime.receiver_pages.take().unwrap_or_else(|| runtime.loaded_pages.clone());
         runtime.receiver_pages = Some(HashSet::new());
         mark_receivers(&mut runtime, Vec::new(), left.into_iter().collect());
-        return;
-    }
-    let super::settings::ReceiverResidency::Radius(radius) = policy else {
-        // Unlimited again: every loaded page without receivers rescans.
-        if let Some(allowed) = runtime.receiver_pages.take() {
-            let missing: Vec<_> = runtime
-                .loaded_pages
-                .iter()
-                .filter(|page| !allowed.contains(*page))
-                .copied()
-                .collect();
-            mark_receivers(&mut runtime, missing, Vec::new());
-        }
         return;
     };
     let foci: Vec<Vec3> = cameras.iter()
@@ -76,7 +62,7 @@ pub(super) fn update_receiver_residency(
         } else if d <= radius {
             entered.push(page);
         } else if first {
-            // Switching from unlimited: pages outside lose their receivers.
+            // Startup: pages outside lose their receivers.
             left.push(page);
         }
     }

@@ -82,8 +82,7 @@ fn cacheless_retention_publishes_even_when_geometry_and_sources_are_unchanged() 
     let device = super::tests::native_tracer().context;
     let (scene, sources, _) = super::tests::open_floor_fixture();
     let mut world = world(gi::VoxelGiRuntime { scene, sources, ..default() }, default(), device);
-    world.resource_mut::<gi::VoxelGiSettings>().receiver_strategy =
-        gi::ReceiverStrategy::View { cache_radius: 0.0, cache_share: 0.0 };
+    world.resource_mut::<gi::VoxelGiSettings>().cache_radius = 0.0;
     let first = run_worker(&mut world);
     {
         let mut runtime = world.resource_mut::<gi::VoxelGiRuntime>();
@@ -196,8 +195,7 @@ fn scene_edits_reach_view_history_without_world_cache_pages() {
     let device = super::tests::native_tracer().context;
     let (scene, sources, _) = super::tests::open_floor_fixture();
     let mut world = world(gi::VoxelGiRuntime { scene: scene.clone(), sources, ..default() }, default(), device);
-    world.resource_mut::<gi::VoxelGiSettings>().receiver_strategy =
-        gi::ReceiverStrategy::View { cache_radius: 0.0, cache_share: 0.0 };
+    world.resource_mut::<gi::VoxelGiSettings>().cache_radius = 0.0;
     let first = run_worker(&mut world);
     let bounds = Bounds::point(IVec3::new(1, 4, 1));
     let mut change = GeometryChange::from_bounds(&scene, &[bounds], gi::retention::INFLUENCE_RADIUS);

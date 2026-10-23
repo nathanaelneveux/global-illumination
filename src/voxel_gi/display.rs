@@ -275,7 +275,7 @@ pub(super) fn upload_transport_cache(
     mut view_only: Local<bool>,
 ) {
     let mut timing = timings.main_scope(MainStage::DisplayPublication);
-    if settings.view_first() {
+    {
         if !*view_only {
             super::render::clear_world_display(&mut cache, &mut patch_queue, &mut assets, &mut buffers, &mut materials);
             *view_only = true;

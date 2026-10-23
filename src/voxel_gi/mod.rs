@@ -48,7 +48,7 @@ use bevy::prelude::*;
 use bevy::tasks::Task;
 
 pub use field::VoxelEnergyField;
-pub use settings::{ReceiverStrategy, TransportSettings, VoxelGiSettings};
+pub use settings::{TransportSettings, VoxelGiSettings};
 pub use sources::VoxelGiEnvironment;
 pub use spectrum::{EnergyEmitter, EnergySpectrum};
 pub use world::{MaterialTransport, VoxelMaterialTransportTable};
@@ -280,7 +280,8 @@ struct VoxelGiRuntime {
     sky_band: Vec<IVec3>,
     sky_revision: u64,
     sky_batch_size: usize,
-    /// Pages allowed receivers under `receiver_radius` (None: all loaded).
+    /// Pages allowed cache receivers under `cache_radius` (None before the
+    /// first residency update: all loaded).
     receiver_pages: Option<HashSet<IVec3>>,
     /// Pages entering or leaving it: rescanned for receivers, or retired,
     /// without a geometry change.
