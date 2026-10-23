@@ -24,6 +24,7 @@ struct ViewEstimate {
 // face-owned prior during that interval, but never trace or export it against
 // incompatible geometry. This bit is not a material-table index.
 const PENDING_GEOMETRY: u32 = 0x80000000u;
+const MIN_LONE_SAMPLES: f32 = 4.0;
 struct FarPixel {
     surface: vec3<f32>,
     face: u32,
@@ -287,6 +288,11 @@ fn reconstruct_view(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
     if weight <= 0.0 { return; }
+    // A face with no coplanar support is not shown on its own first samples:
+    // one or two paths are often black, and a distant thin face would flash
+    // black. Until four samples it publishes no evidence, so the material
+    // uses neighbouring support instead. Once shown, it keeps updating.
+    if weight == center.mean.w && center.mean.w < MIN_LONE_SAMPLES && center.shown.w == 0.0 { return; }
     let desired = mix(sum / weight, center.mean.rgb, select(0.0, 1.0 - view.display.y, center.mean.w > 0.0));
     let blend = select(1.0, view.display.z, center.shown.w > 0.0);
     estimates[id.x].shown = vec4(mix(center.shown.rgb, desired, blend), 1.0);

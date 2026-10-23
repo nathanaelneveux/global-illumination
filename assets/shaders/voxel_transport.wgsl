@@ -150,8 +150,13 @@ fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>, sky:
     // bins, including the containing bin, with unchanged world geometry gates.
     let tiles = (far_view.shape.xy + 1u) / 2u;
     let base = vec2<i32>(floor(uv * vec2<f32>(far_view.shape.xy) * 0.5 - 0.5));
+    // Coplanar donors first. A thin face with none (a distant ledge's
+    // one-pixel side) would otherwise read black; its indirect light then
+    // borrows from parallel faces up to four voxels in front of or behind it.
     var sum = vec3(0.0);
     var weight = 0.0;
+    var parallel_sum = vec3(0.0);
+    var parallel_weight = 0.0;
     for (var y = 0; y <= 1; y++) {
         for (var x = 0; x <= 1; x++) {
             let q = base + vec2(x, y);
@@ -166,12 +171,22 @@ fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>, sky:
                 if sky && any(donor.sky == vec4(0u)) { continue; }
                 if dot(vec3<f32>(FACE_NORMALS[donor.face]), normal) < 0.99 { continue; }
                 let delta = donor.surface - surface;
-                if abs(dot(delta, normal)) > 0.05 || dot(delta, delta) > 256.0 { continue; }
-                let w = 1.0 / (0.25 + dot(delta, delta));
-                sum += far_value(donor, position, normal, sky) * w;
-                weight += w;
+                let d2 = dot(delta, delta);
+                if d2 > 256.0 { continue; }
+                let offset = abs(dot(delta, normal));
+                let w = 1.0 / (0.25 + d2);
+                if offset <= 0.05 {
+                    sum += far_value(donor, position, normal, sky) * w;
+                    weight += w;
+                } else if !sky && offset <= 4.05 {
+                    parallel_sum += donor.irradiance * w;
+                    parallel_weight += w;
+                }
             }
         }
+    }
+    if weight == 0.0 && parallel_weight > 0.0 {
+        return vec4(parallel_sum / parallel_weight, 1.0);
     }
     return vec4(sum / max(weight, 1e-8), select(0.0, 1.0, weight > 0.0));
 }
