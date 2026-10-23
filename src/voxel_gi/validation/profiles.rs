@@ -25,6 +25,28 @@ pub(super) enum Profile {
     Stress,
 }
 
+/// `motion` walk mode (VOXEL_GI_VALIDATE_MOTION_WALK=<voxels per second>).
+pub(super) fn motion_walk() -> Option<f32> {
+    static WALK: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *WALK.get_or_init(|| {
+        std::env::var("VOXEL_GI_VALIDATE_MOTION_WALK")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+    })
+}
+
+/// Two bursts of consecutive frames while walking (one capture per frame).
+static WALK_CAPTURES: std::sync::LazyLock<Vec<(f32, &'static str)>> = std::sync::LazyLock::new(|| {
+    let mut captures = vec![(14.4, "before")];
+    for (at, burst) in [(20.0, "a"), (26.0, "b")] {
+        for frame in 0..16 {
+            captures.push((at, &*Box::leak(format!("walk-{burst}-{frame:02}").into_boxed_str())));
+        }
+    }
+    captures
+});
+
 impl Profile {
     pub fn parse(value: &str) -> Result<Self, String> {
         match value {
@@ -114,6 +136,9 @@ impl Profile {
                 (59.0, "tunnel-later")];
         }
         if self == Self::Motion {
+            if motion_walk().is_some() {
+                return &WALK_CAPTURES;
+            }
             return &[(14.4, "before"), (16.4, "base-1"), (17.4, "turned-1"),
                 (18.4, "base-2"), (19.4, "turned-2"), (30.4, "returned")];
         }

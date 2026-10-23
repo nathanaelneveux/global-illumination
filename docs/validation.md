@@ -431,7 +431,12 @@ persistent wrong shadows even when exact-view return tests are stable. It is an
 expensive diagnostic, not a proposed gameplay fallback or a performance run.
 `VOXEL_GI_VALIDATE_MOTION_STATIC=1` keeps the camera
 stationary through the same capture schedule and background streaming, to
-separate ongoing refinement from motion-sensitive reconstruction. Reports record
+separate ongoing refinement from motion-sensitive reconstruction. `VOXEL_GI_VALIDATE_MOTION_WALK=<voxels/s>`
+instead walks forward from the same eye from 15 s and captures two bursts of
+16 consecutive frames (`walk-a-*`, `walk-b-*`). Exact returns cannot see
+flicker that discovery reuse hides on return; consecutive frames can. Use it
+with `VOXEL_GI_VALIDATE_LIGHT_COMPONENT=indirect` and `tools/walk_dropouts.py`
+for single-frame black flashes (4.32 voxels/s matches `streaming`). Reports record
 the actual `motion_turn_degrees`; the analysis uses that angle for reprojection.
 Component residuals cover the valid image overlap, including unchanged sky:
 the green-terrain mask is inappropriate for white/blue irradiance. Compare like

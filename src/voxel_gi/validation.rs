@@ -102,6 +102,9 @@ pub(super) struct ValidationRun {
     profile: Profile,
     motion_diagnostic: u32,
     motion_static: bool,
+    /// Walk forward at this many voxels per second instead of turning
+    /// (VOXEL_GI_VALIDATE_MOTION_WALK; consecutive-frame bursts).
+    motion_walk: Option<f32>,
     metrics: Metrics,
     captures: usize,
     edits: u32,
@@ -209,6 +212,7 @@ pub(super) fn run_validation(
         run.profile = profile;
         if matches!(profile, Profile::Motion | Profile::Tunnel) {
             run.motion_static = std::env::var_os("VOXEL_GI_VALIDATE_MOTION_STATIC").is_some();
+            run.motion_walk = profiles::motion_walk();
             let component = std::env::var("VOXEL_GI_VALIDATE_LIGHT_COMPONENT").ok();
             run.motion_diagnostic = match profiles::motion_diagnostic(
                 std::env::var_os("VOXEL_GI_VALIDATE_VIEW_COVERAGE").is_some(), component.as_deref(),
@@ -398,14 +402,16 @@ pub(super) fn run_validation(
     if profile == Profile::Motion {
         // Same eye and two repeatable orientations, separated by 0.15 degrees.
         // Exact returns distinguish selection flicker from camera parallax.
-        let yaw = if !run.motion_static && (15.0..30.0).contains(&elapsed) && elapsed as u32 % 2 == 1 {
-            0.15f32.to_radians()
-        } else { 0.0 };
+        // Walk mode instead moves steadily forward along the view from 15 s.
+        let moved = !run.motion_static && run.motion_walk.is_none()
+            && (15.0..30.0).contains(&elapsed) && elapsed as u32 % 2 == 1;
+        let yaw = if moved { 0.15f32.to_radians() } else { 0.0 };
         // Use the generator's fixed spawn, not the physics body's position
         // during asynchronous startup (which can still be falling).
-        let eye = generator.player_spawn_position() + Vec3::Y * 1.62;
-        let transform = Transform::from_translation(eye).with_rotation(
-            Quat::from_rotation_y(std::f32::consts::PI + yaw) * Quat::from_rotation_x(-0.12));
+        let rotation = Quat::from_rotation_y(std::f32::consts::PI + yaw) * Quat::from_rotation_x(-0.12);
+        let walked = run.motion_walk.map_or(0.0, |speed| speed * (elapsed - 15.0).clamp(0.0, 15.0));
+        let eye = generator.player_spawn_position() + Vec3::Y * 1.62 + rotation * Vec3::NEG_Z * walked;
+        let transform = Transform::from_translation(eye).with_rotation(rotation);
         for camera in &cameras {
             commands.entity(camera)
                 .remove::<bevy_ahoy::prelude::CharacterControllerCameraOf>()
@@ -691,7 +697,8 @@ pub(super) fn run_validation(
             "note": "Inactive BVW loader walks from (-96,40,0) toward -Z. Does not render or alter GI view priority. Loaded terrain participates in transport."},
         "presentation": "shared-corner sun + corner-reconstructed indirect; preferred modes except compare/stress",
         "view_diagnostic": run.motion_diagnostic,
-        "motion_turn_degrees": if run.motion_static { 0.0 } else { 0.15 },
+        "motion_turn_degrees": if run.motion_static || run.motion_walk.is_some() { 0.0 } else { 0.15 },
+        "motion_walk_voxels_per_second": run.motion_walk,
         "spatial_retention": super::retention::POLICY_NAME,
         "settings": {"transport": settings.transport, "cache_radius": settings.cache_radius,
             "cache_share": settings.cache_share,
