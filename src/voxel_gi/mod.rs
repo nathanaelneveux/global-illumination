@@ -218,8 +218,6 @@ struct VoxelGiRuntime {
     page_edits: bvw::PageEdits,
     dirty_voxels: HashSet<IVec3>,
     removed_pages: HashSet<IVec3>,
-    last_world_change: Instant,
-    dirty_since: Option<Instant>,
     urgent_edit: bool,
     generation: u64,
     spatial_history: retention::SpatialHistory,
@@ -277,7 +275,6 @@ struct VoxelGiRuntime {
 
 impl Default for VoxelGiRuntime {
     fn default() -> Self {
-        let now = Instant::now();
         Self {
             scene: Arc::new(TransportScene::default()),
             sources: TransportSources::default(),
@@ -289,8 +286,6 @@ impl Default for VoxelGiRuntime {
             page_edits: default(),
             dirty_voxels: HashSet::new(),
             removed_pages: HashSet::new(),
-            last_world_change: now,
-            dirty_since: None,
             urgent_edit: false,
             generation: 0,
             spatial_history: default(),

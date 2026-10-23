@@ -13,11 +13,8 @@ use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
 use bevy_voxel_world::prelude::*;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-// Existing coalescing windows; publication and display response are independent.
-const STREAM_DEBOUNCE: Duration = Duration::from_millis(350);
-const MAX_REBUILD_LATENCY: Duration = Duration::from_secs(1);
 /// Receivers are kept until a page is this much farther than the radius, so a
 /// camera moving back and forth across it does not churn pages.
 const RECEIVER_HYSTERESIS: f32 = PAGE_EDGE as f32;
@@ -92,7 +89,6 @@ fn mark_receivers(runtime: &mut VoxelGiRuntime, entered: Vec<IVec3>, left: Vec<I
         runtime.receiver_dirty.remove(&page);
         runtime.receiver_retired.insert(page);
     }
-    runtime.dirty_since.get_or_insert(Instant::now());
 }
 
 /// Sparse authoritative edits, grouped by page. Immutable worker views use
@@ -142,12 +138,10 @@ pub(super) fn collect_chunk_changes(
     mut timings: ResMut<GiWorkTimings>,
 ) {
     let _timing = timings.main_scope(super::telemetry::MainStage::Ingestion);
-    let mut changed = false;
     for event in spawned.read() {
         runtime.loaded_pages.insert(event.chunk_key);
         runtime.removed_pages.remove(&event.chunk_key);
         runtime.dirty_pages.insert(event.chunk_key);
-        changed = true;
     }
     for event in updated.read() {
         runtime.loaded_pages.insert(event.chunk_key);
@@ -157,14 +151,12 @@ pub(super) fn collect_chunk_changes(
             runtime.full_resample_pages.insert(event.chunk_key);
             runtime.page_edits.0.remove(&event.chunk_key);
         }
-        changed = true;
     }
     for event in despawned.read() {
         runtime.loaded_pages.remove(&event.chunk_key);
         runtime.dirty_pages.remove(&event.chunk_key);
         runtime.full_resample_pages.remove(&event.chunk_key);
         runtime.removed_pages.insert(event.chunk_key);
-        changed = true;
     }
     if explicit_dirty.all_loaded {
         runtime.page_edits.0.clear();
@@ -172,7 +164,6 @@ pub(super) fn collect_chunk_changes(
         runtime.dirty_pages.extend(pages.iter().copied());
         runtime.full_resample_pages.extend(pages.iter().copied());
         explicit_dirty.all_loaded = false;
-        changed = true;
     }
     for voxel in explicit_dirty.voxels.drain() {
         let page = page_of(voxel);
@@ -182,7 +173,6 @@ pub(super) fn collect_chunk_changes(
             runtime.full_resample_pages.insert(page);
             runtime.dirty_voxels.insert(voxel);
             runtime.urgent_edit = true;
-            changed = true;
         }
     }
     for (voxel, material) in explicit_dirty.edits.drain() {
@@ -192,13 +182,7 @@ pub(super) fn collect_chunk_changes(
             runtime.dirty_pages.insert(page);
             runtime.dirty_voxels.insert(voxel);
             runtime.urgent_edit = true;
-            changed = true;
         }
-    }
-    if changed {
-        let now = Instant::now();
-        runtime.last_world_change = now;
-        runtime.dirty_since.get_or_insert(now);
     }
 }
 
@@ -215,18 +199,13 @@ pub(super) fn start_scene_task(
         || !runtime.removed_pages.is_empty()
         || !runtime.receiver_dirty.is_empty()
         || !runtime.receiver_retired.is_empty();
-    // A player edit rebuilds on the next frame: edits made in one frame are
-    // already batched, and waiting for quiet let terrain streaming (which
-    // also moves `last_world_change`) hold an edit back by 100+ ms while its
-    // mesh was already visible. Streaming alone still coalesces.
-    let quiet = runtime.urgent_edit || runtime.last_world_change.elapsed() >= STREAM_DEBOUNCE;
-    let overdue = runtime
-        .dirty_since
-        .is_some_and(|start| start.elapsed() >= MAX_REBUILD_LATENCY);
+    // No quiet period: a build in flight already batches whatever arrives
+    // meanwhile. Waiting for streaming or an edit to go quiet only kept
+    // freshly drawn terrain and edits without GI geometry (pending, black)
+    // for up to a second while their meshes were already visible.
     if runtime.scene_task.is_some()
         || (runtime.scene_publication.is_some() && !runtime.urgent_edit)
         || !pending
-        || (!quiet && !overdue)
     {
         return;
     }
@@ -247,7 +226,6 @@ pub(super) fn start_scene_task(
     let exact_edits: Vec<_> = runtime.dirty_voxels.drain().collect();
     let mut removed_pages: Vec<_> = runtime.removed_pages.drain().collect();
     removed_pages.sort_unstable_by_key(|p| (p.z, p.y, p.x));
-    runtime.dirty_since = None;
     runtime.urgent_edit = false;
 
     let mut affected_pages = affected_probe_pages(&dirty_pages, &removed_pages);
