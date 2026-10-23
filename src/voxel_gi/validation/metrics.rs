@@ -47,8 +47,7 @@ pub(super) struct Metrics {
     last_batch: u64,
     last_transport_batch: u64,
     frame_timeline: Vec<Value>,
-    previous_gi: [f32; 7],
-    previous_display_timing: [f32; 7],
+    previous_gi: [f32; 6],
     frame_timing_enabled: Option<bool>,
 }
 
@@ -82,10 +81,8 @@ impl Metrics {
             .push(json!({"at_s":elapsed,"phase":phase,
             "interval_ms":frame_ms,"capture_excluded":capture_excluded,
             "previous_gi_body_ms":self.previous_gi,
-            "previous_display_stage_ms":self.previous_display_timing,
             "previous_host_schedule_ms":previous_host_ms}));
         self.previous_gi = stats.last_main_stage_ms;
-        self.previous_display_timing = stats.last_display_stage_ms;
     }
     /// O(1) observations of publication and lighting progress. A small early
     /// page set can be fully covered while most terrain is still unpublished;
@@ -124,9 +121,6 @@ impl Metrics {
             "coverage": stats.interactive_coverage, "bootstrap": stats.bootstrap_coverage,
             "traced_paths": stats.traced_paths, "transport_batches": stats.transport_batches,
             "pending_probes": stats.pending_probes,
-            "display_preparing": runtime.gpu_snapshot.is_some() || runtime.gpu_task.is_some() || runtime.gpu_prepared.is_some(),
-            "display_catchup_keys": runtime.gpu_catchup_dirty.len(),
-            "display_topology_pending": runtime.gpu_topology_dirty,
         }));
     }
 
@@ -260,7 +254,6 @@ impl Metrics {
             "edits_still_pending": usize::from(self.watch.is_some()),
             "work_timeline": self.work_samples,
             "gi_main_stage_names": super::super::telemetry::MAIN_STAGE_NAMES,
-            "display_stage_names": super::super::telemetry::DISPLAY_STAGE_NAMES,
             "host_schedule_names": super::host_timing::STAGES,
             "frame_timeline": self.frame_timeline})
     }
@@ -278,19 +271,15 @@ mod tests {
             ..default()
         };
         let mut stats = VoxelGiStats {
-            last_main_stage_ms: [2.0; 7],
-            last_display_stage_ms: [1.0; 7],
+            last_main_stage_ms: [2.0; 6],
             ..default()
         };
         metrics.record_frame(1.0, "startup", 20.0, false, &stats, Some([3.0; 7]));
-        stats.last_main_stage_ms = [0.0; 7];
-        stats.last_display_stage_ms = [0.0; 7];
+        stats.last_main_stage_ms = [0.0; 6];
         metrics.record_frame(1.02, "startup", 21.0, true, &stats, Some([4.0; 7]));
         let rows = metrics.report()["frame_timeline"].clone();
-        assert_eq!(rows[0]["previous_gi_body_ms"], json!(vec![0.0; 7]));
-        assert_eq!(rows[1]["previous_gi_body_ms"], json!(vec![2.0; 7]));
-        assert_eq!(rows[0]["previous_display_stage_ms"], json!(vec![0.0; 7]));
-        assert_eq!(rows[1]["previous_display_stage_ms"], json!(vec![1.0; 7]));
+        assert_eq!(rows[0]["previous_gi_body_ms"], json!(vec![0.0; 6]));
+        assert_eq!(rows[1]["previous_gi_body_ms"], json!(vec![2.0; 6]));
         assert_eq!(rows[1]["capture_excluded"], true);
         assert_eq!(rows[1]["previous_host_schedule_ms"], json!(vec![4.0; 7]));
     }

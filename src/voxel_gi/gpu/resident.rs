@@ -1014,10 +1014,6 @@ impl ResidentAccumulator {
         Ok(())
     }
 
-    pub(super) fn buffer(&self) -> Buffer {
-        self.state.buffer.clone()
-    }
-
     /// The prepared batch's GPU pick records: buffer, byte offset and count.
     pub(super) fn pick_records(&self) -> (&Buffer, u64, u32) {
         (

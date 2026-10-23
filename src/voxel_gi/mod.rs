@@ -8,7 +8,6 @@
 mod bvw;
 mod diagnostics;
 mod dispatch;
-mod display;
 mod emission;
 mod field;
 mod geometry;
@@ -56,16 +55,14 @@ pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 use bvw::{collect_chunk_changes, start_scene_task};
 pub(crate) use diagnostics::{VoxelGiDiagnosticsPlugin, configure_demo_launch};
 use dispatch::{apply_trace_task, start_trace_task};
-use display::upload_transport_cache;
 use publication::apply_scene_task;
-use render::{GpuSnapshot, GpuTransportCache, PreparedGpuCache, install_render_assets};
+use render::install_render_assets;
 use sources::{TransportSources, synchronize_material_table, synchronize_transport_sources};
 use telemetry::GiWorkTimings;
 use tracer::BOOTSTRAP_SAMPLES;
 use work::TraceWork;
 use world::{PAGE_EDGE, SurfaceProbe, SurfaceProbeDescriptor, TransportScene};
 
-const GPU_UPLOAD_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Transport and display-cache integration for the prototype BVW world.
 /// Debug controls, HUD and validation are opt-in via the demo diagnostics plugin.
@@ -91,7 +88,6 @@ impl Plugin for VoxelGiPlugin {
             .init_resource::<VoxelGiSettings>()
             .init_resource::<VoxelGiEnvironment>()
             .init_resource::<VoxelMaterialTransportTable>()
-            .init_resource::<GpuTransportCache>()
             .add_systems(
                 Update,
                 (
@@ -104,7 +100,6 @@ impl Plugin for VoxelGiPlugin {
                     start_scene_task,
                     apply_trace_task,
                     start_trace_task,
-                    upload_transport_cache,
                     telemetry::finish_frame,
                 )
                     .chain()
@@ -113,19 +108,6 @@ impl Plugin for VoxelGiPlugin {
     }
 
     fn finish(&self, app: &mut App) {
-        // CPU tracing still uses the same display storage bindings. Capture
-        // renderer limits independently of transport backend selection.
-        if let Some(limits) = app
-            .get_sub_app(bevy::render::RenderApp)
-            .and_then(|render_app| {
-                render_app
-                    .world()
-                    .get_resource::<bevy::render::renderer::RenderDevice>()
-                    .map(|device| render::DisplayBufferLimits::from(&device.limits()))
-            })
-        {
-            app.insert_resource(limits);
-        }
         let context = app
             .get_sub_app(bevy::render::RenderApp)
             .and_then(|render_app| {
@@ -191,10 +173,7 @@ pub struct VoxelGiStats {
     pub main_thread_ms_per_frame: Option<f32>,
     /// Last app frame's GI system-body times, in telemetry stage order.
     /// Excludes workers/render work; unlike the overlay average, retains spikes.
-    pub last_main_stage_ms: [f32; 7],
-    /// Opt-in display-publication substage costs, in telemetry stage order.
-    /// Zero unless frame-timing validation is enabled; included in main time.
-    pub last_display_stage_ms: [f32; 7],
+    pub last_main_stage_ms: [f32; 6],
     /// Completed transport/sky compute-pass timestamps per app frame over the
     /// same window. None until available, or on CPU/unsupported GPU backends.
     /// Excludes queue waits, transfers and graphics; do not add to main time.
@@ -295,20 +274,6 @@ struct VoxelGiRuntime {
     /// and is charged its measured time at completion.
     gpu_allowance_ms: f32,
     gpu_allowance_at: Option<Instant>,
-    gpu_topology_dirty: bool,
-    gpu_rebuild_required: bool,
-    gpu_added: Vec<IVec3>,
-    gpu_removed: Vec<IVec3>,
-    /// Values that must publish atomically with face/hash topology, not the
-    /// independent backlog of ordinary radiance updates.
-    gpu_topology_values: HashSet<IVec3>,
-    gpu_task: Option<Task<Result<PreparedGpuCache, display::DisplayBuildFailure>>>,
-    gpu_snapshot: Option<GpuSnapshot>,
-    gpu_prepared: Option<PreparedGpuCache>,
-    gpu_catchup_dirty: display::DisplayDirtyQueue,
-    gpu_value_dirty: display::DisplayDirtyQueue,
-    sky_upload_pending: bool,
-    last_gpu_upload: Instant,
 }
 
 impl Default for VoxelGiRuntime {
@@ -364,18 +329,6 @@ impl Default for VoxelGiRuntime {
             slot_retirements: Vec::new(),
             gpu_allowance_ms: 0.0,
             gpu_allowance_at: None,
-            gpu_topology_dirty: false,
-            gpu_rebuild_required: false,
-            gpu_added: Vec::new(),
-            gpu_removed: Vec::new(),
-            gpu_topology_values: default(),
-            gpu_task: None,
-            gpu_snapshot: None,
-            gpu_prepared: None,
-            gpu_catchup_dirty: default(),
-            gpu_value_dirty: default(),
-            sky_upload_pending: false,
-            last_gpu_upload: now - GPU_UPLOAD_INTERVAL,
         }
     }
 }

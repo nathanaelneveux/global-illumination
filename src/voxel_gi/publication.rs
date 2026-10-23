@@ -270,7 +270,6 @@ fn reconcile_scene_page(
     }
     let mut invalidated = HashSet::new();
     let mut added = Vec::new();
-    let mut face_topology_changed = false;
     for descriptor in descriptors {
         let mut probe = old_affected.remove(&descriptor.voxel).unwrap_or_else(|| {
             invalidated.insert(descriptor.voxel);
@@ -287,10 +286,6 @@ fn reconcile_scene_page(
             Box::new(probe)
         });
         let old_mask = probe.face_mask;
-        let display_changed = invalidated.contains(&descriptor.voxel)
-            || old_mask != descriptor.face_mask
-            || probe.material != descriptor.material
-            || probe.emission != runtime.materials.get(descriptor.material).emission;
         if probe.material != descriptor.material {
             // Incident energy is defined by position/orientation, not the
             // receiver's material ID. Treat replacement as a local scene edit;
@@ -309,7 +304,6 @@ fn reconcile_scene_page(
             }
         }
         if old_mask != descriptor.face_mask {
-            face_topology_changed = true;
             invalidated.insert(descriptor.voxel);
         }
         // New or newly exposed faces get resident GPU state soon, not only
@@ -329,9 +323,6 @@ fn reconcile_scene_page(
             .entry(page_of(descriptor.voxel))
             .or_default()
             .push(descriptor.voxel);
-        if display_changed {
-            runtime.mark_topology_value_dirty(descriptor.voxel);
-        }
         field.probes.insert_box(descriptor.voxel, probe);
     }
     if !old_affected.is_empty() && field.pages.get(&page).is_none_or(|probes| probes.is_empty()) {
@@ -342,12 +333,7 @@ fn reconcile_scene_page(
     let topology_changed =
         old_count != field.probes.len() || !old_affected.is_empty() || !added.is_empty();
     if topology_changed {
-        runtime.gpu_removed.extend(old_affected.keys().copied());
-        runtime.gpu_added.extend(added.iter().copied());
         field.update_indices(&added, &old_affected);
-    }
-    if topology_changed || face_topology_changed {
-        runtime.gpu_topology_dirty = true;
     }
 
     finish_scene_page(
@@ -603,7 +589,6 @@ mod donor_tests {
                 assert_eq!(runtime.active_faces, 1024);
                 assert_eq!(runtime.completed_samples, 65536);
                 assert_eq!(runtime.covered_faces, 1024);
-                assert!(runtime.gpu_value_dirty.is_empty());
                 assert_eq!(
                     field.probes[&IVec3::ZERO].display[2].indirect,
                     Vec3::splat(2.0)

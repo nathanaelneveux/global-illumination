@@ -347,10 +347,9 @@ mod tests {
     }
 
     #[test]
-    fn tuning_presets_never_replace_cache_addressing() {
+    fn tuning_presets_never_replace_the_current_suns() {
         let mut live = GpuTransportSettings {
-            hash_mask: 8191,
-            probe_capacity: 5000,
+            sun_count: 2,
             ..default()
         };
         let preset = DisplaySettings {
@@ -359,12 +358,10 @@ mod tests {
             ..DisplaySettings::read(&live)
         };
         preset.write(&mut live);
-        assert_eq!(live.hash_mask, 8191);
-        assert_eq!(live.probe_capacity, 5000);
+        assert_eq!(live.sun_count, 2);
         assert_eq!(DisplaySettings::read(&live), preset);
         DisplaySettings::read(&GpuTransportSettings::default()).write(&mut live);
-        assert_eq!(live.hash_mask, 8191);
-        assert_eq!(live.probe_capacity, 5000);
+        assert_eq!(live.sun_count, 2);
     }
 
     #[test]

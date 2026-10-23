@@ -302,13 +302,6 @@ fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
         "unchanged probes must keep their allocations across page publication",
     );
     assert!(
-        !world
-            .resource::<VoxelGiRuntime>()
-            .gpu_value_dirty
-            .contains(&retained),
-        "unchanged page receivers do not need display uploads"
-    );
-    assert!(
         world
             .resource::<VoxelEnergyField>()
             .publishing_pages
@@ -787,10 +780,7 @@ fn sky_comparison_is_display_only_and_independent_of_gi_toggle() {
     let handle = materials.add(render::material_template(&VoxelTransportAssets {
         geometry: default(),
         far: default(),
-        resident: default(),
         texture: default(),
-        hash_entries: default(),
-        probes: default(),
     }));
     let mut runtime = VoxelGiRuntime {
         source_revision: 7,

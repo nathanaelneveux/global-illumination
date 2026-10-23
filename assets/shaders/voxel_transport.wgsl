@@ -25,21 +25,7 @@ var mat_array_texture: texture_2d_array<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101)
 var mat_array_texture_sampler: sampler;
 
-struct GpuHashEntry {
-    voxel: vec3<i32>,
-    probe_index: u32,
-}
-
-struct GpuProbe {
-    faces: array<vec4<f32>, 6>,
-    emission: vec4<f32>,
-    direct_sky: array<vec4<u32>, 6>, // four corner visibility words per face
-    resident: array<vec2<u32>, 6>, // slot + allocation incarnation
-}
-
 struct GpuTransportSettings {
-    hash_mask: u32,
-    probe_capacity: u32,
     enabled: u32,
     reconstruction: u32,
     intensity: f32,
@@ -50,14 +36,8 @@ struct GpuTransportSettings {
     sun_color: array<vec4<f32>, 4>,
 }
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(102)
-var<storage, read> transport_hash: array<GpuHashEntry>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(103)
-var<storage, read> transport_probes: array<GpuProbe>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(104)
 var<uniform> transport_settings: GpuTransportSettings;
-@group(#{MATERIAL_BIND_GROUP}) @binding(105)
-var<storage, read> resident_faces: array<vec4<u32>>;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -100,7 +80,7 @@ struct CustomVertexOutput {
     @location(8) tex_idx: vec3<u32>,
 }
 
-// The GI worker's transport geometry, for faces without a display probe.
+// The GI worker's transport geometry, for sun visibility of uncovered faces.
 struct TraversalParams {
     counts: vec4<u32>, // sun visibility distance (0 before the first scene), unused, directory mask, unused
     minimum: vec4<i32>,
@@ -198,82 +178,10 @@ fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>, sky:
 
 // #include voxel_traversal.wgsl
 
-fn lookup_probe(voxel: vec3<i32>) -> u32 {
-    var slot = hash_voxel(voxel) & transport_settings.hash_mask;
-    var probe_index = 0xffffffffu;
-    for (var attempt = 0u; attempt < 32u; attempt += 1u) {
-        let entry = transport_hash[slot];
-        if entry.probe_index == 0xffffffffu {
-            break;
-        }
-        if entry.probe_index != 0xfffffffeu && all(entry.voxel == voxel) {
-            probe_index = entry.probe_index;
-            break;
-        }
-        slot = (slot + 1u) & transport_settings.hash_mask;
-    }
-    return probe_index;
-}
-
-fn lookup_face(voxel: vec3<i32>, face: u32) -> vec4<f32> {
-    let probe_index = lookup_probe(voxel);
-    if probe_index >= transport_settings.probe_capacity {
-        return vec4(0.0);
-    }
-
-    return resolved_face(probe_index, face);
-}
-
-fn resolved_face(index: u32, face: u32) -> vec4<f32> {
-    let fallback = transport_probes[index].faces[face];
-    let address = transport_probes[index].resident[face];
-    let base = address.x * 9u;
-    if fallback.w > 0.0 && address.y != 0u && base + 8u < arrayLength(&resident_faces) {
-        if resident_faces[base + 7u].x == address.y {
-            // Final presentation is separate from the unfiltered temporal
-            // resolve at record six. Spatial reconstruction never feeds back.
-            let display = bitcast<vec4<f32>>(vec4(resident_faces[base + 1u].w, resident_faces[base + 3u].yzw));
-            let previous = bitcast<vec4<f32>>(resident_faces[base + 8u]);
-            let duration = resident_faces[base + 7u].z;
-            let age = mesh_view_bindings::globals.frame_count - resident_faces[base + 8u].w;
-            let elapsed = select(age, 0u, age > 0x7fffffffu);
-            let blend = select(1.0, min(f32(elapsed) / f32(max(duration, 1u)), 1.0), duration > 0u && duration <= 32u);
-            let custom = bitcast<vec4<f32>>(resident_faces[base + 5u]).yzw;
-            return vec4(mix(previous.rgb, display.rgb, blend) + custom, max(display.a, 0.03125));
-        }
-    }
-    return fallback;
-}
-
 const FACE_NORMALS = array<vec3<i32>, 6>(
     vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0),
     vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1),
 );
-
-// Bridge a mesh/cache publication gap, for both digging and placement. Prefer
-// old equally oriented surfaces (including the surface just covered by a new
-// block). Otherwise borrow faces bordering the receiver's known-air cell, or
-// the removed voxel's old faces. No arbitrary-radius search through walls.
-// This display-only estimate is never stored or used as transport evidence.
-fn unpublished_face_prior(voxel: vec3<i32>, receiver_face: u32) -> vec4<f32> {
-    var sum = vec4(0.0);
-    for (var face = 0u; face < 6u; face += 1u) {
-        let value = lookup_face(voxel + FACE_NORMALS[face], receiver_face);
-        sum += vec4(value.rgb * value.w, value.w);
-    }
-    if sum.w > 0.0 { return vec4(sum.rgb / sum.w, 0.125); }
-    let exterior = voxel + FACE_NORMALS[receiver_face];
-    let index = lookup_probe(exterior);
-    for (var face = 0u; face < 6u; face += 1u) {
-        let value = lookup_face(exterior - FACE_NORMALS[face], face);
-        sum += vec4(value.rgb * value.w, value.w);
-        if index < transport_settings.probe_capacity {
-            let removed = resolved_face(index, face);
-            sum += vec4(removed.rgb * removed.w, removed.w);
-        }
-    }
-    return vec4(sum.rgb / max(sum.w, 0.000001), select(0.0, 0.125, sum.w > 0.0));
-}
 
 fn corner_lit(word: u32, bit: u32) -> f32 {
     return select(0.0, 1.0, (word & bit) != 0u);
@@ -285,29 +193,6 @@ fn corner_lit(word: u32, bit: u32) -> f32 {
 // light the face here, so a moving sun brightens or dims every frame while
 // cached shadows change only when its quantized direction does. Unknown
 // corners contribute no direct sunlight yet; available corners remain usable.
-// Readiness must NEVER switch a face to another shadow algorithm.
-fn sky_irradiance(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
-    if (far_view.shape.z & 2u) != 0u { return far_sun(position, normal); }
-    let voxel = vec3<i32>(floor(position - normal * 0.01));
-    let index = lookup_probe(voxel);
-    if index >= transport_settings.probe_capacity { return far_sun(position, normal); }
-    var face = 0u;
-    var uv = position.yz - vec2<f32>(voxel.yz);
-    if abs(normal.y) > 0.5 {
-        face = 2u;
-        uv = position.xz - vec2<f32>(voxel.xz);
-    } else if abs(normal.z) > 0.5 {
-        face = 4u;
-        uv = position.xy - vec2<f32>(voxel.xy);
-    }
-    let negative = normal[face / 2u] < 0.0;
-    face += select(0u, 1u, negative);
-    var axis = vec3(0.0);
-    axis[face / 2u] = select(1.0, -1.0, negative);
-    let corners = transport_probes[index].direct_sky[face];
-    return resolve_sky_corners(corners, axis, uv);
-}
-
 fn resolve_sky_corners(corners: vec4<u32>, axis: vec3<f32>, position: vec2<f32>) -> vec4<f32> {
     let ready = select(0.0, 1.0, all(corners != vec4(0u)));
     let uv = clamp(position, vec2(0.0), vec2(1.0));
@@ -387,8 +272,7 @@ fn corner_value(center: vec4<f32>, edge_u: vec4<f32>, edge_v: vec4<f32>, diagona
     return sum.rgb / max(sum.w, 0.000001);
 }
 
-fn display_face(voxel: vec3<i32>, face: u32, view_owned: bool) -> vec4<f32> {
-    if !view_owned { return lookup_face(voxel, face); }
+fn display_face(voxel: vec3<i32>, face: u32) -> vec4<f32> {
     let index = far_face_index(voxel, face);
     if index != 0xffffffffu {
         let value = far_view.pixels[index];
@@ -397,11 +281,11 @@ fn display_face(voxel: vec3<i32>, face: u32, view_owned: bool) -> vec4<f32> {
     return vec4(0.0);
 }
 
-// Identical virtual-corner topology for both ownership models. The view index
-// only contains visible faces; missing neighbours never become invented paths
-// or borrowed physical history. All of this remains presentation-only.
-fn corner_irradiance(position: vec3<f32>, normal: vec3<f32>, view_owned: bool) -> vec4<f32> {
-    if transport_settings.enabled == 0u || (!view_owned && transport_settings.probe_capacity == 0u) {
+// Virtual-corner interpolation over visible faces. The view index only
+// contains visible faces; missing neighbours never become invented paths or
+// borrowed physical history. All of this remains presentation-only.
+fn corner_irradiance(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
+    if transport_settings.enabled == 0u {
         return vec4(0.0);
     }
     let voxel = vec3<i32>(floor(position - normal * 0.01));
@@ -418,29 +302,21 @@ fn corner_irradiance(position: vec3<f32>, normal: vec3<f32>, view_owned: bool) -
     }
     let axis = face / 2u;
     face += select(0u, 1u, normal[axis] < 0.0);
-    var center = display_face(voxel, face, view_owned);
-    if center.w == 0.0 && !view_owned {
-        center = unpublished_face_prior(voxel, face);
-    }
+    let center = display_face(voxel, face);
     if transport_settings.reconstruction == 0u {
         return center;
     }
-    let left = display_face(voxel - u, face, view_owned);
-    let right = display_face(voxel + u, face, view_owned);
-    let bottom = display_face(voxel - v, face, view_owned);
-    let top = display_face(voxel + v, face, view_owned);
-    let c00 = corner_value(center, left, bottom, display_face(voxel - u - v, face, view_owned));
-    let c10 = corner_value(center, right, bottom, display_face(voxel + u - v, face, view_owned));
-    let c01 = corner_value(center, left, top, display_face(voxel - u + v, face, view_owned));
-    let c11 = corner_value(center, right, top, display_face(voxel + u + v, face, view_owned));
+    let left = display_face(voxel - u, face);
+    let right = display_face(voxel + u, face);
+    let bottom = display_face(voxel - v, face);
+    let top = display_face(voxel + v, face);
+    let c00 = corner_value(center, left, bottom, display_face(voxel - u - v, face));
+    let c10 = corner_value(center, right, bottom, display_face(voxel + u - v, face));
+    let c01 = corner_value(center, left, top, display_face(voxel - u + v, face));
+    let c11 = corner_value(center, right, top, display_face(voxel + u + v, face));
     let local = position - vec3<f32>(voxel);
     let uv = clamp(vec2(dot(local, vec3<f32>(u)), dot(local, vec3<f32>(v))), vec2(0.0), vec2(1.0));
     return vec4(mix(mix(c00, c10, uv.x), mix(c01, c11, uv.x), uv.y), center.w);
-}
-
-fn probe_irradiance(position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec3<f32> {
-    if sky { return sky_irradiance(position, normal).rgb; }
-    return corner_irradiance(position, normal, false).rgb * transport_settings.intensity;
 }
 
 fn use_voxel_sky() -> bool {
@@ -458,7 +334,7 @@ override fn lighting::directional_light(
     if !use_voxel_sky() {
         return lighting::directional_light(light_id, input, enable_diffuse);
     }
-    let sky = sky_irradiance((*input).P, (*input).layers[lighting::LAYER_BASE].N);
+    let sky = far_sun((*input).P, (*input).layers[lighting::LAYER_BASE].N);
     if light_id != 0u || !enable_diffuse { return vec3(0.0); }
     // Transport imports sun illuminance / 10,000. Restore photometric scale
     // for a Lambertian response here; Bevy applies camera exposure afterwards.
@@ -525,34 +401,23 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
 #else
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);
-    let view_first = (far_view.shape.z & 2u) != 0u;
     var indirect = vec3(0.0);
     var view_coverage = vec3(1.0, 0.0, 0.0);
-    if !view_first { indirect = probe_irradiance(in.world_position.xyz, normalize(in.world_normal), false); }
     let voxel = vec3<i32>(floor(in.world_position.xyz - in.world_normal * 0.01));
-    let index = lookup_probe(voxel);
-    // A slot is not a published face. During residency/mesh handoff, keep
-    // using the view result until this particular near face has valid data.
     if far_view.shape.z != 0u && transport_settings.enabled != 0u {
-        let face = face_index_of(normalize(in.world_normal));
-        var near_valid = false;
-        if !view_first && index < transport_settings.probe_capacity { near_valid = resolved_face(index, face).w > 0.0; }
-        if !near_valid {
-            var far = vec4(0.0);
-            if view_first { far = corner_irradiance(in.world_position.xyz, normalize(in.world_normal), true); }
-            if far.w > 0.0 { view_coverage = vec3(0.0, 1.0, 0.0); }
-            // Thin/distant faces may miss the reduced prepass grid entirely.
-            // Only those holes use geometric upsampling, not world history.
-            if far.w == 0.0 {
-                far = far_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal), false);
-                if far.w > 0.0 { view_coverage = vec3(1.0, 1.0, 0.0); }
-            }
-            if far.w > 0.0 { indirect = far.rgb * transport_settings.intensity; }
+        var far = corner_irradiance(in.world_position.xyz, normalize(in.world_normal));
+        if far.w > 0.0 { view_coverage = vec3(0.0, 1.0, 0.0); }
+        // Thin/distant faces may miss the reduced prepass grid entirely.
+        // Only those holes use geometric upsampling, not world history.
+        if far.w == 0.0 {
+            far = far_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal), false);
+            if far.w > 0.0 { view_coverage = vec3(1.0, 1.0, 0.0); }
         }
+        if far.w > 0.0 { indirect = far.rgb * transport_settings.intensity; }
     }
     // Validation-only identity coverage, before tone mapping or fog. Selected
     // receiver counters cannot detect visible surfaces absent from the grid.
-    if view_first && transport_settings.debug_irradiance == 6u {
+    if transport_settings.debug_irradiance == 6u {
         let face = face_index_of(normalize(in.world_normal));
         let valid = voxel_material(voxel) != 256u && voxel_material(voxel + FACE_NORMALS[face]) == 256u;
         // Independent channels survive MSAA resolve: red is missing indirect
@@ -565,13 +430,12 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
         out.color = vec4(1.0 - view_coverage.g, select(1.0, 0.0, valid), witness, 1.0);
         return out;
     }
-    if view_first && transport_settings.debug_irradiance == 2u {
+    if transport_settings.debug_irradiance == 2u {
         out.color = vec4(view_coverage, 1.0);
         return out;
     }
     var emission = vec3(0.0);
-    if index < transport_settings.probe_capacity { emission = transport_probes[index].emission.rgb; }
-    else if far_view.shape.z != 0u {
+    if far_view.shape.z != 0u {
         let material = voxel_material(voxel);
         if material < 256u {
             emission = far_view.optical[material * 4u + 2u].rgb;
@@ -587,7 +451,7 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
         // textured appearance. Normal presentation never enters this branch.
         if transport_settings.debug_irradiance >= 4u { diagnostic_light = vec3(0.0); }
         if transport_settings.debug_irradiance != 3u && use_voxel_sky() {
-            var sunlight = probe_irradiance(in.world_position.xyz, normalize(in.world_normal), true);
+            var sunlight = far_sun(in.world_position.xyz, normalize(in.world_normal)).rgb;
             if transport_settings.debug_irradiance == 5u {
                 sunlight = exact_corner_sun(in.world_position.xyz, normalize(in.world_normal)).rgb;
             }

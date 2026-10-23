@@ -5,7 +5,6 @@ use crate::{
     terrain::PrototypeWorld,
     voxel_gi::{
         VoxelGiSettings,
-        render::{GpuProbePatchQueue, GpuTransportCache},
         validation::temporal::TemporalRun,
         world::FACE_OFFSETS,
     },
@@ -204,8 +203,6 @@ fn record(
     field: Res<VoxelEnergyField>,
     runtime: Res<VoxelGiRuntime>,
     settings: Res<VoxelGiSettings>,
-    cache: Res<GpuTransportCache>,
-    queue: Res<GpuProbePatchQueue>,
     windows: Query<&Window, With<PrimaryWindow>>,
 ) {
     let camera = cameras.iter().find(|(c, _)| c.is_active).map(|(_, t)| t);
@@ -222,7 +219,7 @@ fn record(
     let at_s = watch.started.elapsed().as_secs_f32();
     watch
         .run
-        .record_pinned(at_s, &field, &runtime, &cache, &queue);
+        .record_pinned(at_s, &field, &runtime);
     let context = Context {
         generation: runtime.generation,
         transport_revision: field.transport_revision,

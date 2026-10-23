@@ -10,10 +10,8 @@ mod memory;
 mod metrics;
 mod profiles;
 mod reference;
-mod reference_image;
 pub(super) mod reference_oracle;
 mod response;
-mod sample_sweep;
 mod structures;
 mod tunnel;
 pub(super) mod temporal;
@@ -53,15 +51,8 @@ const OFFSCREEN_HEIGHT: u32 = 1440;
 
 pub(super) fn install_frame_timing(app: &mut App) {
     if std::env::var_os("VOXEL_GI_VALIDATE_FRAME_TIMINGS").is_some() {
-        app.world_mut()
-            .resource_mut::<super::telemetry::GiWorkTimings>()
-            .enable_display_detail();
         host_timing::install(app);
     }
-}
-
-pub(super) fn install_reference_image(app: &mut App) {
-    reference_image::install(app);
 }
 
 pub(super) fn setup_capture_target(
@@ -145,8 +136,6 @@ pub(super) fn run_validation(
     gi: (
         Res<VoxelGiStats>,
         Res<super::VoxelGiRuntime>,
-        Res<super::render::GpuTransportCache>,
-        Res<super::render::GpuProbePatchQueue>,
         Option<Res<host_timing::HostTiming>>,
         Option<Res<super::gpu::GpuTransportDevice>>,
     ),
@@ -175,7 +164,7 @@ pub(super) fn run_validation(
     if std::env::var_os("VOXEL_GI_VALIDATE").is_none() || evidence.failed {
         return;
     }
-    let (stats, runtime, cache, queue, host_timing, device) = gi;
+    let (stats, runtime, host_timing, device) = gi;
     let (assets, asset_server, configs, generator) = asset_context;
     if run.startup.is_none() {
         // Shared Cargo build directories can reuse another worktree's package
@@ -360,7 +349,7 @@ pub(super) fn run_validation(
             | Profile::LiveHallway
     ) {
         run.temporal
-            .record(elapsed, profile, &field, &runtime, &cache, &queue);
+            .record(elapsed, profile, &field, &runtime);
     }
     if matches!(profile, Profile::House | Profile::HouseEdits) {
         run.house.tick(
@@ -754,28 +743,7 @@ pub(super) fn run_validation(
         commands.write_message(AppExit::error());
     } else {
         info!(output = %output.display(), "GI validation workload complete (review quality/performance separately)");
-        if reference_image::requested() {
-            match reference_image::ReferenceImage::start(
-                &runtime,
-                &field,
-                &cache,
-                &queue,
-                device.as_deref(),
-                &settings,
-                &world,
-                &generator,
-                profile,
-                output.clone(),
-            ) {
-                Ok(reference) => {
-                    commands.insert_resource(reference);
-                }
-                Err(error) => {
-                    evidence.fail(&error);
-                    commands.write_message(AppExit::error());
-                }
-            }
-        } else if reference::ReferenceRun::requested() {
+        if reference::ReferenceRun::requested() {
             if let Err(error) = run.reference.start(
                 &runtime,
                 device.as_deref(),

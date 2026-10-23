@@ -149,10 +149,7 @@ mod tests {
             &crate::voxel_gi::render::VoxelTransportAssets {
                 geometry: default(),
                 far: default(),
-                resident: default(),
                 texture: default(),
-                hash_entries: default(),
-                probes: default(),
             },
         ));
         app.insert_resource(materials)

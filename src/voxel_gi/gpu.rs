@@ -270,6 +270,7 @@ impl UploadBuffer {
     }
 
     /// Another handle to the same allocation, for read-only diagnostic binding.
+    #[cfg(test)]
     fn shared(&self) -> Self {
         Self {
             buffer: self.buffer.clone(),
@@ -401,9 +402,6 @@ impl GpuTracer {
             },
         ))
     }
-    pub(crate) fn resident_buffer(&self) -> Option<Buffer> {
-        self.resident.as_ref().map(|state| state.buffer())
-    }
     /// Published retention changes, applied on the GPU before the next
     /// batch's rays (kept until a batch with resident inputs runs).
     pub(super) fn queue_retention(&mut self, events: &mut Vec<super::retention::RetentionEvent>) {
@@ -424,6 +422,7 @@ impl GpuTracer {
     /// Diagnostics: terminate this tracer's paths on another tracer's resident
     /// measurements, read-only. The source must not trace while this is bound
     /// if its cache is meant to stay frozen.
+    #[cfg(test)]
     pub(crate) fn share_cache_from(&mut self, source: &GpuTracer) -> Result<(), String> {
         let resident = source
             .resident

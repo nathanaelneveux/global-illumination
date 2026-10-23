@@ -180,21 +180,6 @@ impl std::ops::Index<&IVec3> for ProbeStore {
     }
 }
 
-pub(crate) trait ProbeLookup {
-    fn lookup(&self, key: &IVec3) -> Option<&SurfaceProbe>;
-}
-impl ProbeLookup for ProbeStore {
-    fn lookup(&self, key: &IVec3) -> Option<&SurfaceProbe> {
-        self.get(key)
-    }
-}
-#[cfg(test)]
-impl ProbeLookup for HashMap<IVec3, SurfaceProbe> {
-    fn lookup(&self, key: &IVec3) -> Option<&SurfaceProbe> {
-        self.get(key)
-    }
-}
-
 /// The authoritative world-space energy field. The infrared and ionizing
 /// channels can be read by offscreen simulation systems.
 #[derive(Resource, Default)]

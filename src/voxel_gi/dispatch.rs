@@ -452,7 +452,6 @@ pub(super) fn apply_trace_task(
     mut stats: ResMut<VoxelGiStats>,
     settings: Res<VoxelGiSettings>,
     mut timings: ResMut<GiWorkTimings>,
-    resident_display: Option<ResMut<super::render::ResidentDisplay>>,
     geometry_display: Option<ResMut<super::render::GeometryDisplay>>,
     view_transport: Option<ResMut<gpu::view::ViewTransport>>,
 ) {
@@ -513,12 +512,6 @@ pub(super) fn apply_trace_task(
         display.buffers = Some(buffers);
         display.params = params;
     }
-    if let Some(mut display) = resident_display {
-        display.buffer = result
-            .gpu_tracer
-            .as_ref()
-            .and_then(gpu::GpuTracer::resident_buffer);
-    }
     if let Some(mut view) = view_transport {
         view.0 = result
             .gpu_tracer
@@ -541,7 +534,6 @@ pub(super) fn apply_trace_task(
             && probe.resident[binding.face] != binding.address
         {
             probe.resident[binding.face] = binding.address;
-            runtime.mark_display_dirty(binding.voxel);
         }
     }
     let Some(mut batch) = result.batch else {
@@ -594,8 +586,6 @@ pub(super) fn apply_trace_task(
                 }
             }
             if changed {
-                runtime.mark_display_dirty(voxel);
-                runtime.sky_upload_pending = true;
             }
         }
         if job.trace_mask == 0 {
@@ -620,7 +610,6 @@ pub(super) fn apply_trace_task(
         runtime.covered_faces = runtime.covered_faces.saturating_sub(old_covered) + new_covered;
         runtime.settled_faces = runtime.settled_faces.saturating_sub(old_settled) + new_settled;
         if publish_display {
-            runtime.mark_display_dirty(voxel);
         }
     }
     // The statistics mirror of GPU-picked faces, at most mirror_budget per
@@ -672,7 +661,6 @@ pub(super) fn apply_trace_task(
         runtime.covered_faces = runtime.covered_faces.saturating_sub(old_covered) + new_covered;
         runtime.settled_faces = runtime.settled_faces.saturating_sub(old_settled) + new_settled;
         if publish_display {
-            runtime.mark_display_dirty(voxel);
         }
     }
     drop(_merge_picks);

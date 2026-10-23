@@ -2,7 +2,6 @@
 //! One transport result can be applied per Update. Unlike the broad 250 ms
 //! sampler, observing every Update cannot skip accepted batches. Unchanged
 //! states are run-length encoded; missing receivers are explicit, not zero.
-use super::super::render::{GpuProbePatchQueue, GpuTransportCache};
 use super::*;
 use serde::Serialize;
 
@@ -24,13 +23,6 @@ struct State {
     resident: [u32; 2],
     fresh_mask: u8,
     stable_batches: u8,
-    /// CPU queued publication or latest completed resident presentation snapshot.
-    /// Neither is a claim that the currently rendered frame has this value.
-    mirror: Option<[f32; 4]>,
-    /// Shader-equivalent connected, confidence-weighted corner reconstruction
-    /// from that mirror. None while the center is unpublished (shader prior).
-    corners: Option<[[f32; 3]; 4]>,
-    corner_inputs: [[f32; 4]; 9],
 }
 
 #[derive(Serialize)]
@@ -94,30 +86,6 @@ pub(super) fn sites(profile: Profile) -> Vec<(IVec3, usize)> {
         .collect()
 }
 
-fn corners(patch: &[[f32; 4]]) -> Option<[[f32; 3]; 4]> {
-    let center = Vec4::from_array(patch[4]);
-    if center.w == 0.0 {
-        return None;
-    }
-    Some(
-        [(0, 1, 3), (2, 1, 5), (6, 7, 3), (8, 7, 5)].map(|(diagonal, a, b)| {
-            let a = Vec4::from_array(patch[a]);
-            let b = Vec4::from_array(patch[b]);
-            let diagonal = if a.w > 0.0 || b.w > 0.0 {
-                Vec4::from_array(patch[diagonal])
-            } else {
-                Vec4::ZERO
-            };
-            ((center.truncate() * center.w
-                + a.truncate() * a.w
-                + b.truncate() * b.w
-                + diagonal.truncate() * diagonal.w)
-                / (center.w + a.w + b.w + diagonal.w).max(0.000001))
-            .to_array()
-        }),
-    )
-}
-
 impl TemporalRun {
     /// Pin a normal-gameplay receiver without changing sampling, camera,
     /// scene residency or validation mode. The same recorder follows it even
@@ -135,10 +103,8 @@ impl TemporalRun {
         at_s: f32,
         field: &VoxelEnergyField,
         runtime: &super::super::VoxelGiRuntime,
-        cache: &GpuTransportCache,
-        queue: &GpuProbePatchQueue,
     ) {
-        self.record(at_s, Profile::Gameplay, field, runtime, cache, queue);
+        self.record(at_s, Profile::Gameplay, field, runtime);
     }
 
     pub(super) fn record(
@@ -147,8 +113,6 @@ impl TemporalRun {
         profile: Profile,
         field: &VoxelEnergyField,
         runtime: &super::super::VoxelGiRuntime,
-        cache: &GpuTransportCache,
-        queue: &GpuProbePatchQueue,
     ) {
         if !*self
             .enabled
@@ -162,27 +126,10 @@ impl TemporalRun {
             self.sites = sites(profile);
         }
         let sites = &self.sites;
-        let patch: Vec<_> = sites
-            .iter()
-            .flat_map(|&(voxel, face)| {
-                (-1..=1).flat_map(move |v| {
-                    (-1..=1).map(move |u| {
-                        let offset = match face / 2 {
-                            0 => IVec3::new(0, u, v),
-                            1 => IVec3::new(u, 0, v),
-                            _ => IVec3::new(u, v, 0),
-                        };
-                        (voxel + offset, face)
-                    })
-                })
-            })
-            .collect();
-        let mirror = cache.validation_snapshot(queue, field, &patch);
         let first = self.previous.is_empty();
         self.previous.resize(sites.len(), None);
         for (site, (voxel, face)) in sites.iter().enumerate() {
             let face = *face;
-            let patch = &mirror[site * 9..site * 9 + 9];
             let state = field
                 .probes
                 .get(voxel)
@@ -202,9 +149,6 @@ impl TemporalRun {
                     resident: p.resident[face].to_array(),
                     fresh_mask: p.fresh_mask,
                     stable_batches: p.stats().stable_batches[face],
-                    mirror: (patch[4][3] != 0.0).then_some(patch[4]),
-                    corners: corners(patch),
-                    corner_inputs: patch.try_into().expect("nine-candidate corner patch"),
                 });
             if first || state != self.previous[site] {
                 if self.events.len() < LIMIT {
@@ -236,11 +180,11 @@ impl TemporalRun {
         serde_json::to_writer(
             std::io::BufWriter::new(file),
             &json!({
-                "schema_version": 2, "frames": self.frames, "end_s": self.end_s,
+                "schema_version": 3, "frames": self.frames, "end_s": self.end_s,
                 "sites": self.sites.iter().map(|(v,_)| v.to_array()).collect::<Vec<_>>(),
                 "site_faces": self.sites.iter().map(|(_,face)| face).collect::<Vec<_>>(),
                 "events": self.events,
-                "notes": "Every Update after GI systems. Event-compressed fixed receivers; hold each state until next event. Mirror is CPU queued publication or latest completed GPU-resident presentation snapshot, potentially older than the rendered frame. Corners exclude unpublished-center fallback and material/tonemapping. No convergence claim without independent reference."
+                "notes": "Every Update after GI systems. Event-compressed fixed receivers; hold each state until next event. World-cache receivers only; the view tier owns what is displayed, so use captures for presentation. No convergence claim without independent reference."
             }),
         )?;
         Ok(())
@@ -257,26 +201,24 @@ mod tests {
         let mut run = TemporalRun::pinned(voxel, 2);
         let mut field = VoxelEnergyField::default();
         let runtime = super::super::super::VoxelGiRuntime::default();
-        let cache = GpuTransportCache::default();
-        let queue = GpuProbePatchQueue::unpublished_test_queue();
-        run.record_pinned(0.0, &field, &runtime, &cache, &queue);
+        run.record_pinned(0.0, &field, &runtime);
         let mut probe = SurfaceProbe::new(voxel, 4);
         probe.stats_mut().samples[2] = 2048;
         probe.stats_mut().sequence[2] = 8192;
         probe.resident[2] = UVec2::new(12, 1);
         field.probes.insert(voxel, probe);
-        run.record_pinned(1.0, &field, &runtime, &cache, &queue);
-        run.record_pinned(1.1, &field, &runtime, &cache, &queue);
+        run.record_pinned(1.0, &field, &runtime);
+        run.record_pinned(1.1, &field, &runtime);
         assert_eq!(run.events.len(), 2, "unchanged observations are compressed");
         field.probes.get_mut(&voxel).unwrap().resident[2].y = 2;
-        run.record_pinned(2.0, &field, &runtime, &cache, &queue);
+        run.record_pinned(2.0, &field, &runtime);
         let probe = field.probes.get_mut(&voxel).unwrap();
         probe.revision += 1;
         probe.stats_mut().samples[2] = 0;
         probe.stats_mut().sequence[2] = 0;
-        run.record_pinned(3.0, &field, &runtime, &cache, &queue);
+        run.record_pinned(3.0, &field, &runtime);
         field.probes.remove(&voxel);
-        run.record_pinned(4.0, &field, &runtime, &cache, &queue);
+        run.record_pinned(4.0, &field, &runtime);
         assert_eq!(run.events.len(), 5);
         assert!(run.events[0].state.is_none());
         assert_eq!(run.events[1].state.as_ref().unwrap().sequence, 8192);
@@ -337,19 +279,5 @@ mod tests {
                 crate::structures::VoxelOp::Air
             );
         }
-    }
-    #[test]
-    fn mirrored_corners_preserve_constants_and_disconnect_diagonals() {
-        assert_eq!(
-            corners(&[[2.0, 3.0, 4.0, 0.125]; 9]),
-            Some([[2.0, 3.0, 4.0]; 4])
-        );
-        let mut patch = [[0.0; 4]; 9];
-        assert!(corners(&patch).is_none());
-        patch[4] = [1.0; 4];
-        patch[0] = [100.0, 100.0, 100.0, 1.0];
-        assert_eq!(corners(&patch), Some([[1.0; 3]; 4]));
-        patch[1] = [1.0; 4];
-        assert_eq!(corners(&patch).unwrap()[0], [34.0; 3]);
     }
 }
