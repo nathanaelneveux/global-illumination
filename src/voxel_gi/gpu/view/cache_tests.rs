@@ -432,7 +432,7 @@ fn native_two_way_cache_reserved_paths_match_furnace_energy() {
     f.gpu
         .context
         .queue
-        .write_buffer(&f.camera.control.buffer, 124, &1u32.to_le_bytes());
+        .write_buffer(&f.camera.control.buffer, super::CONTROL_VIEW_FIRST_OFFSET, &1u32.to_le_bytes());
     f.wave(32, 3);
     // Bound command-buffer size, as the runtime does with per-frame submits.
     // Thousands of Metal compute encoders in one submit can lose the device.
@@ -690,7 +690,7 @@ fn native_two_way_cache_rejects_stale_writes_and_obeys_retention() {
     f.gpu
         .context
         .queue
-        .write_buffer(&f.camera.control.buffer, 144, &cache.epoch.to_le_bytes());
+        .write_buffer(&f.camera.control.buffer, super::CONTROL_EPOCH_OFFSET, &cache.epoch.to_le_bytes());
     f.pass("store", Some(&held));
     assert_eq!(f.resident(), capped);
     f.control();
@@ -715,4 +715,21 @@ fn native_two_way_cache_rejects_stale_writes_and_obeys_retention() {
         20.0,
         "flags are not sample weight"
     );
+}
+
+#[test]
+fn control_offsets_used_by_native_tests_match_the_encoded_layout() {
+    let bytes = ShaderBuffer::from(vec![Control {
+        history: UVec4::new(0, 0, 0, 0xdead),
+        cache: UVec4::new(0xbeef, 0, 0, 0),
+        ..default()
+    }])
+    .data
+    .unwrap();
+    let word = |offset: u64| {
+        let at = offset as usize;
+        u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+    };
+    assert_eq!(word(super::CONTROL_VIEW_FIRST_OFFSET), 0xdead);
+    assert_eq!(word(super::CONTROL_EPOCH_OFFSET), 0xbeef);
 }

@@ -156,6 +156,12 @@ struct Control {
     cache: UVec4,
     discovery: UVec4,
 }
+/// Byte offsets of `Control` words that native tests rewrite in place
+/// (`history.w`: view-first; `cache.x`: writable epoch).
+#[cfg(test)]
+pub(super) const CONTROL_VIEW_FIRST_OFFSET: u64 = 64 * 2 + 16 * 3 + 12;
+#[cfg(test)]
+pub(super) const CONTROL_EPOCH_OFFSET: u64 = 64 * 2 + 16 * 5;
 #[derive(Clone, Copy, Default, ShaderType)]
 struct Wave {
     range: UVec4,
