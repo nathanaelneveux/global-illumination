@@ -588,6 +588,14 @@ transition; it must not be mistaken for improved sampler accuracy.
   `previous_display_stage_ms` further splits display publication into poll,
   install, topology, snapshot start/advance, values and ledger, with names in
   `display_stage_names`. These are opt-in CPU body timings, not GPU timestamps.
+- `VOXEL_GI_VALIDATE_NO_VSYNC=1` (windowed validation only) presents with
+  `AutoNoVsync` and three frames of latency. Bevy's default Fifo locks every
+  option to the display rate, hiding headroom; on macOS `AutoNoVsync` alone
+  still blocks most frames on the two-drawable default. Reports record the
+  actual `present_mode`. Compare uncapped intervals only with other uncapped
+  runs. Add `RUST_LOG=warn,prototype_voxel_template::voxel_gi=info` for the
+  view tier's GPU receipts (`GI view transport`: trace, presentation,
+  discovery, pool), logged every 120 frames.
 - `work_timeline` includes `display_preparing`, `display_catchup_keys` and
   `display_topology_pending`. Check them alongside geometry, first-sample debt,
   throughput and receiver age: small frame costs obtained by indefinitely

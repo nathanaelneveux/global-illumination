@@ -48,6 +48,15 @@ fn main() -> AppExit {
         .set(WindowPlugin {
             primary_window: (!headless).then(|| Window {
                 title: "Voxel GI Lab | Sun: voxel corners (F7)".into(),
+                // Validation frame-headroom runs: vsync caps every option at
+                // the display rate and hides its cost.
+                present_mode: if uncapped_validation() {
+                    bevy::window::PresentMode::AutoNoVsync
+                } else {
+                    default()
+                },
+                desired_maximum_frame_latency: uncapped_validation()
+                    .then(|| std::num::NonZero::new(3).unwrap()),
                 ..default()
             }),
             exit_condition: if headless {
@@ -119,6 +128,11 @@ fn main() -> AppExit {
         VoxelGiDiagnosticsPlugin,
     ));
     app.run()
+}
+
+fn uncapped_validation() -> bool {
+    std::env::var_os("VOXEL_GI_VALIDATE").is_some()
+        && std::env::var("VOXEL_GI_VALIDATE_NO_VSYNC").is_ok_and(|value| value == "1")
 }
 
 pub(crate) fn headless_validation() -> bool {

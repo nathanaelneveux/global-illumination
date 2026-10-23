@@ -10,6 +10,8 @@ read [architecture](../architecture.md), [validation](../validation.md) and
 
 Notable records:
 
+- [Ownership comparison, 2026-10-23](option-comparison-2026-10-23.md): all-near,
+  hybrid, cacheless and +cache 32/48/64, windowed uncapped and visible behavior.
 - [Two-way face cache](two-way-cache.md): shared RGB history between visible
   sampling and a small persistent cache, with rendered and analytic gates.
 - [View-first transport](view-first-transport.md): hybrid, +cache and cacheless

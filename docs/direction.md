@@ -7,8 +7,9 @@ the A19 Apple TV (same class). This records the motivation and staged plan;
 and view-driven far lighting are now playable. The subsequent
 [view-first experiment](history/view-first-transport.md) moves visible ownership
 entirely to the view tier; its [two-way cache](history/two-way-cache.md) shares
-exact-face history with a small persistent cache. Neither replaces the hybrid
-default yet.
+exact-face history with a small persistent cache. The
+[2026-10-23 comparison](history/option-comparison-2026-10-23.md) found no
+measured advantage for hybrid over +cache.
 
 ## Why change
 
