@@ -1,4 +1,6 @@
 //! Stable world-space sample streams. History resets never repeat a sequence.
+// Partly used only by the CPU oracle (tests, debug validation).
+#![cfg_attr(not(debug_assertions), allow(dead_code))]
 use bevy::prelude::*;
 
 pub(crate) fn pcg(value: u32) -> u32 {

@@ -1,3 +1,6 @@
+// The CPU estimator is the independent oracle for tests and debug-build
+// validation; release builds only use its shared constants.
+#![cfg_attr(not(debug_assertions), allow(dead_code))]
 use std::sync::Arc;
 
 use bevy::prelude::*;

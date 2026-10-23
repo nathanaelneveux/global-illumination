@@ -104,6 +104,7 @@ fn emission_geometry_changed(
 }
 
 impl EmissionDistribution {
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub fn build(scene: &TransportScene, materials: &VoxelMaterialTransportTable) -> Self {
         Self::with_importance(scene, materials, super::EnergySpectrum::ONE)
     }

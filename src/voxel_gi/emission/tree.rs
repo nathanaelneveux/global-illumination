@@ -1,6 +1,8 @@
 //! Receiver-conditioned binary light hierarchy. The approximate importance
 //! changes only the proposal, never visibility or energy. A power mixture at
 //! every branch retains support for every emitting face in all five bands.
+// Partly used only by the CPU oracle (tests, debug validation).
+#![cfg_attr(not(debug_assertions), allow(dead_code))]
 use super::*;
 
 #[derive(Clone, Copy, Default)]

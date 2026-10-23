@@ -630,6 +630,7 @@ impl GpuTracer {
         Ok(())
     }
 
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub fn trace_compact(
         &mut self,
         scene: Arc<TransportScene>,
