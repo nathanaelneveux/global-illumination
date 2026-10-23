@@ -36,6 +36,22 @@ pub(super) fn motion_walk() -> Option<f32> {
     })
 }
 
+/// `edits` places an emitter instead of rock at 19 s and captures 16
+/// consecutive frames from the edit (VOXEL_GI_VALIDATE_PLACE_EMITTER=1).
+pub(super) fn place_emitter() -> bool {
+    static PLACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PLACE.get_or_init(|| std::env::var_os("VOXEL_GI_VALIDATE_PLACE_EMITTER").is_some())
+}
+
+static PLACE_EMITTER_CAPTURES: std::sync::LazyLock<Vec<(f32, &'static str)>> = std::sync::LazyLock::new(|| {
+    let mut captures = vec![(14.5, "room-settled")];
+    for frame in 0..16 {
+        captures.push((19.0, &*Box::leak(format!("emitter-place-{frame:02}").into_boxed_str())));
+    }
+    captures.push((21.0, "emitter-placed-later"));
+    captures
+});
+
 /// Two bursts of consecutive frames while walking (one capture per frame).
 static WALK_CAPTURES: std::sync::LazyLock<Vec<(f32, &'static str)>> = std::sync::LazyLock::new(|| {
     let mut captures = vec![(14.4, "before")];
@@ -204,6 +220,8 @@ impl Profile {
                 (69.0, "first-corner-returned"),
                 (89.0, "second-corner-returned"),
             ]
+        } else if self == Self::Edits && place_emitter() {
+            &PLACE_EMITTER_CAPTURES
         } else if self == Self::Edits {
             &[
                 (14.5, "room-settled"),

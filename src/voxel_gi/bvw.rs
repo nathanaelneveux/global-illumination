@@ -17,7 +17,6 @@ use std::time::{Duration, Instant};
 
 // Existing coalescing windows; publication and display response are independent.
 const STREAM_DEBOUNCE: Duration = Duration::from_millis(350);
-const EDIT_DEBOUNCE: Duration = Duration::from_millis(40);
 const MAX_REBUILD_LATENCY: Duration = Duration::from_secs(1);
 /// Receivers are kept until a page is this much farther than the radius, so a
 /// camera moving back and forth across it does not churn pages.
@@ -216,12 +215,11 @@ pub(super) fn start_scene_task(
         || !runtime.removed_pages.is_empty()
         || !runtime.receiver_dirty.is_empty()
         || !runtime.receiver_retired.is_empty();
-    let debounce = if runtime.urgent_edit {
-        EDIT_DEBOUNCE
-    } else {
-        STREAM_DEBOUNCE
-    };
-    let quiet = runtime.last_world_change.elapsed() >= debounce;
+    // A player edit rebuilds on the next frame: edits made in one frame are
+    // already batched, and waiting for quiet let terrain streaming (which
+    // also moves `last_world_change`) hold an edit back by 100+ ms while its
+    // mesh was already visible. Streaming alone still coalesces.
+    let quiet = runtime.urgent_edit || runtime.last_world_change.elapsed() >= STREAM_DEBOUNCE;
     let overdue = runtime
         .dirty_since
         .is_some_and(|start| start.elapsed() >= MAX_REBUILD_LATENCY);
