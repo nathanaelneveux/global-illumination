@@ -52,6 +52,11 @@ impl Plugin for PlayerPlugin {
                 sync_player_input.before(EnhancedInputSystems::Prepare),
             )
             .add_systems(Update, edit_voxels);
+            // Validation captures stay free of HUD overlays.
+            if std::env::var_os("VOXEL_GI_VALIDATE").is_none() {
+                app.add_systems(Startup, spawn_crosshair)
+                    .add_systems(Update, show_crosshair_while_aiming);
+            }
         }
     }
 }
@@ -64,6 +69,10 @@ struct PlayerInput;
 
 #[derive(Component)]
 struct PlayerCamera;
+
+/// Minecraft-style aiming cross at the screen centre.
+#[derive(Component)]
+struct Crosshair;
 
 #[derive(Component, Default)]
 struct HeldJumpFilter {
@@ -93,6 +102,59 @@ struct DetonateBomb;
 /// The HUD requests the same one-shot blast as B, without changing click modes.
 #[derive(Message)]
 pub(crate) struct BombAtAim;
+
+const CROSSHAIR_LENGTH: f32 = 18.0;
+const CROSSHAIR_THICKNESS: f32 = 2.0;
+
+/// Two bars with a dark outline so the cross reads on snow, sky and shadow.
+fn spawn_crosshair(mut commands: Commands) {
+    let bar = |width: f32, height: f32| {
+        (
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px((CROSSHAIR_LENGTH - width) / 2.0),
+                top: Val::Px((CROSSHAIR_LENGTH - height) / 2.0),
+                width: Val::Px(width),
+                height: Val::Px(height),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.9)),
+            BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+        )
+    };
+    commands.spawn((
+        Crosshair,
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Percent(50.0),
+            top: Val::Percent(50.0),
+            width: Val::Px(CROSSHAIR_LENGTH),
+            height: Val::Px(CROSSHAIR_LENGTH),
+            margin: UiRect {
+                left: Val::Px(-CROSSHAIR_LENGTH / 2.0),
+                top: Val::Px(-CROSSHAIR_LENGTH / 2.0),
+                ..default()
+            },
+            ..default()
+        },
+        children![
+            bar(CROSSHAIR_LENGTH, CROSSHAIR_THICKNESS + 2.0),
+            bar(CROSSHAIR_THICKNESS + 2.0, CROSSHAIR_LENGTH),
+        ],
+    ));
+}
+
+/// Hidden while the cursor is free for the HUD, as when aiming is paused.
+fn show_crosshair_while_aiming(
+    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
+    mut crosshair: Query<&mut Visibility, With<Crosshair>>,
+) {
+    let wanted = if cursor.visible { Visibility::Hidden } else { Visibility::Inherited };
+    for mut visibility in &mut crosshair {
+        visibility.set_if_neq(wanted);
+    }
+}
 
 /// The HUD queues the same placement operation as the keyboard shortcut.
 #[derive(Message)]
