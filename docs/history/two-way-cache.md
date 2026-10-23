@@ -832,5 +832,16 @@ exact corner reference (0 pixels off by >.1) in every variant.
 | Lone-sample rule off | 2.38 / 1.28 (cave .94 / .43) | identical | 1298, 2027, 1544, 1061 | Removed: no longer reduces flashes |
 
 The footprint scan therefore still pays for itself, and memoization, the
-stagger and witnesses remain its cost controls. A cheaper scan would need a
-correct indirect fallback for missed tiny faces (not the any-orientation one).
+stagger and witnesses remain its cost controls.
+
+A cheaper scan was tried on `daac913`: one pass reducing each pixel to a plane
+key (face, plane, 16-voxel block) in workgroup memory, with the full decode and
+coverage check once per key instead of once per pixel per allocation round.
+With a 256-entry table, streaming discovery stayed 1.28 ms and cave rose
+.43 -> .88 ms (workgroup memory is reserved by every tile, including those that
+exit early). With 64 entries: streaming 1.28 -> 1.01 ms, cave .43 -> .48 ms, but
+577 more darker pixels in the indirect-only static view and walk flashes
+8181/2314. Most tiles finish in one round, so the cost is the per-pixel decode
+itself, not the rounds. Not kept. A real saving needs either fewer checked
+pixels or a correct indirect fallback for missed tiny faces (the
+any-orientation fallback of `3fdc8ff` tinted them sky-blue).
