@@ -22,6 +22,10 @@ fn shared_slot(receiver: ViewReceiver, material: u32) -> u32 {
 }
 
 fn load_shared_face(index: u32, receiver: ViewReceiver) {
+    if (estimates[index].identity.y & PENDING_GEOMETRY) != 0u {
+        estimates[index].identity.w = 0u;
+        return;
+    }
     // A stale descriptor is not cache eviction. Keep provenance so the next
     // current descriptor loads the authority even if an edit lowered its count.
     if view.cache.z != 0u && view.cache.x != cache_guard[0] { return; }
@@ -126,14 +130,16 @@ fn prior_air(voxel: vec3<i32>) -> bool {
     return in_bounds(region) && lookup_region(region) != 0xffffffffu && voxel_material(voxel) == 256u;
 }
 
-fn bootstrap_face(receiver: ViewReceiver) -> FacePrior {
+fn bootstrap_face(receiver: ViewReceiver, pending: bool) -> FacePrior {
     // Explicit components avoid Naga/Metal signed arithmetic on packed int3.
     let origin = vec3<i32>(receiver.voxel.x, receiver.voxel.y, receiver.voxel.z);
     let normal = vec3<i32>(face_normal(receiver.face));
     let air = origin + normal;
     var prior: FacePrior;
-    // Unknown geometry is not empty space. Never borrow through a wall.
-    if voxel_material(origin) == 256u || !prior_air(air) { return prior; }
+    // A validated raster face proves its own exterior is air even while the
+    // transport scene still contains the removed voxel. Other connections
+    // still need known air. Never trace through this provisional topology.
+    if !pending && (voxel_material(origin) == 256u || !prior_air(air)) { return prior; }
     for (var face = 0u; face < 6u; face++) {
         let offset = vec3<i32>(face_normal(face));
         let voxel = origin + offset;
@@ -176,7 +182,7 @@ fn load_shared_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     // Never restart a sampled face after a retention cap. This initializes
     // only a new, unmeasured identity, after retention and cache admission.
     if estimate.mean.w == 0.0 && estimate.identity.x == 0u {
-        let prior = bootstrap_face(receiver);
+        let prior = bootstrap_face(receiver, (estimate.identity.y & PENDING_GEOMETRY) != 0u);
         if prior.weight > 0.0 {
             estimate.mean = vec4(prior.mean, prior.weight);
             // This is already a post-edit initialization, not old history to

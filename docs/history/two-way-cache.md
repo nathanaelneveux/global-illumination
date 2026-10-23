@@ -721,3 +721,85 @@ are unchanged and the temporary baseline checkout is restored to
 the same 33 existing warnings (`target/centroid-release.log`). No live GI process
 is left running. The validity analyzer rejects non-view ownership configurations
 instead of treating ordinary hybrid shading as a diagnostic mask.
+
+### Edit bootstrap and asynchronous geometry handoff (2026-10-22)
+
+Branch `codex/edit-face-bootstrap`, baseline `f79b80c`. `473b90e` adds the user's
+one-wide/two-high hillside tunnel: twenty depths, forty individual removals,
+upper block followed 250 ms later by the lower block. All forty edits hit solid
+voxels. Captures sample depths 1/2/4/8/12/20, with background terrain loading.
+
+`504e17f` initializes new view faces from supported **raw** local face data at
+one effective history weight, with no QMC index advance. Matching normals take
+precedence. A native Metal test checks zero-ray initialization, perpendicular
+and covered donors, rejection of remote/unmeasured donors, repeated handoff
+without duplicate weight, and exact 1/(N+1) dilution by sixteen real paths.
+The existing two-way ownership test also passes. No display-filtered donor data
+is admitted, and no independent-path accuracy threshold is changed.
+
+Raw seeding alone was **not** a reliable gameplay fix. In two ordinary tunnel
+pairs, the baseline had 831,623 / 824,816 black-then-lit pixels in the sampled
+400 ms views, while the seed-only candidate had 59,048 / 885,676. These counts
+use pixels at <=2/255 in all early RGB channels that are later >.02 luminance,
+not a physical radiance threshold. Runs in `target/gi-validation/`:
+
+- control (baseline worktree, clean `473b90e`):
+  `tunnel-1792717848472801000-58753`, `tunnel-1792718292879742000-59733`;
+- raw seed (main, `473b90e` + the feature/test diff committed as `504e17f`):
+  `tunnel-1792718013635734000-59061`, `tunnel-1792718189553402000-59426`.
+
+The diagnostic extension in `215f905` distinguishes missing support (red) from
+invalid exposed transport geometry (green). Its tiny blue execution witness is
+excluded by the analyzer; it permits a legitimate zero-failure indoor mask
+without weakening normal black-frame rejection. The initial witness-free run
+`tunnel-1792718571227497000-60052` correctly failed the blank-capture check and
+is not gameplay evidence. The completed diagnostic run
+`tunnel-1792718736877736000-60189` showed 832,537 pixels with **both** flags on
+the new floor at 400 ms. The new mesh existed before its transport geometry;
+discovery rejected the face, so a raw seed alone could not help it.
+
+The retained handoff change (following `215f905`) keeps an explicit pending
+raster identity in the existing receiver record. It can hold a raw seed or
+existing exact-face history, but cannot trace, import a resident authority or
+write back until exposure agrees with the current transport scene. Each retained
+witness is reclassified every frame. The native coverage fixture now delays the
+transport model for three frames, checks zero queued rays, then checks the same
+raw means and QMC sequence through admission, motion and occlusion. The cache
+test also verifies pending faces cannot modify resident state. All pass on Metal.
+
+Two normal tunnel runs with the pending-identity diff on `215f905`:
+`tunnel-1792719210082405000-60725` and
+`tunnel-1792719342972030000-61047`. Both had **zero black-then-lit pixels across
+the six sampled 400 ms views**, without increasing ray budgets or allocations.
+All twenty captures in each run were valid/varied at 2560x1440, logs clean and
+images inspected. This is a dropout result, not proof that every intervening
+frame or every edit is correct. Early brightness still evolves: depth-one
+400-to-1700 ms mean FLIP was .198/.179 versus .176/.234 in the controls; depth-two
+was .091/.099 versus .048/.093. The later frame is not an oracle. The first
+candidate's bright-then-dimmer mask covered 11,182 pixels at depth one (2,829 in
+the repeat); do not describe the feature as eliminating all brightness transients.
+
+M4/Metal, 16 GB, development profile, offscreen 2560x1440,
+`config/gi-view-cached.json`, background streaming, preferred corner look:
+
+| Paired workload | Control p50/p95/p99 ms | Seed + pending p50/p95/p99 ms |
+| --- | --- | --- |
+| Tunnel pair 1 | 23.16 / 25.07 / 25.82 | 23.15 / 24.94 / 25.65 |
+| Tunnel pair 2 | 23.07 / 25.10 / 25.96 | 23.18 / 24.96 / 25.70 |
+| Small camera turns | 23.20 / 25.22 / 26.34 | 23.26 / 25.10 / 26.25 |
+
+No meaningful cadence change is claimed. Motion runs are baseline worktree
+`motion-1792719500285476000-61544` (clean `473b90e`) and main
+`motion-1792719435570319000-61373` (`215f905` + pending-identity diff).
+No receiver-pool exhaustion occurred. Return mean FLIP .000225/.000288 and
+aligned mean residual .007106/.007118 do not establish a small visual difference;
+the ordinary images were also inspected. Persistent subpixel identity/coverage
+issues from the preceding investigation are not declared solved.
+
+Artifacts: `target/bootstrap-{tunnel,pending}-quality*/tunnel.{json,png}`,
+`target/bootstrap-tunnel-validity.json`, `target/bootstrap-motion-quality.json`;
+logs `target/bootstrap-*.log` in the owning worktree. Native logs:
+`target/bootstrap-pending-{pipeline,coverage,native}.log` and
+`target/bootstrap-cache-ownership.log`. Baseline runs remain reproducible without
+the estimator change; no BVW changes, debounce, additional lighting readbacks or
+main-thread waits were introduced.

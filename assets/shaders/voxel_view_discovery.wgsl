@@ -100,7 +100,12 @@ fn receiver_exists(receiver: ViewReceiver) -> bool {
 
 fn publish_receiver(index: u32, receiver: ViewReceiver) {
     var estimate: ViewEstimate;
-    if receiver.face < 6u { estimate.identity.y = voxel_material(receiver.voxel); }
+    if receiver.face < 6u {
+        estimate.identity.y = voxel_material(receiver.voxel);
+        if view.history.w != 0u && !receiver_exists(receiver) {
+            estimate.identity.y |= PENDING_GEOMETRY;
+        }
+    }
     receivers[index] = receiver;
     estimates[index] = estimate;
 }
@@ -147,7 +152,10 @@ fn prepare_receiver_pool(@builtin(global_invocation_id) id: vec3<u32>) {
             let in_view = all(pixel >= vec2<i32>(view.viewport.xy))
                 && all(pixel < vec2<i32>(view.viewport.xy + view.viewport.zw));
             var valid = false;
-            if in_view { valid = same_receiver(old, prepass_receiver(pixel)) && receiver_exists(old); }
+            if in_view {
+                valid = same_receiver(old, prepass_receiver(pixel))
+                    && (view.history.w != 0u || receiver_exists(old));
+            }
             let old_tile = previous_pool.slots[id.x].tile;
             if valid {
                 receiver = old;
@@ -287,7 +295,7 @@ fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invoc
             let receiver = prepass_receiver(pixel);
             if receiver.face >= 6u { continue; }
             if owner_of(receiver) != 0xffffffffu { continue; }
-            if receiver_exists(receiver) {
+            if view.history.w != 0u || receiver_exists(receiver) {
                 if !allocate_receiver(id.x, pixel, receiver) { pool_done = 1u; break; }
             } else { atomicStore(&pool.tiles[id.x].pending, 1u); }
         }
@@ -304,7 +312,7 @@ fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invoc
             let pixel = vec2<i32>(begin + vec2(offset % extent.x, offset / extent.x));
             let receiver = prepass_receiver(pixel);
             if receiver.face >= 6u || pool_covers(id.x, receiver) { continue; }
-            if receiver_exists(receiver) { atomicMin(&pool_winner, offset); }
+            if view.history.w != 0u || receiver_exists(receiver) { atomicMin(&pool_winner, offset); }
             else { atomicStore(&pool.tiles[id.x].pending, 1u); }
         }
         workgroupBarrier();

@@ -47,7 +47,7 @@ impl Profile {
             "compare" => Ok(Self::Compare),
             "stress" => Ok(Self::Stress),
             _ => Err(format!(
-                "unknown validation profile {value:?}; choose gameplay, streaming, motion, house, house-edits, response, edits, sources, cave, canyon, day-cycle, structures, hallway, live-cave, live-hallway, compare, or stress"
+                "unknown validation profile {value:?}; choose gameplay, streaming, motion, house, house-edits, response, edits, tunnel, sources, cave, canyon, day-cycle, structures, hallway, live-cave, live-hallway, compare, or stress"
             )),
         }
     }

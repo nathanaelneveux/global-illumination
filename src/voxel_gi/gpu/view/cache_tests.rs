@@ -408,6 +408,18 @@ fn native_new_face_bootstrap_is_weak_and_does_not_restart_sampling() {
     f.pass("load", None);
     assert_eq!(f.estimate()[3], 0);
     assert_eq!(f.estimate()[12], 77);
+    // A raster-only face can hold a prior but must not claim an existing
+    // world's cache slot while the transport geometry is incompatible.
+    let authority = f.resident();
+    control.cache.z = 1;
+    upload_control(&mut f, control);
+    blank[12] = 0;
+    blank[13] = 256 | 0x80000000;
+    f.set_estimate(&blank);
+    f.passes(&["load", "store"], 1, None);
+    assert_eq!(f32::from_bits(f.estimate()[3]), 1.);
+    assert_eq!(f.estimate()[15], 0, "pending geometry has no resident authority");
+    assert_eq!(f.resident(), authority, "pending geometry cannot modify resident transport");
 }
 
 #[test]

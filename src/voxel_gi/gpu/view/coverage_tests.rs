@@ -77,7 +77,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
     let depth_view = depth.create_view(&default());
     let normal_view = normals.create_view(&default());
     for grid in [4u32, 3] {
-        for thin in [false, true] {
+        for (thin, delayed_scene) in [(false, false), (true, false), (false, true), (true, true)] {
             let mut camera = CameraState::new(device, UVec2::splat(grid));
             let count = grid * grid;
             let mask = camera.history[0].hash.capacity as u32 / 4 - 1;
@@ -85,6 +85,16 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
             let mut previous_keys = BTreeSet::new();
             let mut previous_shift = 0.;
             for (frame, shift) in [0., 0., 0.1, -4., -4., -4., 0.].into_iter().enumerate() {
+                // Raster geometry is present before the transport model. The
+                // same face records must survive until publication catches up,
+                // without admitting any rays into the stale/absent scene.
+                let waiting = delayed_scene && frame < 3;
+                let mut params = scene.params;
+                if waiting {
+                    params.minimum = IVec3::splat(128).extend(params.minimum.w);
+                    params.maximum = IVec3::splat(129).extend(params.maximum.w);
+                }
+                camera.params.upload(device, queue, &ShaderBuffer::from(vec![params]).data.unwrap()).unwrap();
                 let hidden = frame == 5;
                 let world = Mat4::from_cols(Vec4::new(8., 0., 0., 0.),
                     Vec4::new(0., -8., 0., 0.), Vec4::new(0., 0., 16., 0.),
@@ -168,11 +178,15 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                     .map(|w| (w[3], [w[4], w[5], w[6]])).collect();
                 let mut estimates = crate::voxel_gi::gpu::maintenance_tests::read_words(
                     &gpu.context, &current.estimates.buffer, u64::from(count) * 64);
+                let ready = crate::voxel_gi::gpu::maintenance_tests::read_words(
+                    &gpu.context, &camera.queue.buffer, 4)[0];
+                if waiting { assert_eq!(ready, 0, "raster-only receivers cannot trace stale geometry"); }
                 for (index, receiver) in words.chunks_exact(8).enumerate().filter(|(_, w)| w[3] < 6) {
                     let key = (receiver[3], [receiver[4], receiver[5], receiver[6]]);
                     let mean = [receiver[3] as f32 + 1., receiver[4] as f32 + 2., receiver[6] as f32 + 3., 128.];
                     let tag = mean.map(f32::to_bits);
                     let estimate = &mut estimates[index * 16..(index + 1) * 16];
+                    if waiting { assert_ne!(estimate[13] & 0x80000000, 0, "explicit pending identity"); }
                     if previous_keys.contains(&key) {
                         assert_eq!(&estimate[..4], &tag, "raw history follows the face, not its spatial bin");
                         assert_eq!(estimate[12], 177, "QMC sequence survives reprojection");
@@ -185,7 +199,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                 queue.write_buffer(&current.estimates.buffer, 0,
                     &estimates.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>());
                 let planes: BTreeSet<_> = keys.iter().map(|(face, voxel)| (*face, voxel[*face as usize / 2])).collect();
-                eprintln!("shared pool grid={grid} thin={thin} frame={frame}: {} keys, {planes:?}, counters {:?}", keys.len(), &metadata[..4]);
+                eprintln!("shared pool grid={grid} thin={thin} delayed={delayed_scene} frame={frame}: {} keys, {planes:?}, counters {:?}", keys.len(), &metadata[..4]);
                 assert!(keys.len() <= count as usize);
                 if hidden { assert!(keys.is_empty(), "occluded geometry cannot retain a receiver"); }
                 else {

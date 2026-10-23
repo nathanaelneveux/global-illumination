@@ -20,6 +20,10 @@ struct ViewEstimate {
     shown: vec4<f32>, // reconstructed presentation, valid support
     identity: vec4<u32>, // next path sequence, material, sunlight, resident incarnation
 }
+// Raster geometry can publish before the asynchronous transport scene. Keep a
+// face-owned prior during that interval, but never trace or export it against
+// incompatible geometry. This bit is not a material-table index.
+const PENDING_GEOMETRY: u32 = 0x80000000u;
 struct FarPixel {
     surface: vec3<f32>,
     face: u32,
@@ -116,10 +120,14 @@ fn reproject_paths(@builtin(global_invocation_id) id: vec3<u32>) {
     var estimate: ViewEstimate;
     var record: ViewPath;
     var state: ViewContinuation;
-    if previous != 0xffffffffu && previous_estimates[previous].identity.y == material {
-        estimate = previous_estimates[previous];
-        record = previous_paths[previous];
-        state = previous_continuations[previous];
+    let pending = (material & PENDING_GEOMETRY) != 0u;
+    if previous != 0xffffffffu {
+        let old = previous_estimates[previous];
+        if old.identity.y == material || pending || (old.identity.y & PENDING_GEOMETRY) != 0u {
+            estimate = old;
+            record = previous_paths[previous];
+            state = previous_continuations[previous];
+        }
     }
     estimate.identity.y = material;
     let normal = face_normal(receiver.face);
@@ -127,8 +135,8 @@ fn reproject_paths(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var light = 0u; light < u32(params.maximum.w); light++) {
         lit_face = lit_face || dot(normal, lights[light].position_range.xyz) > 0.0;
     }
-    estimate.identity.z = 0x80808080u;
-    if lit_face {
+    if !pending || previous == 0xffffffffu { estimate.identity.z = 0x80808080u; }
+    if lit_face && !pending {
         var u = vec3(0.0, 1.0, 0.0);
         var v = vec3(0.0, 0.0, 1.0);
         if receiver.face / 2u == 1u { u = vec3(1.0, 0.0, 0.0); }
@@ -144,9 +152,17 @@ fn reproject_paths(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     receiver.sequence = estimate.identity.x;
     receivers[id.x].sequence = receiver.sequence;
+    if pending {
+        // A paused ray of the old scene is not a path through the new face.
+        // Keep accumulated RGB, not its unfinished continuation or lease.
+        record = ViewPath();
+        state = ViewContinuation();
+        estimate.identity.w = 0u;
+    }
     paths[id.x] = record;
     continuations[id.x] = state;
     estimates[id.x] = estimate;
+    if pending { return; }
     let entry = atomicAdd(&queue[0], 1u);
     atomicStore(&queue[12u + entry], id.x);
     atomicStore(&queue[12u + view.grid.z + id.x], entry);

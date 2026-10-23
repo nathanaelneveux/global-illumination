@@ -210,8 +210,9 @@ unstarted path sequence can inherit a **one-weight raw prior**. Matching normals
 one voxel away take precedence. If none are supported, old faces on the removed
 voxel, faces covered by placement, and faces bordering the new exterior air cell
 provide an orientation-weighted estimate. Nonparallel donors get one quarter of
-the weight of aligned donors. The exterior and lateral connections must be
-loaded air, not unknown space. This is approximate incident irradiance, not a
+the weight of aligned donors. Lateral connections must be loaded air, not
+unknown space. A published raster face can provisionally establish its own
+exterior while the transport model catches up. This is approximate incident irradiance, not a
 claim of conserving flux or inferring a full directional distribution.
 
 Donors are last-frame raw view records or resident raw records with at least 16
@@ -228,10 +229,22 @@ no extra buffers, GPU readback or CPU work. The first display uses the same raw
 prior. The two-way authority transfers it, never adds duplicate copies. Existing
 sampled faces capped to zero are not re-seeded. This applies to view receivers
 (including +cache handoff), not an overhaul of world-only slot initialization.
-It cannot initialize an undiscovered face, recover a retired donor absent from
-both caches, or fix a mesh/transport publication mismatch. Standalone raw-prefix
+It cannot initialize an undiscovered face or recover a retired donor absent from
+both caches. Standalone raw-prefix
 sampler tests do not run this view initialization; a seeded history weight is
 not an independent-path count for accuracy calibration.
+
+View-first discovery therefore distinguishes raster-visible identity from
+transport-ready identity. The material identity's high bit marks a pending face
+when the raster prepass and transport exposure lookup disagree. Such faces keep
+their raw prior (or an existing exact face's history) and display record, but
+are excluded from the ray queue, resident admission and cache writes. In-flight
+old-scene paths and resident leases are discarded. Every retained witness is
+reclassified against the current scene each frame; once exposure agrees, the
+same record becomes traceable without a black restart. A truly occluded face
+still loses its witness normally. Hybrid's geometry admission is unchanged.
+This addresses publication skew without blocking meshing, tracing stale
+geometry, adding a screen-color fallback, or extending receiver storage.
 
 ## Geometry and traversal
 
