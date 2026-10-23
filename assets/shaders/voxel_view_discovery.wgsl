@@ -33,7 +33,36 @@ fn prepass_receiver(pixel: vec2<i32>) -> ViewReceiver {
     surface[receiver.face / 2u] = round(surface[receiver.face / 2u]);
     receiver.voxel = vec3<i32>(floor(surface - normal * 0.01));
     receiver.surface = vec3<f32>(receiver.voxel) + 0.5 + normal * 0.5;
-    return receiver;
+    if receiver_exists(receiver) { return receiver; }
+    // Depth and subpixel-sample error can put a distant face's decoded point
+    // across an in-plane voxel boundary, onto air or a buried face. Within one
+    // pixel's world footprint of that boundary, take the exposed neighbour
+    // instead; a one-pixel ledge side would otherwise never get an owner.
+    // Genuine mesh/transport skew decodes well inside its voxel and stays.
+    let footprint = distance(prepass_position(pixel + vec2(1, 0), z), position);
+    let axis = receiver.face / 2u;
+    let u = (axis + 1u) % 3u;
+    let v = (axis + 2u) % 3u;
+    let local = surface - floor(surface);
+    let gap = vec2(min(local[u], 1.0 - local[u]), min(local[v], 1.0 - local[v]));
+    let step = vec2<i32>(select(1, -1, local[u] < 0.5), select(1, -1, local[v] < 0.5));
+    var best = receiver;
+    var best_gap = 2.0;
+    for (var candidate = 1u; candidate < 4u; candidate++) {
+        var offset = vec3<i32>(0);
+        var needed = 0.0;
+        if (candidate & 1u) != 0u { offset[u] = step.x; needed = max(needed, gap.x); }
+        if (candidate & 2u) != 0u { offset[v] = step.y; needed = max(needed, gap.y); }
+        if needed > footprint || needed >= best_gap { continue; }
+        var neighbour = receiver;
+        neighbour.voxel = receiver.voxel + offset;
+        if receiver_exists(neighbour) {
+            neighbour.surface = vec3<f32>(neighbour.voxel) + 0.5 + normal * 0.5;
+            best = neighbour;
+            best_gap = needed;
+        }
+    }
+    return best;
 }
 
 fn same_plane(a: ViewReceiver, b: ViewReceiver) -> bool {
