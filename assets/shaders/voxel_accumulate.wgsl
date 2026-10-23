@@ -1,5 +1,5 @@
 // Persistent measurement storage, independent of the ray estimator. Each face
-// owns nine uint4s: six result records, temporal RGB, metadata, render transition.
+// owns nine uint4s: six result records, temporal RGB, metadata, one reserved.
 // Readback is a snapshot of this state, never the authority for advancing rays.
 // schedule: (transport revision tag, stable error (f32), stable samples,
 // audit interval ms); focus: (voxel.xyz, GPU pick budget); batch: (CPU
@@ -20,9 +20,6 @@ struct Controls {
 // `select_emit`; unused ones stay 0xffffffff), then cap and seed records.
 @group(0) @binding(4) var<storage, read_write> inputs: array<vec4<u32>>;
 @group(0) @binding(5) var<storage, read> seeds: array<vec4<u32>>;
-// Persistent evidence donors: per-slot (start, len) into an arena of slots.
-@group(0) @binding(6) var<storage, read> donor_lists: array<vec2<u32>>;
-@group(0) @binding(7) var<storage, read> donor_arena: array<u32>;
 @group(0) @binding(8) var<storage, read_write> face_index: array<vec4<u32>>;
 @group(0) @binding(9) var<storage, read> index_scatter: array<u32>;
 
@@ -66,7 +63,7 @@ struct Controls {
 // stale, up to mirror.x per batch; the CPU merges only these.
 @group(0) @binding(17) var<storage, read_write> mirror_out: array<vec4<u32>>;
 
-// Word updates to a persistent buffer (donor arena or list table): word 0 is
+// Word updates to a persistent buffer (slot metadata): word 0 is
 // the count, then (word index, value) pairs. Indices are unique per batch.
 @compute @workgroup_size(64)
 fn scatter_words(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -129,20 +126,9 @@ fn mirror_count(slot: u32) {
     slot_meta[index].w = (slot_meta[index].w & 0xe0000000u) | (state[slot * 9u + 1u].y & 0x1fffffffu);
 }
 
-// A face about to be traced: its task takes the current GPU sequence, and
-// the render transition continues from what the renderer would show now,
-// including an interrupted previous transition (never a raw/noisy donor).
+// A face about to be traced: its task takes the current GPU sequence.
 fn begin_trace(base: u32, task: u32) {
     tasks[task * 2u + 1u].x = state[base + 1u].z;
-    let next_rgb = bitcast<vec3<f32>>(vec3(state[base + 1u].w, state[base + 3u].yz));
-    let previous = bitcast<vec4<f32>>(state[base + 8u]);
-    let duration = state[base + 7u].z;
-    let age = settings.display.x - state[base + 8u].w;
-    // A render frame may precede a pipelined submission's counter. Treat
-    // that as age zero; ordinary u32 wrap still advances the transition.
-    let elapsed = select(age, 0u, age > 0x7fffffffu);
-    let blend = select(1.0, min(f32(elapsed) / f32(max(duration, 1u)), 1.0), duration > 0u && duration <= 32u);
-    state[base + 8u] = vec4(bitcast<vec3<u32>>(mix(previous.rgb, next_rgb, blend)), settings.display.x);
 }
 
 @compute @workgroup_size(64)
@@ -227,9 +213,8 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
         mix(previous.a, confidence, blend),
     ));
     state[base + 7u].y = control.z;
-    // UINT_MAX denotes initialized, instantaneous publication.
-    // Its nonzero bits also preserve the existing temporal-clock validity flag.
-    state[base + 7u].z = select(0xffffffffu, settings.display.y, settings.display.y > 0u);
+    // Nonzero: the temporal clock (7.y) is valid.
+    state[base + 7u].z = 0xffffffffu;
     // Spare result words carry the resolved presentation and its measurement
     // time without enlarging the five-band simulation snapshot.
     state[base + 1u].w = state[base + 6u].x;
@@ -238,8 +223,7 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
         output[result + word] = state[base + word];
     }
     // A GPU pick's result is not read back: its CPU mirror is now stale.
-    // Its record reports the merged count instead (after any retention cap),
-    // so the CPU plans its donor list from the GPU's history.
+    // Its record reports the merged count instead (after any retention cap).
     if i >= settings.batch.x { inputs[i].z = count; }
     record_stability(inputs[i].x, previous_mean, bitcast<f32>(previous_ionizing), i >= settings.batch.x);
     // Readback-only flag: the resident count stays untouched. Slim CPU
@@ -321,80 +305,6 @@ fn refinement_error(base: u32, count: u32) -> f32 {
 }
 
 fn max3(value: vec3<f32>) -> f32 { return max(value.x, max(value.y, value.z)); }
-
-// Standard error of a face's raw mean, from its moments and retained count.
-fn standard_error(base: u32) -> vec3<f32> {
-    let mean = bitcast<vec4<f32>>(state[base]).rgb;
-    let second = bitcast<vec4<f32>>(state[base + 2u]).rgb;
-    let count = state[base + 1u].y;
-    return sqrt(max(second - mean * mean, vec3(0.0)) / max(f32(count), 1.0));
-}
-
-// Adaptive display support. Each header owns a disjoint range of unique,
-// connected candidates; means/moments and temporal RGB are read-only inputs.
-// Counts are a support heuristic, not independently traced rays at this face.
-fn unpack_position_tag(tag: u32) -> vec3<u32> {
-    return vec3(tag, tag >> 6u, tag >> 12u) & vec3(63u);
-}
-
-@compute @workgroup_size(64)
-fn reconstruct_evidence(@builtin(global_invocation_id) id: vec3<u32>) {
-    if id.x >= settings.counts.x || inputs[id.x].x == 0xffffffffu { return; }
-    let slot = inputs[id.x].x;
-    let base = slot * 9u;
-    let count = state[base + 1u].y;
-    let evidence_goal = f32(settings.options.w);
-    if f32(count) >= evidence_goal { return; }
-    // The walk's donors in order; this face needs a prefix sized by its own
-    // current history (2 goal / history sites including itself, bounded).
-    let list = donor_lists[slot];
-    let sites = clamp(2u * ((settings.options.w + max(count, 1u) - 1u) / max(count, 1u)), 1u, settings.limits.x);
-    let donors = min(list.y, sites - 1u);
-    if donors == 0u { return; }
-    let center = bitcast<vec4<f32>>(state[base + 6u]);
-    // Donors are at most 16 voxels away. Modulo-64 coordinate differences
-    // therefore recover exact distances even across negative/world boundaries.
-    // Identity still uses the full slot/incarnation, not these periodic tags.
-    let position = unpack_position_tag(state[base + 7u].w);
-    let mean = bitcast<vec4<f32>>(state[base]).rgb;
-    let error = standard_error(base);
-    let n = max(f32(count), 1.0);
-    let bandwidth2 = max(evidence_goal / n / 3.14159265359, 1.0);
-    var sum = center.rgb * n;
-    var weight = n;
-    var squares = n;
-    for (var i = 0u; i < donors; i += 1u) {
-        let donor = donor_arena[list.x + i] * 9u;
-        if donor + 7u >= arrayLength(&state) { continue; }
-        let donor_count = f32(state[donor + 1u].y);
-        if donor_count == 0.0 { continue; }
-        let donor_mean = bitcast<vec4<f32>>(state[donor]).rgb;
-        let tolerance = vec3(0.002) + 0.1 * max(abs(mean), abs(donor_mean))
-            + 2.0 * (error + standard_error(donor));
-        let difference = max3(abs(mean - donor_mean) / tolerance);
-        let donor_position = unpack_position_tag(state[donor + 7u].w);
-        let delta = vec3<i32>((donor_position + vec3(96u) - position) & vec3(63u)) - vec3(32);
-        let distance2 = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
-        var w = exp(-0.5 * f32(distance2) / bandwidth2 - 0.5 * difference * difference) * donor_count;
-        if w <= 0.00000001 { continue; }
-        let next_effective = (weight + w) * (weight + w) / (squares + w * w / donor_count);
-        let reached = next_effective >= evidence_goal;
-        if reached {
-            let c = weight * weight - evidence_goal * squares;
-            let a = 1.0 - evidence_goal / donor_count;
-            w = clamp(-c / (weight + sqrt(max(weight * weight - a * c, 0.0))), 0.0, w);
-        }
-        sum += bitcast<vec4<f32>>(state[donor + 6u]).rgb * w;
-        weight += w;
-        squares += w * w / donor_count;
-        if reached { break; }
-    }
-    let result = mix(center.rgb, sum / weight, bitcast<f32>(settings.options.z));
-    state[base + 1u].w = bitcast<u32>(result.r);
-    state[base + 3u].y = bitcast<u32>(result.g);
-    state[base + 3u].z = bitcast<u32>(result.b);
-    state[base + 3u].w = bitcast<u32>(center.a);
-}
 
 // #include voxel_retention.wgsl
 
@@ -801,6 +711,6 @@ fn select_emit(
     begin_trace(base, task);
     // Read back: the slot's revision tag (stale picks are undone by the
     // probe's next CPU job) and, once `accumulate` replaces it, the merged
-    // count (donor lists). No pass reads y or z of a pick record.
+    // count. No pass reads y or z of a pick record.
     inputs[task] = vec4(slot, slot_meta[slot * 3u + 1u].z, state[base + 1u].y & 0x3fffffffu, state[base + 7u].x);
 }

@@ -23,12 +23,6 @@ pub(crate) struct TraceWork {
     pub history_recency: f32,
     /// Measured retention constant c (zero = distance-curve caps).
     pub measured_retention: f32,
-    /// Same wrapping frame counter as Bevy's render Globals uniform.
-    pub display_frame: u32,
-    pub display_transition_frames: u32,
-    pub spatial_reconstruction: f32,
-    pub spatial_evidence_target: u32,
-    pub spatial_max_donors: u32,
     pub probes: Vec<ProbeWork>,
     pub faces: Vec<FaceWork>,
     /// Faces that need a resident slot before they are traced, so every

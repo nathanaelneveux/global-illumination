@@ -83,7 +83,6 @@ pub(super) fn start_trace_task(
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     gpu_device: Option<Res<gpu::GpuTransportDevice>>,
     settings: Res<VoxelGiSettings>,
-    frame: Option<Res<bevy::diagnostic::FrameCount>>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
     let _timing = timings.main_scope(super::telemetry::MainStage::TraceDispatch);
@@ -145,13 +144,6 @@ pub(super) fn start_trace_task(
     selected.shared_view_cache = settings.cache_radius().is_some();
     selected.response_seconds = settings.display_response_seconds();
     selected.measured_retention = settings.measured_retention();
-    selected.display_frame = frame.as_ref().map_or(0, |frame| frame.0);
-    selected.display_transition_frames = settings.display_transition_frames.min(32);
-    // The cache never builds presentation donor lists. Its raw estimator,
-    // sunlight and edit-flux measurements remain unchanged.
-    selected.spatial_reconstruction = 0.0;
-    selected.spatial_evidence_target = settings.spatial_evidence_target.min(4096);
-    selected.spatial_max_donors = settings.spatial_max_donors;
     // The rest of the face budget is the GPU's to pick.
     selected.picks = if can_submit {
         runtime.batch_size.saturating_sub(selected.faces.len()) as u32

@@ -1,6 +1,1 @@
-{
-  "spatial_reconstruction": 0.0,
-  "spatial_evidence_target": 0,
-  "spatial_max_donors": 0,
-  "display_transition_frames": 0
-}
+{ "spatial_reconstruction": 0.0, "spatial_evidence_target": 0 }

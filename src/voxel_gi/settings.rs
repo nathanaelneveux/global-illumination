@@ -26,18 +26,14 @@ pub struct VoxelGiSettings {
     /// c * sigma^2 / D^2 would bind keeps that much, is not used as a cache
     /// source for one batch, and uses the fresh batch's noise if it was dark.
     pub measured_retention: f32,
-    /// Resident-only, nonrecursive spatial RGB reconstruction.
-    /// Zero is the unchanged corner display; one enables uncertainty-weighted
-    /// connected-surface filtering. Never changes transport or simulation data.
+    /// View presentation's nonrecursive spatial RGB reconstruction strength.
+    /// Zero is the unfiltered corner display; one enables evidence-weighted
+    /// coplanar filtering. Never changes transport data.
     pub spatial_reconstruction: f32,
-    /// Display-evidence target: a bounded adaptive footprint gathers neighbours
-    /// until this much support. Zero disables reconstruction. This is not
-    /// physical history or an accuracy guarantee. Requires spatial strength > 0.
+    /// View presentation evidence target: the filter gathers coplanar
+    /// neighbours until this much support. Not physical history or an
+    /// accuracy guarantee.
     pub spatial_evidence_target: u32,
-    /// Maximum unique candidate neighbors in adaptive reconstruction, excluding
-    /// the receiver. Zero retains the legacy radius/work bound. This limits
-    /// footprint and cost, not target support, physical history or blend strength.
-    pub spatial_max_donors: u32,
     /// Disable for a same-kernel continuous-sampling A/B baseline.
     pub adaptive_updates: bool,
     /// GPU time per transport batch: its size, and how coarsely the GPU
@@ -53,13 +49,8 @@ pub struct VoxelGiSettings {
     /// atomic, so one expensive page may exceed it; at most four pages publish
     /// per update. Zero retains the one-page-per-update comparison.
     pub scene_publish_budget: Duration,
-    pub display_upload_interval: Duration,
     /// Presentation-only temporal response. Does not filter simulation energy.
     pub display_response: Duration,
-    /// Render-time transition between completed resident RGB targets. Unlike
-    /// estimator filtering, this advances on every rendered frame even when a
-    /// face waits for transport. Zero is the instantaneous publication control.
-    pub display_transition_frames: u32,
     /// Settled faces still receive verification rays at this cadence. This is
     /// eligibility, not a deadline: loaded-world size and work budget matter.
     pub stable_audit_interval: Duration,
@@ -100,15 +91,12 @@ impl Default for VoxelGiSettings {
             measured_retention: 1.0,
             spatial_reconstruction: 1.0,
             spatial_evidence_target: 1024,
-            spatial_max_donors: 0,
             adaptive_updates: true,
             trace_budget_ms: 4.0,
             gpu_time_share: 0.2,
             max_probes_per_dispatch: 8192,
             scene_publish_budget: Duration::from_millis(2),
-            display_upload_interval: Duration::from_millis(50),
             display_response: Duration::from_millis(75),
-            display_transition_frames: 8,
             stable_audit_interval: Duration::from_secs(2),
             stable_min_samples: 64,
             stable_relative_error: 0.12,
@@ -291,12 +279,10 @@ mod tests {
         assert_eq!(settings, preset);
         assert_eq!(settings.spatial_reconstruction, 1.0);
         assert_eq!(settings.spatial_evidence_target, 1024);
-        assert_eq!(settings.spatial_max_donors, 0);
         let control: VoxelGiSettings =
             serde_json::from_str(include_str!("../../config/gi-display-unfiltered.json")).unwrap();
         assert_eq!(control.spatial_reconstruction, 0.0);
         assert_eq!(control.spatial_evidence_target, 0);
-        assert_eq!(control.display_transition_frames, 0);
         assert_eq!(control.transport, settings.transport);
         assert_eq!(
             control.sampling_importance(),
@@ -338,26 +324,13 @@ mod tests {
     }
 
     #[test]
-    fn visible_only_is_the_default_with_rgb_priority_and_equal_band_controls() {
+    fn visible_only_is_the_default() {
         let settings = VoxelGiSettings::default();
         let expected = super::super::EnergySpectrum::new(Vec3::ONE, 0.0, 0.0);
         assert_eq!(settings.sampling_importance(), expected);
         assert_eq!(
             serde_json::from_str::<VoxelGiSettings>("{}").unwrap().sampling_importance(),
             expected
-        );
-        // The previous default (simulation bands at one eighth).
-        assert_eq!(
-            serde_json::from_str::<VoxelGiSettings>(include_str!("../../config/gi-rgb-priority.json"))
-                .unwrap()
-                .sampling_importance(),
-            super::super::EnergySpectrum::new(Vec3::ONE, 0.125, 0.125)
-        );
-        let control: VoxelGiSettings =
-            serde_json::from_str(include_str!("../../config/gi-equal-band.json")).unwrap();
-        assert_eq!(
-            control.sampling_importance(),
-            super::super::EnergySpectrum::ONE
         );
         for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert_eq!(
