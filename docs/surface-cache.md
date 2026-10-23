@@ -4,6 +4,12 @@ Branch `gi-surface-cache`, based on `0790c12`. If this approach does not hold up
 the whole branch is abandoned. Systems that conflict with it are removed here
 instead of being kept side by side.
 
+The measurements below used `tools/live_site_quality.py`, `tools/response_timing.py`,
+the frozen cache sweep and `tools/cache_flip_gate.py`, all of which read the
+world display. They were removed with it on 2026-10-23 (last present at
+`3cd98b2`); today's presentation is view-owned
+([ownership comparison](history/option-comparison-2026-10-23.md)).
+
 ## Change
 
 Each resident face already stores its measured incident energy: emitter NEE plus

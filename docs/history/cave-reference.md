@@ -1,5 +1,8 @@
 # Cave reference and estimator diagnosis
 
+> Historical: the reference-image recorder and its analysis tools were removed on
+> 2026-10-23 with the world display (last present at `3cd98b2`).
+
 The real-time cave still has objectionable noise. Earlier convergence reports
 sampled 36 wall faces and 144 reconstructed corners; they did not establish that
 the entire rendered chamber had converged. A full reference image is needed

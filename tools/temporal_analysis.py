@@ -163,7 +163,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("trace", nargs="?", type=Path)
     parser.add_argument("--interval", action="append", default=[], help="start:end seconds; repeatable")
-    parser.add_argument("--field", choices=["measured", "display", "mirror", "corners"], default="corners")
+    parser.add_argument("--field", choices=["measured", "display"], default="measured")
     parser.add_argument("--reference", type=Path, help='Independent RGB map: "x,y,z[:corner]": [r,g,b]')
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--max-p95", type=float, help="Opt-in stability gate; requires --min-new-paths")

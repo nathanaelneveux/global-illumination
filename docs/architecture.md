@@ -3,13 +3,16 @@
 This is the current design. Historical experiments are kept separately so the
 implementation can be understood without reconstructing its development history.
 The planned direction (near/far lighting, the simulation split) is in
-[direction](direction.md). `receiver_radius` (default 64 voxels; 0 is the all-near control) limits
-world-space receivers to pages near the cameras; geometry stays every loaded
-page. A positive radius enables live view-owned far transport, using the same
-estimator and corner sunlight as the near tier. Its native transport contracts
-are qualified in `gpu/view_tests.rs`; integration evidence and remaining limits
-are in [the runtime checkpoint](history/far-view-runtime.md).
-The numerical model and the stable display policy are deliberately separate.
+[direction](direction.md). Every visible face is view-owned: a per-view tier
+discovers faces after the depth/normal prepass and traces them with the shared
+estimator. A persistent world cache (`cache_radius`, default 64 voxels; 0 is
+cacheless) keeps receivers for pages near the cameras, terminates secondary
+rays, measures edit flux and exchanges RGB history with visible faces.
+Geometry stays every loaded page. Native transport contracts are in
+`gpu/view_tests.rs` and `gpu/view/cache_tests.rs`; integration evidence is in
+[the runtime checkpoint](history/far-view-runtime.md) and
+[the ownership comparison](history/option-comparison-2026-10-23.md).
+The numerical model and the presentation policy are deliberately separate.
 
 ## Data flow and ownership
 
@@ -47,24 +50,23 @@ a test oracle. Rendering does not wait for CPU delivery of lighting statistics.
 | Sampling, emitters and transport | `sampling.rs`, `emission.rs`, `tracer.rs`, `gpu.rs`, shared `voxel_path.wgsl`, face consumer `voxel_trace.wgsl` |
 | Surface-cache face lookup | `gpu/face_index.rs` |
 | View-owned far receivers, scheduling and asynchronous timing | `gpu/view/runtime.rs`, `gpu/view/timing.rs`, `voxel_view_runtime.wgsl` |
-| Experimental bidirectional RGB face ownership | `voxel_view_cache.wgsl`, `gpu/view/cache_tests.rs` |
+| Bidirectional RGB face ownership (two-way cache) | `voxel_view_cache.wgsl`, `gpu/view/cache_tests.rs` |
 | Stable GPU ownership, accumulation and bounded snapshots | `gpu/resident.rs`, `gpu/readback.rs`, `voxel_accumulate.wgsl` |
 | Shared uncertainty heuristic | `statistics.rs` |
 | Direct-sun visibility cache | `sky.rs`, `sky_cache.rs` |
 | Temporal display and initialization | `history.rs` |
-| Display publication and rendering | `display.rs`, `render.rs`, `voxel_transport.wgsl` |
+| Terrain material and shared buffers | `render.rs`, `voxel_transport.wgsl` |
 | Accounting, optional UI, fixtures | `telemetry.rs`, `diagnostics.rs`, `diagnostics/`, `validation/` |
 
 Shader paths are under `assets/shaders/`; Rust paths above are under
 `src/voxel_gi/`. `reconstruction.rs` is an independent CPU test oracle for shader
 interpolation, not a second production reconstruction path.
 
-### View-owned far lighting
+### View-owned lighting
 
 After Bevy's depth/normal prepass and before opaque rendering, each active view
 discovers voxel-face identities using a reduced spatial grid (nominal four-pixel
-cells, at most 65,536 receiver slots). On the experimental shared-pool branch,
-physical receiver slots are independent of grid coordinates. Each 2x2-cell tile
+cells, at most 65,536 receiver slots). Physical receiver slots are independent of grid coordinates. Each 2x2-cell tile
 indexes a linked list of projected receivers and can borrow unused slots from
 anywhere in the view. A preparation dispatch validates old witnesses, retains
 surviving slots and completes the free list before discovery allocates from it.
@@ -143,19 +145,19 @@ Per-camera state stays on the GPU. The material reads a shared output scratch
 buffer overwritten in camera encoder order, with validity cleared before each
 camera. Immutable optical-table generations and coherent geometry/cache buffer
 pairs are shared with the worker. Only 224-byte asynchronous timestamp/counter
-receipts return to the CPU; callbacks are polled without waiting. Far receives
-25% of the existing transport time share and near the rest. Prepass, discovery,
+receipts return to the CPU; callbacks are polled without waiting. The view tier
+receives 75% of the existing transport time share and the world cache
+`cache_share` (25%). Prepass, discovery,
 corner sunlight and reconstruction are separately measured presentation costs,
 not hidden in the transport quota. Preparation and scanning have separate
 timestamps and their sum is the comparable discovery cost. State is bounded by
 viewport capacity, not loaded world size.
 
-### Experimental two-way face cache
+### Two-way face cache
 
-`config/gi-view-cached.json` chooses view-owned display everywhere and a small
-persistent world cache (32-voxel admission radius, 32-voxel retirement hysteresis).
-Its `view_cache_exchange` flag adds exact-face exchange; it does not change the
-hybrid default, expand residency, or share paths between different faces.
+The persistent world cache (`cache_radius` admission, 32-voxel retirement
+hysteresis) exchanges exact-face RGB history with visible view owners. The
+exchange does not expand residency or share paths between different faces.
 
 A resident `(voxel, face, material, incarnation)` record is the single raw RGB
 authority. Before view tracing, a matching visible owner loads that record.
@@ -242,7 +244,7 @@ are excluded from the ray queue, resident admission and cache writes. In-flight
 old-scene paths and resident leases are discarded. Every retained witness is
 reclassified against the current scene each frame; once exposure agrees, the
 same record becomes traceable without a black restart. A truly occluded face
-still loses its witness normally. Hybrid's geometry admission is unchanged.
+still loses its witness normally.
 This addresses publication skew without blocking meshing, tracing stale
 geometry, adding a screen-color fallback, or extending receiver storage.
 
@@ -791,150 +793,32 @@ their revision metadata still prevents simulations from treating them as current
 Sky additionally requires matching scene and sun generations. Accepted selected
 faces update in place, preserving untouched faces and live topology indices.
 
-## Temporal and spatial display
+## Presentation
 
-Temporal filtering runs on resident GPU accumulation (or CPU result merge in the
-CPU backend), once per updated face. It blends
-that face's measured indirect RGB with its own previous display. The base
-time response is `1 - exp(-elapsed / response_seconds)`. Sample evidence and
-visible-band noise further limit the blend; noisy dark estimates are deliberately
-slow. Brightness-compressed weights suppress isolated HDR jumps without imposing
-a permanent brightness ceiling. Confidence weights evolve with the filtered
-value. This is biased presentation, not a modified physical estimator.
+Every visible face is view-owned (see [view-owned lighting](#view-owned-lighting));
+the world cache never draws. The terrain material reads only the view tier's
+output, the shared geometry (for sun visibility of coverage holes) and the
+current suns. The world-cache display path (probe directory, display probes,
+evidence donor lists, render transitions and their publication) was removed on
+2026-10-23 with the hybrid strategy; see
+[the ownership comparison](history/option-comparison-2026-10-23.md).
 
-Resident RGB then uses nonrecursive, connected-coplanar evidence reconstruction,
-with target 1024 (chosen with the user-calibrated FLIP gate for the cache
-estimator; see [surface cache](surface-cache.md#display-evidence-target)) and no extra donor cap. The radius/work bound
-still applies. Compatible raw statistics determine donor weights; temporal RGB
-supplies display values. Spatial output never feeds transport, moments, temporal
-history, scheduling or simulation readback. The CPU reference keeps the original
-corner display. See [reconstruction and cost evidence](history/early-spatial-reconstruction.md).
+Temporal filtering still runs on resident GPU accumulation once per updated
+face, blending measured RGB with the face's previous temporal value (record 6).
+The base response is `1 - exp(-elapsed / response_seconds)`; sample evidence
+and visible-band noise further limit the blend. This is biased presentation
+state, not a modified physical estimator. Through the two-way exchange it is
+the "shown" prior a newly revealed view face can import. Newly exposed world
+faces are seeded from compatible pre-edit neighbours (`history.rs`); seeds
+never become measurements or moments.
 
-Resident presentation also retains the currently displayed RGB when a new
-target arrives and interpolates toward that target over eight render frames.
-This final transition runs in the material, using Bevy's shared frame counter;
-it continues while transport works on other receivers. Interrupted transitions
-start from their current interpolated value, not an older endpoint. It adds no
-readback, per-frame CPU probe loop or recursive spatial feedback. Counter wrap
-and pipelined frames preceding a submission are handled explicitly. The
-`display_transition_frames` setting is capped at 32; zero restores instantaneous
-publication (`config/gi-display-instant.json`). This smooths arrival steps, not
-sampling error, refresh starvation or direct-sun updates. Eight frames is about
-133 ms at 60 Hz, with queued submission time counting toward that interval.
-
-Newly exposed faces can borrow low-confidence display from measured, compatible
-pre-edit neighbors connected through known air. Synthetic seeds never become
-donors in the same publication and never increment measurements or moments.
-Placement can inherit the surface it covered. Unknown sun starts dark rather
-than switching temporarily to a shadow map. A shader-only prior bridges the
-short mesh/cache publication gap; it also never becomes transport evidence.
-
-At render time the fragment shader reconstructs each virtual unit-face corner
-from up to four confidence-weighted coplanar faces. Missing edge faces exclude
-disconnected diagonals. It then bilinearly interpolates the four values across
-the face. Greedy mesh geometry is unchanged. Direct sun interpolates actual
-corner measurements; indirect light interpolates reconstructed corners.
-
-## Display-cache lifetime
-
-`display.rs` coordinates snapshots and sparse patches; `render.rs` owns buffer
-layouts and uploads. Value publication compares aligned words against the
-authoritative byte mirror, skips identical records and unions changed byte
-envelopes per probe until extraction. A single changed sky face can transfer
-16 bytes instead of the whole 256-byte probe; neighboring ranges still coalesce
-to bound copy-command cost. This is not removal of the sky readback round trip
-or of scheduler/simulation feedback. No second world-sized mirror is retained.
-Snapshot packing uses a 1.5-ms slice, checked every 128
-keys (including removed keys), with no additional record ceiling. It does not
-promise a hard deadline under OS preemption. Encoding and initial
-buffer allocation run off thread. Encoding writes one authoritative pair of byte
-mirrors directly, without world-sized typed staging arrays and duplicate encoded
-payloads. The worker also prepares the CPU-only fallback payloads. Capacity
-includes positive growth in already-built, pending receiver pages; future removals
-cannot fund earlier additions.
-
-`render/capacity.rs` checks both maximum buffer size and maximum whole-storage
-binding size, including hash collision growth and integer/shader addressing.
-Optional 50%/16,384-slot headroom is reduced to fit those limits; occupied receivers
-are never dropped to fit. The main world preflights before starting a snapshot,
-the worker checks before allocating large mirrors, and native preparation checks
-the actual device again before either GPU allocation. These limits apply to CPU
-transport too, since presentation still binds the same GPU storage. An oversized
-replacement is a fatal capacity error, with the receiver count, generation and
-device limit in the diagnostic. Invalid upload ranges are likewise fatal before
-submission. Neither condition silently leaves the player with stale lighting.
-Normal asynchronous generation handoffs still preserve the live generation;
-temporary worker ownership is not an error. This is not multi-buffer paging or
-protection against arbitrary system-memory exhaustion; the host must keep
-residency within its supported device limits.
-
-A replacement remains private while topology and measurements catch up in
-batches of 512 keys and a 1.5-ms soft game-thread target. Large journals capture
-compact immutable records within that slice and transfer the private generation
-to a worker for index/GPU-memory updates. Small tails reconcile on the game thread
-so installation can be atomic with the latest state. There is no additional
-8,192-key per-frame catch-up cap. The existing cache keeps receiving value updates;
-the replacement's topology, values and material become visible atomically only
-when its journal is empty. This trades replacement latency for bounded frame
-work, not transport starvation or a debounce. Ordinary sparse edits still use
-the live generation when capacity permits.
-
-One journal records actual presentation changes and topology membership changes
-through snapshot, worker build and private reconciliation. Snapshot capture
-cancels already-covered work; later changes re-enqueue fairly. An unflushed live
-upload is not a new change. Catch-up reads current membership and values rather
-than replaying stale event payloads, including remove/re-add of the same voxel.
-Capacity/hash exhaustion restarts from current residency; a scene revision alone
-does not. Worker-built lookup maps reserve growth capacity too, avoiding a
-main-thread rehash while catching up.
-
-Private buffers remain mapped until catch-up is complete. Each batch acquires
-mapped views once and edits private indices directly; no live-transaction
-preflight or sparse-upload ledger is needed for an invisible generation. Each bounded patch
-updates their initial bytes directly, so installation cannot produce a giant
-deferred patch upload. On devices with `MAPPABLE_PRIMARY_BUFFERS` already enabled,
-the buffers include `MAP_WRITE`: this avoids wgpu's otherwise implicit full-size
-staging copy on unmap. Bevy normally enables this on supported integrated GPUs,
-not discrete GPUs. Other devices retain mapped-at-creation staging; CPU-only
-fixtures use byte arrays. The measured large-copy improvement is therefore
-specific to the supported integrated-device path, not a universal backend claim.
-
-Installation unmaps both buffers before extraction. Descriptor-only assets and
-their exact initialized native buffers are registered before Bevy's asset and
-material preparation; matching size, usage and label prevent duplicate allocation.
-Native tests cover buffer identity, initial/catch-up byte parity, GPU submission,
-generation changes and the CPU fallback. See the
-[publication measurements](history/streaming-performance.md#bounded-display-publication)
-for latency, throughput and remaining stalls.
-
-Each generation owns fresh hash/probe buffer identities and its own shared patch
-queue. Extracted older frames retain their generation. Hash and value patches
-preflight together and snapshot under one lock; a failed bounds check retains both
-for retry. Driver writes happen after releasing the lock, using immutable paired
-scratch bytes; changes arriving meanwhile form the next transaction.
-Ordinary value changes use a coalescing FIFO and a 1.5-ms main-thread slice,
-checked every 128 records. A nonblocking lock attempt leaves all pending keys
-untouched if the renderer is capturing a transaction. Unfinished values retry
-on the next frame without another upload-interval delay. This bounds the value
-path, not atomic topology publication or OS scheduling; it is not a hard frame
-deadline guarantee.
-Sparse writes use wgpu's reusable mapped staging chunks instead of allocating
-one temporary driver buffer per range. One copy submission publishes both
-buffers before drawing. Recall is asynchronous, with no device wait in the main
-world; renderer recovery recreates the device-owned pool.
-Topology updates include values on existing newly exposed faces, so
-the value-upload timer cannot split the transaction. A separate required-value
-ledger contains face-mask/material changes, not the ordinary lighting backlog.
-Successful topology publication consumes only those values and additions/removals;
-unrelated values stay on their bounded FIFO. Topology also uses a nonblocking
-mirror lock: contention retains the entire transaction for retry, without allowing
-its required values to publish separately. The shader's address bound
-is allocated capacity, not current occupancy.
-
-Buffers and indices retain high-water capacity. GPU geometry is persistent and
-patched; ordinary lighting updates do not rebuild geometry or the entire display
-hash. Display disabled with F4 is only an A/B presentation switch: lighting
-transport intentionally continues.
+View presentation reconstructs each virtual unit-face corner from up to four
+coplanar view-owned faces, excluding disconnected diagonals, then bilinearly
+interpolates across the face. `spatial_reconstruction` and
+`spatial_evidence_target` configure the view tier's nonrecursive coplanar
+filter (`config/gi-display-unfiltered.json` turns it off). Direct sun uses the
+same four-corner visibility, from the view tier's corners or, for faces the
+reduced grid missed, traced directly.
 
 ## Simulation and sources
 

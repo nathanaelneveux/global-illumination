@@ -21,7 +21,7 @@ identities and paths live in a bounded view cache, discovered from depth/normals
   NAADF/vxray/DDGI/Solari, and the next speed experiments.
 - [Validation](docs/validation.md): focused checks, visual workloads, evidence
   requirements, and the shared build cache.
-- [Cave reference](docs/cave-reference.md): complete chamber geometry audit,
+- [Cave reference](docs/history/cave-reference.md): complete chamber geometry audit,
   high-sample rendered target, independent estimator checks and image comparison.
 - [October 8 audit](docs/history/audit.md): findings, fixes, retained boundaries, and
   verification for this cleanup.
@@ -44,27 +44,21 @@ identities and paths live in a bounded view cache, discovered from depth/normals
 cargo run --locked
 ```
 
-The playable near/far default keeps world-space receivers within **64 voxels**
-of active cameras (page bounds, with 32-voxel retirement hysteresis). Far faces
-use the same transport and corner sunlight, with exact-face reprojection and
-resumable paths. Geometry remains available across all loaded terrain. Use
-`VOXEL_GI_SETTINGS=config/gi-all-near.json cargo run --locked` for the former
-all-near control. See [runtime evidence](docs/history/far-view-runtime.md).
-
-Experimental view-first controls are available without changing that default:
-`VOXEL_GI_SETTINGS=config/gi-view-cached.json cargo run --locked` puts all visible
-RGB on the view tier and keeps a 32-voxel bounce cache with two-way face-history
-handoff (`view_cache_exchange`);
-`config/gi-view-cacheless.json` removes that cache. The
-[comparison and limitations](docs/history/view-first-transport.md) include cave,
-house turns, emitter response and memory. These are not promoted defaults;
-the [two-way cache qualification](docs/history/two-way-cache.md) substantially
-improves reveal/return history. Windowed frame pacing still needs qualification.
+Every visible face is view-owned: each camera discovers faces after its
+depth/normal prepass and traces them with the shared estimator, with exact-face
+reprojection and resumable paths. A persistent world cache within **64 voxels**
+of active cameras (`cache_radius`; page bounds, 32-voxel retirement hysteresis)
+terminates secondary rays and exchanges RGB history with visible faces, so
+reveals, returns and offscreen edits stay warm. `config/gi-cache-32.json` and
+`config/gi-cacheless.json` trade that cache for memory. Geometry remains
+available across all loaded terrain. The hybrid near/far and all-near strategies
+were removed after [the 2026-10-23 comparison](docs/history/option-comparison-2026-10-23.md);
+see also [view-first](docs/history/view-first-transport.md) and
+[two-way cache](docs/history/two-way-cache.md) history.
 
 GI is a client visual system, not the heat/radiation simulation. Emitter sampling
 and roulette prioritize RGB (nonvisual importance is zero). Legacy multi-band
-records and the `config/gi-equal-band.json` research control remain, but there is
-no gameplay simulation-query API. Shared view/cache history is RGB-only. A future
+records remain, but there is no gameplay simulation-query API. Shared view/cache history is RGB-only. A future
 CPU-capable authoritative simulation will own heat/radiation and publish material
 changes back to the visual world; see [the split](docs/direction.md).
 
@@ -78,20 +72,13 @@ The game always uses resident GPU accumulation; the synchronous and CPU
 runtime backends were removed on this branch (last present at `c68a924`). The
 CPU tracer remains as a test oracle.
 
-Early spatial RGB reconstruction defaults to a **1024 evidence target** on this
-branch, with its full adaptive footprint and no extra donor cap. The cache
-estimator passes the user-calibrated FLIP gate at 1024 raw paths, half of the
-old 2048. That target also keeps smooth-wall noise inside the preferred envelope
-at every prefix; see [surface cache](docs/surface-cache.md#display-evidence-target).
-`config/gi-display-evidence-2048.json` restores the previous target.
-It filters presentation only, never physical samples or simulation data.
-Use `VOXEL_GI_SETTINGS=config/gi-display-unfiltered.json` for the unfiltered
+The view tier's spatial RGB filter uses a **1024 evidence target**, the value
+chosen with the user-calibrated FLIP gate for the former resident display (see
+[surface cache](docs/surface-cache.md#display-evidence-target)); it has not been
+re-qualified for the view filter. `config/gi-display-evidence-2048.json` raises
+it. It filters presentation only, never physical samples. Use
+`VOXEL_GI_SETTINGS=config/gi-display-unfiltered.json` for the unfiltered
 control; sampler accuracy must be qualified separately from this reconstruction.
-Total-light-aware refinement remains opt-in. See [controls, architecture and image
-evidence](docs/history/early-spatial-reconstruction.md). `gi-display-evidence-2048-cap32/64/128.json`
-presets explicitly trade maximum candidate neighbors for cost. The 64-neighbor
-option improves measured cave throughput, but loses four-sample smoothness and
-has not qualified as a universal edit-response improvement.
 
 The many-emitter cave is now in the regular world. Walk toward the house, then
 follow the pale stone path to its right to the lit entrance near **(20, 11, -18)**.

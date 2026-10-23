@@ -1,5 +1,8 @@
 # Cave sample requirements and perceptual accuracy
 
+> Historical: the sample sweep and its analysis tools were removed on 2026-10-23
+> with the world display (last present at `3cd98b2`).
+
 This is an offline fixed-work accuracy study, not a gameplay scheduling, edit
 response or frame-pacing benchmark. BVW and normal transport defaults are
 unchanged. Its purpose is to determine how much *retained useful history* the

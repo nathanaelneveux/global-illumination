@@ -7,17 +7,13 @@ The full suite is an integration checkpoint, not the default for every tweak.
 
 For resident transport, distinguish `snapshot_latency_ms` (submission to CPU
 delivery) from worker occupancy and GPU timestamps. It is not a blocking wait.
-Temporal corner diagnostics must use `validation_snapshot`; resident display
-does not refresh the old CPU upload mirror. Historical multi-band research
+`temporal.json` records world-cache receivers, not the displayed view-owned
+faces; use captures for presentation. Historical multi-band research
 controls still check energy/PDF correctness, with nonvisual importance reported
 separately; RGB FLIP does not qualify those bands for simulation.
 
-Normal runs now use nonvisual importance 0 (display-only GI), independently of backend.
-Use `VOXEL_GI_SETTINGS=config/gi-equal-band.json` to reproduce the historical
-equal-band control; selecting `sync` alone changes ownership, not sampling
-priority. Hold importance fixed when isolating path reuse. The existing paired
-image sweep deliberately keeps its independent control and high-sample reference
-equal-band, so its combined result does not isolate reuse from RGB priority.
+Normal runs use nonvisual importance 0 (display-only GI);
+`simulation_sampling_importance: 1` reproduces the historical equal-band control.
 
 The paired image study uses `VOXEL_GI_VALIDATE_REUSE_SWEEP=1` with the existing
 headless cave/reference/sample-sweep flags. It records a resident independent
@@ -28,7 +24,7 @@ status; neither relaxes the user-calibrated RGB gates. The
 [resident/path-reuse results](history/resident-path-reuse.md) document exact commits,
 settings and evidence. These opt-in studies are not routine toggle stress.
 
-Current appearance acceptance is the user's [2,048-path cave target](cave-sampling.md#user-calibrated-visual-target),
+Current appearance acceptance is the user's [2,048-path cave target](history/cave-sampling.md#user-calibrated-visual-target),
 with 1,536 and 1,024 as visible-failure controls. Use the fixed, versioned profile
 for sampler comparisons; do not turn 2,048 into a history cap, use a raw RGB
 outlier as a universal perceptual threshold, or waive temporal/FPS qualification.
@@ -212,7 +208,7 @@ VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_HEADLESS=1 VOXEL_GI_VALIDATE_BACKGROUND=1
 VOXEL_GI_VALIDATE_FRAME_TIMINGS=1 VOXEL_GI_VALIDATE_PROFILE=gameplay
 VOXEL_GI_VALIDATE_EXIT=1 VOXEL_GI_VALIDATE_EXPECT_BUILD_ROOT="$PWD"
 VOXEL_GI_SETTINGS=target/near-far-lifecycle-64.json cargo run --locked --offline`.
-The settings file contains `{"receiver_radius":64,"cpu_statistics":false}`;
+The settings file contained `{"receiver_radius":64,"cpu_statistics":false}` (since removed);
 other settings are defaults (corner sun/indirect, 1024 evidence, textures on,
 AO off). Evidence:
 `target/gi-validation/gameplay-1792609609777779000-76370/` and
@@ -235,14 +231,9 @@ localized regression. The provisional smooth-wall noise envelope complements,
 not replaces, the existing user-calibrated FLIP guard. Change a quality threshold
 only with new matched evidence and visual agreement, not to pass a candidate.
 
-For a display-target study on the surface cache, add
-`VOXEL_GI_VALIDATE_CACHE_SWEEP=1` and `VOXEL_GI_VALIDATE_EVIDENCE_TARGETS=256,512,1024`
-(any distinct targets) to the headless reference command in
-[the cave protocol](cave-reference.md), with `VOXEL_GI_REFERENCE_PATHS=131072`.
-The raw `samples-*` controls are always captured alongside presentation
-variants. `tools/cache_flip_gate.py RUN` applies the user-calibrated FLIP gate
-and `tools/cache_wall_noise.py RUN` the smooth-wall noise envelope, both against
-the run's own frozen reference ([surface cache](surface-cache.md)).
+The frozen cache sweep, whole-cave reference image and their FLIP/noise tools
+rendered through the world display and were removed with it on 2026-10-23
+(last present at `3cd98b2`); see [the cave protocol](history/cave-reference.md).
 
 | Change | First useful check |
 | --- | --- |
@@ -581,13 +572,11 @@ render-frame transition. Physical prefix exports are unchanged by that
 transition; it must not be mistaken for improved sampler accuracy.
 
 - `VOXEL_GI_VALIDATE_FRAME_TIMINGS=1` adds per-frame intervals and the previous
-  Update's seven GI system-body times to `measurements.frame_timeline`, with
+  Update's six GI system-body times to `measurements.frame_timeline`, with
   names in `gi_main_stage_names`. Capture exclusions are explicit. Pipeline
   overlap means the remainder is not a BVW-only measurement. Use this when
   investigating stalls instead of inferring them from 250-ms averaged timings.
-  `previous_display_stage_ms` further splits display publication into poll,
-  install, topology, snapshot start/advance, values and ledger, with names in
-  `display_stage_names`. These are opt-in CPU body timings, not GPU timestamps.
+  These are opt-in CPU body timings, not GPU timestamps.
 - `VOXEL_GI_VALIDATE_NO_VSYNC=1` (windowed validation only) presents with
   `AutoNoVsync` and three frames of latency. Bevy's default Fifo locks every
   option to the display rate, hiding headroom; on macOS `AutoNoVsync` alone
@@ -596,12 +585,6 @@ transition; it must not be mistaken for improved sampler accuracy.
   runs. Add `RUST_LOG=warn,prototype_voxel_template::voxel_gi=info` for the
   view tier's GPU receipts (`GI view transport`: trace, presentation,
   discovery, pool), logged every 120 frames.
-- `work_timeline` includes `display_preparing`, `display_catchup_keys` and
-  `display_topology_pending`. Check them alongside geometry, first-sample debt,
-  throughput and receiver age: small frame costs obtained by indefinitely
-  delaying the replacement cache are not a pass. Private catch-up must drain;
-  ordinary live lighting must continue while it does. Record replacement latency
-  as well as its per-frame cost.
 - `VOXEL_GI_VALIDATE_TEMPORAL=1` also supports `cave` and `structures`: 36 fixed
   exposed wall faces and their 144 reconstructed corners, with `site_faces` in
   schema 2. Both the isolated chamber and composed normal-world structures are
@@ -616,12 +599,6 @@ transition; it must not be mistaken for improved sampler accuracy.
   replays individual CPU/GPU paths to diagnose outliers. These are opt-in
   investigations, not a new routine validation requirement. Full protocol and
   limitations: [history-retention study](history/cave-history-retention.md).
-- `VOXEL_GI_VALIDATE_REFERENCE_IMAGE=1` on headless `cave` freezes the final
-  scene/publication and bakes all chamber surfaces into two reference images
-  and their average, with independent CPU estimator checks. This is the
-  [whole-cave reference protocol](cave-reference.md), rather than the sparse
-  wall-receiver timing oracle above. Require its separate qualification and
-  capture status before treating it as a reference.
 - For unusually high-variance receivers, `VOXEL_GI_VALIDATE_REFERENCE_BLOCKS`
   raises each sparse reference replica from the default two 32,768-path blocks
   (allowed 2–128). Replica ranges remain disjoint and below the direction

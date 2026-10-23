@@ -665,7 +665,7 @@ visually inspected. Assets verified, exit success, no render validation errors.
 The log includes the normal unsupported-Metal-bindless fallback warning and a
 window-destruction warning on exit; it is not described as warning-free. No
 screen/security settings were changed. This does not certify temporal stability
-or the new [2,048-path appearance target](../cave-sampling.md#user-calibrated-visual-target).
+or the new [2,048-path appearance target](cave-sampling.md#user-calibrated-visual-target).
 
 ## October 14 immutable input and shared delta
 
