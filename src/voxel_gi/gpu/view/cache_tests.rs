@@ -204,7 +204,10 @@ impl Fixture {
                                     (1, 0) => &history.tails.buffer,
                                     (1, 1) => &self.camera.wave.buffer,
                                     (2, 0) => &self.camera.control.buffer,
+                                    (2, 1) => &self.camera.history[1].receivers.buffer,
+                                    (2, 4) => &self.camera.history[1].estimates.buffer,
                                     (2, 5) => &history.estimates.buffer,
+                                    (2, 6) => &self.camera.history[1].hash.buffer,
                                     (2, 7) => &history.hash.buffer,
                                     (2, 10) => &self.camera.queue.buffer,
                                     (2, 14) => &scene.buffers[6],
@@ -283,6 +286,128 @@ impl Fixture {
             .unwrap();
         self.control();
     }
+}
+
+#[test]
+#[ignore = "native raw topology prior, zero-ray initialization and cache handoff"]
+fn native_new_face_bootstrap_is_weak_and_does_not_restart_sampling() {
+    use crate::voxel_gi::{sampling::pcg, world::FACE_OFFSETS};
+    let mut f = Fixture::new();
+    let voxel = f.work.faces[0].voxel;
+    let face = f.work.faces[0].face;
+    let normal = FACE_OFFSETS[face];
+    let material = f.work.faces[0].material as u32;
+    let rgb = [2.0f32, 4.0, 8.0];
+    let scene = f.gpu.view_scene().unwrap();
+    let cache = scene.cache.as_ref().unwrap();
+    let device = &f.gpu.context.device;
+    let queue = &f.gpu.context.queue;
+    let mask = f.camera.history[0].hash.capacity as u32 / 4 - 1;
+    let mut control = Control {
+        grid: UVec4::new(1, 1, 1, mask),
+        history: UVec4::new(1, mask, 1, 1),
+        cache: UVec4::new(cache.epoch, 100, 0, 0),
+        ..default()
+    };
+    let upload_control = |f: &mut Fixture, c: Control| {
+        f.camera.control.upload(&f.gpu.context.device, &f.gpu.context.queue,
+            &ShaderBuffer::from(vec![c]).data.unwrap()).unwrap();
+    };
+    // The old exposed block has been removed. Only its last-frame raw face
+    // survives, not a displayed/reconstructed RGB value or a current slot.
+    let donor = voxel + normal;
+    f.camera.history[1].receivers.upload(device, queue,
+        &ShaderBuffer::from(vec![Receiver { voxel: donor, face: face as u32,
+            surface: donor.as_vec3() + Vec3::splat(0.5) + normal.as_vec3() * 0.5,
+            sequence: 64 }]).data.unwrap()).unwrap();
+    let hash = pcg(pcg(pcg(donor.x as u32) ^ donor.y as u32) ^ donor.z as u32)
+        ^ pcg(face as u32 + 1);
+    queue.write_buffer(&f.camera.history[1].hash.buffer, u64::from(hash & mask) * 4, &1u32.to_le_bytes());
+    let mut old = [0u32; 16];
+    old[..3].copy_from_slice(&rgb.map(f32::to_bits));
+    old[4..7].copy_from_slice(&rgb.map(|v| (v * v + 1.).to_bits()));
+    old[8..11].copy_from_slice(&[900f32.to_bits(); 3]); // presentation MUST NOT seed raw
+    let mut blank = [0u32; 16];
+    blank[13] = material;
+    f.set_estimate(&blank);
+    upload_control(&mut f, control);
+    for support in [1.0f32, 64.] {
+        old[3] = support.to_bits();
+        f.gpu.context.queue.write_buffer(&f.camera.history[1].estimates.buffer, 0,
+            &old.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>());
+        f.pass("load", None);
+        let e = f.estimate();
+        if support == 1. {
+            assert_eq!(e[3], 0, "a pure prior cannot recursively seed another face");
+        } else {
+            assert_eq!(&e[..3], &old[..3]);
+            assert_eq!(&e[4..7], &old[4..7]);
+            assert_eq!(f32::from_bits(e[3]), 1., "zero-ray prior has one effective weight");
+            assert_eq!(e[12], 0, "a prior does not consume a QMC path");
+            assert_eq!(&e[8..11], &old[..3], "first display starts at raw prior, not black");
+        }
+    }
+    // Repeated admission does not add pseudo-counts. An empty resident face
+    // accepts the view prior, then becomes the single authority for both.
+    let side = (face + 2) % 6;
+    for (position, orientation, expected) in [
+        (donor, side, 1.0), // newly exposed perpendicular wall
+        (voxel - normal, face, 1.0), // placement covers an aligned face
+        (voxel - FACE_OFFSETS[side], side, 1.0), // covered perpendicular floor
+        (voxel + normal * 4, face, 0.0), // not a local topology neighbor
+        (donor, face, 1.0),
+    ] {
+        let queue = &f.gpu.context.queue;
+        let mut encoder = f.gpu.context.device.create_command_encoder(&default());
+        encoder.clear_buffer(&f.camera.history[1].hash.buffer, 0, None);
+        queue.submit([encoder.finish()]);
+        f.camera.history[1].receivers.upload(&f.gpu.context.device, queue,
+            &ShaderBuffer::from(vec![Receiver { voxel: position, face: orientation as u32,
+                surface: position.as_vec3(), sequence: 64 }]).data.unwrap()).unwrap();
+        let hash = pcg(pcg(pcg(position.x as u32) ^ position.y as u32) ^ position.z as u32)
+            ^ pcg(orientation as u32 + 1);
+        queue.write_buffer(&f.camera.history[1].hash.buffer, u64::from(hash & mask) * 4, &1u32.to_le_bytes());
+        f.set_estimate(&blank);
+        f.pass("load", None);
+        let e = f.estimate();
+        assert_eq!(f32::from_bits(e[3]), expected, "donor {position:?} face {orientation}");
+        if expected > 0. { assert_eq!(&e[..3], &old[..3]); }
+    }
+    let mut resident = f.resident();
+    resident[..28].fill(0);
+    let offset = u64::from(f.work.faces[0].resident.x) * 144;
+    f.gpu.context.queue.write_buffer(&scene.buffers[6], offset,
+        &resident.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>());
+    control.cache.z = 1;
+    upload_control(&mut f, control);
+    f.passes(&["load", "store"], 4, None);
+    assert_eq!(f.resident()[5], 1);
+    assert_eq!(f.resident()[6], 0);
+    let mut sum = rgb;
+    for n in 1..=16 {
+        f.allowance(1);
+        f.passes(&["load", "trace", "store"], 1, None);
+        let path = crate::voxel_gi::gpu::maintenance_tests::read_words(
+            &f.gpu.context, &f.camera.history[0].paths.buffer, 128);
+        assert_eq!(path[3], n - 1, "prior must not skip or repeat paths");
+        assert_eq!(path[23], 1, "fixture path must be known");
+        for i in 0..3 { sum[i] += f32::from_bits(path[20 + i]) + f32::from_bits(path[24 + i]); }
+        let e = f.estimate();
+        assert_eq!(f32::from_bits(e[3]), (n + 1) as f32);
+        for i in 0..3 {
+            assert!((f32::from_bits(e[i]) - sum[i] / (n + 1) as f32).abs() < 1e-5,
+                "prior influence must dilute as 1/(N+1), including dark samples");
+        }
+    }
+    // A previously sampled identity capped to zero must not be bootstrapped
+    // again; its next ray, not a neighbor, decides the new raw measurement.
+    control.cache.z = 0;
+    upload_control(&mut f, control);
+    blank[12] = 77;
+    f.set_estimate(&blank);
+    f.pass("load", None);
+    assert_eq!(f.estimate()[3], 0);
+    assert_eq!(f.estimate()[12], 77);
 }
 
 #[test]

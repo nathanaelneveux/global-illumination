@@ -15,7 +15,7 @@ struct ViewControl {
     discovery: vec4<u32>, // stationary, compatible previous viewport/overlap/MSAA; reserved
 }
 struct ViewEstimate {
-    mean: vec4<f32>, // raw RGB, physical history weight
+    mean: vec4<f32>, // raw RGB, effective history weight (may include a one-unit topology prior)
     moment: vec4<f32>, // raw second moment, pending predicted change
     shown: vec4<f32>, // reconstructed presentation, valid support
     identity: vec4<u32>, // next path sequence, material, sunlight, resident incarnation

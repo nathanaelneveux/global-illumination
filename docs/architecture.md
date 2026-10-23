@@ -163,7 +163,7 @@ On first admission only, a better-supported valid view estimate can replace a
 cold resident estimate. Their weights are never added: the two histories can
 contain the same path prefix. Once admitted, the resident value wins even when
 an edit has reduced its weight. After tracing, the view writes updated raw
-mean, second moment and physical count back to the same record. The next worker
+mean, second moment and effective history weight back to the same record. The next worker
 dispatch or newly revealed view therefore resumes the shared history.
 An independent unfinished view attempt is discarded when importing a different
 authority's prefix: it may duplicate that prefix and owns no reservation there.
@@ -181,7 +181,8 @@ while background work consumes later indices. Trace/store return the unstarted
 reservation suffix before the command buffer ends. Keeping unused indices
 would introduce path-length-dependent gaps into the low-discrepancy sequence;
 restarting unfinished paths would preferentially discard long contributions.
-Only complete, known paths increase the sample count. The reservation scratch
+Only complete, known paths advance measured evidence; new-face initialization
+may additionally contribute the single pseudo-count described below. The reservation scratch
 adds at most 256 KiB per camera, not another persistent face-history allocation.
 
 Load, trace and store are separate passes in one command buffer on the shared
@@ -201,6 +202,36 @@ This does not promise persistent lighting for all distant/offscreen surfaces.
 Native tests in `gpu/view/cache_tests.rs` cover ownership, retention, generations,
 sequence allocation and analytic RGB energy; rendered qualification is recorded
 in [the experiment](history/two-way-cache.md).
+
+### Raw topology bootstrap for new view faces
+
+After retention and cache admission, a new face with zero history and an
+unstarted path sequence can inherit a **one-weight raw prior**. Matching normals
+one voxel away take precedence. If none are supported, old faces on the removed
+voxel, faces covered by placement, and faces bordering the new exterior air cell
+provide an orientation-weighted estimate. Nonparallel donors get one quarter of
+the weight of aligned donors. The exterior and lateral connections must be
+loaded air, not unknown space. This is approximate incident irradiance, not a
+claim of conserving flux or inferring a full directional distribution.
+
+Donors are last-frame raw view records or resident raw records with at least 16
+effective samples. Filtered display RGB is never used. The mean and second moment
+are averaged, but the new face gets only one unit of effective history regardless
+of donor count. Its QMC sequence stays unchanged. The next N known samples reduce
+the prior's influence to 1/(N+1), unless ordinary retention removes it sooner.
+Neither pure priors nor fewer than 15 fresh samples plus a prior meet the existing
+16-weight transport-cache/donor threshold. This bounds immediate seed-to-seed
+propagation; it does not make the prior unbiased or its donor support independent.
+
+Initialization is fused into the existing cache-load pass, before tracing, with
+no extra buffers, GPU readback or CPU work. The first display uses the same raw
+prior. The two-way authority transfers it, never adds duplicate copies. Existing
+sampled faces capped to zero are not re-seeded. This applies to view receivers
+(including +cache handoff), not an overhaul of world-only slot initialization.
+It cannot initialize an undiscovered face, recover a retired donor absent from
+both caches, or fix a mesh/transport publication mismatch. Standalone raw-prefix
+sampler tests do not run this view initialization; a seeded history weight is
+not an independent-path count for accuracy calibration.
 
 ## Geometry and traversal
 
@@ -615,8 +646,9 @@ old-model jobs. Ordinary analytic light changes retain bounded history instead.
 Receiver material replacement uses ordinary local relighting: incident energy
 has the same spatial definition even when the receiver reflects or emits
 differently. Revision advancement rejects pre-replacement jobs; self-emission
-updates immediately and never becomes incoming simulation energy. New faces
-remain unmeasured. A new receiver's display-prior clock is initialized explicitly,
+updates immediately and never becomes incoming simulation energy. New world-only
+faces remain unmeasured; new view faces can use the bounded raw topology prior
+described above. A new receiver's display-prior clock is initialized explicitly,
 independent of its material ID, not as a side effect of resetting measurements.
 No rule tests a house, tunnel, skylight or gameplay material ID inside the
 estimator. The [completed policy controls](history/scene-history-audit.md#policy-closeout)
@@ -624,7 +656,7 @@ explain why the remaining history limits and dark-discovery minimum are retained
 as heuristics, not presented as physical requirements.
 
 Scene publication preserves compatible faces, introduces new faces without
-inventing measurements, and publishes at most four atomic pages within a nominal
+claiming measurements (the view's raw prior is explicitly approximate), and publishes at most four atomic pages within a nominal
 2 ms budget. A single expensive page can exceed that budget. Worker scans
 can include unchanged touching pages. Equal exposed keys, face masks,
 material IDs and emission establish identity; those pages keep their allocations
