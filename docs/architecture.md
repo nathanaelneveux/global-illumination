@@ -127,8 +127,11 @@ actual world-space positions, not reassigned screen-slot coordinates; camera
 motion alone cannot change those weights for a fixed receiver/donor set.
 This is presentation smoothing,
 not NAADF-style spatial path resampling. Sun visibility is evaluated at the
-same four canonical voxel corners as the near cache. Unrepresented coverage
-holes use those same corner rays, not a different shadow model. Emission is
+same four canonical voxel corners as the near cache. A face the view does not
+own takes each corner from an owned coplanar face sharing that corner (the
+corner's visibility is identical there) and traces only corners none share; it
+never borrows a farther face's corners, which used to shadow small distant
+faces wrongly at particular camera poses. Emission is
 looked up per fragment so a subpixel emitter does not disappear.
 
 The material's world-position interpolant uses perspective-correct **centroid**

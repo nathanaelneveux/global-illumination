@@ -124,16 +124,7 @@ fn far_face_index(voxel: vec3<i32>, face: u32) -> u32 {
     return 0xffffffffu;
 }
 
-fn far_value(donor: FarPixel, position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec3<f32> {
-    if !sky { return donor.irradiance; }
-    let local = position - floor(donor.surface - normal * 0.01);
-    var uv = local.yz;
-    if donor.face / 2u == 1u { uv = local.xz; }
-    else if donor.face / 2u == 2u { uv = local.xy; }
-    return resolve_sky_corners(donor.sky, normal, uv).rgb;
-}
-
-fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec4<f32> {
+fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     if far_view.shape.z == 0u { return vec4(0.0); }
     let uv = (pixel - vec2<f32>(far_view.viewport.xy)) / vec2<f32>(far_view.viewport.zw);
     if any(uv < vec2(0.0)) || any(uv >= vec2(1.0)) { return vec4(0.0); }
@@ -142,9 +133,7 @@ fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>, sky:
     let exact = far_face_index(voxel, face_index_of(normal));
     if exact != 0xffffffffu {
         let value = far_view.pixels[exact];
-        if (!sky && value.evidence > 0.0) || (sky && all(value.sky != vec4(0u))) {
-            return vec4(far_value(value, position, normal, sky), 1.0);
-        }
+        if value.evidence > 0.0 { return vec4(value.irradiance, 1.0); }
     }
     // Physical slots have no screen location. Search the four closest spatial
     // bins, including the containing bin, with unchanged world geometry gates.
@@ -167,8 +156,7 @@ fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>, sky:
                 entry = far_view.links[index];
                 let donor = far_view.pixels[index];
                 if donor.face >= 6u { continue; }
-                if !sky && donor.evidence == 0.0 { continue; }
-                if sky && any(donor.sky == vec4(0u)) { continue; }
+                if donor.evidence == 0.0 { continue; }
                 if dot(vec3<f32>(FACE_NORMALS[donor.face]), normal) < 0.99 { continue; }
                 let delta = donor.surface - surface;
                 let d2 = dot(delta, delta);
@@ -176,9 +164,9 @@ fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>, sky:
                 let offset = abs(dot(delta, normal));
                 let w = 1.0 / (0.25 + d2);
                 if offset <= 0.05 {
-                    sum += far_value(donor, position, normal, sky) * w;
+                    sum += donor.irradiance * w;
                     weight += w;
-                } else if !sky && offset <= 4.05 {
+                } else if offset <= 4.05 {
                     parallel_sum += donor.irradiance * w;
                     parallel_weight += w;
                 }
@@ -229,25 +217,63 @@ fn resolve_sky_corners(corners: vec4<u32>, axis: vec3<f32>, position: vec2<f32>)
     return vec4(sum, ready);
 }
 
-// View-owned corners use the same visibility and interpolation as near. A
-// surface missed by reduced-resolution discovery evaluates its exact corners
-// here; this is coverage-hole shading, not a switch to shadow maps or hard
-// per-pixel shadows. It has no history or feedback into indirect transport.
+// Sunlight from the same four corner visibility words as the near cache.
+// Corner c (u = c & 1, v = c >> 1) is shared by the coplanar faces of the up
+// to four voxels around it, which see the sun identically there, so a face
+// the view does not own takes each corner from an owned face sharing it.
+// Borrowing a coplanar face's corners from up to 16 voxels away (as before)
+// gave a face another voxel's shadow at some camera poses. A corner no owned
+// face shares is traced. No screen-space or history reuse.
 fn far_sun(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     let reach = f32(params.counts.x);
     if reach == 0.0 { return vec4(0.0); }
     let dominant = max(abs(normal.x), max(abs(normal.y), abs(normal.z)));
     let axis = select(vec3(0.0), sign(normal), abs(normal) == vec3(dominant));
-    let clip = position_world_to_clip(position);
-    let screen = clip.xy / clip.w * vec2(0.5, -0.5) + 0.5;
-    let pixel = vec2<f32>(far_view.viewport.xy) + screen * vec2<f32>(far_view.viewport.zw);
-    let cached = far_irradiance(pixel, position, axis, true);
-    if cached.w > 0.0 { return cached; }
-    return exact_corner_sun(position, axis);
+    let face = face_index_of(axis);
+    let voxel = vec3<i32>(floor(position - axis * 0.01));
+    var u = vec3<i32>(0, 1, 0);
+    var v = vec3<i32>(0, 0, 1);
+    if abs(axis.y) > 0.5 { u = vec3<i32>(1, 0, 0); }
+    else if abs(axis.z) > 0.5 { u = vec3<i32>(1, 0, 0); v = vec3<i32>(0, 1, 0); }
+    var words = vec4<u32>(0u);
+    if far_view.shape.z != 0u {
+        // The face itself first, then its eight coplanar neighbours.
+        let order = array(4u, 1u, 3u, 5u, 7u, 0u, 2u, 6u, 8u);
+        for (var n = 0u; n < 9u && any(words == vec4(0u)); n++) {
+            let du = i32(order[n] % 3u) - 1;
+            let dv = i32(order[n] / 3u) - 1;
+            let index = far_face_index(voxel + u * du + v * dv, face);
+            if index == 0xffffffffu { continue; }
+            let donor = far_view.pixels[index].sky;
+            for (var c = 0u; c < 4u; c++) {
+                let cu = i32(c & 1u) - du;
+                let cv = i32(c >> 1u) - dv;
+                if words[c] == 0u && cu >= 0 && cu <= 1 && cv >= 0 && cv <= 1 {
+                    words[c] = donor[u32(cu) + u32(cv) * 2u];
+                }
+            }
+        }
+    }
+    if any(words == vec4(0u)) {
+        let base = vec3<f32>(voxel) + max(axis, vec3(0.0));
+        for (var c = 0u; c < 4u; c++) {
+            if words[c] != 0u { continue; }
+            var word = 0x80000000u;
+            for (var light = 0u; light < min(transport_settings.sun_count, 4u); light += 1u) {
+                let direction = transport_settings.sun_direction[light].xyz;
+                if dot(axis, direction) <= 0.0 { continue; }
+                let origin = base + vec3<f32>(u) * f32(c & 1u) + vec3<f32>(v) * f32(c >> 1u) + direction * 0.002;
+                if trace_domain(origin, direction, reach, true).status == 0u { word |= 1u << light; }
+            }
+            words[c] = word;
+        }
+    }
+    let local = position - vec3<f32>(voxel);
+    return resolve_sky_corners(words, axis, vec2(dot(local, vec3<f32>(u)), dot(local, vec3<f32>(v))));
 }
 
 // Canonical reference for a particular world face, independent of the view
-// receiver selection. Also serves the existing uncovered-face fallback.
+// receiver selection (validation's `sun-reference` component).
 fn exact_corner_sun(position: vec3<f32>, axis: vec3<f32>) -> vec4<f32> {
     let reach = f32(params.counts.x);
     if reach == 0.0 { return vec4(0.0); }
@@ -425,7 +451,7 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
         // Thin/distant faces may miss the reduced prepass grid entirely.
         // Only those holes use geometric upsampling, not world history.
         if far.w == 0.0 {
-            far = far_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal), false);
+            far = far_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal));
             if far.w > 0.0 { view_coverage = vec3(1.0, 1.0, 0.0); }
         }
         if far.w > 0.0 { indirect = far.rgb * transport_settings.intensity; }
