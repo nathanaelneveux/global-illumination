@@ -386,6 +386,7 @@ Durations start after required assets are ready and exclude process compilation.
 | `house-edits` | 180 | House corners, roof skylight, wall doors and turn |
 | `response` | 30 | Underground cavity and emitter on/off response |
 | `edits` | 30 | Early frames after underground and surface edits |
+| `tunnel` | 60 | Dig a one-wide, two-high hillside tunnel for 20 blocks; paired early/later views |
 | `sources` | 72 | Analytic/emissive source changes, multi-band field and streaming |
 | `cave` | 62 | Fixed view of many-emitter chamber; automatically selects cave geometry/palette |
 | `structures` | 62 | Normal-world house/path, cave entrance, and underground interior |

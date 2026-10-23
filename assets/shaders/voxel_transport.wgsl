@@ -557,7 +557,12 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
         let valid = voxel_material(voxel) != 256u && voxel_material(voxel + FACE_NORMALS[face]) == 256u;
         // Independent channels survive MSAA resolve: red is missing indirect
         // support, green is a lookup outside exposed transport geometry.
-        out.color = vec4(1.0 - view_coverage.g, select(1.0, 0.0, valid), 0.0, 1.0);
+        // A completely covered indoor view legitimately has a zero failure
+        // mask. A tiny blue witness proves the diagnostic shader ran, without
+        // relaxing black-frame checks for ordinary lighting captures. The
+        // analyzer excludes blue (sky, mixed silhouettes and this witness).
+        let witness = select(0.0, 0.5, all(in.position.xy < vec2(4.0)));
+        out.color = vec4(1.0 - view_coverage.g, select(1.0, 0.0, valid), witness, 1.0);
         return out;
     }
     if view_first && transport_settings.debug_irradiance == 2u {

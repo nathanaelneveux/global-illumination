@@ -218,7 +218,7 @@ pub(super) fn run_validation(
             return;
         }
         run.profile = profile;
-        if profile == Profile::Motion {
+        if matches!(profile, Profile::Motion | Profile::Tunnel) {
             run.motion_static = std::env::var_os("VOXEL_GI_VALIDATE_MOTION_STATIC").is_some();
             let component = std::env::var("VOXEL_GI_VALIDATE_LIGHT_COMPONENT").ok();
             run.motion_diagnostic = match profiles::motion_diagnostic(
@@ -431,7 +431,7 @@ pub(super) fn run_validation(
     {
         let mut next = material.extension.settings;
         profile.configure(elapsed, &mut next);
-        if profile == Profile::Motion {
+        if matches!(profile, Profile::Motion | Profile::Tunnel) {
             next.debug_irradiance = run.motion_diagnostic;
         }
         if next != material.extension.settings {

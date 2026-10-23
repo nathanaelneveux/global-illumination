@@ -5,7 +5,8 @@ Requires numpy and Pillow. Use the motion profile's face-validity diagnostic:
 red = missing indirect support; green = not an exposed transport face. Unlike
 the green/yellow/red coverage palette, these independent channels cannot cancel
 one another during MSAA resolve. The blue sky is excluded; mixed sky/silhouette
-pixels are excluded too. These are lookup diagnostics, not lighting accuracy.
+pixels and the blue shader-execution witness are excluded too. These are lookup
+diagnostics, not lighting accuracy. Tunnel edit captures are supported as well.
 """
 import json
 import sys
@@ -25,7 +26,11 @@ def evaluate(run):
         for c in report["capture_windows"]
     )
     captures = {}
-    for name in ["before", "base-1", "turned-1", "base-2", "turned-2", "returned"]:
+    names = ["before", "base-1", "turned-1", "base-2", "turned-2", "returned"]
+    if report["profile"] == "tunnel":
+        names = ["entrance"] + [f"depth{d:02}-{ms:04}ms"
+            for d in [1, 2, 4, 8, 12, 20] for ms in [50, 400, 1700]] + ["tunnel-later"]
+    for name in names:
         pixels = np.asarray(Image.open(run / f"{name}.png").convert("RGB"))
         assert pixels.shape == (1440, 2560, 3)
         terrain = pixels[..., 2] == 0
