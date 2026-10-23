@@ -133,6 +133,21 @@ fn far_value(donor: FarPixel, position: vec3<f32>, normal: vec3<f32>, sky: bool)
     return resolve_sky_corners(donor.sky, normal, uv).rgb;
 }
 
+fn sibling_irradiance(voxel: vec3<i32>, face: u32) -> vec4<f32> {
+    var sum = vec3(0.0);
+    var weight = 0.0;
+    for (var other = 0u; other < 6u; other++) {
+        if other == face || other == (face ^ 1u) { continue; }
+        let index = far_face_index(voxel, other);
+        if index == 0xffffffffu { continue; }
+        let donor = far_view.pixels[index];
+        if donor.evidence == 0.0 { continue; }
+        sum += donor.irradiance;
+        weight += 1.0;
+    }
+    return vec4(sum / max(weight, 1.0), select(0.0, 1.0, weight > 0.0));
+}
+
 fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>, sky: bool) -> vec4<f32> {
     if far_view.shape.z == 0u { return vec4(0.0); }
     let uv = (pixel - vec2<f32>(far_view.viewport.xy)) / vec2<f32>(far_view.viewport.zw);
@@ -150,13 +165,15 @@ fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>, sky:
     // bins, including the containing bin, with unchanged world geometry gates.
     let tiles = (far_view.shape.xy + 1u) / 2u;
     let base = vec2<i32>(floor(uv * vec2<f32>(far_view.shape.xy) * 0.5 - 0.5));
-    // Coplanar donors first. A thin face with none (a distant ledge's
-    // one-pixel side) would otherwise read black; its indirect light then
-    // borrows from parallel faces up to four voxels in front of or behind it.
+    // Coplanar donors first. A face with none nearby (a distant ledge's
+    // one-pixel side, missed by the reduced discovery grid at this camera
+    // pose) would otherwise read black. Its indirect light then falls back to
+    // nearby lit faces of other planes, parallel ones preferred: approximate,
+    // for a pixel or two, and only on this miss path.
     var sum = vec3(0.0);
     var weight = 0.0;
-    var parallel_sum = vec3(0.0);
-    var parallel_weight = 0.0;
+    var fallback_sum = vec3(0.0);
+    var fallback_weight = 0.0;
     for (var y = 0; y <= 1; y++) {
         for (var x = 0; x <= 1; x++) {
             let q = base + vec2(x, y);
@@ -169,24 +186,23 @@ fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>, sky:
                 if donor.face >= 6u { continue; }
                 if !sky && donor.evidence == 0.0 { continue; }
                 if sky && any(donor.sky == vec4(0u)) { continue; }
-                if dot(vec3<f32>(FACE_NORMALS[donor.face]), normal) < 0.99 { continue; }
+                let facing = dot(vec3<f32>(FACE_NORMALS[donor.face]), normal);
                 let delta = donor.surface - surface;
                 let d2 = dot(delta, delta);
-                if d2 > 256.0 { continue; }
-                let offset = abs(dot(delta, normal));
                 let w = 1.0 / (0.25 + d2);
-                if offset <= 0.05 {
+                if facing >= 0.99 && abs(dot(delta, normal)) <= 0.05 && d2 <= 256.0 {
                     sum += far_value(donor, position, normal, sky) * w;
                     weight += w;
-                } else if !sky && offset <= 4.05 {
-                    parallel_sum += donor.irradiance * w;
-                    parallel_weight += w;
+                } else if !sky && facing > -0.5 {
+                    let affinity = select(0.25, 1.0, facing >= 0.99);
+                    fallback_sum += donor.irradiance * w * affinity;
+                    fallback_weight += w * affinity;
                 }
             }
         }
     }
-    if weight == 0.0 && parallel_weight > 0.0 {
-        return vec4(parallel_sum / parallel_weight, 1.0);
+    if weight == 0.0 && fallback_weight > 0.0 {
+        return vec4(fallback_sum / fallback_weight, 1.0);
     }
     return vec4(sum / max(weight, 1e-8), select(0.0, 1.0, weight > 0.0));
 }
@@ -277,14 +293,14 @@ fn exact_corner_sun(position: vec3<f32>, axis: vec3<f32>) -> vec4<f32> {
 // Four coplanar faces meet at a virtual voxel corner. Only the connected
 // component containing this face contributes. In particular, a diagonal face
 // across two missing/occluded edge faces cannot leak light into this surface.
-fn corner_value(center: vec4<f32>, edge_u: vec4<f32>, edge_v: vec4<f32>, diagonal: vec4<f32>) -> vec3<f32> {
+fn corner_value(center: vec4<f32>, edge_u: vec4<f32>, edge_v: vec4<f32>, diagonal: vec4<f32>) -> vec4<f32> {
     var sum = vec4(center.rgb * center.w, center.w)
         + vec4(edge_u.rgb * edge_u.w, edge_u.w)
         + vec4(edge_v.rgb * edge_v.w, edge_v.w);
     if edge_u.w > 0.0 || edge_v.w > 0.0 {
         sum += vec4(diagonal.rgb * diagonal.w, diagonal.w);
     }
-    return sum.rgb / max(sum.w, 0.000001);
+    return vec4(sum.rgb / max(sum.w, 0.000001), sum.w);
 }
 
 fn display_face(voxel: vec3<i32>, face: u32) -> vec4<f32> {
@@ -331,7 +347,24 @@ fn corner_irradiance(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     let c11 = corner_value(center, right, top, display_face(voxel + u + v, face));
     let local = position - vec3<f32>(voxel);
     let uv = clamp(vec2(dot(local, vec3<f32>(u)), dot(local, vec3<f32>(v))), vec2(0.0), vec2(1.0));
-    return vec4(mix(mix(c00, c10, uv.x), mix(c01, c11, uv.x), uv.y), center.w);
+    var corners = array(c00, c10, c01, c11);
+    var support = center.w;
+    if center.w == 0.0 {
+        // An unowned face (missed by the reduced discovery grid at this camera
+        // pose) still has the owned coplanar neighbours loaded above. Corners
+        // they do not reach take the mean of those they do; never black.
+        var mean = vec4(0.0);
+        for (var i = 0u; i < 4u; i++) {
+            if corners[i].w > 0.0 { mean += vec4(corners[i].rgb, 1.0); }
+        }
+        if mean.w == 0.0 { return vec4(0.0); }
+        for (var i = 0u; i < 4u; i++) {
+            if corners[i].w == 0.0 { corners[i] = vec4(mean.rgb / mean.w, 1.0); }
+        }
+        support = 0.001;
+    }
+    let rgb = mix(mix(corners[0].rgb, corners[1].rgb, uv.x), mix(corners[2].rgb, corners[3].rgb, uv.x), uv.y);
+    return vec4(rgb, support);
 }
 
 fn use_voxel_sky() -> bool {
@@ -426,6 +459,13 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
         // Only those holes use geometric upsampling, not world history.
         if far.w == 0.0 {
             far = far_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal), false);
+            if far.w > 0.0 { view_coverage = vec3(1.0, 1.0, 0.0); }
+        }
+        // Last resort for a tiny face nobody owns: its own voxel's other
+        // visible faces (a ledge side's top). Approximate, a few hash
+        // lookups, and only for pixels that would otherwise be black.
+        if far.w == 0.0 {
+            far = sibling_irradiance(voxel, face_index_of(normalize(in.world_normal)));
             if far.w > 0.0 { view_coverage = vec3(1.0, 1.0, 0.0); }
         }
         if far.w > 0.0 { indirect = far.rgb * transport_settings.intensity; }

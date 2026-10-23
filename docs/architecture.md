@@ -77,9 +77,16 @@ concurrently initialized current receiver. Discovery reads this index after the
 preparation dispatch completes. Newly allocated keys are indexed only after
 discovery finishes; no workgroup spins on another group's partially published data.
 
-Discovery retains useful coarse coverage and scans full-resolution footprints
-for missing planes under the same world-distance gate as presentation. There is
-no four-receiver tile quota. Total pool exhaustion is bounded and explicitly
+Discovery samples the four cell centres of each tile; it does not scan
+full-resolution footprints (that cost ~1 ms of GPU per frame, 2026-10-23).
+Faces between centres, mostly tiny or grazing ones in the distance, are shaded
+by the material from what is owned: coplanar neighbours by exact key (virtual
+corners use whichever exist), then any nearby lit face in the screen bins
+(parallel preferred), then the face's own voxel's other faces. Approximate for
+a pixel or two, never black, and only on that miss path. A face with no
+coplanar support is not presented until four samples. A decoded point within
+one pixel of an in-plane voxel boundary takes the exposed neighbour across it.
+Total pool exhaustion is bounded and explicitly
 counted, not an alias or an out-of-bounds write. Quantized normals select their
 dominant axis; depth is snapped to the voxel plane before the geometry identity
 check. Duplicate pixels share one face owner. A ping-pong hash reprojects the exact same face, its raw
