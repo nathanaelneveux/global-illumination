@@ -15,6 +15,7 @@ pub(super) mod reference_oracle;
 mod response;
 mod sample_sweep;
 mod structures;
+mod tunnel;
 pub(super) mod temporal;
 
 use super::render::VoxelTransportMaterial;
@@ -122,6 +123,7 @@ pub(super) struct ValidationRun {
     emissive: Option<(IVec3, WorldVoxel<u8>, MaterialTransport)>,
     emitter_started: bool,
     response: response::ResponseRun,
+    tunnel: tunnel::TunnelRun,
     house: house::HouseRun,
     temporal: temporal::TemporalRun,
     cave_camera_initialized: bool,
@@ -385,6 +387,9 @@ pub(super) fn run_validation(
             &cameras,
             &mut lights,
         );
+    }
+    if profile == Profile::Tunnel {
+        run.tunnel.tick(elapsed, &mut world, &mut dirty, &mut commands, &cameras, &mut lights);
     }
     if profile == Profile::Streaming {
         // Replay an absolute path, independent of asynchronous startup physics
@@ -664,6 +669,14 @@ pub(super) fn run_validation(
             evidence.fail(&format!("Could not save response sequence: {error}"));
             commands.write_message(AppExit::error());
             return;
+    }
+    if profile == Profile::Tunnel
+        && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("tunnel.json"),
+            json!({"events": run.tunnel.events,
+                "note": "One-wide two-high tunnel, 20 depths, upper block then lower 250ms later. Capture offsets follow upper edit; 400ms captures are 150ms after lower edit. Fixed warmup, not certified convergence."}).to_string()) {
+        evidence.fail(&format!("Could not save tunnel sequence: {error}"));
+        commands.write_message(AppExit::error());
+        return;
     }
     let (memory, footprint) = run.memory.finish();
     if let Some(text) = footprint {

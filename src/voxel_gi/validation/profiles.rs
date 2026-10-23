@@ -12,6 +12,7 @@ pub(super) enum Profile {
     HouseEdits,
     Response,
     Edits,
+    Tunnel,
     Sources,
     Cave,
     Canyon,
@@ -34,6 +35,7 @@ impl Profile {
             "house-edits" => Ok(Self::HouseEdits),
             "response" => Ok(Self::Response),
             "edits" => Ok(Self::Edits),
+            "tunnel" => Ok(Self::Tunnel),
             "sources" => Ok(Self::Sources),
             "cave" => Ok(Self::Cave),
             "canyon" => Ok(Self::Canyon),
@@ -59,6 +61,7 @@ impl Profile {
             Self::HouseEdits => "house-edits",
             Self::Response => "response",
             Self::Edits => "edits",
+            Self::Tunnel => "tunnel",
             Self::Sources => "sources",
             Self::Cave => "cave",
             Self::Canyon => "canyon",
@@ -84,6 +87,7 @@ impl Profile {
             Self::LiveCave | Self::LiveHallway => 182.0,
             Self::DayCycle => 183.0,
             Self::Cave | Self::Canyon | Self::Structures | Self::Hallway => 62.0,
+            Self::Tunnel => 60.0,
             Self::HouseEdits => 180.0,
             Self::Response | Self::Edits => 30.0,
             _ => 72.0,
@@ -99,6 +103,16 @@ impl Profile {
     }
 
     pub fn captures(self) -> &'static [(f32, &'static str)] {
+        if self == Self::Tunnel {
+            return &[(14.5, "entrance"),
+                (15.05, "depth01-0050ms"), (15.4, "depth01-0400ms"), (16.7, "depth01-1700ms"),
+                (17.05, "depth02-0050ms"), (17.4, "depth02-0400ms"), (18.7, "depth02-1700ms"),
+                (21.05, "depth04-0050ms"), (21.4, "depth04-0400ms"), (22.7, "depth04-1700ms"),
+                (29.05, "depth08-0050ms"), (29.4, "depth08-0400ms"), (30.7, "depth08-1700ms"),
+                (37.05, "depth12-0050ms"), (37.4, "depth12-0400ms"), (38.7, "depth12-1700ms"),
+                (53.05, "depth20-0050ms"), (53.4, "depth20-0400ms"), (54.7, "depth20-1700ms"),
+                (59.0, "tunnel-later")];
+        }
         if self == Self::Motion {
             return &[(14.4, "before"), (16.4, "base-1"), (17.4, "turned-1"),
                 (18.4, "base-2"), (19.4, "turned-2"), (30.4, "returned")];
@@ -361,6 +375,7 @@ mod tests {
             Profile::HouseEdits,
             Profile::Response,
             Profile::Edits,
+            Profile::Tunnel,
             Profile::Sources,
             Profile::Cave,
             Profile::Structures,
