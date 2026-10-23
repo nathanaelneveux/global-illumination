@@ -136,7 +136,10 @@ fn reproject_paths(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var light = 0u; light < u32(params.maximum.w); light++) {
         lit_face = lit_face || dot(normal, lights[light].position_range.xyz) > 0.0;
     }
-    if !pending || previous == 0xffffffffu { estimate.identity.z = 0x80808080u; }
+    // A new face awaiting GI geometry has unknown corners (0), not known-unlit
+    // ones: the material traces unknown corners itself instead of going black.
+    if !pending { estimate.identity.z = 0x80808080u; }
+    else if previous == 0xffffffffu { estimate.identity.z = 0u; }
     if lit_face && !pending {
         var u = vec3(0.0, 1.0, 0.0);
         var v = vec3(0.0, 0.0, 1.0);
