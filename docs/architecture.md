@@ -979,10 +979,13 @@ on invalid RON; the plugin accepts a host-provided settings resource directly.
 
 This is one axis-aligned unit-voxel world in integer coordinates, with f32 ray
 positions. There is no floating origin, world-ID key, deformation metric or
-cross-world ray routing yet. BVW-specific storage/generator adaptation is isolated
-in `bvw.rs`; the renderer still uses BVW's vertex layout and a world-position hash.
-`VoxelGiPlugin` accepts a host-owned texture handle; the host prepares its array,
-palette and reloads. `VoxelGiDiagnosticsPlugin` is optional demo UI, not core input.
+cross-world ray routing yet. Core publishes what a lit material binds as
+`VoxelGiMaterialData` (shared geometry, traversal parameters, the visible-face
+output and the presentation uniform) and touches no material asset. The BVW
+connector (`bvw.rs`, `bvw_material.rs`) owns page forwarding and the mesh
+material: BVW's vertex layout, the host's texture array (`material_template`,
+`prepare_texture_array`) and a copy of `VoxelGiMaterialData` on change.
+`VoxelGiDebugPlugin` is optional HUD/panel, not core input.
 
 For an asteroid or planet, first define canonical local coordinates, world identity,
 local-to-world transforms, ray distance units, normals and source conversion.

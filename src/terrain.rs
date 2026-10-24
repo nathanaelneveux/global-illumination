@@ -13,7 +13,7 @@ use crate::terrain_meshing::build_chunk_mesh;
 use crate::terrain_noise::{BEDROCK_FLOOR_Y, MAX_SURFACE_Y, TerrainColumn, TerrainNoise};
 use crate::voxel_gi::{
     MaterialTransport, VoxelGiInput, VoxelMaterialTransportTable,
-    render::{VoxelTransportAssets, material_template},
+    VoxelGiMaterialData, material_template,
 };
 
 pub type MaterialIndex = u8;
@@ -122,10 +122,11 @@ impl Plugin for TerrainPlugin {
                 table.set(global.index(), cave.get(local));
             }
         }
-        let transport_assets = app.world().resource::<VoxelTransportAssets>().clone();
+        let texture = app.world().resource::<crate::assets::TemplateAssets>().voxel_texture.clone();
+        let data = app.world().resource::<VoxelGiMaterialData>().clone();
         app.add_plugins(
             VoxelWorldPlugin::with_config(PrototypeWorld::default())
-                .with_material(material_template(&transport_assets)),
+                .with_material(material_template(texture, &data)),
         )
         .add_systems(Update, apply_live_prototype_config);
     }

@@ -111,17 +111,12 @@ fn main() -> AppExit {
     if !headless {
         app.add_plugins(AppControlsPlugin);
     }
-    let voxel_texture = app
-        .world()
-        .resource::<assets::TemplateAssets>()
-        .voxel_texture
-        .clone();
     // All prototype writes use BvwVoxelEdits::set_voxel; coarse external changes
     // explicitly request resampling. BVW remains the terrain/mesh host.
     app.insert_resource(voxel_gi::VoxelGiInput::tracked());
     app.add_plugins(gi_lab::GiLabPlugin);
     app.add_plugins((
-        VoxelGiPlugin { voxel_texture },
+        VoxelGiPlugin,
         voxel_gi::VoxelGiBvwPlugin::<terrain::PrototypeWorld>::default(),
         TerrainPlugin,
         ChunkColliderPlugin,

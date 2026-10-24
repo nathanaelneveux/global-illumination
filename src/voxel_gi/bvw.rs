@@ -35,6 +35,7 @@ where
             super::input::VOXEL_GI_PAGE_EDGE,
             "a BVW chunk must be one GI page"
         );
+        super::bvw_material::install(app);
         app.add_systems(
             Update,
             (forward_chunk_events::<C>, refresh_source::<C>)

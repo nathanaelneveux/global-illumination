@@ -2,7 +2,7 @@ use bevy::light::{CascadeShadowConfigBuilder, SimulationLightSystems};
 use bevy::prelude::*;
 
 use crate::terrain::TERRAIN_VIEW_DISTANCE;
-use crate::voxel_gi::render::VoxelTransportMaterial;
+use crate::voxel_gi::VoxelTransportMaterial;
 
 #[derive(Component)]
 struct DemoSun;

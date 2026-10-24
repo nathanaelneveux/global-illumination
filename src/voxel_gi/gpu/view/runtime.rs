@@ -2,10 +2,7 @@
 //! gameplay/render system waits for a GPU submission. Per-view ping-pong state
 //! retains face identities, path records, unfinished tails and raw statistics.
 use super::*;
-use crate::voxel_gi::{
-    VoxelGiSettings,
-    render::{VoxelTransportAssets, VoxelTransportMaterial},
-};
+use crate::voxel_gi::{VoxelGiSettings, render::VoxelGiMaterialData};
 use bevy::{
     core_pipeline::{
         prepass::{DepthPrepass, NormalPrepass, ViewPrepassTextures},
@@ -97,8 +94,7 @@ fn configure_views(
     mut stats: ResMut<crate::voxel_gi::VoxelGiStats>,
     mut view: ResMut<ViewSettings>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
-    mut assets: ResMut<VoxelTransportAssets>,
-    mut materials: ResMut<Assets<VoxelTransportMaterial>>,
+    mut material_data: ResMut<VoxelGiMaterialData>,
     cameras: Query<
         (
             Entity,
@@ -121,10 +117,7 @@ fn configure_views(
         asset.buffer_description.usage =
             BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
         view.output = buffers.add(asset);
-        assets.far = view.output.clone();
-        for (_, material) in materials.iter_mut() {
-            material.extension.far = view.output.clone();
-        }
+        material_data.far = view.output.clone();
     }
     for (entity, depth, normal, added) in &cameras {
         if enabled && added.is_none() {

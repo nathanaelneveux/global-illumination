@@ -6,6 +6,7 @@
 //! simulation measurements. `bvw` is the current host adapter, `diagnostics` the
 //! optional demo tooling. This module is not yet a storage-independent crate.
 mod bvw;
+mod bvw_material;
 mod input;
 mod pages;
 mod diagnostics;
@@ -54,9 +55,15 @@ pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 
 use pages::{ingest_input, start_scene_task};
 pub use bvw::{BvwVoxelEdits, GiFallbackVoxel, VoxelGiBvwPlugin};
+pub use bvw_material::{
+    VoxelTransportExtension, VoxelTransportMaterial, material_template, prepare_texture_array,
+    texture_array_ready,
+};
 pub use input::{VoxelGiInput, VoxelGiSource, VoxelSource, dense_page};
 pub use gpu::view::ViewReceipts;
-pub use render::{GiDebugView, VoxelGiDisplay};
+pub use render::{
+    GiDebugView, GpuTransportSettings, GpuTraversalParams, VoxelGiDisplay, VoxelGiMaterialData,
+};
 pub use telemetry::MAIN_STAGE_NAMES as GI_MAIN_STAGE_NAMES;
 pub use diagnostics::{VoxelGiDebugPlugin, parse_settings};
 use dispatch::{apply_trace_task, start_trace_task};
@@ -69,13 +76,10 @@ use work::TraceWork;
 use world::{PAGE_EDGE, SurfaceProbe, SurfaceProbeDescriptor, TransportScene};
 
 
-/// Transport and display-cache integration for the prototype BVW world.
-/// Debug controls, HUD and validation are opt-in via the demo diagnostics plugin.
-pub struct VoxelGiPlugin {
-    /// Host-owned texture array matching the terrain mesh's material indices.
-    /// The host prepares/reloads the image; GI does not choose an asset or palette.
-    pub voxel_texture: Handle<Image>,
-}
+/// Voxel GI: page ingestion, transport and the view tier. Materials bind
+/// `VoxelGiMaterialData` (the BVW connector's material does this); the debug
+/// HUD and panel are the opt-in `VoxelGiDebugPlugin`.
+pub struct VoxelGiPlugin;
 
 /// Schedule simulation readers after this set to observe this frame's published
 /// measurements. Workers remain asynchronous; inspect estimate freshness.
@@ -84,7 +88,7 @@ pub struct VoxelGiSystems;
 
 impl Plugin for VoxelGiPlugin {
     fn build(&self, app: &mut App) {
-        install_render_assets(app, self.voxel_texture.clone());
+        install_render_assets(app);
         app.init_resource::<VoxelGiInput>()
             .init_resource::<VoxelGiSource>()
             .init_resource::<VoxelGiRuntime>()

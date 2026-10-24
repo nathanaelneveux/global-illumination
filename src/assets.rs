@@ -111,10 +111,10 @@ fn refresh_voxel_texture_on_change(
     let layers = world.voxel_texture_layers().max(1);
     // Read through AssetMut first. Mutably dereferencing an already prepared
     // image would emit Modified again and reupload the texture every frame.
-    if crate::voxel_gi::render::texture_array_ready(&image, layers) {
+    if crate::voxel_gi::texture_array_ready(&image, layers) {
         return;
     }
-    if let Err(error) = crate::voxel_gi::render::prepare_texture_array(&mut image, layers) {
+    if let Err(error) = crate::voxel_gi::prepare_texture_array(&mut image, layers) {
         error!(%error, "failed to prepare terrain texture array");
     }
 }
@@ -171,7 +171,7 @@ mod tests {
             modified, 1,
             "preparation must modify the image exactly once"
         );
-        assert!(crate::voxel_gi::render::texture_array_ready(
+        assert!(crate::voxel_gi::texture_array_ready(
             app.world()
                 .resource::<Assets<Image>>()
                 .get(&texture)
@@ -203,7 +203,7 @@ mod tests {
             .resource::<Assets<Image>>()
             .get(&texture)
             .unwrap();
-        assert!(crate::voxel_gi::render::texture_array_ready(image, 2));
+        assert!(crate::voxel_gi::texture_array_ready(image, 2));
         assert_eq!(image.texture_descriptor.size.height, 4);
         assert_eq!(image.data.as_ref().unwrap().len(), 64);
     }

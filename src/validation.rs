@@ -13,7 +13,7 @@ mod response;
 mod structures;
 mod tunnel;
 
-use crate::voxel_gi::render::VoxelTransportMaterial;
+use crate::voxel_gi::VoxelTransportMaterial;
 /// Face normals in the lab's face order (+X, -X, +Y, -Y, +Z, -Z).
 const FACE_OFFSETS: [IVec3; 6] = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
 use crate::voxel_gi::{
