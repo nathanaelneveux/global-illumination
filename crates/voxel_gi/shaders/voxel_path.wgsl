@@ -44,6 +44,13 @@ struct Energy {
 // cached incident energy instead of tracing further bounces.
 @group(0) @binding(9) var<storage, read> cache_state: array<vec4<u32>>;
 @group(0) @binding(10) var<storage, read> cache_index: array<vec4<u32>>;
+// A cached face ends a path once its mean's relative standard error is at
+// most 1/4: 16 samples at relative sigma one, the Monte Carlo prior. A
+// variance-aware test (shrunk toward that prior, as the view filter does)
+// accepts quiet faces a couple of samples sooner and noisy emitter-lit ones
+// later, but cannot certify a black face (zero mean, zero variance), which
+// needs this count anyway. That difference was judged not worth a second
+// cache load on the hottest path (2026-10-24 review; not measured).
 const CACHE_MIN_SAMPLES: u32 = 16u;
 
 struct CachedEnergy { found: bool, value: vec4<f32> }

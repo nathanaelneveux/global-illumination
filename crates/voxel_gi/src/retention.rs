@@ -16,6 +16,14 @@ use super::tracer::HISTORY_LIMIT;
 
 /// Selected by native-material comparisons, not anchored to a near/far floor.
 /// Requalify against the fixed appearance goal when changing the estimator.
+///
+/// It is the measured rule at one assumed flux, not a separate law: keeping
+/// n = c sigma^2 / D^2 samples for a change D = F / (pi d^2) gives
+/// n = c pi^2 sigma^2 d^4 / F^2, which is (d / 12)^4 for F = 144 pi sigma
+/// (c = 1). An edit of unknown flux is assumed to change a face 12 voxels
+/// away by one standard deviation of its samples per sample (it keeps one),
+/// at 24 voxels by a quarter (it keeps 16). Known flux replaces the
+/// assumption; this applies only when the edit was not measured.
 const DISTANCE_SCALE: i64 = 12;
 
 /// Conservative binning reach: beyond this radius H(d) cannot reduce any

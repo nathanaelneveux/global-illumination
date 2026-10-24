@@ -17,6 +17,10 @@ pub(super) const RELIGHT_RADIUS: i32 = 48;
 /// this radius whose history the change binds; unknown flux, or the curve
 /// rule, wakes every face within RELIGHT_RADIUS.
 pub(super) const MEASURED_RELIGHT_RADIUS: i32 = 64;
+/// A face whose own voxel or material changed keeps 16 samples: a mean of
+/// relative standard error 1/4 at relative sigma one, the same bound as a
+/// usable cache face (`CACHE_MIN_SAMPLES`). A choice of trust, not derived
+/// from the change's size.
 pub(super) const NEAR_HISTORY: u32 = 16;
 /// History kept by reference work built outside the scheduler (tests).
 #[cfg(test)]
