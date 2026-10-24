@@ -75,7 +75,7 @@ fn capture_widgets(
     mut settings: Local<VoxelGiSettings>,
 ) {
     let context = contexts.ctx_mut().unwrap();
-    let mut display = DisplaySettings::read(&GpuTransportSettings::default());
+    let mut display = DisplaySettings::read(&crate::voxel_gi::VoxelGiDisplay::default());
     egui::Window::new("Lighting controls")
         .default_pos([16.0, 16.0])
         .default_width(440.0)

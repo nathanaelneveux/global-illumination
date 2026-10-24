@@ -144,7 +144,7 @@ pub(super) fn run_validation(
     cameras: Query<Entity, With<Camera3d>>,
     mut commands: Commands,
     handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
-    mut materials: ResMut<Assets<VoxelTransportMaterial>>,
+    mut display: ResMut<super::VoxelGiDisplay>,
     mut transport_materials: ResMut<VoxelMaterialTransportTable>,
     asset_context: (
         Res<TemplateAssets>,
@@ -395,22 +395,14 @@ pub(super) fn run_validation(
     if elapsed < 1.0 {
         run.center = player.translation;
     }
-    if let Some(handle) = handle.as_ref()
-        && let Some(material) = materials.get(&handle.handle)
-    {
-        let mut next = material.extension.settings;
-        profile.configure(elapsed, &mut next);
-        if matches!(profile, Profile::Motion | Profile::Tunnel | Profile::Streaming) {
-            next.debug_irradiance = run.motion_diagnostic;
-        }
-        if next != material.extension.settings {
-            materials
-                .get_mut(&handle.handle)
-                .unwrap()
-                .extension
-                .settings = next;
-            run.mode_changes += 1;
-        }
+    let mut next = *display;
+    profile.configure(elapsed, &mut next);
+    if matches!(profile, Profile::Motion | Profile::Tunnel | Profile::Streaming) {
+        next.debug_view = super::GiDebugView::from_index(run.motion_diagnostic);
+    }
+    if next != *display {
+        *display = next;
+        run.mode_changes += 1;
     }
     let phase = profile.phase(elapsed);
     if let Some(&(at, name)) = profile.captures().get(run.captures)

@@ -4,11 +4,9 @@ use super::{
     diagnostics::toggle_voxel_gi,
     dispatch::{append_sky_work, select_probes, select_transport},
     publication::publish_scene_page,
-    render::{VoxelTransportAssets, VoxelTransportMaterial},
     sources::{SourceChange, invalidate_source_change},
 };
 use bevy::platform::collections::HashMap;
-use bevy_voxel_world::rendering::VoxelWorldMaterialHandle;
 
 #[test]
 #[should_panic(expected = "Voxel GI requires a GPU transport device")]
@@ -773,12 +771,6 @@ fn dispatch_reuses_returned_storage_without_retaining_candidates() {
 #[test]
 fn sky_comparison_is_display_only_and_independent_of_gi_toggle() {
     let mut app = App::new();
-    let mut materials = Assets::<VoxelTransportMaterial>::default();
-    let handle = materials.add(render::material_template(&VoxelTransportAssets {
-        geometry: default(),
-        far: default(),
-        texture: default(),
-    }));
     let mut runtime = VoxelGiRuntime {
         source_revision: 7,
         generation: 9,
@@ -786,10 +778,7 @@ fn sky_comparison_is_display_only_and_independent_of_gi_toggle() {
     };
     enqueue_urgent(&mut runtime, [IVec3::ZERO]);
     app.insert_resource(runtime)
-        .insert_resource(materials)
-        .insert_resource(VoxelWorldMaterialHandle {
-            handle: handle.clone(),
-        })
+        .init_resource::<VoxelGiDisplay>()
         .init_resource::<ButtonInput<KeyCode>>()
         .add_systems(Update, toggle_voxel_gi);
     let window = app
@@ -797,25 +786,19 @@ fn sky_comparison_is_display_only_and_independent_of_gi_toggle() {
         .spawn((Window::default(), bevy::window::PrimaryWindow))
         .id();
     for (key, sky, gi) in [
-        (KeyCode::F7, 0, 1),
-        (KeyCode::F4, 0, 0),
-        (KeyCode::F7, 1, 0),
-        (KeyCode::F4, 1, 1),
+        (KeyCode::F7, false, true),
+        (KeyCode::F4, false, false),
+        (KeyCode::F7, true, false),
+        (KeyCode::F4, true, true),
     ] {
         let mut keyboard = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
         keyboard.reset_all();
         keyboard.press(key);
         app.update();
-        let settings = app
-            .world()
-            .resource::<Assets<VoxelTransportMaterial>>()
-            .get(&handle)
-            .unwrap()
-            .extension
-            .settings;
-        assert_eq!(settings.voxel_sky, sky);
-        assert_eq!(settings.enabled, gi);
-        assert_eq!(settings.reconstruction, 1);
+        let display = *app.world().resource::<VoxelGiDisplay>();
+        assert_eq!(display.voxel_sun, sky);
+        assert_eq!(display.enabled, gi);
+        assert!(display.corner_reconstruction);
         let runtime = app.world().resource::<VoxelGiRuntime>();
         assert_eq!(runtime.source_revision, 7);
         assert_eq!(runtime.generation, 9);

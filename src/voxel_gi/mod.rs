@@ -57,6 +57,7 @@ pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 use pages::{ingest_input, start_scene_task};
 pub use bvw::{BvwVoxelEdits, GiFallbackVoxel, VoxelGiBvwPlugin};
 pub use input::{VoxelGiInput, VoxelGiSource, VoxelSource, dense_page};
+pub use render::{GiDebugView, VoxelGiDisplay};
 pub(crate) use diagnostics::{VoxelGiDiagnosticsPlugin, configure_demo_launch};
 use dispatch::{apply_trace_task, start_trace_task};
 use publication::apply_scene_task;

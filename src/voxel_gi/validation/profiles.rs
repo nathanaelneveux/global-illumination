@@ -1,6 +1,6 @@
 //! Workload identity and presentation are explicit; toggle stress is never a
 //! proxy for the cost or appearance of the normal gameplay mode.
-use super::super::render::GpuTransportSettings;
+use super::super::render::{GiDebugView, VoxelGiDisplay};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Profile {
@@ -370,24 +370,24 @@ impl Profile {
         }
     }
 
-    pub fn configure(self, elapsed: f32, settings: &mut GpuTransportSettings) {
-        settings.reset_display();
+    pub fn configure(self, elapsed: f32, settings: &mut VoxelGiDisplay) {
+        *settings = VoxelGiDisplay::default();
         if self == Self::Stress && (25.0..65.0).contains(&elapsed) {
             let step = ((elapsed - 25.0) * 8.0) as u32;
-            settings.enabled = step & 1;
-            settings.reconstruction = (step >> 1) & 1;
-            settings.debug_irradiance = (step >> 2) & 1;
-            settings.voxel_sky = (step >> 3) & 1;
+            settings.enabled = step & 1 != 0;
+            settings.corner_reconstruction = (step >> 1) & 1 != 0;
+            settings.debug_view = GiDebugView::from_index((step >> 2) & 1);
+            settings.voxel_sun = (step >> 3) & 1 != 0;
         } else if self == Self::Compare {
             match elapsed as u32 {
-                16..=17 => settings.voxel_sky = 0,
-                18..=19 => settings.reconstruction = 0,
-                20..=21 => settings.debug_irradiance = 1,
+                16..=17 => settings.voxel_sun = false,
+                18..=19 => settings.corner_reconstruction = false,
+                20..=21 => settings.debug_view = GiDebugView::Irradiance,
                 22..=23 => {
-                    settings.debug_irradiance = 1;
-                    settings.reconstruction = 0;
+                    settings.debug_view = GiDebugView::Irradiance;
+                    settings.corner_reconstruction = false;
                 }
-                24..=25 => settings.enabled = 0,
+                24..=25 => settings.enabled = false,
                 _ => {}
             }
         }
@@ -444,16 +444,11 @@ mod tests {
             Profile::Hallway,
         ] {
             for tick in 0..720 {
-                let mut settings = GpuTransportSettings::default();
+                let mut settings = VoxelGiDisplay::default();
                 profile.configure(tick as f32 / 10.0, &mut settings);
                 assert_eq!(
-                    (
-                        settings.enabled,
-                        settings.reconstruction,
-                        settings.voxel_sky,
-                        settings.debug_irradiance
-                    ),
-                    (1, 1, 1, 0)
+                    settings,
+                    VoxelGiDisplay::default()
                 );
             }
         }
@@ -465,29 +460,29 @@ mod tests {
     #[test]
     fn comparison_labels_match_explicit_modes_and_restore_defaults() {
         let expected = [
-            (1, 1, 1, 0),
-            (1, 1, 0, 0),
-            (1, 0, 1, 0),
-            (1, 1, 1, 1),
-            (1, 0, 1, 1),
-            (0, 1, 1, 0),
-            (1, 1, 1, 0),
+            (true, true, true, 0),
+            (true, true, false, 0),
+            (true, false, true, 0),
+            (true, true, true, 1),
+            (true, false, true, 1),
+            (false, true, true, 0),
+            (true, true, true, 0),
         ];
         for (&(at, _), expected) in Profile::Compare.captures().iter().zip(expected) {
-            let mut settings = GpuTransportSettings::default();
+            let mut settings = VoxelGiDisplay::default();
             Profile::Compare.configure(at, &mut settings);
             assert_eq!(
                 (
                     settings.enabled,
-                    settings.reconstruction,
-                    settings.voxel_sky,
-                    settings.debug_irradiance
+                    settings.corner_reconstruction,
+                    settings.voxel_sun,
+                    settings.debug_view.index()
                 ),
                 expected
             );
         }
-        let mut settings = GpuTransportSettings::default();
+        let mut settings = VoxelGiDisplay::default();
         Profile::Stress.configure(71.0, &mut settings);
-        assert_eq!(settings.voxel_sky, 1);
+        assert!(settings.voxel_sun);
     }
 }

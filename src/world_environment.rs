@@ -1,6 +1,5 @@
 use bevy::light::{CascadeShadowConfigBuilder, SimulationLightSystems};
 use bevy::prelude::*;
-use bevy_voxel_world::rendering::VoxelWorldMaterialHandle;
 
 use crate::terrain::TERRAIN_VIEW_DISTANCE;
 use crate::voxel_gi::render::VoxelTransportMaterial;
@@ -109,8 +108,7 @@ fn rotate_sun(angle: Option<Res<SunAngle>>, mut suns: Query<&mut Transform, With
 /// conservatively restores raster shadows. F7 takes effect before light culling
 /// and render extraction in the same frame. Point-light shadows are untouched.
 fn synchronize_sun_shadows(
-    handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
-    materials: Res<Assets<VoxelTransportMaterial>>,
+    display: Res<crate::voxel_gi::VoxelGiDisplay>,
     other_meshes: Query<
         (),
         (
@@ -120,10 +118,7 @@ fn synchronize_sun_shadows(
     >,
     mut suns: Query<&mut DirectionalLight, With<DemoSun>>,
 ) {
-    let corner_sun = handle
-        .as_ref()
-        .and_then(|handle| materials.get(&handle.handle))
-        .is_some_and(|material| material.extension.settings.voxel_sky != 0);
+    let corner_sun = display.voxel_sun;
     let required = !corner_sun || !other_meshes.is_empty();
     for mut sun in &mut suns {
         if sun.shadow_maps_enabled != required {
@@ -140,18 +135,7 @@ mod tests {
     #[test]
     fn shadows_follow_consumers_without_changing_other_lights() {
         let mut app = App::new();
-        let mut materials = Assets::<VoxelTransportMaterial>::default();
-        let material = materials.add(crate::voxel_gi::render::material_template(
-            &crate::voxel_gi::render::VoxelTransportAssets {
-                geometry: default(),
-                far: default(),
-                texture: default(),
-            },
-        ));
-        app.insert_resource(materials)
-            .insert_resource(VoxelWorldMaterialHandle {
-                handle: material.clone(),
-            });
+        app.init_resource::<crate::voxel_gi::VoxelGiDisplay>();
         let sun = app
             .world_mut()
             .spawn((
@@ -185,27 +169,12 @@ mod tests {
                 .unwrap()
                 .shadow_maps_enabled
         );
-        app.world_mut()
-            .resource_mut::<Assets<VoxelTransportMaterial>>()
-            .get_mut(&material)
-            .unwrap()
-            .extension
-            .settings
-            .voxel_sky = 0;
+        app.world_mut().resource_mut::<crate::voxel_gi::VoxelGiDisplay>().voxel_sun = false;
         assert!(update(&mut app), "F7 must restore raster shadows");
-        app.world_mut()
-            .resource_mut::<Assets<VoxelTransportMaterial>>()
-            .get_mut(&material)
-            .unwrap()
-            .extension
-            .settings
-            .voxel_sky = 1;
+        app.world_mut().resource_mut::<crate::voxel_gi::VoxelGiDisplay>().voxel_sun = true;
         let mesh = app.world_mut().spawn(Mesh3d::default()).id();
         assert!(update(&mut app), "other receivers still need shadow maps");
         app.world_mut().despawn(mesh);
         assert!(!update(&mut app));
-        app.world_mut()
-            .remove_resource::<VoxelWorldMaterialHandle<VoxelTransportMaterial>>();
-        assert!(update(&mut app), "unknown material mode is conservative");
     }
 }

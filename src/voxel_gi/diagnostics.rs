@@ -5,11 +5,9 @@ use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnost
 use bevy::prelude::*;
 use bevy::window::{CursorOptions, PrimaryWindow};
 use bevy_inspector_egui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use bevy_voxel_world::rendering::VoxelWorldMaterialHandle;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use super::render::VoxelTransportMaterial;
 use super::{VoxelEnergyField, VoxelGiRuntime, VoxelGiStats, VoxelGiSystems};
 use crate::player::{BombAtAim, PlaceEmissiveBlock};
 
@@ -174,8 +172,7 @@ fn hud_cost_text(stats: &VoxelGiStats) -> String {
 
 pub(super) fn toggle_voxel_gi(
     keyboard: Res<ButtonInput<KeyCode>>,
-    material_handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
-    mut materials: ResMut<Assets<VoxelTransportMaterial>>,
+    mut gi: ResMut<super::VoxelGiDisplay>,
     mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>,
 ) {
     // Scripted validation owns presentation as well as the player path.
@@ -183,44 +180,26 @@ pub(super) fn toggle_voxel_gi(
     if std::env::var_os("VOXEL_GI_VALIDATE").is_some() {
         return;
     }
-    if keyboard.just_pressed(KeyCode::F7)
-        && let Some(handle) = material_handle.as_ref()
-        && let Some(mut material) = materials.get_mut(&handle.handle)
-    {
-        material.extension.settings.voxel_sky ^= 1;
-        info!(
-            voxel_sky = material.extension.settings.voxel_sky != 0,
-            "direct sky lighting changed (F5 controls cached face/corner blending)"
-        );
+    if keyboard.just_pressed(KeyCode::F7) {
+        gi.voxel_sun = !gi.voxel_sun;
+        info!(voxel_sky = gi.voxel_sun, "direct sky lighting changed (F5 controls cached face/corner blending)");
     }
-    if keyboard.just_pressed(KeyCode::F6)
-        && let Some(handle) = material_handle.as_ref()
-        && let Some(mut material) = materials.get_mut(&handle.handle)
-    {
-        material.extension.settings.debug_irradiance ^= 1;
-        info!(
-            irradiance_only = material.extension.settings.debug_irradiance != 0,
-            "voxel GI diagnostic view changed"
-        );
+    if keyboard.just_pressed(KeyCode::F6) {
+        gi.debug_view = if gi.debug_view == super::GiDebugView::None {
+            super::GiDebugView::Irradiance
+        } else {
+            super::GiDebugView::None
+        };
+        info!(irradiance_only = gi.debug_view != super::GiDebugView::None, "voxel GI diagnostic view changed");
     }
-    if keyboard.just_pressed(KeyCode::F5)
-        && let Some(handle) = material_handle.as_ref()
-        && let Some(mut material) = materials.get_mut(&handle.handle)
-    {
-        material.extension.settings.reconstruction ^= 1;
-        info!(
-            smooth_corners = material.extension.settings.reconstruction != 0,
-            "voxel GI reconstruction changed"
-        );
+    if keyboard.just_pressed(KeyCode::F5) {
+        gi.corner_reconstruction = !gi.corner_reconstruction;
+        info!(smooth_corners = gi.corner_reconstruction, "voxel GI reconstruction changed");
     }
-    if (keyboard.just_pressed(KeyCode::F5) || keyboard.just_pressed(KeyCode::F7))
-        && let Some(handle) = material_handle.as_ref()
-        && let Some(material) = materials.get(&handle.handle)
-    {
-        let settings = material.extension.settings;
-        let sky_mode = if settings.voxel_sky == 0 {
+    if keyboard.just_pressed(KeyCode::F5) || keyboard.just_pressed(KeyCode::F7) {
+        let sky_mode = if !gi.voxel_sun {
             "per-pixel"
-        } else if settings.reconstruction != 0 {
+        } else if gi.corner_reconstruction {
             "voxel corners"
         } else {
             "voxel faces"
@@ -229,18 +208,9 @@ pub(super) fn toggle_voxel_gi(
             window.title = format!("Voxel GI Lab | Sun: {sky_mode} (F7)");
         }
     }
-    if !keyboard.just_pressed(KeyCode::F4) {
-        return;
-    }
-    if let Some(handle) = material_handle
-        && let Some(mut material) = materials.get_mut(&handle.handle)
-    {
-        let settings = &mut material.extension.settings;
-        settings.enabled = u32::from(settings.enabled == 0);
-        info!(
-            enabled = settings.enabled != 0,
-            "world-space voxel GI toggled"
-        );
+    if keyboard.just_pressed(KeyCode::F4) {
+        gi.enabled = !gi.enabled;
+        info!(enabled = gi.enabled, "world-space voxel GI toggled");
     }
 }
 
@@ -311,42 +281,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keyboard_toggle_uses_material_state_without_a_runtime_mirror() {
-        use super::super::render::{VoxelTransportAssets, material_template};
+    fn keyboard_toggle_flips_the_current_display_state() {
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
-        let mut materials = Assets::<VoxelTransportMaterial>::default();
-        let handle = materials.add(material_template(&VoxelTransportAssets {
-            geometry: default(),
-            far: default(),
-            texture: default(),
-        }));
         // An external caller, not the keyboard or panel, changed presentation.
-        materials
-            .get_mut(&handle)
-            .unwrap()
-            .extension
-            .settings
-            .enabled = 0;
-        world.insert_resource(materials);
-        world.insert_resource(VoxelWorldMaterialHandle {
-            handle: handle.clone(),
+        world.insert_resource(super::super::VoxelGiDisplay {
+            enabled: false,
+            ..default()
         });
         let mut keyboard = ButtonInput::default();
         keyboard.press(KeyCode::F4);
         world.insert_resource(keyboard);
-        for expected in [1, 0] {
+        for expected in [true, false] {
             world.run_system_once(toggle_voxel_gi).unwrap();
-            assert_eq!(
-                world
-                    .resource::<Assets<VoxelTransportMaterial>>()
-                    .get(&handle)
-                    .unwrap()
-                    .extension
-                    .settings
-                    .enabled,
-                expected
-            );
+            assert_eq!(world.resource::<super::super::VoxelGiDisplay>().enabled, expected);
         }
     }
 

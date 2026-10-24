@@ -96,6 +96,63 @@ impl MaterialExtension for VoxelTransportExtension {
     }
 }
 
+/// How GI-lit materials present lighting. Presentation only: never changes
+/// transport data or history.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct VoxelGiDisplay {
+    /// Apply GI lighting at all.
+    pub enabled: bool,
+    /// Interpolate lighting across voxel corners (false: flat per face).
+    pub corner_reconstruction: bool,
+    /// GI's voxel-corner sun visibility replaces Bevy's shadowed sun.
+    pub voxel_sun: bool,
+    /// Indirect light multiplier.
+    pub intensity: f32,
+    pub debug_view: GiDebugView,
+}
+
+impl Default for VoxelGiDisplay {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            corner_reconstruction: true,
+            voxel_sun: true,
+            intensity: 1.0,
+            debug_view: GiDebugView::None,
+        }
+    }
+}
+
+/// Diagnostic shading, replacing the lit color (the material's mode index).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GiDebugView {
+    #[default]
+    None,
+    /// Combined irradiance (sun and indirect) without albedo.
+    Irradiance,
+    /// Which lookup supplied each pixel's indirect light.
+    Coverage,
+    Indirect,
+    Sun,
+    /// Sun traced from the face's own corners (reference for `Sun`).
+    ExactCornerSun,
+    /// Missing indirect support and invalid exposed-face lookups.
+    FaceValidity,
+}
+
+impl GiDebugView {
+    pub fn index(self) -> u32 {
+        self as u32
+    }
+
+    pub fn from_index(index: u32) -> Self {
+        [Self::None, Self::Irradiance, Self::Coverage, Self::Indirect, Self::Sun, Self::ExactCornerSun, Self::FaceValidity]
+            .get(index as usize)
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
 pub struct GpuTransportSettings {
     pub enabled: u32,
@@ -126,18 +183,6 @@ impl Default for GpuTransportSettings {
     }
 }
 
-impl GpuTransportSettings {
-    /// Reset presentation, keeping the current suns.
-    #[cfg(any(debug_assertions, test))]
-    pub(crate) fn reset_display(&mut self) {
-        *self = Self {
-            sun_count: self.sun_count,
-            sun_direction: self.sun_direction,
-            sun_color: self.sun_color,
-            ..default()
-        };
-    }
-}
 
 #[derive(Resource, Clone)]
 pub struct VoxelTransportAssets {
@@ -221,9 +266,11 @@ fn install_geometry_buffers(
     }
 }
 
+/// Compose the material's settings from `VoxelGiDisplay` and the current suns.
 /// The display applies each cached sun's current direction and transport
 /// color per pixel; corner visibility comes from its quantized direction.
-fn synchronize_sun_display(
+fn synchronize_material_settings(
+    display: Res<VoxelGiDisplay>,
     runtime: Option<Res<super::VoxelGiRuntime>>,
     handle: Option<
         Res<bevy_voxel_world::rendering::VoxelWorldMaterialHandle<VoxelTransportMaterial>>,
@@ -234,27 +281,24 @@ fn synchronize_sun_display(
         return;
     };
     let lights = super::sky_cache::sky_lights(&runtime.sources);
-    let mut direction = [Vec4::ZERO; super::sky::MAX_SKY_LIGHTS];
-    let mut color = [Vec4::ZERO; super::sky::MAX_SKY_LIGHTS];
-    for (index, light) in lights.iter().enumerate() {
-        direction[index] = light.direction.extend(0.0);
-        color[index] = light.color.extend(0.0);
-    }
-    let Some(material) = materials.get(&handle.handle) else {
-        return;
+    let mut next = GpuTransportSettings {
+        enabled: u32::from(display.enabled),
+        reconstruction: u32::from(display.corner_reconstruction),
+        intensity: display.intensity,
+        debug_irradiance: display.debug_view.index(),
+        voxel_sky: u32::from(display.voxel_sun),
+        sun_count: lights.len() as u32,
+        ..default()
     };
-    let current = &material.extension.settings;
-    if current.sun_count == lights.len() as u32
-        && current.sun_direction == direction
-        && current.sun_color == color
-    {
-        return;
+    for (index, light) in lights.iter().enumerate() {
+        next.sun_direction[index] = light.direction.extend(0.0);
+        next.sun_color[index] = light.color.extend(0.0);
     }
-    if let Some(mut material) = materials.get_mut(&handle.handle) {
-        let settings = &mut material.extension.settings;
-        settings.sun_count = lights.len() as u32;
-        settings.sun_direction = direction;
-        settings.sun_color = color;
+    // Idle frames must not mark the material changed.
+    if materials.get(&handle.handle).is_some_and(|material| material.extension.settings != next)
+        && let Some(mut material) = materials.get_mut(&handle.handle)
+    {
+        material.extension.settings = next;
     }
 }
 
@@ -265,12 +309,13 @@ pub fn install_render_assets(app: &mut App, texture: Handle<Image>) {
         ExtractResourcePlugin::<super::gpu::view::ViewTransport>::default(),
     ));
     app.init_resource::<GeometryDisplay>();
+    app.init_resource::<VoxelGiDisplay>();
     app.init_resource::<super::gpu::view::ViewTransport>();
     app.add_systems(
         Update,
         (
             publish_geometry_buffers.after(super::dispatch::apply_trace_task),
-            synchronize_sun_display.after(super::sources::synchronize_transport_sources),
+            synchronize_material_settings.after(super::sources::synchronize_transport_sources),
         ),
     );
     let geometry = app

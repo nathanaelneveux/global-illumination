@@ -1,7 +1,7 @@
 //! Demo tuning surface. The reusable solver owns settings and invalidation;
 //! this adapter owns widgets, session comparisons and opt-in RON import/export.
 use super::*;
-use crate::voxel_gi::{TransportSettings, VoxelGiSettings, render::GpuTransportSettings};
+use crate::voxel_gi::{GiDebugView, TransportSettings, VoxelGiDisplay, VoxelGiSettings};
 
 #[cfg(test)]
 #[path = "tuning_capture.rs"]
@@ -33,21 +33,21 @@ struct DisplaySettings {
 }
 
 impl DisplaySettings {
-    fn read(settings: &GpuTransportSettings) -> Self {
+    fn read(settings: &VoxelGiDisplay) -> Self {
         Self {
-            enabled: settings.enabled != 0,
-            corners: settings.reconstruction != 0,
-            cached_sun: settings.voxel_sky != 0,
-            irradiance: settings.debug_irradiance != 0,
+            enabled: settings.enabled,
+            corners: settings.corner_reconstruction,
+            cached_sun: settings.voxel_sun,
+            irradiance: settings.debug_view != GiDebugView::None,
             intensity: settings.intensity,
         }
     }
 
-    fn write(self, settings: &mut GpuTransportSettings) {
-        settings.enabled = u32::from(self.enabled);
-        settings.reconstruction = u32::from(self.corners);
-        settings.voxel_sky = u32::from(self.cached_sun);
-        settings.debug_irradiance = u32::from(self.irradiance);
+    fn write(self, settings: &mut VoxelGiDisplay) {
+        settings.enabled = self.enabled;
+        settings.corner_reconstruction = self.corners;
+        settings.voxel_sun = self.cached_sun;
+        settings.debug_view = if self.irradiance { GiDebugView::Irradiance } else { GiDebugView::None };
         settings.intensity = self.intensity;
     }
 }
@@ -84,8 +84,7 @@ pub(super) fn draw_panel(
     mut contexts: EguiContexts,
     mut panel: ResMut<TuningPanel>,
     mut settings: ResMut<VoxelGiSettings>,
-    handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
-    mut materials: ResMut<Assets<VoxelTransportMaterial>>,
+    mut gi_display: ResMut<VoxelGiDisplay>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
 ) {
     if !panel.open {
@@ -94,14 +93,8 @@ pub(super) fn draw_panel(
     let Ok(context) = contexts.ctx_mut() else {
         return;
     };
-    let Some(handle) = handle else {
-        return;
-    };
-    let Some(material) = materials.get(&handle.handle) else {
-        return;
-    };
     let mut next = settings.clone();
-    let mut display = DisplaySettings::read(&material.extension.settings);
+    let mut display = DisplaySettings::read(&gi_display);
     let mut open = panel.open;
     egui::Window::new("Lighting controls")
         .open(&mut open)
@@ -119,14 +112,8 @@ pub(super) fn draw_panel(
     if *settings != next {
         *settings = next;
     }
-    if display != DisplaySettings::read(&material.extension.settings) {
-        display.write(
-            &mut materials
-                .get_mut(&handle.handle)
-                .unwrap()
-                .extension
-                .settings,
-        );
+    if display != DisplaySettings::read(&gi_display) {
+        display.write(&mut gi_display);
     }
 }
 
@@ -141,7 +128,7 @@ fn contents(
     ui.horizontal(|ui| {
         if ui.button("Reset defaults").clicked() {
             *settings = VoxelGiSettings::default();
-            *display = DisplaySettings::read(&GpuTransportSettings::default());
+            *display = DisplaySettings::read(&VoxelGiDisplay::default());
             panel.draft = Some(settings.transport);
             panel.status = "Defaults restored. Model changes refine progressively.".into();
         }
@@ -264,7 +251,7 @@ mod tests {
         let context = egui::Context::default();
         let mut panel = TuningPanel::default();
         let mut settings = VoxelGiSettings::default();
-        let mut display = DisplaySettings::read(&GpuTransportSettings::default());
+        let mut display = DisplaySettings::read(&VoxelGiDisplay::default());
         let mut frame = |events| {
             context.run_ui(
                 egui::RawInput {
@@ -336,24 +323,6 @@ mod tests {
     }
 
     #[test]
-    fn tuning_presets_never_replace_the_current_suns() {
-        let mut live = GpuTransportSettings {
-            sun_count: 2,
-            ..default()
-        };
-        let preset = DisplaySettings {
-            corners: false,
-            intensity: 0.5,
-            ..DisplaySettings::read(&live)
-        };
-        preset.write(&mut live);
-        assert_eq!(live.sun_count, 2);
-        assert_eq!(DisplaySettings::read(&live), preset);
-        DisplaySettings::read(&GpuTransportSettings::default()).write(&mut live);
-        assert_eq!(live.sun_count, 2);
-    }
-
-    #[test]
     fn tuning_import_clamps_and_idle_panel_does_not_change_settings() {
         let imported =
             parse_settings("(transport: (reach: 16.0, bounces: 0), samples_per_dispatch: 999)")
@@ -380,7 +349,7 @@ mod tests {
         let context = egui::Context::default();
         let mut panel = TuningPanel::default();
         let mut settings = defaults.clone();
-        let mut display = DisplaySettings::read(&GpuTransportSettings::default());
+        let mut display = DisplaySettings::read(&VoxelGiDisplay::default());
         for _ in 0..2 {
             let output = context.run_ui(egui::RawInput::default(), |root| {
                 egui::Window::new("Lighting controls").show(root.ctx(), |ui| {
@@ -392,7 +361,7 @@ mod tests {
         assert_eq!(settings, defaults);
         assert_eq!(
             display,
-            DisplaySettings::read(&GpuTransportSettings::default())
+            DisplaySettings::read(&VoxelGiDisplay::default())
         );
     }
 }
