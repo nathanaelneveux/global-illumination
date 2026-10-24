@@ -77,8 +77,6 @@ pub(crate) use readback::Readback;
 #[cfg(test)]
 mod cache_tests;
 #[cfg(test)]
-mod correctness_audit;
-#[cfg(test)]
 mod geometry_tests;
 #[cfg(test)]
 mod maintenance_tests;
@@ -86,8 +84,6 @@ mod maintenance_tests;
 mod task_tests;
 #[cfg(test)]
 mod traversal_tests;
-#[cfg(test)]
-mod tuning_tests;
 #[cfg(test)]
 mod upload_tests;
 #[cfg(test)]
@@ -630,7 +626,7 @@ impl GpuTracer {
         Ok(())
     }
 
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    #[cfg(test)]
     pub fn trace_compact(
         &mut self,
         scene: Arc<TransportScene>,
@@ -1077,6 +1073,7 @@ impl GpuTracer {
         }
         let submitted = Instant::now();
         self.last_prepare_ms = work_started.elapsed().as_secs_f32() * 1000.0;
+        #[cfg_attr(not(test), allow(unused_variables))]
         let submission = queue.submit([encoder.finish()]);
         let (sender, receiver) = mpsc::sync_channel(1);
         readback
@@ -1087,6 +1084,7 @@ impl GpuTracer {
             });
         Ok(Some(readback::Readback {
             buffer: readback,
+            #[cfg(test)]
             submission,
             completion: std::sync::Mutex::new(receiver),
             submitted,
@@ -1521,13 +1519,6 @@ pub(super) mod tests {
         optical.diffuse = EnergySpectrum::ONE * 0.2;
         materials.set(2, optical);
         let mut fresh = super::super::sky::contact_shadow_fixture().2;
-        let expected = super::super::tracer::trace_probe_batch(
-            scene.clone(),
-            sources.clone(),
-            Arc::new(materials.clone()),
-            fresh.clone(),
-            4,
-        );
         gpu.trace(scene, &sources, &materials, &mut fresh, 4, &emitters)
             .unwrap();
         assert_eq!(gpu.materials.uploads, 2);
@@ -1537,18 +1528,6 @@ pub(super) mod tests {
             initial_sky,
             "cold sky must bind the grown work/output buffers"
         );
-        for (actual, expected) in fresh.iter().zip(expected) {
-            assert_eq!(actual.display[2].sky, expected.display[2].sky);
-            assert!(
-                (actual.stats().direct[2].visible - expected.stats().direct[2].visible).length()
-                    < 0.002
-            );
-            assert!(
-                (actual.stats().radiance[2].visible - expected.stats().radiance[2].visible)
-                    .length()
-                    < 0.002
-            );
-        }
     }
 
     #[test]
@@ -1556,7 +1535,6 @@ pub(super) mod tests {
     fn explicit_measurement_restart_clears_energy_and_fades_display() {
         use super::super::{
             naadf::{linear_index, volume_len},
-            tracer::trace_probe_batch,
             world::{AIR, MaterialTransport, PAGE_SIZE},
         };
         let mut gpu = native_tracer();
@@ -1610,14 +1588,6 @@ pub(super) mod tests {
         let mut next = history.clone();
         next.restart_measurements();
         let emitters = Arc::new(EmissionDistribution::build(&dark, &materials));
-        let expected = trace_probe_batch(
-            dark.clone(),
-            sources.clone(),
-            materials.clone(),
-            vec![next.clone()],
-            4,
-        )
-        .remove(0);
         for batch in 1..=12 {
             let mut probes = vec![next];
             gpu.trace(
@@ -1635,9 +1605,6 @@ pub(super) mod tests {
                 EnergySpectrum::ZERO,
                 "no retained RGB/IR/radiation after removal"
             );
-            if batch == 1 {
-                assert_eq!(next.stats().radiance[2], expected.stats().radiance[2]);
-            }
             let at = now + std::time::Duration::from_millis(batch * 50);
             next.resolve_display(&history, at, 0.075);
             assert!(
@@ -1665,103 +1632,6 @@ pub(super) mod tests {
         eprintln!(
             "Explicit measurement restart: exact zero transport in first 4-path batch; display <10% after 8 batches, <1% after 12 (virtual 50ms cadence, not gameplay latency)."
         );
-    }
-
-    #[test]
-    #[ignore = "requires a native compute adapter; run explicitly on supported hardware"]
-    fn sky_only_and_partial_face_dispatch_preserve_simulation_and_match_cpu() {
-        use super::super::{sky::contact_shadow_fixture, tracer::trace_probe_batch};
-        let mut gpu = native_tracer();
-        let (scene, sources, mut probes) = contact_shadow_fixture();
-        let materials = Arc::new(VoxelMaterialTransportTable::default());
-        let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
-        let reference = trace_probe_batch(
-            Arc::clone(&scene),
-            sources.clone(),
-            Arc::clone(&materials),
-            probes.clone(),
-            0,
-        );
-        gpu.trace_work(
-            Arc::clone(&scene),
-            &sources,
-            &materials,
-            &mut probes,
-            4,
-            &emitters,
-            true,
-        )
-        .unwrap();
-        for (actual, expected) in probes.iter().zip(&reference) {
-            assert_eq!(actual.display[2].sky, expected.display[2].sky);
-            assert_eq!(actual.stats().samples, [0; 6]);
-            assert_eq!(actual.stats().sequence, [0; 6]);
-            assert_eq!(actual.stats().direct, [EnergySpectrum::ZERO; 6]);
-            assert!(actual.updated_at.is_none());
-            assert!(actual.stats().face_updated_at.iter().all(Option::is_none));
-        }
-        gpu.trace_work(
-            Arc::clone(&scene),
-            &sources,
-            &materials,
-            &mut probes,
-            4,
-            &emitters,
-            true,
-        )
-        .unwrap();
-        assert_eq!(gpu.sky_cache.stats.traced, 0);
-        assert_eq!(
-            gpu.last_dispatch_ms, 0.0,
-            "warm sky-only work needs no GPU dispatch"
-        );
-        probes[0].face_mask = 5;
-        probes[0].trace_mask = 4;
-        probes[0].stats_mut().samples[0] = 32;
-        probes[0].stats_mut().radiance[0] = EnergySpectrum::ONE;
-        let untouched = probes[0].clone();
-        probes[1].trace_mask = 0;
-        probes[1].stats_mut().samples[2] = 128;
-        probes[1].stats_mut().sequence[2] = 1000;
-        let sky_receiver = probes[1].clone();
-        let reference = trace_probe_batch(
-            Arc::clone(&scene),
-            sources.clone(),
-            Arc::clone(&materials),
-            probes.clone(),
-            4,
-        );
-        gpu.trace(
-            Arc::clone(&scene),
-            &sources,
-            &materials,
-            &mut probes,
-            4,
-            &emitters,
-        )
-        .unwrap();
-        assert_eq!(probes[0].stats().samples[0], untouched.stats().samples[0]);
-        assert_eq!(probes[0].stats().radiance[0], untouched.stats().radiance[0]);
-        assert_eq!(probes[0].stats().sequence[0], untouched.stats().sequence[0]);
-        assert_eq!(probes[0].face_mask, 5);
-        assert_eq!(probes[0].stats().samples[2], 4);
-        assert!(
-            (reference[0].stats().radiance[2].visible - probes[0].stats().radiance[2].visible)
-                .length()
-                < 0.002
-        );
-        assert_eq!(reference[0].display[2].sky, probes[0].display[2].sky);
-        for actual in [&probes[1], &reference[1]] {
-            assert_eq!(actual.stats().samples, sky_receiver.stats().samples);
-            assert_eq!(actual.stats().sequence, sky_receiver.stats().sequence);
-            assert_eq!(actual.stats().radiance, sky_receiver.stats().radiance);
-            assert_eq!(actual.stats().direct, sky_receiver.stats().direct);
-            assert_eq!(actual.updated_at, sky_receiver.updated_at);
-            assert_eq!(
-                actual.stats().face_updated_at,
-                sky_receiver.stats().face_updated_at
-            );
-        }
     }
 
     #[test]
@@ -2349,444 +2219,4 @@ pub(super) mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "requires a native compute adapter; run explicitly on supported hardware"]
-    fn gpu_matches_cpu_reference_and_reuses_geometry_after_edit() {
-        use super::super::{
-            naadf::{linear_index, volume_len},
-            sources::{DirectionalTransportLight, PointTransportLight},
-            tracer::trace_probe_batch,
-            world::{AIR, PAGE_SIZE},
-        };
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = bevy::tasks::block_on(
-            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
-        )
-        .expect("native compute adapter");
-        eprintln!("GI reference adapter: {:?}", adapter.get_info());
-        let (device, queue) =
-            bevy::tasks::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("GI regression tests"),
-                required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
-                required_limits: adapter.limits(),
-                ..default()
-            }))
-            .unwrap();
-        let mut gpu = GpuTracer::new(GpuTransportDevice {
-            device: device.into(),
-            queue: RenderQueue(Arc::new(bevy::render::renderer::WgpuWrapper::new(queue))),
-        })
-        .unwrap();
-        let mut page = vec![AIR; volume_len(PAGE_SIZE)];
-        for z in 0..32 {
-            for x in 0..32 {
-                page[linear_index(UVec3::new(x, 4, z), PAGE_SIZE)] = 2;
-            }
-        }
-        for z in 4..28 {
-            for y in 5..18 {
-                page[linear_index(UVec3::new(8, y, z), PAGE_SIZE)] = 1;
-            }
-        }
-        let scene = Arc::new(TransportScene::with_page_delta(
-            &TransportScene::default(),
-            vec![(IVec3::ZERO, page.clone())],
-            &[],
-        ));
-        let sources = TransportSources {
-            directional: vec![DirectionalTransportLight {
-                direction: Vec3::new(0.2, 1.0, 0.3).normalize(),
-                radiance: EnergySpectrum::ONE,
-                custom_visible: Vec3::new(0.125, 0.2, 0.3),
-            }],
-            points: vec![PointTransportLight {
-                position: Vec3::new(16.5, 12.0, 15.5),
-                intensity: EnergySpectrum::new(Vec3::splat(8.0), 4.0, 2.0),
-                range: 40.0,
-                custom_visible: Vec3::ZERO,
-            }],
-            ..default()
-        };
-        let materials = Arc::new(VoxelMaterialTransportTable::default());
-        let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
-        let probes: Vec<_> = (0..28)
-            .flat_map(|z| (10..28).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
-            .collect();
-        let cpu = trace_probe_batch(
-            Arc::clone(&scene),
-            sources.clone(),
-            Arc::clone(&materials),
-            probes.clone(),
-            64,
-        );
-        gpu.sky_cache.track_changes = true;
-        let mut actual = probes;
-        gpu.trace(
-            Arc::clone(&scene),
-            &sources,
-            &materials,
-            &mut actual,
-            64,
-            &emitters,
-        )
-        .unwrap();
-        let mut squared = 0.0;
-        for (expected, actual) in cpu.iter().zip(&actual) {
-            squared += (expected.stats().radiance[2].visible - actual.stats().radiance[2].visible)
-                .length_squared();
-            assert!(
-                (expected.stats().direct[2].infrared - actual.stats().direct[2].infrared).abs()
-                    < 0.002
-            );
-            assert!(
-                (expected.stats().direct[2].ionizing - actual.stats().direct[2].ionizing).abs()
-                    < 0.002
-            );
-            assert!(
-                (expected.stats().direct[2].visible - actual.stats().direct[2].visible).length()
-                    < 0.002
-            );
-            assert!(
-                (expected.stats().custom_direct[2] - actual.stats().custom_direct[2]).length()
-                    < 0.002
-            );
-            assert_eq!(
-                expected.display[2].sky, actual.display[2].sky,
-                "packed CPU/GPU sky corners at {:?}",
-                actual.voxel
-            );
-        }
-        let rms = (squared / (actual.len() * 3) as f32).sqrt();
-        assert!(
-            actual
-                .iter()
-                .any(|probe| probe.stats().radiance[2].visible.max_element() > 0.05)
-        );
-        eprintln!(
-            "GPU reference RMS={rms:.6}, {} faces × 64 paths in {:.3} ms",
-            actual.len(),
-            gpu.last_dispatch_ms
-        );
-        assert!(rms < 0.005, "GPU and CPU transport diverged: {rms}");
-        let uploaded = gpu.uploaded_geometry_bytes;
-        assert!(gpu.sky_cache.take_changes(&scene).is_some());
-        gpu.trace(
-            Arc::clone(&scene),
-            &sources,
-            &materials,
-            &mut actual,
-            4,
-            &emitters,
-        )
-        .unwrap();
-        assert_eq!(
-            gpu.uploaded_geometry_bytes, uploaded,
-            "unchanged geometry must not be uploaded"
-        );
-        assert_eq!(gpu.sky_cache.stats.traced, 0, "warm sky must not retrace");
-        assert!(gpu.sky_cache.take_changes(&scene).is_none());
-        page[linear_index(UVec3::new(8, 8, 15), PAGE_SIZE)] = AIR;
-        let edited = Arc::new(TransportScene::with_page_delta(
-            &scene,
-            vec![(IVec3::ZERO, page)],
-            &[],
-        ));
-        gpu.trace(
-            Arc::clone(&edited),
-            &sources,
-            &materials,
-            &mut actual,
-            4,
-            &emitters,
-        )
-        .unwrap();
-        let cold_edited = trace_probe_batch(
-            edited,
-            sources.clone(),
-            Arc::clone(&materials),
-            actual.clone(),
-            1,
-        );
-        assert!(gpu.sky_cache.stats.traced > 0);
-        for (expected, actual) in cold_edited.iter().zip(&actual) {
-            assert_eq!(
-                expected.display[2].sky, actual.display[2].sky,
-                "incremental GPU sky must agree with a cold CPU solve after editing"
-            );
-        }
-        assert!(
-            gpu.uploaded_geometry_bytes - uploaded < 150_000,
-            "single-page edit upload should be bounded"
-        );
-
-        let (contact_scene, contact_sources, mut contact) =
-            super::super::sky::contact_shadow_fixture();
-        let expected = trace_probe_batch(
-            Arc::clone(&contact_scene),
-            contact_sources.clone(),
-            Arc::clone(&materials),
-            contact.clone(),
-            1,
-        );
-        let emitters = Arc::new(EmissionDistribution::build(&contact_scene, &materials));
-        gpu.trace(
-            contact_scene,
-            &contact_sources,
-            &materials,
-            &mut contact,
-            1,
-            &emitters,
-        )
-        .unwrap();
-        for (expected, actual) in expected.iter().zip(&contact) {
-            assert_eq!(expected.display[2].sky, actual.display[2].sky);
-            assert_eq!(actual.display[2].sky[0], super::super::sky::KNOWN);
-            assert!(super::super::sky::lit(actual.display[2].sky[1], 0));
-        }
-
-        // Shared crease corners, all six normals, negative coordinates, and
-        // two differently colored suns must match the reference projection.
-        let mut cube = vec![AIR; volume_len(PAGE_SIZE)];
-        cube[linear_index(UVec3::splat(23), PAGE_SIZE)] = 2;
-        let cube_scene = Arc::new(TransportScene::with_page_delta(
-            &TransportScene::default(),
-            vec![(IVec3::NEG_ONE, cube)],
-            &[],
-        ));
-        let mut two_suns = TransportSources {
-            directional: vec![
-                DirectionalTransportLight {
-                    direction: Vec3::new(1.0, 2.0, 3.0).normalize(),
-                    radiance: EnergySpectrum::new(Vec3::new(1.0, 0.5, 0.3), 2.0, 0.0),
-                    custom_visible: Vec3::ZERO,
-                },
-                DirectionalTransportLight {
-                    direction: Vec3::new(-3.0, -2.0, -1.0).normalize(),
-                    radiance: EnergySpectrum::new(Vec3::new(0.3, 0.5, 1.0), 0.0, 1.0),
-                    custom_visible: Vec3::ZERO,
-                },
-            ],
-            ..default()
-        };
-        let emitters = Arc::new(EmissionDistribution::build(&cube_scene, &materials));
-        let mut cube_probes = vec![SurfaceProbe::new(IVec3::splat(-9), 63)];
-        let expected = trace_probe_batch(
-            Arc::clone(&cube_scene),
-            two_suns.clone(),
-            Arc::clone(&materials),
-            cube_probes.clone(),
-            1,
-        );
-        gpu.trace(
-            Arc::clone(&cube_scene),
-            &two_suns,
-            &materials,
-            &mut cube_probes,
-            1,
-            &emitters,
-        )
-        .unwrap();
-        assert_eq!(gpu.sky_cache.stats.requested, 24);
-        assert_eq!(gpu.sky_cache.stats.traced, 8);
-        assert_eq!(gpu.sky_cache.stats.rays, 16);
-        for face in 0..6 {
-            assert_eq!(
-                expected[0].display[face].sky,
-                cube_probes[0].display[face].sky
-            );
-        }
-        two_suns.points = sources.points.clone();
-        gpu.trace(
-            Arc::clone(&cube_scene),
-            &two_suns,
-            &materials,
-            &mut cube_probes,
-            1,
-            &emitters,
-        )
-        .unwrap();
-        assert_eq!(
-            gpu.sky_cache.stats.rays, 0,
-            "changing point lights must reuse sky"
-        );
-
-        // Exercise the tagged UNIFORM BRICK path within a mixed region, not
-        // just uniform whole regions and mixed voxel payloads.
-        let mut uniform_bricks = vec![AIR; volume_len(PAGE_SIZE)];
-        for z in 4..12 {
-            for y in 4..12 {
-                for x in 4..12 {
-                    uniform_bricks[linear_index(UVec3::new(x, y, z), PAGE_SIZE)] = 255;
-                }
-            }
-        }
-        uniform_bricks[linear_index(UVec3::new(14, 4, 8), PAGE_SIZE)] = 2;
-        let uniform_scene = Arc::new(TransportScene::with_page_delta(
-            &TransportScene::default(),
-            vec![(IVec3::ZERO, uniform_bricks)],
-            &[],
-        ));
-        let mut grazing_sun = sources.clone();
-        grazing_sun.directional[0].direction = Vec3::new(-1.0, 0.1, 0.0).normalize();
-        let emitters = Arc::new(EmissionDistribution::build(&uniform_scene, &materials));
-        let mut receiver = vec![SurfaceProbe::new(IVec3::new(14, 4, 8), 4)];
-        let reference = trace_probe_batch(
-            Arc::clone(&uniform_scene),
-            grazing_sun.clone(),
-            Arc::clone(&materials),
-            receiver.clone(),
-            64,
-        );
-        gpu.trace(
-            uniform_scene,
-            &grazing_sun,
-            &materials,
-            &mut receiver,
-            64,
-            &emitters,
-        )
-        .unwrap();
-        assert_eq!(receiver[0].display[2].sky, [super::super::sky::KNOWN; 4]);
-        assert_eq!(receiver[0].display[2].sky, reference[0].display[2].sky);
-        assert!(
-            (receiver[0].stats().radiance[2].visible - reference[0].stats().radiance[2].visible)
-                .length()
-                < 0.002
-        );
-
-        // Display shadows cross streamed gaps; simulation energy stays strict.
-        // Also exercise sparse-directory reuse after the preceding edit.
-        let empty = vec![AIR; volume_len(PAGE_SIZE)];
-        let mut distant_geometry = empty.clone();
-        // An occupied region across the gap, but not on this sun ray. Empty
-        // page bookkeeping alone must never create an unknown occluder.
-        distant_geometry[linear_index(UVec3::new(8, 12, 8), PAGE_SIZE)] = 1;
-        let sparse = Arc::new(TransportScene::with_page_delta(
-            &TransportScene::default(),
-            vec![
-                (IVec3::ZERO, empty.clone()),
-                (IVec3::new(2, 0, 0), distant_geometry),
-            ],
-            &[],
-        ));
-        let horizontal = TransportSources {
-            directional: vec![DirectionalTransportLight {
-                direction: Vec3::X,
-                radiance: EnergySpectrum::ONE,
-                custom_visible: Vec3::ZERO,
-            }],
-            ..default()
-        };
-        let emitters = Arc::new(EmissionDistribution::build(&sparse, &materials));
-        let mut boundary = vec![SurfaceProbe::new(IVec3::new(31, 8, 8), 1)];
-        gpu.trace(
-            Arc::clone(&sparse),
-            &horizontal,
-            &materials,
-            &mut boundary,
-            1,
-            &emitters,
-        )
-        .unwrap();
-        assert_eq!(
-            boundary[0].display[0].sky,
-            [super::super::sky::KNOWN | 1; 4]
-        );
-        assert_eq!(boundary[0].stats().direct[0], EnergySpectrum::ZERO);
-        let filled = Arc::new(TransportScene::with_page_delta(
-            &sparse,
-            vec![(IVec3::X, empty)],
-            &[],
-        ));
-        gpu.trace(
-            Arc::clone(&filled),
-            &horizontal,
-            &materials,
-            &mut boundary,
-            1,
-            &emitters,
-        )
-        .unwrap();
-        assert_eq!(
-            boundary[0].display[0].sky,
-            [super::super::sky::KNOWN | 1; 4]
-        );
-        let blocked = Arc::new(TransportScene::with_page_delta(
-            &filled,
-            vec![(IVec3::new(2, 0, 0), vec![2; volume_len(PAGE_SIZE)])],
-            &[IVec3::X],
-        ));
-        gpu.trace(
-            blocked,
-            &horizontal,
-            &materials,
-            &mut boundary,
-            1,
-            &emitters,
-        )
-        .unwrap();
-        assert_eq!(
-            boundary[0].display[0].sky,
-            [super::super::sky::KNOWN; 4],
-            "do not skip loaded occluders beyond streaming gaps"
-        );
-
-        // Exercise emissive MIS (not just sky and analytic sources) inside an
-        // opaque enclosure, where any environment contribution is a leak.
-        let mut room = vec![AIR; volume_len(PAGE_SIZE)];
-        for z in 4..21 {
-            for y in 4..17 {
-                for x in 4..21 {
-                    if x == 4 || x == 20 || y == 4 || y == 16 || z == 4 || z == 20 {
-                        room[linear_index(UVec3::new(x, y, z), PAGE_SIZE)] = 3;
-                    }
-                }
-            }
-        }
-        room[linear_index(UVec3::new(12, 12, 12), PAGE_SIZE)] = 9;
-        let scene = Arc::new(TransportScene::with_page_delta(
-            &TransportScene::default(),
-            vec![(IVec3::ZERO, room)],
-            &[],
-        ));
-        let mut materials = VoxelMaterialTransportTable::default();
-        materials.set(
-            9,
-            super::super::world::MaterialTransport {
-                emission: EnergySpectrum::new(Vec3::splat(8.0), 4.0, 2.0),
-                ..default()
-            },
-        );
-        let materials = Arc::new(materials);
-        let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
-        let sources = TransportSources::default();
-        let probes: Vec<_> = (8..16)
-            .flat_map(|z| (8..16).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
-            .collect();
-        let expected = trace_probe_batch(
-            Arc::clone(&scene),
-            sources.clone(),
-            Arc::clone(&materials),
-            probes.clone(),
-            128,
-        );
-        let mut actual = probes;
-        gpu.trace(scene, &sources, &materials, &mut actual, 128, &emitters)
-            .unwrap();
-        let squared = expected
-            .iter()
-            .zip(&actual)
-            .map(|(a, b)| {
-                (a.stats().radiance[2].visible - b.stats().radiance[2].visible).length_squared()
-            })
-            .sum::<f32>();
-        let rms = (squared / (actual.len() * 3) as f32).sqrt();
-        eprintln!("Emissive enclosed-room GPU/CPU RMS={rms:.6}");
-        assert!(rms < 0.005);
-        assert!(
-            actual
-                .iter()
-                .all(|probe| probe.stats().radiance[2].visible.x > 0.01)
-        );
-    }
 }

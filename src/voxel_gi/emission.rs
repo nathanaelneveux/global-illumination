@@ -104,7 +104,7 @@ fn emission_geometry_changed(
 }
 
 impl EmissionDistribution {
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    #[cfg(test)]
     pub fn build(scene: &TransportScene, materials: &VoxelMaterialTransportTable) -> Self {
         Self::with_importance(scene, materials, super::EnergySpectrum::ONE)
     }
@@ -204,6 +204,7 @@ impl EmissionDistribution {
         }
     }
 
+    #[cfg(test)]
     pub fn select(&self, uniform: f32) -> Option<EmissiveFace> {
         if self.faces.is_empty() {
             return None;
@@ -214,6 +215,7 @@ impl EmissionDistribution {
         self.faces.get(index.min(self.faces.len() - 1)).copied()
     }
 
+    #[cfg(test)]
     pub fn select_at(&self, position: Vec3, normal: Vec3, uniform: f32) -> Option<EmissiveFace> {
         if self.tree.is_empty() {
             return self.select(uniform);
@@ -224,6 +226,7 @@ impl EmissionDistribution {
         Some(face)
     }
 
+    #[cfg(test)]
     pub fn probability_at(
         &self,
         position: Vec3,

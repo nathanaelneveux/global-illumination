@@ -537,8 +537,7 @@ mod tests {
                     assert_eq!(face.samples, reference.stats().samples[index]);
                     assert_eq!(face.radiance, reference.stats().radiance[index]);
                     for sample in 0..4 {
-                        super::super::tracer::accumulate_sample(
-                            &mut reference,
+                        reference.accumulate_sample(
                             index,
                             EnergySpectrum::new(Vec3::splat(sample as f32 * 0.2), 0.3, 0.6),
                         );

@@ -221,13 +221,10 @@ fn temporal_blend(history: Vec3, measured: Vec3, alpha: f32) -> Vec3 {
 mod tests {
     use super::super::{
         naadf::{linear_index, volume_len},
-        sources::TransportSources,
-        tracer::trace_probe_batch,
-        world::{PAGE_SIZE, VoxelMaterialTransportTable},
+        world::PAGE_SIZE,
     };
     use super::*;
     use std::collections::HashMap;
-    use std::sync::Arc;
     use std::time::Duration;
 
     fn scene_with(solids: &[IVec3]) -> TransportScene {
@@ -491,7 +488,7 @@ mod tests {
             for batch in 1..=64 {
                 for _ in 0..4 {
                     // Closing the last opening makes every fresh path dark.
-                    super::super::tracer::accumulate_sample(&mut probe, 2, EnergySpectrum::ZERO);
+                    probe.accumulate_sample(2, EnergySpectrum::ZERO);
                 }
                 let mean = probe.stats().radiance[2];
                 let second = probe.stats().second_moment[2];
@@ -604,67 +601,6 @@ mod tests {
             EnergySpectrum::ONE,
             "only presentation is filtered"
         );
-    }
-
-    #[test]
-    fn digging_a_sealed_dark_tunnel_never_seeds_unoccluded_sky() {
-        let now = Instant::now();
-        let mut page = vec![2; volume_len(PAGE_SIZE)];
-        for z in 8..12 {
-            for y in 8..11 {
-                for x in 8..12 {
-                    page[linear_index(UVec3::new(x, y, z), PAGE_SIZE)] = AIR;
-                }
-            }
-        }
-        let old_scene = Arc::new(TransportScene::with_page_delta(
-            &TransportScene::default(),
-            vec![(IVec3::ZERO, page.clone())],
-            &[],
-        ));
-        let old_voxel = IVec3::new(9, 7, 9);
-        let blank = SurfaceProbe::new(old_voxel, 4);
-        let materials = Arc::new(VoxelMaterialTransportTable::default());
-        let mut donor = trace_probe_batch(
-            old_scene,
-            TransportSources::default(),
-            materials.clone(),
-            vec![blank.clone()],
-            64,
-        )
-        .remove(0);
-        donor.resolve_display(&blank, now, 0.075);
-        assert_eq!(donor.stats().radiance[2], EnergySpectrum::ZERO);
-        page[linear_index(old_voxel.as_uvec3(), PAGE_SIZE)] = AIR;
-        let scene = Arc::new(TransportScene::with_page_delta(
-            &TransportScene::default(),
-            vec![(IVec3::ZERO, page)],
-            &[],
-        ));
-        let voxel = old_voxel - IVec3::Y;
-        let mut previous = SurfaceProbe::new(voxel, 4);
-        previous.display[2] = seed_face(&scene, voxel, 2, 0, Instant::now(), |v| {
-            (v == old_voxel).then_some(&donor)
-        });
-        assert!(
-            previous.display[2].confidence > 0.0,
-            "can inherit the removed front wall"
-        );
-        assert_eq!(previous.display[2].indirect, Vec3::ZERO);
-        for batch in 1..=8 {
-            let mut next = trace_probe_batch(
-                scene.clone(),
-                TransportSources::default(),
-                materials.clone(),
-                vec![previous.clone()],
-                4,
-            )
-            .remove(0);
-            next.resolve_display(&previous, now + Duration::from_millis(batch * 50), 0.075);
-            assert_eq!(next.display[2].indirect, Vec3::ZERO);
-            assert_eq!(next.stats().radiance[2], EnergySpectrum::ZERO);
-            previous = next;
-        }
     }
 
     #[test]

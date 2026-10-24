@@ -258,7 +258,7 @@ impl NaadfRegion {
         }
     }
 
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    #[cfg(test)]
     pub fn brick_occupied(&self, brick: UVec3) -> bool {
         match &self.storage {
             RegionStorage::Empty => false,
@@ -333,7 +333,7 @@ impl TopLevelAadf {
         }
     }
 
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    #[cfg(test)]
     pub fn contains(&self, coordinate: IVec3) -> bool {
         self.size != UVec3::ZERO
             && coordinate.cmpge(self.minimum).all()
@@ -387,13 +387,6 @@ impl TransportScene {
         keys.sort_unstable_by_key(|p| (p.z, p.y, p.x));
         keys.dedup();
         keys
-    }
-
-    #[cfg(test)]
-    pub(crate) fn transport_changed_from(&self, previous: &Self) -> bool {
-        super::geometry::SceneChanges::between(previous, self)
-            .transport
-            .is_some()
     }
 
     pub fn with_page_delta(
@@ -470,7 +463,7 @@ impl TransportScene {
             .map(|region| region.material(local.as_uvec3()))
     }
 
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    #[cfg(test)]
     pub fn world_bounds(&self) -> Option<(Vec3, Vec3)> {
         (self.top_level.size != UVec3::ZERO).then(|| {
             (
@@ -606,6 +599,19 @@ impl SurfaceProbe {
             source_revision: 0,
             updated_at: None,
         }
+    }
+
+    /// Test helper: append one raw sample to the CPU statistics.
+    #[cfg(test)]
+    pub(crate) fn accumulate_sample(&mut self, face: usize, sample: EnergySpectrum) {
+        let sample = sample.finite_or_zero();
+        let count = (self.stats().samples[face] + 1).min(super::tracer::HISTORY_LIMIT);
+        let alpha = 1.0 / count as f32;
+        let stats = self.stats_mut();
+        stats.radiance[face] += (sample - stats.radiance[face]) * alpha;
+        stats.second_moment[face] += (sample * sample - stats.second_moment[face]) * alpha;
+        stats.samples[face] = count;
+        stats.sequence[face] = stats.sequence[face].wrapping_add(1);
     }
 
     /// CPU statistics, or empty ones when this probe keeps none.

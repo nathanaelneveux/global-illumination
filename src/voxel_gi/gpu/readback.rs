@@ -4,7 +4,7 @@ use super::*;
 
 pub(crate) struct Readback {
     pub(super) buffer: UploadBuffer,
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    #[cfg(test)]
     pub(super) submission: wgpu::SubmissionIndex,
     // Mutex supplies Sync for Bevy resource ownership, but the worker owns the
     // snapshot exclusively and accesses the receiver with get_mut, never locks.
@@ -51,7 +51,7 @@ impl Readback {
 
     /// The independent reference/tests use the same submission and decoder,
     /// with an explicit worker-only wait. Runtime residency only calls poll.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    #[cfg(test)]
     pub(super) fn wait(&mut self, device: &RenderDevice) -> Result<(), String> {
         if self.poll(device)? {
             return Ok(());

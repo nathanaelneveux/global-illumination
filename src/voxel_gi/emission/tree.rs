@@ -1,8 +1,6 @@
 //! Receiver-conditioned binary light hierarchy. The approximate importance
 //! changes only the proposal, never visibility or energy. A power mixture at
 //! every branch retains support for every emitting face in all five bands.
-// Partly used only by the CPU oracle (tests, debug validation).
-#![cfg_attr(not(debug_assertions), allow(dead_code))]
 use super::*;
 
 #[derive(Clone, Copy, Default)]
@@ -75,6 +73,7 @@ pub(super) fn build(faces: &[EmissiveFace]) -> Vec<LightNode> {
     nodes
 }
 
+#[cfg(test)]
 fn importance(node: &LightNode, position: Vec3, normal: Vec3) -> f32 {
     let delta = (node.minimum + node.maximum) * 0.5 - position;
     let radius = (node.maximum - node.minimum).length() * 0.5;
@@ -92,6 +91,7 @@ fn importance(node: &LightNode, position: Vec3, normal: Vec3) -> f32 {
     node.power * receiver_cosine * emitter_cosine / (distance * distance + radius * radius + 0.25)
 }
 
+#[cfg(test)]
 fn left_probability(nodes: &[LightNode], node: &LightNode, position: Vec3, normal: Vec3) -> f32 {
     let left = &nodes[node.left as usize];
     let right = &nodes[node.right as usize];
@@ -107,6 +107,7 @@ fn left_probability(nodes: &[LightNode], node: &LightNode, position: Vec3, norma
     p.clamp(1e-6, 1.0 - 1e-6)
 }
 
+#[cfg(test)]
 pub(super) fn select(
     nodes: &[LightNode],
     position: Vec3,
@@ -134,6 +135,7 @@ pub(super) fn select(
     }
 }
 
+#[cfg(test)]
 pub(super) fn probability(
     nodes: &[LightNode],
     faces: &[EmissiveFace],

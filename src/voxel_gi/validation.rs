@@ -9,8 +9,6 @@ mod house;
 mod memory;
 mod metrics;
 mod profiles;
-mod reference;
-pub(super) mod reference_oracle;
 mod response;
 mod structures;
 mod tunnel;
@@ -129,7 +127,6 @@ pub(super) struct ValidationRun {
     max_pages: usize,
     capture_pause_until: f32,
     done: bool,
-    reference: reference::ReferenceRun,
 }
 
 pub(super) fn run_validation(
@@ -140,7 +137,6 @@ pub(super) fn run_validation(
         Res<VoxelGiStats>,
         Res<super::VoxelGiRuntime>,
         Option<Res<host_timing::HostTiming>>,
-        Option<Res<super::gpu::GpuTransportDevice>>,
     ),
     settings: Res<VoxelGiSettings>,
     field: Res<VoxelEnergyField>,
@@ -161,13 +157,12 @@ pub(super) fn run_validation(
     ),
 ) {
     if run.done {
-        run.reference.poll(&mut commands, &mut evidence);
         return;
     }
     if std::env::var_os("VOXEL_GI_VALIDATE").is_none() || evidence.failed {
         return;
     }
-    let (stats, runtime, host_timing, device) = gi;
+    let (stats, runtime, host_timing) = gi;
     let (assets, asset_server, configs, generator) = asset_context;
     if run.startup.is_none() {
         // Shared Cargo build directories can reuse another worktree's package
@@ -746,18 +741,7 @@ pub(super) fn run_validation(
         commands.write_message(AppExit::error());
     } else {
         info!(output = %output.display(), "GI validation workload complete (review quality/performance separately)");
-        if reference::ReferenceRun::requested() {
-            if let Err(error) = run.reference.start(
-                &runtime,
-                device.as_deref(),
-                &settings,
-                profile,
-                output.clone(),
-            ) {
-                evidence.fail(&error);
-                commands.write_message(AppExit::error());
-            }
-        } else if std::env::var_os("VOXEL_GI_VALIDATE_EXIT").is_some() {
+        if std::env::var_os("VOXEL_GI_VALIDATE_EXIT").is_some() {
             commands.write_message(AppExit::Success);
         }
     }

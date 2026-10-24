@@ -5,7 +5,10 @@ usage: uv run --python 3.12 --with numpy --with pillow --with flip-evaluator \
 
 Cost: view-tier GPU receipts (median after the first quarter of the run),
 headless frame-time percentiles and GI main-thread time per frame (streaming),
-peak process footprint. Offscreen cadence is not windowed frame pacing.
+peak process footprint. Offscreen cadence is not windowed frame pacing, and it
+drifts between sessions (an identical rerun was 2.8 ms slower at p50 on
+2026-10-23): compare against a baseline run next to the candidate, and rerun
+the baseline when a cost delta matters.
 Visible: static-pose pixels darker/brighter than baseline by >.1 luminance
 (combined, sun, indirect), single-frame black flashes on two walks, black
 pixels per frame after a turn, tunnel black-then-lit, response FLIP.

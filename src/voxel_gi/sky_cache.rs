@@ -556,13 +556,17 @@ fn ray_intersects_box(origin: Vec3, direction: Vec3, minimum: Vec3, maximum: Vec
 }
 
 #[cfg(test)]
+#[path = "sky_cache/cpu_trace.rs"]
+mod cpu_trace;
+
+#[cfg(test)]
 mod tests {
+    use super::cpu_trace::sample_sky_corner;
     use super::super::{
         naadf::{linear_index, volume_len},
         sky::KNOWN,
         sources::{DirectionalTransportLight, PointTransportLight},
         spectrum::EnergySpectrum,
-        tracer::sample_sky_corner,
         world::{PAGE_EDGE, PAGE_SIZE},
     };
     use super::*;
