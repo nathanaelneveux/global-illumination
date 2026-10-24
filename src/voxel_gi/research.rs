@@ -1,7 +1,7 @@
 //! Deterministic transport fixtures shared by opt-in research studies. These
 //! reuse the host scenes' geometry/material policy and allocate only in tests.
 use super::{
-    Vec3, TransportSources, VoxelMaterialTransportTable,
+    MaterialTransport, TransportSources, VoxelMaterialTransportTable,
     naadf::{linear_index, volume_len},
     sources::DirectionalTransportLight,
     world::{AIR, FACE_OFFSETS, PAGE_SIZE, SurfaceProbe, TransportScene},
@@ -110,48 +110,50 @@ pub(super) fn furnace() -> ResearchFixture {
     }
 }
 
-/// Actual hallway chamber at its world coordinates, with opaque surroundings.
-/// This isolates emitter paths; the entrance has no environment illumination.
+
+/// A sealed 96x9x9 rock corridor with one emitter at one end and two baffles
+/// near the other (the lab's hallway chamber, closed). No environment light.
 pub(super) fn hallway() -> ResearchFixture {
-    use crate::structures::{StructureLayer, VoxelOp, hallway};
-    use crate::terrain::TerrainMaterial;
-    let layer = StructureLayer::new(hallway::instances(), 32);
-    let rock = TerrainMaterial::CaveRock.index();
-    let mut pages = Vec::new();
-    for px in -4..0 {
-        let coordinate = IVec3::new(px, -1, -1);
-        let mut page = vec![u16::from(rock); volume_len(PAGE_SIZE)];
-        for z in 0..32 {
-            for y in 0..32 {
-                for x in 0..32 {
-                    let local = UVec3::new(x, y, z);
-                    page[linear_index(local, PAGE_SIZE)] =
-                        match layer.sample(coordinate * 32 + local.as_ivec3()) {
-                            VoxelOp::Solid(id) => u16::from(id),
-                            VoxelOp::Air => AIR,
-                            VoxelOp::Keep => u16::from(rock),
-                        };
+    const ORIGIN: IVec3 = IVec3::new(-128, -12, -24);
+    const SOURCE: IVec3 = IVec3::new(-124, -11, -20);
+    let (rock, emitter) = (5_u16, 4_u16);
+    let material = |p: IVec3| {
+        let local = p - ORIGIN;
+        let inside = (0..96).contains(&local.x) && (0..9).contains(&local.y) && (0..9).contains(&local.z);
+        let shell = local.x == 0 || local.x == 95 || local.y == 0 || local.y == 8 || local.z == 0 || local.z == 8;
+        let baffle = (local.x == 88 && local.z < 6) || (local.x == 92 && local.z > 2);
+        if p == SOURCE {
+            emitter
+        } else if !inside || shell || baffle {
+            rock
+        } else {
+            AIR
+        }
+    };
+    let pages = (-4..0)
+        .map(|px| {
+            let coordinate = IVec3::new(px, -1, -1);
+            let mut page = vec![rock; volume_len(PAGE_SIZE)];
+            for z in 0..32 {
+                for y in 0..32 {
+                    for x in 0..32 {
+                        let local = UVec3::new(x, y, z);
+                        page[linear_index(local, PAGE_SIZE)] = material(coordinate * 32 + local.as_ivec3());
+                    }
                 }
             }
-        }
-        pages.push((coordinate, page));
-    }
-    let scene = Arc::new(TransportScene::with_page_delta(
-        &TransportScene::default(),
-        pages,
-        &[],
-    ));
+            (coordinate, page)
+        })
+        .collect();
+    let scene = Arc::new(TransportScene::with_page_delta(&TransportScene::default(), pages, &[]));
     let mut materials = VoxelMaterialTransportTable::default();
-    materials.set(rock, crate::cave_scene::materials().get(2));
-    materials.set(
-        TerrainMaterial::Emissive.index(),
-        crate::terrain::emissive_block_transport(),
-    );
+    materials.set(rock as u8, MaterialTransport { diffuse: Vec3::splat(0.55), emission: Vec3::ZERO });
+    materials.set(emitter as u8, MaterialTransport { diffuse: Vec3::splat(0.8), emission: Vec3::new(12.0, 5.0, 1.0) });
     let receivers = (1..80)
         .flat_map(|x| {
             [-2, 0, 2].map(move |z| {
-                let mut probe = SurfaceProbe::new(hallway::floor_receiver(x) + IVec3::Z * z, 4);
-                probe.material = rock;
+                let mut probe = SurfaceProbe::new(SOURCE + IVec3::new(x, -1, z), 4);
+                probe.material = rock as u8;
                 probe
             })
         })
@@ -168,6 +170,53 @@ pub(super) fn hallway() -> ResearchFixture {
     }
 }
 
+/// The lab's composed-cave geometry and materials (cave_scene.rs), copied so
+/// these fixtures do not depend on the lab: a 56x40x56 chamber with a lava
+/// floor, a blue-lit spire, green ceiling crystals, wall torches and a roof
+/// opening.
+const CAVE_ENVIRONMENT: Vec3 = Vec3::new(0.35, 0.45, 0.7);
+
+fn cave_sun() -> Vec3 {
+    Vec3::new(-0.2, 1.0, -0.15).normalize()
+}
+
+fn cave_materials() -> VoxelMaterialTransportTable {
+    let mut table = VoxelMaterialTransportTable::default();
+    for (id, diffuse, emission) in [
+        (2, 0.55, Vec3::ZERO),
+        (4, 0.15, Vec3::new(3.0, 0.45, 0.02)),
+        (5, 0.2, Vec3::new(0.03, 0.4, 12.0)),
+        (6, 0.2, Vec3::new(0.3, 6.0, 0.08)),
+        (7, 0.2, Vec3::new(14.0, 4.0, 0.8)),
+    ] {
+        table.set(id, MaterialTransport { diffuse: Vec3::splat(diffuse), emission });
+    }
+    table
+}
+
+fn cave_voxel(p: IVec3) -> u16 {
+    let IVec3 { x, y, z } = p;
+    if !(4..=59).contains(&x) || !(4..=43).contains(&y) || !(4..=59).contains(&z) {
+        return AIR;
+    }
+    if y == 43 && (51..=55).contains(&x) && (51..=55).contains(&z) {
+        return AIR;
+    }
+    if y == 4 {
+        return if (10..=54).contains(&x) && (10..=54).contains(&z) { 4 } else { 2 };
+    }
+    if x == 4 || x == 59 || z == 4 || z == 59 || y == 43 {
+        2
+    } else if (30..=34).contains(&x) && (30..=34).contains(&z) && y <= 37 {
+        if y % 4 == 0 && (x == 30 || x == 34 || z == 30 || z == 34) { 5 } else { 2 }
+    } else if y >= 40 && x % 11 == 7 && z % 13 == 8 {
+        6
+    } else if y == 10 && (((x == 5 || x == 58) && z % 8 == 0) || ((z == 5 || z == 58) && x % 8 == 0)) {
+        7
+    } else {
+        AIR
+    }
+}
 
 /// A 56×40×56 enclosed cavity: extensive lava, a blue-lit central spire,
 /// green ceiling crystals, wall torches and a small far-side skylight.
@@ -183,11 +232,7 @@ pub(super) fn cave() -> ResearchFixture {
                         for x in 0..32 {
                             let local = UVec3::new(x, y, z);
                             let p = coordinate * 32 + local.as_ivec3();
-                            page[linear_index(local, PAGE_SIZE)] = match crate::cave_scene::voxel(p)
-                            {
-                                bevy_voxel_world::prelude::WorldVoxel::Solid(id) => id as u16,
-                                _ => AIR,
-                            };
+                            page[linear_index(local, PAGE_SIZE)] = cave_voxel(p);
                         }
                     }
                 }
@@ -200,7 +245,7 @@ pub(super) fn cave() -> ResearchFixture {
         pages,
         &[],
     ));
-    let materials = crate::cave_scene::materials();
+    let materials = cave_materials();
     let mut receivers = Vec::new();
     for t in (8..58).step_by(7) {
         for y in [9, 22, 37] {
@@ -230,9 +275,9 @@ pub(super) fn cave() -> ResearchFixture {
         materials,
         receivers,
         sources: TransportSources {
-            environment: crate::cave_scene::ENVIRONMENT,
+            environment: CAVE_ENVIRONMENT,
             directional: vec![DirectionalTransportLight {
-                direction: crate::cave_scene::sun_direction(),
+                direction: cave_sun(),
                 radiance: Vec3::splat(4.0),
                 custom_visible: Vec3::ZERO,
             }],
@@ -243,109 +288,6 @@ pub(super) fn cave() -> ResearchFixture {
 
 pub(super) fn channels(value: Vec3) -> [f32; 3] {
     value.to_array()
-}
-
-/// Fully resident canyon volume. Uniform air/rock regions compact naturally in
-/// TransportScene; receiver sites cover floor, rims and every tower face. This
-/// is a fixed numerical fixture, not a streaming/frame-pacing benchmark.
-pub(super) fn canyon() -> ResearchFixture {
-    let size = crate::canyon_scene::SIZE;
-    let mut pages = Vec::new();
-    for pz in 0..size.z / 32 {
-        for py in 0..size.y / 32 {
-            for px in 0..size.x / 32 {
-                let coordinate = IVec3::new(px, py, pz);
-                let mut page = vec![AIR; volume_len(PAGE_SIZE)];
-                for z in 0..32 {
-                    for x in 0..32 {
-                        let wx = px * 32 + x;
-                        let wz = pz * 32 + z;
-                        let height = crate::canyon_scene::height(wx, wz);
-                        for y in 0..32 {
-                            let wy = py * 32 + y;
-                            if wy <= height {
-                                page[linear_index(
-                                    UVec3::new(x as u32, y as u32, z as u32),
-                                    PAGE_SIZE,
-                                )] = if (wy / 16) % 4 == 2 { 2 } else { 1 };
-                            }
-                        }
-                    }
-                }
-                pages.push((coordinate, page));
-            }
-        }
-    }
-    let scene = Arc::new(TransportScene::with_page_delta(
-        &TransportScene::default(),
-        pages,
-        &[],
-    ));
-    let mut sites = std::collections::BTreeSet::new();
-    for z in (32..480).step_by(24) {
-        for x in (48..208).step_by(16) {
-            let y = crate::canyon_scene::height(x, z);
-            sites.insert((x, y, z, 2));
-        }
-    }
-    // Cross sections include vertical rims and any pillars crossing the slice.
-    for z in (16..512).step_by(32).chain([180, 294, 414, 450]) {
-        for y in [16, 48, 96, 144, 192, 224] {
-            for x in 1..255 {
-                let p = IVec3::new(x, y, z);
-                if scene.material_at(p).is_none_or(|m| m == AIR) {
-                    continue;
-                }
-                for (face, normal) in [(0, IVec3::X), (1, IVec3::NEG_X)] {
-                    if scene.material_at(p + normal) == Some(AIR) {
-                        sites.insert((x, y, z, face));
-                    }
-                }
-            }
-        }
-    }
-    let receivers = sites
-        .into_iter()
-        .map(|(x, y, z, face)| {
-            let voxel = IVec3::new(x, y, z);
-            let mut p = SurfaceProbe::new(voxel, 1 << face);
-            p.material = scene.material_at(voxel).unwrap() as u8;
-            p
-        })
-        .collect();
-    ResearchFixture {
-        scene,
-        materials: crate::canyon_scene::materials(),
-        receivers,
-        sources: TransportSources {
-            environment: crate::canyon_scene::ENVIRONMENT,
-            directional: vec![DirectionalTransportLight {
-                direction: crate::canyon_scene::sun_direction(),
-                radiance: Vec3::splat(2.0),
-                custom_visible: Vec3::ZERO,
-            }],
-            points: vec![],
-        },
-    }
-}
-
-#[test]
-fn canyon_transport_fixture_matches_host_geometry_and_has_exposed_receivers() {
-    let canyon = canyon();
-    assert!(canyon.receivers.len() > 300);
-    for p in &canyon.receivers {
-        assert!(matches!(
-            crate::canyon_scene::voxel(p.voxel),
-            bevy_voxel_world::prelude::WorldVoxel::Solid(_)
-        ));
-        for (face, normal) in FACE_OFFSETS.iter().enumerate() {
-            if p.face_mask & (1 << face) != 0 {
-                assert_eq!(canyon.scene.material_at(p.voxel + *normal), Some(AIR));
-            }
-        }
-    }
-    assert!(canyon.receivers.iter().any(|p| p.voxel.y > 200));
-    assert!(canyon.receivers.iter().any(|p| p.voxel.z > 400));
 }
 
 #[test]

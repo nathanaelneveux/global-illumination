@@ -54,39 +54,6 @@ mod tests {
             "coincident corners on disconnected faces cannot share a display/transport state"
         );
 
-        let world = crate::terrain::PrototypeWorld::default();
-        let solid = |voxel| {
-            matches!(
-                world.generated_voxel(voxel),
-                bevy_voxel_world::prelude::WorldVoxel::Solid(_)
-            )
-        };
-        let mut house = Vec::new();
-        for z in -24..=-12 {
-            for y in 10..=17 {
-                for x in -6..=6 {
-                    let voxel = IVec3::new(x, y, z);
-                    if !solid(voxel) {
-                        continue;
-                    }
-                    for (face, offset) in super::super::world::FACE_OFFSETS.iter().enumerate() {
-                        if !solid(voxel + *offset) {
-                            house.push((voxel, face));
-                        }
-                    }
-                }
-            }
-        }
-        let (positions, oriented) = transport_sites(&house);
-        println!(
-            "corner-site census: flat32 faces={} positions=1089 oriented=1089; cube faces=6 positions=8 oriented=24; house faces={} positions={} oriented={}",
-            plane.len(),
-            house.len(),
-            positions,
-            oriented
-        );
-        assert!(!house.is_empty());
-        assert!(oriented >= positions);
     }
 
     fn weighted_corner(
