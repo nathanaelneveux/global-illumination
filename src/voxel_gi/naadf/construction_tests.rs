@@ -1,8 +1,7 @@
-//! Construction oracle and opt-in paired CPU benchmarks. The full-sweep oracle
-//! freezes the pre-optimization algorithm independently of the production loop.
+//! Construction oracle. The full-sweep oracle freezes the pre-optimization
+//! algorithm independently of the production loop.
 
 use super::*;
-use std::{hint::black_box, time::Instant};
 
 fn full_sweep_reference(size: UVec3, blocked: &[bool]) -> Vec<Aadf> {
     assert_eq!(blocked.len(), volume_len(size));
@@ -145,60 +144,3 @@ fn construction_matches_full_sweep_oracle() {
     }
 }
 
-#[test]
-#[ignore = "paired CPU construction timings; run without concurrent workloads"]
-fn aadf_construction_benchmark() {
-    type Builder = fn(UVec3, &[bool]) -> Vec<Aadf>;
-    let small = UVec3::splat(4);
-    let large = UVec3::new(48, 16, 48);
-    let fixtures = [
-        ("brick_empty", small, occupancy(small, |_| false)),
-        ("brick_full", small, occupancy(small, |_| true)),
-        ("brick_plane", small, occupancy(small, |p| p.y < 2)),
-        (
-            "brick_scattered",
-            small,
-            occupancy(small, |p| (p.x + 3 * p.y + 7 * p.z) % 5 == 0),
-        ),
-        (
-            "top_terrain",
-            large,
-            occupancy(large, |p| p.y < 4 + (p.x / 4 + p.z / 6) % 5),
-        ),
-        (
-            "top_scattered",
-            large,
-            occupancy(large, |p| (p.x + 3 * p.y + 7 * p.z) % 7 == 0),
-        ),
-        (
-            "top_loaded_islands",
-            large,
-            occupancy(large, |p| p.x % 12 >= 5 || p.z % 12 >= 5 || p.y < 4),
-        ),
-    ];
-    for (name, size, blocked) in fixtures {
-        let expected = full_sweep_reference(size, &blocked);
-        assert_eq!(build_aadf(size, &blocked), expected, "{name}");
-        let repetitions = if size == small { 256 } else { 1 };
-        let mut timings = [Vec::new(), Vec::new()];
-        let builders: [Builder; 2] = [full_sweep_reference, build_aadf];
-        for pair in 0..24 {
-            for variant in [pair % 2, 1 - pair % 2] {
-                let start = Instant::now();
-                for _ in 0..repetitions {
-                    black_box(builders[variant](black_box(size), black_box(&blocked)));
-                }
-                if pair >= 4 {
-                    timings[variant].push(start.elapsed().as_secs_f64() * 1e6 / repetitions as f64);
-                }
-            }
-        }
-        for values in &mut timings {
-            values.sort_by(f64::total_cmp);
-        }
-        println!(
-            "AADF {name} size={size:?} pairs=20 us_p50={:.3}->{:.3} us_p95={:.3}->{:.3} exact=true",
-            timings[0][10], timings[1][10], timings[0][18], timings[1][18]
-        );
-    }
-}

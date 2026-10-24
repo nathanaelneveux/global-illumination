@@ -2399,55 +2399,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "paired resident compute cost, no rendering or gameplay claim"]
-    fn resident_compute_cost() {
-        let control = super::super::tests::native_tracer();
-        let mut candidate = GpuTracer::new(control.context.clone()).unwrap();
-        candidate.enable_resident().unwrap();
-        let mut tracers = [control, candidate];
-        let (scene, sources, initial) = super::super::tests::open_floor_fixture();
-        let materials = VoxelMaterialTransportTable::default();
-        let emitters = Arc::new(EmissionDistribution::default());
-        let mut probes = [initial.clone(), initial];
-        let mut times: [Vec<f32>; 2] = default();
-        for round in 0..40 {
-            for mode in (0..2).map(|offset| (round + offset) % 2) {
-                let mut work = TraceWork::from_probes(&probes[mode], false);
-                for job in &mut work.probes {
-                    job.sky_requested = false;
-                }
-                work.response_seconds = 0.075;
-                tracers[mode]
-                    .trace_compact(
-                        Arc::clone(&scene),
-                        &sources,
-                        &materials,
-                        &mut work,
-                        16,
-                        &emitters,
-                        false,
-                    )
-                    .unwrap();
-                if round >= 10 {
-                    times[mode].push(tracers[mode].last_gpu_ms.unwrap());
-                }
-                for (job, probe) in work.probes.iter().zip(&mut probes[mode]) {
-                    for face in &work.faces[job.faces()] {
-                        face.write(probe);
-                    }
-                }
-            }
-        }
-        for (mode, times) in times.iter_mut().enumerate() {
-            times.sort_by(f32::total_cmp);
-            eprintln!(
-                "RESIDENT_COST mode={mode} GPU_p50={:.4} GPU_p95={:.4}",
-                times[15], times[28]
-            );
-        }
-    }
-
-    #[test]
     #[ignore = "native overlapping readbacks with growth and recycled resident slots"]
     fn resident_queued_snapshots_keep_their_own_measurements() {
         let mut control = super::super::tests::native_tracer();

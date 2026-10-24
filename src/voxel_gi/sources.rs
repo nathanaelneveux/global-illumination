@@ -441,47 +441,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "paired static analytic source synchronization study; no renderer"]
-    fn static_source_sync_cost_study() {
-        for count in [100, 10_000] {
-            let mut app = source_app();
-            for x in 0..count {
-                app.world_mut().spawn((
-                    PointLight::default(),
-                    GlobalTransform::from_translation(Vec3::X * x as f32),
-                ));
-            }
-            app.update();
-            let expected = app.world().resource::<VoxelGiRuntime>().sources.clone();
-            let mut times: [Vec<f64>; 2] = default();
-            for round in 0..24 {
-                for mode in [round % 2, 1 - round % 2] {
-                    if mode == 0 {
-                        // Equal-valued changed input forces the original complete
-                        // snapshot work without changing transport revisions.
-                        app.world_mut()
-                            .resource_mut::<VoxelGiEnvironment>()
-                            .set_changed();
-                    }
-                    let start = std::time::Instant::now();
-                    app.update();
-                    if round >= 4 {
-                        times[mode].push(start.elapsed().as_secs_f64() * 1000.0);
-                    }
-                    assert_eq!(app.world().resource::<VoxelGiRuntime>().sources, expected);
-                }
-            }
-            for t in &mut times {
-                t.sort_by(f64::total_cmp);
-            }
-            println!(
-                "STATIC_SOURCES count={count} full_ms={:.4} gated_ms={:.4} exact=true",
-                times[0][10], times[1][10]
-            );
-        }
-    }
-
-    #[test]
     fn empty_sources_are_omitted_but_each_transport_band_can_activate_them() {
         let mut app = App::new();
         app.init_resource::<VoxelGiRuntime>()

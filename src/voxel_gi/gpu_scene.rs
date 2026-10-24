@@ -381,57 +381,6 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "paired scene packing scaling study; no concurrent workloads"]
-    fn scene_delta_discovery_cost_study() {
-        for pages in [32, 256, 1024] {
-            let mut scene = TransportScene::with_page_delta(
-                &TransportScene::default(),
-                (0..pages)
-                    .map(|x| (IVec3::new(x, 0, 0), vec![1; volume_len(PAGE_SIZE)]))
-                    .collect(),
-                &[],
-            );
-            let mut fast = PackedScene::default();
-            let mut full = PackedScene {
-                full_discovery_for_benchmark: true,
-                ..default()
-            };
-            fast.update(&scene);
-            full.update(&scene);
-            let mut times: [Vec<f64>; 2] = default();
-            for round in 0..24 {
-                let mut material = vec![1; volume_len(PAGE_SIZE)];
-                material[linear_index(UVec3::splat(8), PAGE_SIZE)] = 2 + (round % 2) as u16;
-                scene = TransportScene::with_page_delta(&scene, vec![(IVec3::ZERO, material)], &[]);
-                for mode in [round % 2, 1 - round % 2] {
-                    let start = std::time::Instant::now();
-                    let delta = if mode == 0 {
-                        full.update(&scene)
-                    } else {
-                        fast.update(&scene)
-                    };
-                    if round >= 4 {
-                        times[mode].push(start.elapsed().as_secs_f64() * 1000.0);
-                    }
-                    std::hint::black_box(delta);
-                }
-                assert_eq!(fast.headers, full.headers);
-                assert_eq!(fast.cells, full.cells);
-                assert_eq!(fast.directory, full.directory);
-            }
-            for t in &mut times {
-                t.sort_by(f64::total_cmp);
-            }
-            println!(
-                "DELTA_PACK regions={} changed=1 control_ms={:.4} candidate_ms={:.4} exact=true",
-                scene.regions.len(),
-                times[0][10],
-                times[1][10]
-            );
-        }
-    }
-
     fn decoded_material(packed: &PackedScene, voxel: IVec3) -> u16 {
         let key = voxel.div_euclid(IVec3::splat(16));
         let allocation = &packed.regions[&key];

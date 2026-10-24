@@ -549,58 +549,6 @@ mod donor_tests {
     }
 
     #[test]
-    #[ignore = "isolated unchanged-page publication cost study"]
-    fn unchanged_publication_study() {
-        let (mut runtime, mut field, descriptors) = unchanged_page_fixture();
-        let mut result = empty_result();
-        let mut stats = VoxelGiStats::default();
-        let mut times: [Vec<Duration>; 2] = default();
-        for round in 0..128 {
-            for mode in [round % 2, 1 - round % 2] {
-                let descriptors = descriptors.clone();
-                let start = Instant::now();
-                if mode == 0 {
-                    reconcile_scene_page(
-                        &mut runtime,
-                        &mut field,
-                        &mut stats,
-                        &mut result,
-                        IVec3::ZERO,
-                        descriptors,
-                    );
-                } else {
-                    publish_scene_page(
-                        &mut runtime,
-                        &mut field,
-                        &mut stats,
-                        &mut result,
-                        IVec3::ZERO,
-                        descriptors,
-                    );
-                }
-                let elapsed = start.elapsed();
-                if round >= 16 {
-                    times[mode].push(elapsed);
-                }
-                assert_eq!(runtime.active_faces, 1024);
-                assert_eq!(runtime.completed_samples, 65536);
-                assert_eq!(runtime.covered_faces, 1024);
-                assert_eq!(
-                    field.probes[&IVec3::ZERO].display[2].indirect,
-                    Vec3::splat(2.0)
-                );
-            }
-        }
-        for values in &mut times {
-            values.sort_unstable();
-        }
-        eprintln!(
-            "UNCHANGED_PAGE 1024 receivers, baseline/identity p50 {:?}/{:?}",
-            times[0][56], times[1][56]
-        );
-    }
-
-    #[test]
     fn donor_page_bounds_include_borders_and_exclude_empty_interiors() {
         let page = IVec3::new(-2, 0, 3);
         let mut pages = HashMap::new();

@@ -33,7 +33,6 @@ fn probe_shard(key: &IVec3) -> usize {
 #[cfg(test)]
 mod store_tests {
     use super::*;
-    use std::{hint::black_box, time::Instant};
 
     #[test]
     fn sharded_store_preserves_identity_count_and_negative_keys() {
@@ -72,57 +71,6 @@ mod store_tests {
         assert_eq!(store.keys().count(), 0);
     }
 
-    #[test]
-    #[ignore = "CPU receiver-index growth/lookup study; no transport or GPU work"]
-    fn receiver_index_growth_study() {
-        // A usize has the same index payload width as Box<SurfaceProbe>. Exclude
-        // receiver allocation to isolate index growth; do not call this a full
-        // publication benchmark. Chunk-coherent coordinates, one million sites.
-        const COUNT: usize = 1 << 20;
-        const BATCH: usize = 512;
-        let keys: Vec<_> = (0..COUNT)
-            .map(|i| IVec3::new((i % 1024) as i32 - 512, (i / 1024) as i32 - 512, -64))
-            .collect();
-        let mut growth = [Vec::new(), Vec::new()];
-        let mut lookup = [Vec::new(), Vec::new()];
-        for round in 0..8 {
-            for mode in [round % 2, 1 - round % 2] {
-                let mut maps: Vec<HashMap<IVec3, usize>> =
-                    (0..if mode == 0 { 1 } else { PROBE_SHARDS })
-                        .map(|_| HashMap::default())
-                        .collect();
-                let mut worst: f64 = 0.0;
-                for (chunk, keys) in keys.chunks(BATCH).enumerate() {
-                    let start = Instant::now();
-                    for (i, &key) in keys.iter().enumerate() {
-                        let shard = if mode == 0 { 0 } else { probe_shard(&key) };
-                        maps[shard].insert(key, chunk * BATCH + i);
-                    }
-                    worst = worst.max(start.elapsed().as_secs_f64() * 1000.0);
-                }
-                let start = Instant::now();
-                let mut sum = 0usize;
-                for i in 0..COUNT {
-                    let key = &keys[(i * 65537) % COUNT];
-                    let shard = if mode == 0 { 0 } else { probe_shard(key) };
-                    sum += black_box(maps[shard][key]);
-                }
-                assert_eq!(sum, COUNT * (COUNT - 1) / 2);
-                if round > 0 {
-                    growth[mode].push(worst);
-                    lookup[mode].push(start.elapsed().as_secs_f64() * 1000.0);
-                }
-            }
-        }
-        for mode in 0..2 {
-            growth[mode].sort_by(f64::total_cmp);
-            lookup[mode].sort_by(f64::total_cmp);
-            eprintln!(
-                "RECEIVER_INDEX mode={mode} growth_512_worst_median_ms={} lookup_1m_median_ms={}",
-                growth[mode][3], lookup[mode][3]
-            );
-        }
-    }
 }
 
 impl ProbeStore {

@@ -490,42 +490,4 @@ mod tests {
         assert!(dirty.edits.is_empty());
     }
 
-    #[test]
-    #[ignore = "isolated BVW input sampling pair, not frame timing"]
-    fn immutable_edit_input_cost_study() {
-        let mut app = app(true);
-        app.world_mut()
-            .run_system_once(
-                |mut world: VoxelWorld<PrototypeWorld>, mut dirty: ResMut<VoxelGiDirty>| {
-                    dirty.set_voxel(&mut world, IVec3::ONE, WorldVoxel::Air);
-                },
-            )
-            .unwrap();
-        app.update();
-        app.world_mut().run_system_once(|world: VoxelWorld<PrototypeWorld>, runtime: Res<VoxelGiRuntime>| {
-            let lookup = world.get_voxel_fn();
-            let overlay = &runtime.page_edits.0[&IVec3::ZERO];
-            let mut times: [Vec<f64>; 2] = default();
-            for round in 0..24 {
-                let mut data = Vec::new();
-                for mode in [round % 2, 1 - round % 2] {
-                    let started = Instant::now();
-                    let next = if mode == 0 {
-                        sample_dense_page(IVec3::ZERO, |p| match lookup(p) {
-                            WorldVoxel::Unset => WorldVoxel::Solid(1), v => v,
-                        })
-                    } else {
-                        let mut page = sample_dense_page(IVec3::ZERO, |_| WorldVoxel::Solid(1));
-                        apply_page_edits(&mut page, IVec3::ZERO, overlay);
-                        page
-                    };
-                    if round >= 4 { times[mode].push(started.elapsed().as_secs_f64() * 1000.0); }
-                    if !data.is_empty() { assert_eq!(data, next); }
-                    data = std::hint::black_box(next);
-                }
-            }
-            for t in &mut times { t.sort_by(f64::total_cmp); }
-            println!("INPUT_PAIR page=32768 edits=1 paths=real_BVW_lookup/generated_page_plus_overlay old_ms={:.4} new_ms={:.4} exact=true", times[0][10], times[1][10]);
-        }).unwrap();
-    }
 }
