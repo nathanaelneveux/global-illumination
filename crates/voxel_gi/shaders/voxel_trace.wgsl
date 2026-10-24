@@ -157,8 +157,11 @@ fn trace_footprints(@builtin(global_invocation_id) id: vec3<u32>) {
         if enter > exit { continue; }
         // Shadowed beyond the box either way: the change cannot matter.
         if trace_domain(point + direction * (exit + 0.01), direction, reach, true).status != 0u { continue; }
-        let hit = trace_domain(point + direction * (enter - 0.01), -direction, reach, true);
-        if hit.status != 1u || dot(hit.normal, direction) <= 0.0 { continue; }
+        let start = point + direction * (enter - 0.01);
+        let hit = trace_domain(start, -direction, reach, true);
+        // A tube starting inside solid (the box rests on it) lands nowhere.
+        if hit.status != 1u || dot(hit.normal, direction) <= 0.0
+            || length(hit.position - start) < 0.02 { continue; }
         // Reflected power through the tube: irradiance across its section
         // (perpendicular to the light, so no cosine) times the albedo.
         flux += dot(color, w) * dot(materials[hit.material].diffuse.rgb, w) * spacing * spacing;

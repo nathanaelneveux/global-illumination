@@ -1178,14 +1178,19 @@ impl ResidentAccumulator {
 }
 
 /// Changed boxes per batch whose shadows the GPU traces; the rest keep only
-/// their own retention (loads past it, typically far streaming).
+/// their own retention.
 const MAX_FOOTPRINTS: usize = 64;
 /// Tubes per footprint side: one per voxel of the box's diagonal, at most this.
 const FOOTPRINT_GRID: f32 = 64.0;
 
-/// Reserve one Light event per changed box (edits first, then unknown
-/// changes and loads), with an empty bound the GPU fills with where the
-/// box's shadow lands (`trace_footprints`). Returns each box and its event.
+/// Reserve one Light event per edited box (player edits first, then unknown
+/// changes), with an empty bound the GPU fills with where the box's shadow
+/// lands (`trace_footprints`). Returns each box and its event. Loads get
+/// none: streaming loads arrive continuously, and their conservative
+/// footprints (a loaded region's shadow lands on ground that is often new
+/// or no receiver) cut history all around the player (house reveal FLIP
+/// .012 -> .10). A load's real sunlight changes on visible faces are their
+/// observed corner flips (`report_sun_flips`).
 fn plan_footprints(
     events: &mut Vec<super::super::retention::RetentionEvent>,
 ) -> Vec<(super::super::geometry::Bounds, usize)> {
@@ -1196,8 +1201,8 @@ fn plan_footprints(
             for (bounds, weight) in event.bounds.iter().zip(&event.weights) {
                 let wanted = match weight.kind {
                     ChangeKind::Edit { .. } => edits,
-                    ChangeKind::Unknown | ChangeKind::Load { .. } => !edits,
-                    ChangeKind::Unload | ChangeKind::Light => false,
+                    ChangeKind::Unknown => !edits,
+                    ChangeKind::Load { .. } | ChangeKind::Unload | ChangeKind::Light => false,
                 };
                 if wanted && boxes.len() < MAX_FOOTPRINTS {
                     boxes.push(*bounds);
@@ -2211,6 +2216,70 @@ mod tests {
         assert!((flux - 9.0 * albedo).abs() <= 0.25 * 9.0 * albedo, "{flux} vs {}", 9.0 * albedo);
         let (min, _, _, _) = footprint(true);
         assert_eq!(min, IVec3::splat(1 << 29), "a hole under a roof changes no sunlight");
+    }
+
+    #[test]
+    fn loads_and_light_changes_get_no_footprint() {
+        use crate::geometry::{Bounds, ChangeKind, ChangeWeight};
+        let bounds = Bounds::point(IVec3::ZERO);
+        let event = |kind| crate::retention::RetentionEvent::single(bounds, ChangeWeight { kind, flux: 0.0 });
+        let mut events = vec![
+            event(ChangeKind::Load { top: 4 }),
+            event(ChangeKind::Light),
+            event(ChangeKind::Edit { voxels: 1, measure: true }),
+        ];
+        let planned = plan_footprints(&mut events);
+        assert_eq!(planned, vec![(bounds, 3)], "only the edit, with its reserved fourth event");
+        assert_eq!(events.len(), 4);
+    }
+
+    #[test]
+    #[ignore = "native GPU change footprints: a block placed on the floor shades nothing below it"]
+    fn placed_block_footprint_does_not_land_inside_its_support() {
+        use crate::geometry::{Bounds, ChangeKind, ChangeWeight};
+        use crate::naadf::{linear_index, volume_len};
+        use crate::sources::DirectionalTransportLight;
+        use crate::world::{AIR, PAGE_SIZE};
+        let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+        for z in 0..32 {
+            for x in 0..32 {
+                page[linear_index(UVec3::new(x, 4, z), PAGE_SIZE)] = 2;
+            }
+        }
+        for z in 8..=10 {
+            for x in 8..=10 {
+                page[linear_index(UVec3::new(x, 5, z), PAGE_SIZE)] = 2;
+            }
+        }
+        let scene = Arc::new(TransportScene::with_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, page)],
+            &[],
+        ));
+        let sources = TransportSources {
+            directional: vec![DirectionalTransportLight {
+                direction: Vec3::Y,
+                radiance: Vec3::ONE,
+                custom_visible: Vec3::ZERO,
+            }],
+            ..default()
+        };
+        let probes: Vec<_> = (0..32)
+            .flat_map(|z| (0..32).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
+            .collect();
+        let mut gpu = super::super::tests::native_tracer();
+        gpu.enable_resident().unwrap();
+        let mut work = TraceWork::from_probes(&probes);
+        let placed = Bounds { min: IVec3::new(8, 5, 8), max: IVec3::new(10, 5, 10) };
+        work.retention_events = vec![crate::retention::RetentionEvent::single(placed, ChangeWeight {
+            kind: ChangeKind::Edit { voxels: 9, measure: false },
+            flux: 0.0,
+        })];
+        let emitters = Arc::new(EmissionDistribution::default());
+        gpu.trace_compact(scene, &sources, &VoxelMaterialTransportTable::default(), &mut work, 4, &emitters)
+            .unwrap();
+        let words = read_words(&gpu, &gpu.resident.as_ref().unwrap().events_buffer.buffer, 10 * 16);
+        assert_eq!(words[8 * 4] as i32, 1 << 29, "the edit's own faces are the edit event's");
     }
 
     #[test]
