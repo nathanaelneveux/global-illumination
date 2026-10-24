@@ -92,7 +92,7 @@ impl GpuTracer {
                     emitters.total_weight,
                     emitters.faces.len() as f32,
                 ),
-                // Bevy renders its own direct RGB. Standalone EnergyEmitter
+                // Bevy renders its own direct RGB. Standalone VoxelGiEmitter
                 // RGB is instead supplied by the transport presentation.
                 transport: Vec4::new(self.view_transport.reach,
                     f32::from(sources.directional.iter().any(|light| light.custom_visible != Vec3::ZERO)

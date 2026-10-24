@@ -1,8 +1,8 @@
 //! Analytic source snapshots shared by CPU and GPU transport.
 //! Bevy light adaptation lives here; estimators depend only on these values.
-use super::spectrum::Radiance;
+use super::color::FiniteColor;
 use super::{
-    EnergyEmitter, VoxelEnergyField, VoxelGiRuntime, VoxelGiStats, VoxelMaterialTransportTable,
+    ReceiverField, VoxelGiRuntime, VoxelGiStats, VoxelMaterialTransportTable,
     advance_transport_revision, telemetry::GiWorkTimings,
     update_stats_from_counters,
 };
@@ -74,19 +74,19 @@ pub(super) struct SourceInputs<'w, 's> {
             Or<(
                 With<PointLight>,
                 With<DirectionalLight>,
-                With<EnergyEmitter>,
+                With<VoxelGiEmitter>,
             )>,
             Or<(
                 Changed<PointLight>,
                 Changed<DirectionalLight>,
-                Changed<EnergyEmitter>,
+                Changed<VoxelGiEmitter>,
                 Changed<GlobalTransform>,
             )>,
         ),
     >,
     removed_points: RemovedComponents<'w, 's, PointLight>,
     removed_directional: RemovedComponents<'w, 's, DirectionalLight>,
-    removed_emitters: RemovedComponents<'w, 's, EnergyEmitter>,
+    removed_emitters: RemovedComponents<'w, 's, VoxelGiEmitter>,
     removed_transforms: RemovedComponents<'w, 's, GlobalTransform>,
     initialized: Local<'s, bool>,
 }
@@ -105,13 +105,13 @@ impl SourceInputs<'_, '_> {
 
 pub(super) fn synchronize_transport_sources(
     mut runtime: ResMut<VoxelGiRuntime>,
-    mut field: ResMut<VoxelEnergyField>,
+    mut field: ResMut<ReceiverField>,
     mut stats: ResMut<VoxelGiStats>,
     environment: Res<VoxelGiEnvironment>,
-    directional_lights: Query<(&DirectionalLight, &GlobalTransform, Option<&EnergyEmitter>)>,
-    point_lights: Query<(&PointLight, &GlobalTransform, Option<&EnergyEmitter>)>,
+    directional_lights: Query<(&DirectionalLight, &GlobalTransform, Option<&VoxelGiEmitter>)>,
+    point_lights: Query<(&PointLight, &GlobalTransform, Option<&VoxelGiEmitter>)>,
     energy_emitters: Query<
-        (&EnergyEmitter, &GlobalTransform),
+        (&VoxelGiEmitter, &GlobalTransform),
         (Without<PointLight>, Without<DirectionalLight>),
     >,
     mut timings: ResMut<GiWorkTimings>,
@@ -130,12 +130,12 @@ pub(super) fn synchronize_transport_sources(
         let color = Vec3::new(linear.red, linear.green, linear.blue);
         let mut radiance = color * (light.illuminance / 10_000.0);
         if let Some(extra) = extra {
-            radiance += extra.spectrum;
+            radiance += extra.color;
         }
         next.directional.push(DirectionalTransportLight {
             direction: transform.back().as_vec3(),
             radiance: radiance.bounded(1e12),
-            custom_visible: extra.map_or(Vec3::ZERO, |extra| extra.spectrum.bounded(1e12)),
+            custom_visible: extra.map_or(Vec3::ZERO, |extra| extra.color.bounded(1e12)),
         });
     }
     for (light, transform, extra) in &point_lights {
@@ -143,21 +143,21 @@ pub(super) fn synchronize_transport_sources(
         let color = Vec3::new(linear.red, linear.green, linear.blue);
         let mut intensity = color * (light.intensity / 1_000.0);
         if let Some(extra) = extra {
-            intensity += extra.spectrum;
+            intensity += extra.color;
         }
         next.points.push(PointTransportLight {
             position: transform.translation(),
             intensity: intensity.bounded(1e12),
             range: extra.map_or(light.range, |emitter| emitter.range.max(light.range)),
-            custom_visible: extra.map_or(Vec3::ZERO, |extra| extra.spectrum.bounded(1e12)),
+            custom_visible: extra.map_or(Vec3::ZERO, |extra| extra.color.bounded(1e12)),
         });
     }
     for (emitter, transform) in &energy_emitters {
         next.points.push(PointTransportLight {
             position: transform.translation(),
-            intensity: emitter.spectrum.bounded(1e12),
+            intensity: emitter.color.bounded(1e12),
             range: emitter.range,
-            custom_visible: emitter.spectrum.bounded(1e12),
+            custom_visible: emitter.color.bounded(1e12),
         });
     }
     // Eliminate empty sources before either backend (and the sunlight cache)
@@ -279,7 +279,7 @@ fn compare_vec3(a: Vec3, b: Vec3) -> std::cmp::Ordering {
 pub(super) fn synchronize_material_table(
     mut runtime: ResMut<VoxelGiRuntime>,
     materials: Res<VoxelMaterialTransportTable>,
-    mut field: ResMut<VoxelEnergyField>,
+    mut field: ResMut<ReceiverField>,
     mut stats: ResMut<VoxelGiStats>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
@@ -296,7 +296,7 @@ pub(super) fn synchronize_material_table(
 /// the old model must be rejected even after another analytic source moves.
 pub(super) fn invalidate_model(
     runtime: &mut VoxelGiRuntime,
-    field: &mut VoxelEnergyField,
+    field: &mut ReceiverField,
     stats: &mut VoxelGiStats,
 ) {
     invalidate_source_change(runtime, field, stats, SourceChange::Global);
@@ -307,7 +307,7 @@ pub(super) fn invalidate_model(
 
 pub(super) fn invalidate_source_change(
     runtime: &mut VoxelGiRuntime,
-    field: &mut VoxelEnergyField,
+    field: &mut ReceiverField,
     stats: &mut VoxelGiStats,
     change: SourceChange,
 ) {
@@ -336,6 +336,26 @@ impl Default for TransportSources {
     }
 }
 
+/// Extra GI light. On an entity with a Bevy point or directional light it adds
+/// to that light's GI contribution; alone (with a transform) it is a point
+/// source Bevy does not render, whose direct light GI shows itself. Bevy
+/// point and directional lights are imported without it.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct VoxelGiEmitter {
+    /// Linear RGB radiance (directional) or intensity (point).
+    pub color: Vec3,
+    pub range: f32,
+}
+
+impl Default for VoxelGiEmitter {
+    fn default() -> Self {
+        Self {
+            color: Vec3::ZERO,
+            range: 32.0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,7 +363,7 @@ mod tests {
     fn source_app() -> App {
         let mut app = App::new();
         app.init_resource::<VoxelGiRuntime>()
-            .init_resource::<VoxelEnergyField>()
+            .init_resource::<ReceiverField>()
             .init_resource::<VoxelGiStats>()
             .init_resource::<VoxelGiEnvironment>()
             .init_resource::<GiWorkTimings>()
@@ -367,8 +387,8 @@ mod tests {
         let entity = app
             .world_mut()
             .spawn((
-                EnergyEmitter {
-                    spectrum: Vec3::splat(2.0),
+                VoxelGiEmitter {
+                    color: Vec3::splat(2.0),
                     ..default()
                 },
                 GlobalTransform::IDENTITY,
@@ -414,7 +434,7 @@ mod tests {
             app.world().resource::<VoxelGiRuntime>().sources.points[0].position,
             Vec3::X
         );
-        app.world_mut().entity_mut(entity).remove::<EnergyEmitter>();
+        app.world_mut().entity_mut(entity).remove::<VoxelGiEmitter>();
         app.update();
         assert!(
             app.world()
@@ -437,7 +457,7 @@ mod tests {
     fn empty_sources_are_omitted_but_each_transport_band_can_activate_them() {
         let mut app = App::new();
         app.init_resource::<VoxelGiRuntime>()
-            .init_resource::<VoxelEnergyField>()
+            .init_resource::<ReceiverField>()
             .init_resource::<VoxelGiStats>()
             .init_resource::<VoxelGiEnvironment>()
             .init_resource::<GiWorkTimings>()
@@ -464,7 +484,7 @@ mod tests {
             .id();
         let emitter = app
             .world_mut()
-            .spawn((EnergyEmitter::default(), GlobalTransform::IDENTITY))
+            .spawn((VoxelGiEmitter::default(), GlobalTransform::IDENTITY))
             .id();
         app.update();
         let runtime = app.world().resource::<VoxelGiRuntime>();
@@ -472,16 +492,16 @@ mod tests {
         assert!(runtime.sources.directional.is_empty());
         let revision = runtime.source_revision;
 
-        app.world_mut().entity_mut(point).insert(EnergyEmitter {
-            spectrum: Vec3::splat(2.0),
+        app.world_mut().entity_mut(point).insert(VoxelGiEmitter {
+            color: Vec3::splat(2.0),
             ..default()
         });
-        app.world_mut().entity_mut(sun).insert(EnergyEmitter {
-            spectrum: Vec3::splat(3.0),
+        app.world_mut().entity_mut(sun).insert(VoxelGiEmitter {
+            color: Vec3::splat(3.0),
             ..default()
         });
-        app.world_mut().entity_mut(emitter).insert(EnergyEmitter {
-            spectrum: Vec3::ONE,
+        app.world_mut().entity_mut(emitter).insert(VoxelGiEmitter {
+            color: Vec3::ONE,
             ..default()
         });
         app.update();
@@ -506,7 +526,7 @@ mod tests {
         assert!(contributes(Vec3::ZERO, Vec3::ONE));
 
         for entity in [point, sun, emitter] {
-            app.world_mut().entity_mut(entity).remove::<EnergyEmitter>();
+            app.world_mut().entity_mut(entity).remove::<VoxelGiEmitter>();
         }
         app.update();
         let runtime = app.world().resource::<VoxelGiRuntime>();
@@ -608,7 +628,7 @@ mod tests {
     fn source_changes_cap_every_face_on_the_gpu() {
         use crate::retention::source_limit;
         let mut runtime = VoxelGiRuntime::default();
-        let mut field = VoxelEnergyField::default();
+        let mut field = ReceiverField::default();
         let mut stats = VoxelGiStats::default();
         invalidate_source_change(
             &mut runtime,
@@ -630,7 +650,7 @@ mod tests {
     fn host_environment_and_light_removal_advance_revisions_but_static_frames_do_not() {
         let mut app = App::new();
         app.init_resource::<VoxelGiRuntime>()
-            .init_resource::<VoxelEnergyField>()
+            .init_resource::<ReceiverField>()
             .init_resource::<VoxelGiStats>()
             .init_resource::<VoxelGiEnvironment>()
             .init_resource::<GiWorkTimings>()

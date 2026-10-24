@@ -819,7 +819,7 @@ GI offers no simulation queries: heat and radiation belong to a deterministic
 direct-transport field ([direction](direction.md)). The former
 `estimate`/`sample`/`request_refresh` API and its tests were removed.
 
-`EnergyEmitter` augments a Bevy directional/point light or acts as a transformed
+`VoxelGiEmitter` augments a Bevy directional/point light or acts as a transformed
 point source alone. `VoxelMaterialTransportTable` supplies per-band diffuse
 response and emission; inputs are sanitized and reflectance is bounded to one.
 `VoxelGiEnvironment` makes the background energy host-configurable. Rendering

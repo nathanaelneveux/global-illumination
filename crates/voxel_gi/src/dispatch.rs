@@ -2,7 +2,7 @@
 //! CPU jobs and GPU picks. Bulk selection happens on the GPU; every loaded
 //! receiver remains eligible independently of camera visibility.
 use super::{
-    TraceBatchResult, VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats, emission,
+    TraceBatchResult, ReceiverField, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats, emission,
     enqueue_urgent, gpu, probe_metrics, scheduling, telemetry::GiWorkTimings,
     update_stats_from_counters, work::TraceWork,
 };
@@ -25,7 +25,7 @@ const ENSURE_PROBES_PER_BATCH: usize = 8192;
 
 pub(super) fn start_trace_task(
     mut runtime: ResMut<VoxelGiRuntime>,
-    field: ResMut<VoxelEnergyField>,
+    field: ResMut<ReceiverField>,
     mut stats: ResMut<VoxelGiStats>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     gpu_device: Option<Res<gpu::GpuTransportDevice>>,
@@ -130,8 +130,8 @@ pub(super) fn start_trace_task(
         && !maintenance
     {
         runtime.trace_scratch = selected;
-        stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
-        stats.idle_scheduler_frames += 1;
+        stats.scheduler.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
+        stats.scheduler.idle_scheduler_frames += 1;
         update_stats_from_counters(&runtime, &field, &mut stats);
         return;
     }
@@ -143,7 +143,7 @@ pub(super) fn start_trace_task(
     selected.retention_events = runtime.spatial_history.take_events();
     selected.retire_pages = std::mem::take(&mut runtime.slot_retirements);
     let paths = selected.faces.len() as u64 * u64::from(samples);
-    stats.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
+    stats.scheduler.last_selection_ms = selection_started.elapsed().as_secs_f32() * 1000.0;
     let scene = Arc::clone(&runtime.scene);
     let batch_submits = !selected.probes.is_empty() || selected.picks > 0;
     let gpu_reserved_ms = if batch_submits {
@@ -275,7 +275,7 @@ pub(super) fn start_trace_task(
 #[cfg(test)]
 pub(super) fn select_probes(
     runtime: &mut VoxelGiRuntime,
-    field: &VoxelEnergyField,
+    field: &ReceiverField,
 ) -> Vec<super::world::SurfaceProbe> {
     // Reference view for existing policy tests. Production never materializes
     // these full receiver copies; it transfers only TraceWork.
@@ -310,7 +310,7 @@ pub(super) fn select_probes(
 /// own statistics (`select_*` in voxel_accumulate.wgsl), in the same batch.
 pub(super) fn select_transport(
     runtime: &mut VoxelGiRuntime,
-    field: &VoxelEnergyField,
+    field: &ReceiverField,
 ) -> TraceWork {
     let mut selected = std::mem::take(&mut runtime.trace_scratch);
     selected.clear();
@@ -353,7 +353,7 @@ pub(super) fn select_transport(
 
 pub(super) fn apply_trace_task(
     mut runtime: ResMut<VoxelGiRuntime>,
-    mut field: ResMut<VoxelEnergyField>,
+    mut field: ResMut<ReceiverField>,
     mut stats: ResMut<VoxelGiStats>,
     settings: Res<VoxelGiSettings>,
     mut timings: ResMut<GiWorkTimings>,
@@ -386,10 +386,10 @@ pub(super) fn apply_trace_task(
         .and_then(|batch| batch.execution_ms)
         .unwrap_or(result.trace_time.as_secs_f32() * 1000.0);
     if let Some(tracer) = &result.gpu_tracer {
-        stats.last_prepare_ms = tracer.last_prepare_ms;
-        stats.last_snapshot_latency_ms = tracer.last_snapshot_latency_ms;
-        stats.last_decode_ms = tracer.last_decode_ms;
-        stats.packed_geometry_bytes = tracer.geometry_storage_bytes();
+        stats.scheduler.last_prepare_ms = tracer.last_prepare_ms;
+        stats.scheduler.last_snapshot_latency_ms = tracer.last_snapshot_latency_ms;
+        stats.scheduler.last_decode_ms = tracer.last_decode_ms;
+        stats.scheduler.packed_geometry_bytes = tracer.geometry_storage_bytes();
     }
     if let (Some((buffers, params)), Some(mut display)) = (result.geometry.take(), geometry_display)
     {
@@ -407,7 +407,7 @@ pub(super) fn apply_trace_task(
     }
     runtime.gpu_tracer = result.gpu_tracer;
     runtime.emission_cache = result.emission_cache;
-    stats.last_worker_ms = result.trace_time.as_secs_f32() * 1000.0;
+    stats.scheduler.last_worker_ms = result.trace_time.as_secs_f32() * 1000.0;
     runtime.gpu_pending = result.pending;
     // Address publication is independent of statistical snapshots. Once the
     // submitted GPU work completes, the renderer sees it without a CPU merge.
@@ -425,7 +425,7 @@ pub(super) fn apply_trace_task(
         return;
     };
 
-    stats.transport_batches += 1;
+    stats.scheduler.transport_batches += 1;
     // Charge the measured GPU time against what was reserved.
     runtime.gpu_allowance_ms += batch.gpu_reserved_ms - batch.gpu_ms.unwrap_or(measured_ms);
     let transport_revision = field.transport_revision;
@@ -513,17 +513,18 @@ pub(super) fn apply_trace_task(
     // bounded subset of those; counting them shrank the budget).
     let picks_traced = batch.work.pick_tags.len();
     let traced_faces = batch.work.faces.len() + picks_traced;
-    stats.traced_paths = stats
+    stats.scheduler.traced_paths = stats
+        .scheduler
         .traced_paths
         .saturating_add(picks_traced as u64 * u64::from(settings.batch_samples()));
     drop(_merge);
     batch.work.clear();
     runtime.trace_scratch = batch.work;
-    stats.traced_paths = stats.traced_paths.saturating_add(batch.paths);
-    stats.last_merge_ms = merge_started.elapsed().as_secs_f32() * 1000.0;
+    stats.scheduler.traced_paths = stats.scheduler.traced_paths.saturating_add(batch.paths);
+    stats.scheduler.last_merge_ms = merge_started.elapsed().as_secs_f32() * 1000.0;
     // Adjust work to measured execution time rather than fixing throughput to
     // 1,024 probes per display frame. Limit growth to avoid sudden GPU bursts.
-    stats.last_trace_batch_ms = measured_ms;
+    stats.scheduler.last_trace_batch_ms = measured_ms;
     runtime.batch_size = scheduling::next_budget(
         runtime.batch_size,
         traced_faces,

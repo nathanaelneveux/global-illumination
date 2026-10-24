@@ -62,7 +62,7 @@ impl DayRun {
         }
         self.last_sample = elapsed;
         self.samples.push(json!({"at_s": elapsed, "angle_deg": angle,
-            "traced_paths": stats.traced_paths, "transport_batches": stats.transport_batches,
-            "gpu_ms_per_frame": stats.gpu_ms_per_frame, "trace_batch_ms": stats.last_trace_batch_ms}));
+            "traced_paths": stats.scheduler.traced_paths, "transport_batches": stats.scheduler.transport_batches,
+            "gpu_ms_per_frame": stats.gpu_ms_per_frame, "trace_batch_ms": stats.scheduler.last_trace_batch_ms}));
     }
 }

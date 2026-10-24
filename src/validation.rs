@@ -18,7 +18,7 @@ use voxel_gi_bvw::VoxelTransportMaterial;
 /// Face normals in the lab's face order (+X, -X, +Y, -Y, +Z, -Z).
 const FACE_OFFSETS: [IVec3; 6] = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
 use voxel_gi_bvw::BvwVoxelEdits;
-use voxel_gi::{EnergyEmitter, MaterialTransport, VoxelGiInput, VoxelGiSettings, VoxelGiStats, VoxelMaterialTransportTable};
+use voxel_gi::{VoxelGiEmitter, MaterialTransport, VoxelGiInput, VoxelGiSettings, VoxelGiStats, VoxelMaterialTransportTable};
 use crate::assets::{PrototypeConfig, TemplateAssets};
 use crate::{player::Player, terrain::PrototypeWorld};
 use bevy::camera::{RenderTarget, ShadowLodOrigin};
@@ -537,8 +537,8 @@ pub(super) fn run_validation(
                         range: 24.0,
                         ..default()
                     },
-                    EnergyEmitter {
-                        spectrum: Vec3::ZERO,
+                    VoxelGiEmitter {
+                        color: Vec3::ZERO,
                         range: 24.0,
                     },
                     Transform::from_translation(center + Vec3::Y * 4.0),
@@ -701,25 +701,16 @@ pub(super) fn run_validation(
         "view_diagnostic": run.motion_diagnostic,
         "motion_turn_degrees": if run.motion_static || run.motion_walk.is_some() { 0.0 } else { 0.15 },
         "motion_walk_voxels_per_second": run.motion_walk,
-        "settings": {"transport": settings.transport, "cache_radius": settings.cache_radius,
-            "cache_share": settings.cache_share,
-            "samples_per_dispatch": settings.clone().normalized().samples_per_dispatch,
-            "spatial_reconstruction": settings.spatial_reconstruction,
-            "spatial_noise_threshold": settings.spatial_noise_threshold,
-            "trace_budget_ms": settings.trace_budget_ms, "gpu_time_share": settings.gpu_time_share,
-            "max_probes_per_dispatch": settings.max_probes_per_dispatch,
-            "scene_publish_budget_ms": settings.scene_publish_budget.as_secs_f32() * 1000.0,
-            "display_response_ms": settings.display_response.as_secs_f32() * 1000.0,
-            "measured_retention": settings.measured_retention,
-            "stable_min_samples": settings.stable_min_samples, "stable_relative_error": settings.stable_relative_error,
-            "stable_audit_interval_ms": settings.stable_audit_interval.as_secs_f32() * 1000.0},
+        // Every public setting as solved (clamped); scheduler bounds are
+        // build constants, identified by the commit.
+        "settings": settings.clone().normalized(),
         "terrain": config.map(|c| json!({"seed": c.world_seed, "period": c.terrain_period, "ambient_occlusion": c.ambient_occlusion})),
         "captures": evidence.completed, "capture_windows": evidence.windows,
         "edits": run.edits, "edit_attempts": run.edit_attempts, "moves": run.moves, "mode_changes": run.mode_changes,
         "max_loaded_pages": run.max_pages, "coverage": stats.interactive_coverage,
-        "transport_batches": stats.transport_batches,
-        "traced_paths": stats.traced_paths, "packed_geometry_bytes": stats.packed_geometry_bytes,
-        "last_selection_ms": stats.last_selection_ms, "last_merge_ms": stats.last_merge_ms,
+        "transport_batches": stats.scheduler.transport_batches,
+        "traced_paths": stats.scheduler.traced_paths, "packed_geometry_bytes": stats.scheduler.packed_geometry_bytes,
+        "last_selection_ms": stats.scheduler.last_selection_ms, "last_merge_ms": stats.scheduler.last_merge_ms,
         "measurements": run.metrics.report(),
         "memory": memory,
         "measurement_notes": "Field observations sample at most 1024 voxels every 250 ms; repeated observations are not independent. Display steps are not image-space noise or error. Edit latency is first fresh measurement of selected adjacent receivers, not visual convergence. Capture/readback plus 250 ms cooldown frames are excluded. Offscreen timings are not windowed gameplay FPS and must not be compared against a windowed baseline. Completed is workload integrity, not a quality/performance pass."

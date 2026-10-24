@@ -1,6 +1,8 @@
 //! Frame timing and transport work observations from public GI stats.
 //! Deliberately separate from visual ground truth: captures judge lighting.
 use voxel_gi::{GI_MAIN_STAGE_NAMES, VoxelGiStats};
+#[cfg(test)]
+use voxel_gi::SchedulerStats;
 use bevy::prelude::*;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -61,19 +63,19 @@ impl Metrics {
             "interval_ms":frame_ms,"capture_excluded":capture_excluded,
             "previous_gi_body_ms":self.previous_gi,
             "previous_host_schedule_ms":previous_host_ms}));
-        self.previous_gi = stats.last_main_stage_ms;
+        self.previous_gi = stats.scheduler.last_main_stage_ms;
     }
     /// O(1) observations of publication and lighting progress. A small early
     /// page set can be fully covered while most terrain is still unpublished;
     /// keep its denominator, not a misleading first-100% time.
     pub fn record_work(&mut self, elapsed: f32, phase: &'static str, stats: &VoxelGiStats) {
-        if stats.transport_batches != self.last_batch {
-            self.last_batch = stats.transport_batches;
+        if stats.scheduler.transport_batches != self.last_batch {
+            self.last_batch = stats.scheduler.transport_batches;
             let phase = self.phases.entry(phase).or_default();
-            phase.selection_ms.push(stats.last_selection_ms);
-            phase.merge_ms.push(stats.last_merge_ms);
-            phase.worker_ms.push(stats.last_worker_ms);
-            phase.gpu_ms.push(stats.last_trace_batch_ms);
+            phase.selection_ms.push(stats.scheduler.last_selection_ms);
+            phase.merge_ms.push(stats.scheduler.last_merge_ms);
+            phase.worker_ms.push(stats.scheduler.last_worker_ms);
+            phase.gpu_ms.push(stats.scheduler.last_trace_batch_ms);
         }
         if elapsed - self.last_work_sample < 0.25 {
             return;
@@ -83,8 +85,8 @@ impl Metrics {
             "elapsed_s": elapsed, "phase": phase,
             "loaded_pages": stats.loaded_pages, "published_probes": stats.surface_probes,
             "coverage": stats.interactive_coverage, "bootstrap": stats.bootstrap_coverage,
-            "traced_paths": stats.traced_paths, "transport_batches": stats.transport_batches,
-            "pending_probes": stats.pending_probes,
+            "traced_paths": stats.scheduler.traced_paths, "transport_batches": stats.scheduler.transport_batches,
+            "pending_probes": stats.scheduler.pending_probes,
         }));
     }
 
@@ -119,11 +121,11 @@ mod tests {
             ..default()
         };
         let mut stats = VoxelGiStats {
-            last_main_stage_ms: [2.0; 6],
+            scheduler: SchedulerStats { last_main_stage_ms: [2.0; 6], ..default() },
             ..default()
         };
         metrics.record_frame(1.0, "startup", 20.0, false, &stats, Some([3.0; 7]));
-        stats.last_main_stage_ms = [0.0; 6];
+        stats.scheduler.last_main_stage_ms = [0.0; 6];
         metrics.record_frame(1.02, "startup", 21.0, true, &stats, Some([4.0; 7]));
         let rows = metrics.report()["frame_timeline"].clone();
         assert_eq!(rows[0]["previous_gi_body_ms"], json!(vec![0.0; 6]));
@@ -137,16 +139,15 @@ mod tests {
         let mut metrics = Metrics::default();
         let mut stats = VoxelGiStats {
             loaded_pages: 3,
-            transport_batches: 1,
             interactive_coverage: 1.0,
             bootstrap_coverage: 0.5,
-            last_trace_batch_ms: 2.0,
+            scheduler: SchedulerStats { transport_batches: 1, last_trace_batch_ms: 2.0, ..default() },
             ..default()
         };
         for elapsed in [0.3, 0.6] {
             metrics.record_work(elapsed, "startup", &stats);
         }
-        stats.transport_batches = 2;
+        stats.scheduler.transport_batches = 2;
         metrics.record_work(0.9, "startup", &stats);
         let report = metrics.report();
         assert_eq!(report["work_timeline"].as_array().unwrap().len(), 3);

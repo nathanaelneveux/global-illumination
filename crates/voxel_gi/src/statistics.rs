@@ -2,7 +2,7 @@
 //! These are heuristics over correlated, bounded sample histories, not certified
 //! confidence intervals. Callers choose tolerances; this module has no display,
 //! scene, source, or scheduler state.
-use super::spectrum::Radiance;
+use super::color::FiniteColor;
 use bevy::prelude::*;
 
 /// A per-channel heuristic for adaptive work allocation. This is NOT a confidence

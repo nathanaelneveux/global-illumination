@@ -1,7 +1,7 @@
 //! Main-world scene publication. Geometry is prepared off-thread; receiver pages
 //! publish atomically with retained measurements and display-only initialization.
 use super::{
-    SceneBuildResult, VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats,
+    SceneBuildResult, ReceiverField, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats,
     advance_transport_revision, enqueue_urgent, history, page_of,
     probe_metrics,
     telemetry::GiWorkTimings,
@@ -62,7 +62,7 @@ impl DonorPages {
 
 pub(super) fn apply_scene_task(
     mut runtime: ResMut<VoxelGiRuntime>,
-    mut field: ResMut<VoxelEnergyField>,
+    mut field: ResMut<ReceiverField>,
     mut stats: ResMut<VoxelGiStats>,
     settings: Res<VoxelGiSettings>,
     mut timings: ResMut<GiWorkTimings>,
@@ -75,7 +75,7 @@ pub(super) fn apply_scene_task(
         runtime.scene_task = None;
         if !result.changed && !result.receivers_changed {
             stats.loaded_pages = runtime.loaded_pages.len();
-            stats.last_scene_build_ms = result.build_time.as_secs_f32() * 1000.0;
+            stats.scheduler.last_scene_build_ms = result.build_time.as_secs_f32() * 1000.0;
             return;
         }
         // Scene edits, including emitting voxels, share spatial history
@@ -122,7 +122,7 @@ pub(super) fn apply_scene_task(
     let Some(mut result) = runtime.scene_publication.take() else {
         return;
     };
-    let budget = settings.scene_publish_budget.min(Duration::from_millis(8));
+    let budget = settings.scheduler.scene_publish_budget.min(Duration::from_millis(8));
     let mut published = 0;
     while let Some((page, descriptors)) = result.pages.pop_front() {
         // Empty pages need no merge; skip them without spending a whole frame.
@@ -147,8 +147,7 @@ pub(super) fn apply_scene_task(
     }
     update_stats_from_counters(&runtime, &field, &mut stats);
     stats.loaded_pages = runtime.loaded_pages.len();
-    stats.naadf_regions = runtime.scene.regions.len();
-    stats.last_scene_build_ms = result.build_time.as_secs_f32() * 1_000.0;
+    stats.scheduler.last_scene_build_ms = result.build_time.as_secs_f32() * 1_000.0;
     if !result.pages.is_empty() {
         runtime.scene_publication = Some(result);
     }
@@ -156,7 +155,7 @@ pub(super) fn apply_scene_task(
 
 pub(super) fn publish_scene_page(
     runtime: &mut VoxelGiRuntime,
-    field: &mut VoxelEnergyField,
+    field: &mut ReceiverField,
     stats: &mut VoxelGiStats,
     result: &mut SceneBuildResult,
     page: IVec3,
@@ -185,7 +184,7 @@ pub(super) fn publish_scene_page(
 /// Descriptors are the worker scanner's unique voxel keys. Equal cardinality
 /// and equal exposed records establish page identity independently of order.
 fn page_matches(
-    field: &VoxelEnergyField,
+    field: &ReceiverField,
     page: IVec3,
     descriptors: &[SurfaceProbeDescriptor],
     materials: &super::world::VoxelMaterialTransportTable,
@@ -204,7 +203,7 @@ fn page_matches(
 
 fn reconcile_scene_page(
     runtime: &mut VoxelGiRuntime,
-    field: &mut VoxelEnergyField,
+    field: &mut ReceiverField,
     stats: &mut VoxelGiStats,
     result: &mut SceneBuildResult,
     page: IVec3,
@@ -345,7 +344,7 @@ fn reconcile_scene_page(
 
 fn finish_scene_page(
     runtime: &mut VoxelGiRuntime,
-    field: &mut VoxelEnergyField,
+    field: &mut ReceiverField,
     stats: &mut VoxelGiStats,
     result: &mut SceneBuildResult,
     page: IVec3,
@@ -375,17 +374,16 @@ fn finish_scene_page(
     field.publishing_pages.remove(&page);
     update_stats_from_counters(runtime, field, stats);
     stats.loaded_pages = runtime.loaded_pages.len();
-    stats.naadf_regions = runtime.scene.regions.len();
-    stats.last_scene_build_ms = result.build_time.as_secs_f32() * 1_000.0;
+    stats.scheduler.last_scene_build_ms = result.build_time.as_secs_f32() * 1_000.0;
     debug!(
             loaded_pages = stats.loaded_pages,
-            naadf_regions = stats.naadf_regions,
+            naadf_regions = runtime.scene.regions.len(),
             surface_probes = stats.surface_probes,
-            pending_probes = stats.pending_probes,
+            pending_probes = stats.scheduler.pending_probes,
             relit_probes,
             coverage_percent = format_args!("{:.1}", stats.interactive_coverage * 100.0),
             bootstrap_percent = format_args!("{:.1}", stats.bootstrap_coverage * 100.0),
-            build_ms = format_args!("{:.1}", stats.last_scene_build_ms),
+            build_ms = format_args!("{:.1}", stats.scheduler.last_scene_build_ms),
             publish_ms = format_args!("{:.1}", publish_started.elapsed().as_secs_f64() * 1000.0),
             "incremental world-space voxel transport scene rebuilt"
         );
@@ -419,10 +417,10 @@ mod donor_tests {
 
     fn unchanged_page_fixture() -> (
         VoxelGiRuntime,
-        VoxelEnergyField,
+        ReceiverField,
         Vec<SurfaceProbeDescriptor>,
     ) {
-        let mut field = VoxelEnergyField::default();
+        let mut field = ReceiverField::default();
         let descriptors: Vec<_> = (0..32)
             .flat_map(|z| {
                 (0..32).map(move |x| SurfaceProbeDescriptor {

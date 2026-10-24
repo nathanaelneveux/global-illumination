@@ -75,8 +75,8 @@ fn setup_lighting(mut commands: Commands) {
         cascade_shadow_config,
     ));
     if cave || canyon {
-        sun.insert(voxel_gi::EnergyEmitter {
-            spectrum: Vec3::ZERO,
+        sun.insert(voxel_gi::VoxelGiEmitter {
+            color: Vec3::ZERO,
             range: 0.0,
         });
     }

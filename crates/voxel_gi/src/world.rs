@@ -7,7 +7,7 @@ use std::time::Instant;
 use bevy::prelude::*;
 
 use super::naadf::{Aadf, build_aadf, linear_index, volume_len};
-use super::spectrum::Radiance;
+use super::color::FiniteColor;
 mod delta;
 pub(crate) use delta::SceneStamp;
 

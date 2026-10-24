@@ -16,7 +16,7 @@ use bevy::render::storage::ShaderBuffer;
 use super::emission::EmissionDistribution;
 use super::gpu_scene::PackedScene;
 use super::sources::TransportSources;
-use super::spectrum::Radiance;
+use super::color::FiniteColor;
 use super::tracer::HISTORY_LIMIT;
 use super::work::TraceWork;
 #[cfg(test)]

@@ -27,9 +27,9 @@ mod sampling;
 mod scheduling;
 mod settings;
 mod sky;
+mod color;
 mod sources;
 mod sun_changes;
-mod spectrum;
 #[cfg(test)]
 mod statistics;
 mod telemetry;
@@ -46,10 +46,9 @@ use std::time::{Duration, Instant};
 use bevy::prelude::*;
 use bevy::tasks::Task;
 
-pub use field::VoxelEnergyField;
+use field::ReceiverField;
 pub use settings::{TransportSettings, VoxelGiQuality, VoxelGiSettings};
-pub use sources::VoxelGiEnvironment;
-pub use spectrum::EnergyEmitter;
+pub use sources::{VoxelGiEmitter, VoxelGiEnvironment};
 pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 
 use pages::{ingest_input, start_scene_task};
@@ -86,7 +85,7 @@ impl Plugin for VoxelGiPlugin {
         app.init_resource::<VoxelGiInput>()
             .init_resource::<VoxelGiSource>()
             .init_resource::<VoxelGiRuntime>()
-            .init_resource::<VoxelEnergyField>()
+            .init_resource::<ReceiverField>()
             .init_resource::<VoxelGiStats>()
             .init_resource::<GiWorkTimings>()
             .init_resource::<VoxelGiSettings>()
@@ -131,10 +130,13 @@ impl Plugin for VoxelGiPlugin {
     }
 }
 
+/// What GI is doing, for a host's HUD or adaptive quality: coverage of the
+/// world cache, its cost, and the view tier's GPU time. `scheduler` holds
+/// scheduler internals for diagnostics (the debug HUD, validation); they
+/// change with the implementation.
 #[derive(Resource, Clone, Debug, Default)]
 pub struct VoxelGiStats {
     pub loaded_pages: usize,
-    pub naadf_regions: usize,
     pub surface_probes: usize,
     pub bootstrap_coverage: f32,
     pub interactive_coverage: f32,
@@ -144,15 +146,25 @@ pub struct VoxelGiStats {
     /// Mean GI main-world system-body time per app frame over a 250 ms window.
     /// Excludes background workers and render-world upload/draw work.
     pub main_thread_ms_per_frame: Option<f32>,
-    /// Last app frame's GI system-body times, in telemetry stage order.
-    /// Excludes workers/render work; unlike the overlay average, retains spikes.
-    pub last_main_stage_ms: [f32; 6],
     /// Completed transport compute-pass timestamps per app frame over the
     /// same window. None until available, or on CPU/unsupported GPU backends.
     /// Excludes queue waits, transfers and graphics; do not add to main time.
     pub gpu_ms_per_frame: Option<f32>,
+    /// Visible-face (view tier) GPU time last frame. Unlike `gpu_ms_per_frame`
+    /// (world-cache transport), presentation and discovery are not limited by
+    /// `gpu_time_share`; `view_receivers` scales them.
+    pub view_gpu: ViewReceipts,
+    pub backend: &'static str,
+    pub scheduler: SchedulerStats,
+}
+
+/// World-cache scheduler internals, for diagnostics.
+#[derive(Clone, Debug, Default)]
+pub struct SchedulerStats {
+    /// Last app frame's GI system-body times, in telemetry stage order.
+    /// Excludes workers/render work; unlike the overlay average, retains spikes.
+    pub last_main_stage_ms: [f32; 6],
     pub pending_probes: usize,
-    pub global_refresh: f32,
     pub traced_paths: u64,
     pub last_scene_build_ms: f32,
     pub last_trace_batch_ms: f32,
@@ -167,13 +179,8 @@ pub struct VoxelGiStats {
     pub last_decode_ms: f32,
     pub packed_geometry_bytes: usize,
     pub fully_bootstrapped: bool,
-    /// Visible-face (view tier) GPU time last frame. Unlike `gpu_ms_per_frame`
-    /// (world-cache transport), presentation and discovery are not limited by
-    /// `gpu_time_share`; `view_receivers` scales them.
-    pub view_gpu: ViewReceipts,
     /// World-cache faces the next batch may select.
     pub dispatch_budget: usize,
-    pub backend: &'static str,
 }
 
 #[derive(Resource)]
@@ -329,7 +336,7 @@ fn page_of(voxel: IVec3) -> IVec3 {
     voxel.div_euclid(IVec3::splat(PAGE_EDGE as i32))
 }
 
-fn advance_transport_revision(runtime: &mut VoxelGiRuntime, field: &mut VoxelEnergyField) {
+fn advance_transport_revision(runtime: &mut VoxelGiRuntime, field: &mut ReceiverField) {
     field.transport_revision = field.transport_revision.wrapping_add(1);
     // Old histories remain useful, but have not passed stability checks in the
     // new scene. Revision-aware deltas cannot subtract them from this new count.
@@ -361,13 +368,13 @@ fn probe_metrics(probe: &SurfaceProbe, transport_revision: u64) -> (u64, u64, u6
 
 fn update_stats_from_counters(
     runtime: &VoxelGiRuntime,
-    field: &VoxelEnergyField,
+    field: &ReceiverField,
     stats: &mut VoxelGiStats,
 ) {
     let faces = runtime.active_faces;
     stats.surface_probes = field.probes.len();
-    stats.dispatch_budget = runtime.batch_size;
-    stats.pending_probes = runtime.urgent_pending.len();
+    stats.scheduler.dispatch_budget = runtime.batch_size;
+    stats.scheduler.pending_probes = runtime.urgent_pending.len();
     stats.bootstrap_coverage = if faces == 0 {
         1.0
     } else {
@@ -384,8 +391,7 @@ fn update_stats_from_counters(
         runtime.settled_faces as f32 / faces as f32
     };
     // The world sweep is continuous on the GPU (oldest faces first).
-    stats.global_refresh = 1.0;
-    stats.fully_bootstrapped = stats.bootstrap_coverage >= 1.0 && field.publishing_pages.is_empty();
+    stats.scheduler.fully_bootstrapped = stats.bootstrap_coverage >= 1.0 && field.publishing_pages.is_empty();
 }
 
 #[cfg(test)]

@@ -77,7 +77,7 @@ impl GiWorkTimings {
     }
 
     fn finish_frame_at(&mut self, now: Instant, stats: &mut VoxelGiStats) {
-        stats.last_main_stage_ms = self.frame_main.map(|d| d.as_secs_f32() * 1000.0);
+        stats.scheduler.last_main_stage_ms = self.frame_main.map(|d| d.as_secs_f32() * 1000.0);
         self.frame_main = [Duration::ZERO; 6];
         self.frames += 1;
         if now.saturating_duration_since(self.started) < REPORT_INTERVAL {
@@ -130,10 +130,10 @@ mod tests {
         let mut stats = VoxelGiStats::default();
         timings.frame_main[MainStage::ScenePublication as usize] = Duration::from_millis(20);
         timings.finish_frame_at(now, &mut stats);
-        assert_eq!(stats.last_main_stage_ms[2], 20.0);
+        assert_eq!(stats.scheduler.last_main_stage_ms[2], 20.0);
         assert!(stats.main_thread_ms_per_frame.is_none());
         timings.finish_frame_at(now, &mut stats);
-        assert_eq!(stats.last_main_stage_ms, [0.0; 6]);
+        assert_eq!(stats.scheduler.last_main_stage_ms, [0.0; 6]);
     }
 
     #[test]

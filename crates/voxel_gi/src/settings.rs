@@ -7,9 +7,6 @@ use std::time::Duration;
 #[serde(default, deny_unknown_fields)]
 pub struct VoxelGiSettings {
     pub transport: TransportSettings,
-    /// New paths per selected face, not a lifetime sample limit. Smaller batches
-    /// refresh more receivers sooner but pay more scheduling/transfer overhead.
-    pub samples_per_dispatch: u32,
     /// Measured retention constant c (default 1); zero restores the whole-range
     /// distance curve.
     /// Resident only. Each edit, load or sunlight change predicts a luminance
@@ -27,33 +24,13 @@ pub struct VoxelGiSettings {
     /// MSE-optimal weights from their measured variance and bias. 0.031 is
     /// the former 1024-sample target for a relative sigma of one.
     pub spatial_noise_threshold: f32,
-    /// GPU time per transport batch: its size, and how coarsely the GPU
-    /// share below is spent.
-    pub trace_budget_ms: f32,
     /// The GI budget: the share of GPU time transport batches may use
     /// (0.2 = 20%), independent of frame rate. Batches wait while it is spent;
     /// main-thread work per batch scales with them. Publication keeps its own
     /// per-frame caps.
     pub gpu_time_share: f32,
-    pub max_probes_per_dispatch: usize,
-    /// Main-thread receiver publication budget (capped at 8 ms). A page is
-    /// atomic, so one expensive page may exceed it; at most four pages publish
-    /// per update. Zero retains the one-page-per-update comparison.
-    pub scene_publish_budget: Duration,
     /// Presentation-only temporal response. Does not filter simulation energy.
     pub display_response: Duration,
-    /// Settled faces still receive verification rays at this cadence. This is
-    /// eligibility, not a deadline: loaded-world size and work budget matter.
-    pub stable_audit_interval: Duration,
-    /// Baseline minimum. Dark indirect RGB (peak below 0.02) requires at least
-    /// 256 samples before sparse audits, even if early observed variance is zero.
-    pub stable_min_samples: u32,
-    /// Per-band relative-error heuristic, not a certified convergence bound.
-    pub stable_relative_error: f32,
-    /// GPU-picked faces whose progress (counts, settled verdict, presentation
-    /// seed) the CPU mirrors per batch. The GPU state is the authority; this
-    /// bounds the readback and main-thread merge.
-    pub statistics_mirror_per_batch: u32,
     /// Persistent world cache: receivers (probes, resident slots, sun corners)
     /// for pages within this many voxels of an active camera (page nearest
     /// point), kept until 32 voxels beyond it. Every visible face is
@@ -71,6 +48,37 @@ pub struct VoxelGiSettings {
     /// Fraction of the transport allowance spent refreshing the cache; the
     /// visible faces get the remainder. Not extra budget.
     pub cache_share: f32,
+    /// Scheduler work bounds: measured, not host policy.
+    #[serde(skip)]
+    pub(crate) scheduler: SchedulerSettings,
+}
+
+/// The world-cache scheduler's batch and audit bounds.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SchedulerSettings {
+    /// New paths per selected face, not a lifetime sample limit. Smaller batches
+    /// refresh more receivers sooner but pay more scheduling/transfer overhead.
+    pub(crate) samples_per_dispatch: u32,
+    /// GPU time per transport batch: its size, and how coarsely the GPU
+    /// share (`gpu_time_share`) is spent.
+    pub(crate) trace_budget_ms: f32,
+    pub(crate) max_probes_per_dispatch: usize,
+    /// Main-thread receiver publication budget (capped at 8 ms). A page is
+    /// atomic, so one expensive page may exceed it; at most four pages publish
+    /// per update. Zero retains the one-page-per-update comparison.
+    pub(crate) scene_publish_budget: Duration,
+    /// Settled faces still receive verification rays at this cadence. This is
+    /// eligibility, not a deadline: loaded-world size and work budget matter.
+    pub(crate) stable_audit_interval: Duration,
+    /// Baseline minimum. Dark indirect RGB (peak below 0.02) requires at least
+    /// 256 samples before sparse audits, even if early observed variance is zero.
+    pub(crate) stable_min_samples: u32,
+    /// Per-band relative-error heuristic, not a certified convergence bound.
+    pub(crate) stable_relative_error: f32,
+    /// GPU-picked faces whose progress (counts, settled verdict, presentation
+    /// seed) the CPU mirrors per batch. The GPU state is the authority; this
+    /// bounds the readback and main-thread merge.
+    pub(crate) statistics_mirror_per_batch: u32,
 }
 
 /// Starting points for `VoxelGiSettings` that trade cost for quality. They
@@ -126,22 +134,30 @@ impl Default for VoxelGiSettings {
     fn default() -> Self {
         Self {
             transport: TransportSettings::default(),
-            samples_per_dispatch: 16,
             measured_retention: 1.0,
             spatial_reconstruction: 1.0,
             spatial_noise_threshold: 0.031,
-            trace_budget_ms: 4.0,
             gpu_time_share: 0.2,
+            display_response: Duration::from_millis(75),
+            cache_radius: 64.0,
+            view_receivers: 65_536,
+            cache_share: 0.25,
+            scheduler: SchedulerSettings::default(),
+        }
+    }
+}
+
+impl Default for SchedulerSettings {
+    fn default() -> Self {
+        Self {
+            samples_per_dispatch: 16,
+            trace_budget_ms: 4.0,
             max_probes_per_dispatch: 8192,
             scene_publish_budget: Duration::from_millis(2),
-            display_response: Duration::from_millis(75),
             stable_audit_interval: Duration::from_secs(2),
             stable_min_samples: 64,
             stable_relative_error: 0.12,
             statistics_mirror_per_batch: 1024,
-            cache_radius: 64.0,
-            view_receivers: 65_536,
-            cache_share: 0.25,
         }
     }
 }
@@ -150,16 +166,16 @@ impl VoxelGiSettings {
     /// Clamp every field to its supported range (what the solver would use).
     pub fn normalized(mut self) -> Self {
         self.transport = self.transport.normalized();
-        self.samples_per_dispatch = self.batch_samples();
-        self.trace_budget_ms = self.budget_ms();
-        self.max_probes_per_dispatch = self.batch_limit();
-        self.stable_min_samples = self.stable_samples();
-        self.stable_relative_error = self.stable_error();
-        self.stable_audit_interval = self.audit_interval();
+        self.scheduler.samples_per_dispatch = self.batch_samples();
+        self.scheduler.trace_budget_ms = self.budget_ms();
+        self.scheduler.max_probes_per_dispatch = self.batch_limit();
+        self.scheduler.stable_min_samples = self.stable_samples();
+        self.scheduler.stable_relative_error = self.stable_error();
+        self.scheduler.stable_audit_interval = self.audit_interval();
         self.display_response = self
             .display_response
             .clamp(Duration::from_millis(10), Duration::from_millis(500));
-        self.scene_publish_budget = self.scene_publish_budget.min(Duration::from_millis(8));
+        self.scheduler.scene_publish_budget = self.scheduler.scene_publish_budget.min(Duration::from_millis(8));
         self.view_receivers = self.view_receiver_limit();
         self.spatial_noise_threshold = self.noise_threshold();
         self
@@ -185,18 +201,18 @@ impl VoxelGiSettings {
         }
     }
     pub(super) fn batch_samples(&self) -> u32 {
-        self.samples_per_dispatch.clamp(1, 64)
+        self.scheduler.samples_per_dispatch.clamp(1, 64)
     }
     pub(super) fn audit_interval(&self) -> Duration {
-        self.stable_audit_interval
+        self.scheduler.stable_audit_interval
             .clamp(Duration::from_millis(100), Duration::from_secs(30))
     }
     pub(super) fn stable_samples(&self) -> u32 {
-        self.stable_min_samples.clamp(32, 256)
+        self.scheduler.stable_min_samples.clamp(32, 256)
     }
     pub(super) fn stable_error(&self) -> f32 {
-        if self.stable_relative_error.is_finite() {
-            self.stable_relative_error.clamp(0.01, 0.5)
+        if self.scheduler.stable_relative_error.is_finite() {
+            self.scheduler.stable_relative_error.clamp(0.01, 0.5)
         } else {
             0.12
         }
@@ -205,12 +221,12 @@ impl VoxelGiSettings {
         self.display_response.as_secs_f32().clamp(0.01, 0.5)
     }
     pub(super) fn mirror_per_batch(&self) -> u32 {
-        self.statistics_mirror_per_batch.clamp(64, 65536)
+        self.scheduler.statistics_mirror_per_batch.clamp(64, 65536)
     }
 
     pub(super) fn budget_ms(&self) -> f32 {
-        if self.trace_budget_ms.is_finite() {
-            self.trace_budget_ms.clamp(0.25, 16.0)
+        if self.scheduler.trace_budget_ms.is_finite() {
+            self.scheduler.trace_budget_ms.clamp(0.25, 16.0)
         } else {
             4.0
         }
@@ -234,7 +250,7 @@ impl VoxelGiSettings {
         }
     }
     pub(super) fn batch_limit(&self) -> usize {
-        self.max_probes_per_dispatch.clamp(64, 8192)
+        self.scheduler.max_probes_per_dispatch.clamp(64, 8192)
     }
 }
 
@@ -282,7 +298,7 @@ impl TransportSettings {
 pub(super) fn synchronize_transport_settings(
     settings: Res<VoxelGiSettings>,
     mut runtime: ResMut<super::VoxelGiRuntime>,
-    mut field: ResMut<super::VoxelEnergyField>,
+    mut field: ResMut<super::ReceiverField>,
     mut stats: ResMut<super::VoxelGiStats>,
 ) {
     let transport = settings.transport.normalized();
@@ -300,10 +316,13 @@ mod tests {
     #[test]
     fn ron_import_clamps_and_round_trips() {
         let imported =
-            VoxelGiSettings::from_ron("(transport: (reach: 16.0, bounces: 0), samples_per_dispatch: 999, view_receivers: 1)")
+            VoxelGiSettings::from_ron("(transport: (reach: 16.0, bounces: 0), view_receivers: 1)")
                 .unwrap();
         assert_eq!(imported.transport, TransportSettings { reach: 16.0, bounces: 1 });
-        assert_eq!(imported.samples_per_dispatch, 64);
+        assert!(
+            VoxelGiSettings::from_ron("(samples_per_dispatch: 16)").is_err(),
+            "scheduler bounds are not host settings"
+        );
         assert_eq!(imported.view_receivers, 8_192);
         assert!(VoxelGiSettings::from_ron("broken").is_err());
         let high = VoxelGiSettings::quality(VoxelGiQuality::High);
@@ -375,18 +394,20 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<VoxelGiSettings>()
             .init_resource::<super::super::VoxelGiRuntime>()
-            .init_resource::<super::super::VoxelEnergyField>()
+            .init_resource::<super::super::ReceiverField>()
             .init_resource::<super::super::VoxelGiStats>()
             .add_systems(Update, synchronize_transport_settings);
         app.update();
         app.world_mut()
             .resource_mut::<VoxelGiSettings>()
+            .scheduler
             .trace_budget_ms = 1.0;
         app.world_mut()
             .resource_mut::<VoxelGiSettings>()
             .display_response = Duration::from_millis(200);
         app.world_mut()
             .resource_mut::<VoxelGiSettings>()
+            .scheduler
             .samples_per_dispatch = 1;
         app.update();
         assert_eq!(

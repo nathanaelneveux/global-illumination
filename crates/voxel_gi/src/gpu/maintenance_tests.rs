@@ -8,7 +8,7 @@ use bevy::{
 
 fn world(
     runtime: gi::VoxelGiRuntime,
-    field: gi::VoxelEnergyField,
+    field: gi::ReceiverField,
     device: GpuTransportDevice,
 ) -> World {
     AsyncComputeTaskPool::get_or_init(|| TaskPoolBuilder::new().num_threads(1).build());
@@ -151,7 +151,7 @@ fn retirements_survive_poll_only_and_empty_receiver_dispatch() {
                 batch: default(),
             });
         }
-        let mut field = gi::VoxelEnergyField::default();
+        let mut field = gi::ReceiverField::default();
         if near_receiver {
             let other = IVec3::new(64, 4, 8);
             field.order.push(other);
@@ -224,7 +224,7 @@ fn scene_edits_reach_view_history_without_world_cache_pages() {
         assert!(Instant::now() < deadline, "scene publication timed out");
         std::thread::yield_now();
     }
-    assert!(world.resource::<gi::VoxelEnergyField>().pages.is_empty());
+    assert!(world.resource::<gi::ReceiverField>().pages.is_empty());
     assert!(world.resource::<gi::VoxelGiRuntime>().spatial_history.has_events(),
         "view receivers must receive geometry events without any world-cache page");
     let mut next = run_worker(&mut world);

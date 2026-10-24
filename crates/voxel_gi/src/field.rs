@@ -131,7 +131,7 @@ impl std::ops::Index<&IVec3> for ProbeStore {
 /// World-cache receivers: identity, exposure, resident slots and scheduling
 /// order. The GPU state is the authority for their measurements.
 #[derive(Resource, Default)]
-pub struct VoxelEnergyField {
+pub(crate) struct ReceiverField {
     pub(super) probes: ProbeStore,
     pub(super) order: Vec<IVec3>,
     pub(super) pages: HashMap<IVec3, Vec<IVec3>>,
@@ -141,7 +141,8 @@ pub struct VoxelEnergyField {
     pub(super) publishing_pages: HashSet<IVec3>,
 }
 
-impl VoxelEnergyField {
+impl ReceiverField {
+    #[cfg(test)]
     pub fn probe_count(&self) -> usize {
         self.probes.len()
     }

@@ -89,7 +89,7 @@ GI does no simulation, and simulation has no place in a general package.
 
 - **Infrared/ionizing bands: remove.** Visible RGB only, in CPU records, GPU
   state and shaders (`direction.md` stage 3).
-- **CPU energy field and gameplay queries: remove** (`VoxelEnergyField`, the CPU
+- **CPU energy field and gameplay queries: remove** (`VoxelEnergyField`, now the crate-private `ReceiverField`; the CPU
   statistics mirror), keeping only what world-cache scheduling needs.
 - **CPU path tracer / oracle** (`tracer.rs`, `sampling.rs`, emission tree,
   `reconstruction.rs`, `correctness_audit`, `research.rs`). Dead in release
@@ -137,21 +137,24 @@ What the connector and core must handle for it, beyond the lab:
 Done in the lab first (Bevy UI debug panel, `VoxelGiQuality` presets, the
 `view_receivers` setting and view GPU receipts in `VoxelGiStats`).
 
-Keep public, with RON presets for the Neo, the M4 and larger GPUs:
+Public, with RON presets for the Neo, the M4 and larger GPUs (2026-10-24):
 
-- `cache_radius` (world cache size, the main memory/cost knob);
-- `gpu_time_share` and `trace_budget_ms` (GI's GPU share and batch size);
-- `samples_per_dispatch`;
-- view receiver density (today the fixed 4-pixel grid capped by
-  `MAX_PIXELS = 65536`; at 1440p cells are already ~7.5 px, so better GPUs can
-  afford a finer grid);
-- `spatial_reconstruction` and `spatial_noise_threshold`;
+- `cache_radius` (world cache size, the main memory/cost knob) and
+  `cache_share` (its part of the budget);
+- `gpu_time_share` (GI's GPU share);
+- `view_receivers` (visible-face density);
+- `spatial_reconstruction`, `spatial_noise_threshold`, `display_response`;
+- `measured_retention` (its zero is the distance-curve control);
 - `transport.reach` and `transport.bounces`.
 
+Internal (`SchedulerSettings`, not deserialized): `samples_per_dispatch`,
+`trace_budget_ms`, `max_probes_per_dispatch`, `scene_publish_budget`, the
+`stable_*` audit bounds and `statistics_mirror_per_batch`. No preset, config or
+panel set them; they are measured work bounds, changed in code with evidence.
+`VoxelGiStats` keeps coverage, cost and view GPU time at the top level and
+groups scheduler internals under `scheduler` (`SchedulerStats`).
+
 Removed: `adaptive_updates`, `cpu_statistics`, `simulation_sampling_importance`.
-Candidates to make internal: `statistics_mirror_per_batch`, `measured_retention` (keep
-only if pass 3 shows a visible benefit), `stable_*` and `display_response` unless
-a preset needs them.
 
 ## Audit method
 

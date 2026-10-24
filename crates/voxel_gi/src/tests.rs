@@ -12,9 +12,9 @@ use bevy::platform::collections::HashMap;
 fn transport_failure_missing_device_does_not_select_cpu_implicitly() {
     use bevy::ecs::system::RunSystemOnce;
     let mut world = World::new();
-    world.init_resource::<VoxelEnergyField>();
+    world.init_resource::<ReceiverField>();
     world
-        .resource_mut::<VoxelEnergyField>()
+        .resource_mut::<ReceiverField>()
         .order
         .push(IVec3::ZERO);
     world.init_resource::<VoxelGiRuntime>();
@@ -47,7 +47,7 @@ fn transport_failure_worker_error_is_fatal_at_publication() {
         std::thread::yield_now();
     }
     let mut world = World::new();
-    world.init_resource::<VoxelEnergyField>();
+    world.init_resource::<ReceiverField>();
     world.init_resource::<VoxelGiRuntime>();
     world.resource_mut::<VoxelGiRuntime>().trace_task = Some(task);
     world.init_resource::<VoxelGiSettings>();
@@ -63,7 +63,7 @@ fn settled_counter_follows_accepted_transport_not_untraced_or_rejected_batches()
     // Settled is the GPU's verdict, carried by each merged face.
     let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
     probe.stats_mut().samples = [256; 6];
-    let mut field = VoxelEnergyField::default();
+    let mut field = ReceiverField::default();
     field.probes.insert(IVec3::ZERO, probe);
     field.update_indices(&[IVec3::ZERO], &HashMap::new());
     let mut world = World::new();
@@ -78,7 +78,7 @@ fn settled_counter_follows_accepted_transport_not_untraced_or_rejected_batches()
     world.init_resource::<VoxelGiSettings>();
     world.init_resource::<GiWorkTimings>();
     for (case, expected) in [(0, 1.0), (1, 1.0), (2, 1.0), (3, 0.0), (4, 0.0)] {
-        let mut probe = world.resource::<VoxelEnergyField>().probes[&IVec3::ZERO].clone();
+        let mut probe = world.resource::<ReceiverField>().probes[&IVec3::ZERO].clone();
         probe.trace_mask = 4;
         if case == 1 {
             probe.trace_mask = 0;
@@ -130,7 +130,7 @@ fn settled_counter_follows_accepted_transport_not_untraced_or_rejected_batches()
         );
         if case == 4 {
             assert_eq!(
-                world.resource::<VoxelEnergyField>().probes[&IVec3::ZERO]
+                world.resource::<ReceiverField>().probes[&IVec3::ZERO]
                     .stats()
                     .radiance[2],
                 Vec3::ONE
@@ -141,7 +141,7 @@ fn settled_counter_follows_accepted_transport_not_untraced_or_rejected_batches()
 
 #[test]
 fn settled_counter_tracks_global_revisions_and_page_removal() {
-    let mut field = VoxelEnergyField::default();
+    let mut field = ReceiverField::default();
     let mut runtime = VoxelGiRuntime::default();
     let mut stats = VoxelGiStats::default();
     let far = IVec3::new(128, 0, 0);
@@ -224,7 +224,7 @@ fn settled_counter_tracks_global_revisions_and_page_removal() {
 #[test]
 fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
     use bevy::ecs::system::RunSystemOnce;
-    let mut field = VoxelEnergyField::default();
+    let mut field = ReceiverField::default();
     let old = IVec3::ZERO;
     let retained = IVec3::new(32, 0, 0);
     for voxel in [old, retained] {
@@ -269,12 +269,11 @@ fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
     });
     world.insert_resource(VoxelGiStats::default());
     world.init_resource::<GiWorkTimings>();
-    world.insert_resource(VoxelGiSettings {
-        scene_publish_budget: Duration::ZERO,
-        ..default()
-    });
+    let mut settings = VoxelGiSettings::default();
+    settings.scheduler.scene_publish_budget = Duration::ZERO;
+    world.insert_resource(settings);
     world.run_system_once(apply_scene_task).unwrap();
-    let field = world.resource::<VoxelEnergyField>();
+    let field = world.resource::<ReceiverField>();
     assert!(!field.probes.contains_key(&old));
     assert!(field.probes.contains_key(&added));
     assert!(field.probes.contains_key(&retained));
@@ -285,7 +284,7 @@ fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
     world.run_system_once(apply_scene_task).unwrap();
     assert_eq!(
         world
-            .resource::<VoxelEnergyField>()
+            .resource::<ReceiverField>()
             .probes
             .get(&retained)
             .unwrap() as *const SurfaceProbe,
@@ -294,7 +293,7 @@ fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
     );
     assert!(
         world
-            .resource::<VoxelEnergyField>()
+            .resource::<ReceiverField>()
             .publishing_pages
             .is_empty()
     );
@@ -310,7 +309,7 @@ fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
 fn new_receiver_display_clock_does_not_depend_on_material_id() {
     for material in [0, 2] {
         let mut runtime = VoxelGiRuntime::default();
-        let mut field = VoxelEnergyField::default();
+        let mut field = ReceiverField::default();
         let mut stats = VoxelGiStats::default();
         let mut result = SceneBuildResult {
             scene: runtime.scene.clone(),
@@ -362,7 +361,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             probe.stats_mut().stable_batches = [4; 6];
             let mut late = probe.clone();
             late.stats_mut().radiance = [Vec3::ONE * 100.0; 6];
-            let mut field = VoxelEnergyField::default();
+            let mut field = ReceiverField::default();
             field.probes.insert(voxel, probe);
             field.pages.insert(IVec3::ZERO, vec![voxel]);
             field.update_indices(&[voxel], &HashMap::new());
@@ -463,7 +462,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             world.init_resource::<GiWorkTimings>();
             world.run_system_once(apply_trace_task).unwrap();
             assert_eq!(
-                world.resource::<VoxelEnergyField>().probes[&voxel]
+                world.resource::<ReceiverField>().probes[&voxel]
                     .stats()
                     .radiance[2],
                 Vec3::ONE,
@@ -517,7 +516,7 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
             assert!(Instant::now() < deadline, "test scene did not finish");
             std::thread::yield_now();
         }
-        let mut field = VoxelEnergyField::default();
+        let mut field = ReceiverField::default();
         for voxel in [near, far] {
             let mut probe = SurfaceProbe::new(voxel, 4);
             probe.stats_mut().samples = [4096; 6];
@@ -552,7 +551,7 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
         world.init_resource::<GiWorkTimings>();
         world.run_system_once(apply_scene_task).unwrap();
         world.resource_scope(|world, mut runtime: Mut<VoxelGiRuntime>| {
-            let field = world.resource::<VoxelEnergyField>();
+            let field = world.resource::<ReceiverField>();
             assert_eq!(runtime.source_revision, 0);
             assert_eq!(runtime.model_reset_source_revision, 0);
             assert_eq!(field.transport_revision, 1);
@@ -597,7 +596,7 @@ fn publication_batches_cheap_pages_without_unbounded_display_work() {
             )
         })
         .collect();
-    let mut field = VoxelEnergyField::default();
+    let mut field = ReceiverField::default();
     field
         .publishing_pages
         .extend(pages.iter().map(|(page, _)| *page));
@@ -617,12 +616,11 @@ fn publication_batches_cheap_pages_without_unbounded_display_work() {
     });
     world.insert_resource(VoxelGiStats::default());
     world.init_resource::<GiWorkTimings>();
-    world.insert_resource(VoxelGiSettings {
-        scene_publish_budget: Duration::MAX,
-        ..default()
-    });
+    let mut settings = VoxelGiSettings::default();
+    settings.scheduler.scene_publish_budget = Duration::MAX;
+    world.insert_resource(settings);
     world.run_system_once(apply_scene_task).unwrap();
-    let published = world.resource::<VoxelEnergyField>().probe_count();
+    let published = world.resource::<ReceiverField>().probe_count();
     assert!(
         published <= 4,
         "downstream topology patches have a page-count cap"
@@ -633,7 +631,7 @@ fn publication_batches_cheap_pages_without_unbounded_display_work() {
     for _ in 0..6 {
         world.run_system_once(apply_scene_task).unwrap();
     }
-    let field = world.resource::<VoxelEnergyField>();
+    let field = world.resource::<ReceiverField>();
     assert_eq!(field.probe_count(), 6);
     assert!(field.publishing_pages.is_empty());
     assert!(
@@ -646,7 +644,7 @@ fn publication_batches_cheap_pages_without_unbounded_display_work() {
 
 #[test]
 fn in_flight_lighting_cannot_restore_indices_moved_by_streaming() {
-    let mut field = VoxelEnergyField::default();
+    let mut field = ReceiverField::default();
     let voxels = [IVec3::ZERO, IVec3::X, IVec3::Y, IVec3::Z];
     for voxel in voxels {
         field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
@@ -673,7 +671,7 @@ fn in_flight_lighting_cannot_restore_indices_moved_by_streaming() {
 
 #[test]
 fn dispatch_reuses_returned_storage_without_retaining_candidates() {
-    let mut field = VoxelEnergyField::default();
+    let mut field = ReceiverField::default();
     field.order.push(IVec3::ZERO);
     field
         .probes
@@ -703,7 +701,7 @@ fn dispatch_reuses_returned_storage_without_retaining_candidates() {
 #[test]
 fn cpu_selects_only_event_work() {
     let now = Instant::now();
-    let mut field = VoxelEnergyField::default();
+    let mut field = ReceiverField::default();
     for x in 0..64 {
         let voxel = IVec3::new(10_000 + x, 0, 0);
         let mut probe = SurfaceProbe::new(voxel, 5);
