@@ -191,8 +191,6 @@ pub struct VoxelEnergyField {
     pub(super) transport_revision: u64,
     /// Geometry is ready but these receiver pages have not been published yet.
     pub(super) publishing_pages: HashSet<IVec3>,
-    /// Probes keep CPU statistics (`VoxelGiSettings::cpu_statistics`).
-    pub(super) cpu_statistics: bool,
 }
 
 impl VoxelEnergyField {

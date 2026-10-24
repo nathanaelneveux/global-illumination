@@ -3,6 +3,7 @@
 use bevy::prelude::*;
 use std::time::Instant;
 
+#[cfg(test)]
 use super::statistics::{relative_error, relative_error_with_floor};
 use super::world::{AIR, FACE_OFFSETS, SurfaceProbe, TransportScene};
 
@@ -107,16 +108,21 @@ fn measured_display(
     source_revision: u64,
     now: Instant,
 ) -> Option<(FaceDisplay, f32)> {
-    // Without CPU statistics a donor's display confidence and probe-level time
-    // stand in for its sample count and per-face time.
-    let measured = match donor.stats.as_deref() {
-        Some(stats) => stats.samples[face] > 0,
-        None => donor.display[face].confidence > 0.0,
+    // A donor's display confidence and probe-level time stand in for its
+    // sample count and per-face time (the GPU slot holds the measurements).
+    let measured = donor.measured(face);
+    #[cfg(test)]
+    let has_measurement = if donor.stats.is_some() {
+        measured.samples > 0
+    } else {
+        donor.display[face].confidence > 0.0
     };
-    if donor.face_mask & (1 << face) == 0 || !measured || donor.source_revision != source_revision {
+    #[cfg(not(test))]
+    let has_measurement = donor.display[face].confidence > 0.0;
+    if donor.face_mask & (1 << face) == 0 || !has_measurement || donor.source_revision != source_revision {
         return None;
     }
-    let updated = donor.stats().face_updated_at[face].or(donor.updated_at)?;
+    let updated = measured.updated_at.or(donor.updated_at)?;
     let age = now.saturating_duration_since(updated).as_secs_f32();
     let display = donor.display[face];
     // Settled faces are intentionally audited sparsely. An arbitrary two-second
@@ -149,8 +155,9 @@ impl SurfaceProbe {
         self.display_updated_at = Some(now);
     }
 
-    /// Resolve one accepted face in place; its display value is still the
-    /// authoritative pre-batch history. No six-face worker snapshot is needed.
+    /// Test reference for the GPU presentation filter (voxel_accumulate.wgsl):
+    /// resolve one accepted face in place from its CPU statistics.
+    #[cfg(test)]
     pub(crate) fn resolve_face(
         &mut self,
         face: usize,
@@ -207,6 +214,7 @@ impl SurfaceProbe {
 /// of clipping energy: persistent changes still reach their full intensity,
 /// colors remain a convex RGB blend, and there is no hard brightness ceiling.
 /// This is a robust, biased display filter, not a transport estimator.
+#[cfg(test)]
 fn temporal_blend(history: Vec3, measured: Vec3, alpha: f32) -> Vec3 {
     const DISPLAY_SCALE: f32 = 0.25;
     let old_weight = (1.0 - alpha) / (DISPLAY_SCALE + history.max_element());

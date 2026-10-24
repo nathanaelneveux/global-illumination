@@ -7,10 +7,8 @@ The full suite is an integration checkpoint, not the default for every tweak.
 
 For resident transport, distinguish `snapshot_latency_ms` (submission to CPU
 delivery) from worker occupancy and GPU timestamps. It is not a blocking wait.
-`temporal.json` records world-cache receivers, not the displayed view-owned
-faces; use captures for presentation. Historical multi-band research
-controls still check energy/PDF correctness, with nonvisual importance reported
-separately; RGB FLIP does not qualify those bands for simulation.
+Validation reports' receiver records describe world-cache receivers, not the
+displayed view-owned faces; use captures for presentation.
 
 Normal runs use nonvisual importance 0 (display-only GI);
 `simulation_sampling_importance: 1` reproduces the historical equal-band control.
@@ -197,10 +195,10 @@ parity and alternating compute timings against that exact shader. Use the
 targeted `shader` filter for layout/composition checks; avoid the broad `view_`
 filter, which also selects unrelated view-factor and upload studies.
 
-Keep `cpu_statistics=false` in at least one runtime smoke check: validation with
-the full mirror alone cannot exercise slim-record HUD progress and publication
-ordering. `slim_progress_receives_gpu_stability_without_changing_sample_counts`
-and `mirror_record_never_replaces_a_newer_cpu_result` cover those native contracts.
+Production probes keep no CPU measurements (only test fixtures do).
+`slim_progress_receives_gpu_stability_without_changing_sample_counts` and
+`mirror_record_never_replaces_a_newer_cpu_result` cover HUD progress and
+publication ordering natively.
 
 2026-10-21 lifecycle smoke: `a5edd91` (only documentation changed during the
 run), dev profile, Apple M4/Metal, 2560×1440 offscreen. Command: `RUST_LOG=warn
@@ -521,8 +519,7 @@ reference is rate 0 with the offset the moving run reaches at a capture time;
 compares them.
 Captures come in pairs one second apart (30/31 ... 180/181 s): the sun moves a
 fraction of a degree between them, so their FLIP is mostly flicker. `day.json`
-records per-second history percentiles (CPU mirror: use
-`config/gi-mirror-full.ron`), traced paths, sky-corner retraces and revisions.
+records traced paths, sky-corner retraces and revisions each second.
 
 First results (gi-day-night on 4915387, Apple M4, headless, full mirror). A
 fixed sun settles to median history ~1,000 samples by 180 s at ~4.3M paths/s,
@@ -556,12 +553,6 @@ small fixed-work native compute studies remain isolated estimator controls, not
 evidence of throughput under streaming. Use these composed end-to-end profiles
 before promoting their winners.
 
-`cave` and `structures` also save `cave.json`: fixed receivers on all four walls,
-including five-band measurements, moments, history, sequence, RGB display and
-measurement age. Missing receivers are recorded, not silently excluded. Use it
-to distinguish lack of work from sampling error; neither history nor coverage is
-ground-truth convergence.
-
 Each run creates a unique `target/gi-validation/<profile>-<stamp>-<pid>/` directory
 with status, report and images. Schema 3 identifies offscreen/window capture;
 older schema-2 records in the archive retain their original limitations. The
@@ -575,12 +566,8 @@ workload or nonblank image alone is not a quality/performance pass.
 182 seconds, with captures at 15/30/60/120/180 seconds. The hallway camera stands
 beside the emitter looking toward the dark end, unlike the historical `hallway`
 overview looking toward the lamp. Use `VOXEL_GI_VALIDATE_BACKGROUND=1` for a
-moving terrain loader and `VOXEL_GI_VALIDATE_TEMPORAL=1` for every-update records.
-The hallway records 237 contiguous floor receivers in three parallel rows;
-the cave uses the existing wall receivers. Neither profile freezes sampling,
-forces uniform histories, or replaces scheduling with an offline prefix bake.
-Temporal records are still **pre-spatial** CPU feedback, not final rendered RGB.
-These views diagnose live publication and sampling; they do not supersede the
+moving terrain loader. Neither profile freezes sampling, forces uniform
+histories, or replaces scheduling with an offline prefix bake. These views diagnose live publication and sampling; they do not supersede the
 raw matched-prefix sampler controls or establish windowed frame pacing.
 The explicit `gi-display-unfiltered.ron` control also disables the final
 render-frame transition. Physical prefix exports are unchanged by that
@@ -600,30 +587,6 @@ transition; it must not be mistaken for improved sampler accuracy.
   runs. Add `RUST_LOG=warn,prototype_voxel_template::voxel_gi=info` for the
   view tier's GPU receipts (`GI view transport`: trace, presentation,
   discovery, pool), logged every 120 frames.
-- `VOXEL_GI_VALIDATE_TEMPORAL=1` also supports `cave` and `structures`: 36 fixed
-  exposed wall faces and their 144 reconstructed corners, with `site_faces` in
-  schema 2. Both the isolated chamber and composed normal-world structures are
-  checked for exposure. Missing sites are failures, not stable black samples.
-  See the [streaming investigation](history/streaming-performance.md) for exact runs.
-- `VOXEL_GI_VALIDATE_REFERENCE=1` adds two offline 65,536-path references per
-  fixed face on the frozen final scene, **after** timings/captures. It requires
-  headless validation with exit enabled. Use `tools/reference_analysis.py` to
-  compare actual RGB error, replica disagreement and sustained accuracy, not
-  just history count. `VOXEL_GI_VALIDATE_CAVE_LONG=1` extends the cave workload
-  to 182 seconds; optional `VOXEL_GI_VALIDATE_PATH_DIAGNOSTIC=<receiver-index>`
-  replays individual CPU/GPU paths to diagnose outliers. These are opt-in
-  investigations, not a new routine validation requirement. Full protocol and
-  limitations: [history-retention study](history/cave-history-retention.md).
-- For unusually high-variance receivers, `VOXEL_GI_VALIDATE_REFERENCE_BLOCKS`
-  raises each sparse reference replica from the default two 32,768-path blocks
-  (allowed 2–128). Replica ranges remain disjoint and below the direction
-  sequence period. Inspect replica disagreement before calling either one a
-  settled target; a larger path count alone is not qualification.
-  `VOXEL_GI_VALIDATE_REFERENCE_CPU_SITES=10,70,190` additionally runs the independent
-  random cosine estimator (no emitter proposals or MIS) at those temporal-site
-  indices, one million paths each, after GPU reference collection. Up to eight
-  sites are allowed; means and standard errors are saved, not silently treated
-  as a pass. This is an expensive opt-in diagnosis, not a routine gameplay test.
 - Coverage is at least one path sample per exposed face. Bootstrap targets eight.
   Record published/loaded geometry and pending ingestion alongside percentages;
   an early tiny field can be 100% covered while most terrain is not published.
@@ -734,38 +697,3 @@ Metal bindless warning remains; no dependency, shader or lighting setting change
 Keep focused, buildable local commits. Record verification and limitations in
 their messages; do not combine unrelated estimator, storage and presentation
 changes merely because they share one session.
-
-## Pin an actual gameplay face
-
-In a development build, aim the center of the view at a bad face and press
-**F8**. This pins its voxel/normal, records its subsequent live state, and
-captures `pinned.png` in a focused normal game window. Continue playing, moving,
-or editing normally. **F9** saves `temporal.json`, `watch.json` and `saved.png`
-under ignored `target/gi-face-watch/<timestamp>-<pid>/`; normal exit and selecting
-another face also save the trace. These controls work without validation mode,
-reference baking or a special scene. The existing unfiltered preset remains
-`VOXEL_GI_SETTINGS=config/gi-display-unfiltered.ron`.
-
-The watch does not request rays, refresh a receiver, move a camera, add residency,
-change lighting settings, or stop streaming. With no watch, the recorder does
-not run; BVW ray picking runs only on F8. It records raw RGB/moments, history and
-sequence, display RGB, all nine corner inputs, material/face mask, resident
-allocation, retention/source/geometry/transport revisions, camera route and
-settings changes. Missing/replaced faces and address-only changes are explicit.
-The mirror is the latest queued/completed CPU snapshot, which may differ from
-the currently rendered GPU frame; the pinned image is needed to correlate an
-actual visual failure. Pinning cannot recover events before the pin.
-
-Probes keep no CPU statistics by default (`cpu_statistics` off), so the watch
-and the validation recorders (live-site, house, response timing, day-cycle
-history) read zeros, and when statistics are on, the mirror is bounded to
-`statistics_mirror_per_batch` faces per batch. Run with
-`VOXEL_GI_SETTINGS=config/gi-mirror-full.ron` (statistics on, full mirror)
-when those numbers matter, and judge default-setting runs by their rendered
-captures. Memory measurements should use default settings.
-
-This is a gameplay diagnostic, not a frozen reference or a quality/FPS pass.
-An automated smoke test can pin known coordinates using
-`VOXEL_GI_WATCH_FACE=x,y,z,face` (face order +X,-X,+Y,-Y,+Z,-Z); this does not
-exercise the interactive key/ray-picking path. Headless runs omit the watch's
-window screenshots and retain their ordinary validation capture guards.

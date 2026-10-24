@@ -66,9 +66,9 @@ fn transport_failure_worker_error_is_fatal_at_publication() {
 fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches() {
     use bevy::ecs::system::RunSystemOnce;
     let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(1).build();
+    // Settled is the GPU's verdict, carried by each merged face.
     let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
     probe.stats_mut().samples = [256; 6];
-    probe.stats_mut().stable_batches = [3; 6];
     let mut field = VoxelEnergyField::default();
     field.probes.insert(IVec3::ZERO, probe);
     field.update_indices(&[IVec3::ZERO], &HashMap::new());
@@ -88,10 +88,8 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
         probe.trace_mask = 4;
         if case == 1 {
             probe.trace_mask = 0;
-            probe.stats_mut().stable_batches = [0; 6];
         } else if case == 2 {
             probe.revision += 1;
-            probe.stats_mut().stable_batches = [0; 6];
         } else if case == 3 {
             probe.stats_mut().radiance[2] = Vec3::ONE;
             probe.stats_mut().second_moment[2] = Vec3::ONE;
@@ -104,11 +102,15 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
                 .unwrap();
             probe.stats_mut().radiance[2] = Vec3::ONE * 100.0;
         }
+        let mut work = TraceWork::from_probes(&[probe], case == 1);
+        for face in &mut work.faces {
+            face.gpu_settled = Some(case != 3);
+        }
         let task = pool.spawn(async move {
             TraceBatchResult {
                 geometry: None,
                 batch: Some(TransportBatch {
-                    work: TraceWork::from_probes(&[probe], case == 1),
+                    work,
                     paths: 4,
                     sky_only: case == 1,
                     sky_count: usize::from(case == 1),
@@ -157,7 +159,7 @@ fn settled_counter_tracks_global_revisions_and_page_removal() {
     for voxel in [IVec3::ZERO, far] {
         let mut probe = SurfaceProbe::new(voxel, 5);
         probe.stats_mut().samples = [128; 6];
-        probe.stats_mut().stable_batches = [4; 6];
+        probe.progress.settled = 63;
         let (faces, samples, covered, settled) = probe_metrics(&probe, 0);
         runtime.active_faces += faces;
         runtime.completed_samples += samples;
@@ -182,7 +184,7 @@ fn settled_counter_tracks_global_revisions_and_page_removal() {
     current.transport_revision = field.transport_revision;
     current.stats_mut().samples = [128; 6];
     current.fresh_mask = current.face_mask;
-    current.stats_mut().stable_batches = [4; 6];
+    current.progress.settled = 63;
     runtime.settled_faces = probe_metrics(current, field.transport_revision).3;
     let mut result = SceneBuildResult {
         scene: runtime.scene.clone(),
@@ -677,7 +679,6 @@ fn in_flight_lighting_cannot_restore_indices_moved_by_streaming() {
         &pending_result.faces,
         field.probes.get_mut(&IVec3::Z).unwrap(),
         Instant::now(),
-        &VoxelGiSettings::default(),
     );
     removed.clear();
     removed.insert(IVec3::Z, field.probes.remove(&IVec3::Z).unwrap());
@@ -764,7 +765,7 @@ fn dispatch_reuses_returned_storage_without_retaining_candidates() {
     let face_allocation = runtime.trace_scratch.faces.as_ptr();
     for _ in 0..2 {
         enqueue_urgent(&mut runtime, [IVec3::ZERO]);
-        let mut selected = select_transport(&mut runtime, &field, &VoxelGiSettings::default());
+        let mut selected = select_transport(&mut runtime, &field);
         assert_eq!(selected.probes.as_ptr(), allocation);
         assert_eq!(selected.faces.as_ptr(), face_allocation);
         assert_eq!(selected.probes.len(), 1);

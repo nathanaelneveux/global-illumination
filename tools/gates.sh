@@ -17,7 +17,7 @@ run() {
   local name=$1 profile=$2; shift 2
   local before=$(ls -1d target/gi-validation/$profile-* 2>/dev/null | wc -l)
   env RUST_LOG=warn VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_HEADLESS=1 VOXEL_GI_VALIDATE_BACKGROUND=1 \
-    VOXEL_GI_VALIDATE_TEMPORAL=1 VOXEL_GI_VALIDATE_FRAME_TIMINGS=1 \
+    VOXEL_GI_VALIDATE_FRAME_TIMINGS=1 \
     VOXEL_GI_VALIDATE_PROFILE=$profile VOXEL_GI_VALIDATE_EXIT=1 \
     VOXEL_GI_VALIDATE_EXPECT_BUILD_ROOT="$root" "$@" \
     cargo run --locked --offline > target/gates/$label-$name.log 2>&1

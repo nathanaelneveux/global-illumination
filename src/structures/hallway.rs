@@ -11,7 +11,7 @@ pub const ORIGIN: IVec3 = IVec3::new(-128, -12, -24);
 pub const SIZE: UVec3 = UVec3::new(96, 9, 9);
 pub const SOURCE: IVec3 = IVec3::new(-124, -11, -20);
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(test)]
 pub fn floor_receiver(offset: i32) -> IVec3 {
     SOURCE + IVec3::new(offset, -1, 0)
 }

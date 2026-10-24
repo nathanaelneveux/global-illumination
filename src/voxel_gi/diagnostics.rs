@@ -1,7 +1,5 @@
 //! Optional demo instrumentation, separate from transport scheduling. The HUD
 //! reuses O(1) counters; expensive field summaries and scripted edits are opt-in.
-#[cfg(debug_assertions)]
-mod face_watch;
 mod tuning;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::*;
@@ -23,19 +21,12 @@ pub(crate) struct VoxelGiDiagnosticsPlugin;
 /// inside construction of the reusable GI plugin. No process-global mutation.
 pub(crate) fn configure_demo_launch(app: &mut App) -> Result<(), String> {
     app.init_resource::<super::VoxelGiSettings>();
-    if std::env::var("VOXEL_GI_CONTINUOUS").is_ok_and(|v| v == "1") {
-        app.world_mut()
-            .resource_mut::<super::VoxelGiSettings>()
-            .adaptive_updates = false;
-    }
     Ok(())
 }
 
 impl Plugin for VoxelGiDiagnosticsPlugin {
     fn build(&self, app: &mut App) {
         tuning::load_launch_settings(app);
-        #[cfg(debug_assertions)]
-        face_watch::install(app);
         if terminal_stats_enabled() {
             app.add_plugins(LogDiagnosticsPlugin::default())
                 .add_systems(Update, log_voxel_gi_stats.after(VoxelGiSystems));
@@ -267,8 +258,7 @@ pub(super) fn log_voxel_gi_stats(
     // Diagnostic summaries must not stall the workload they measure. Sample a
     // bounded, evenly spaced subset of the live key array; transport/freshness
     // counters above remain exact and independent of this optional estimate.
-    let (mean, oldest) = sampled_field_history(&field, now);
-    stats.mean_history_samples = mean;
+    let oldest = sampled_field_age(&field, now);
     stats.oldest_sample_age_ms = oldest.as_secs_f32() * 1000.0;
     info!(
         loaded_pages = stats.loaded_pages,
@@ -299,36 +289,21 @@ pub(super) fn log_voxel_gi_stats(
         decode_ms = stats.last_decode_ms,
         packed_geometry_bytes = stats.packed_geometry_bytes,
         fully_bootstrapped = stats.fully_bootstrapped,
-        sampled_mean_history = stats.mean_history_samples,
         sampled_oldest_ms = stats.oldest_sample_age_ms,
         backend = stats.backend,
         "voxel GI status"
     );
 }
 
-fn sampled_field_history(field: &VoxelEnergyField, now: Instant) -> (f32, Duration) {
-    let mut samples = 0_u64;
-    let mut faces = 0_u64;
-    let mut oldest = Duration::ZERO;
-    for voxel in field
+fn sampled_field_age(field: &VoxelEnergyField, now: Instant) -> Duration {
+    field
         .order
         .iter()
         .step_by(field.order.len().div_ceil(1024).max(1))
-    {
-        let Some(probe) = field.probes.get(voxel) else {
-            continue;
-        };
-        for face in 0..6 {
-            if probe.face_mask & (1 << face) != 0 {
-                samples += u64::from(probe.stats().samples[face]);
-                faces += 1;
-                if let Some(updated) = probe.stats().face_updated_at[face].or(probe.updated_at) {
-                    oldest = oldest.max(now.saturating_duration_since(updated));
-                }
-            }
-        }
-    }
-    (samples as f32 / faces.max(1) as f32, oldest)
+        .filter_map(|voxel| field.probes.get(voxel)?.updated_at)
+        .map(|updated| now.saturating_duration_since(updated))
+        .max()
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -376,23 +351,19 @@ mod tests {
     }
 
     #[test]
-    fn optional_history_summary_is_bounded_and_explicitly_sampled() {
+    fn optional_age_summary_is_bounded_and_explicitly_sampled() {
         let now = Instant::now();
         let mut field = VoxelEnergyField::default();
-        assert_eq!(sampled_field_history(&field, now), (0.0, Duration::ZERO));
+        assert_eq!(sampled_field_age(&field, now), Duration::ZERO);
         for x in 0..2048 {
             let voxel = IVec3::new(x, 0, 0);
-            let mut probe = super::super::world::SurfaceProbe::new(voxel, 4);
-            probe.stats_mut().samples[2] = if x % 2 == 0 { 32 } else { 500 };
-            probe.stats_mut().face_updated_at[2] =
-                Some(now - Duration::from_secs(if x % 2 == 0 { 1 } else { 10 }));
+            let mut probe = super::super::world::SurfaceProbe::new_slim(voxel, 4);
+            probe.updated_at = Some(now - Duration::from_secs(if x % 2 == 0 { 1 } else { 10 }));
             field.probes.insert(voxel, probe);
             field.order.push(voxel);
         }
-        assert_eq!(
-            sampled_field_history(&field, now),
-            (32.0, Duration::from_secs(1))
-        );
+        // Every other receiver: the sample never sees the 10 s ones.
+        assert_eq!(sampled_field_age(&field, now), Duration::from_secs(1));
     }
 
     #[test]
@@ -401,7 +372,6 @@ mod tests {
             surface_probes: 100,
             interactive_coverage: 0.75,
             bootstrap_coverage: 0.325,
-            mean_history_samples: 200.0,
             settled_coverage: 0.125,
             main_thread_ms_per_frame: Some(1.25),
             gpu_ms_per_frame: Some(0.375),

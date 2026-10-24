@@ -33,7 +33,7 @@ run() {
   local headless=()
   [[ $mode == headless ]] && headless=(VOXEL_GI_VALIDATE_HEADLESS=1)
   env RUST_LOG=warn VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_BACKGROUND=1 \
-    VOXEL_GI_VALIDATE_TEMPORAL=1 VOXEL_GI_VALIDATE_FRAME_TIMINGS=1 \
+    VOXEL_GI_VALIDATE_FRAME_TIMINGS=1 \
     VOXEL_GI_VALIDATE_PROFILE=$profile VOXEL_GI_VALIDATE_EXIT=1 \
     VOXEL_GI_VALIDATE_EXPECT_BUILD_ROOT="$root" $headless "$@" \
     cargo run --locked > "$out/$name.log" 2>&1

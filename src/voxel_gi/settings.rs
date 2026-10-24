@@ -25,8 +25,6 @@ pub struct VoxelGiSettings {
     /// neighbours until this much support. Not physical history or an
     /// accuracy guarantee.
     pub spatial_evidence_target: u32,
-    /// Disable for a same-kernel continuous-sampling A/B baseline.
-    pub adaptive_updates: bool,
     /// GPU time per transport batch: its size, and how coarsely the GPU
     /// share below is spent.
     pub trace_budget_ms: f32,
@@ -50,16 +48,10 @@ pub struct VoxelGiSettings {
     pub stable_min_samples: u32,
     /// Per-band relative-error heuristic, not a certified convergence bound.
     pub stable_relative_error: f32,
-    /// Faces whose CPU statistics mirror the GPU merges per batch (the GPU
-    /// state is the authority; GPU-picked faces' mirror lags under heavy
-    /// refinement). Bounds the main-thread merge. Validation of display
-    /// quality from CPU recorders raises it (config/gi-mirror-full.ron).
+    /// GPU-picked faces whose progress (counts, settled verdict, presentation
+    /// seed) the CPU mirrors per batch. The GPU state is the authority; this
+    /// bounds the readback and main-thread merge.
     pub statistics_mirror_per_batch: u32,
-    /// Keep a CPU copy of every probe's statistics (~600 B each): validation
-    /// recorders, diagnostics and simulation-style queries read it. Off by
-    /// default, since the GPU state is the authority and the renderer reads it
-    /// directly; config/gi-mirror-full.ron turns it on with the full mirror.
-    pub cpu_statistics: bool,
     /// Persistent world cache: receivers (probes, resident slots, sun corners)
     /// for pages within this many voxels of an active camera (page nearest
     /// point), kept until 32 voxels beyond it. Every visible face is
@@ -81,7 +73,6 @@ impl Default for VoxelGiSettings {
             measured_retention: 1.0,
             spatial_reconstruction: 1.0,
             spatial_evidence_target: 1024,
-            adaptive_updates: true,
             trace_budget_ms: 4.0,
             gpu_time_share: 0.2,
             max_probes_per_dispatch: 8192,
@@ -91,7 +82,6 @@ impl Default for VoxelGiSettings {
             stable_min_samples: 64,
             stable_relative_error: 0.12,
             statistics_mirror_per_batch: 1024,
-            cpu_statistics: false,
             cache_radius: 64.0,
             cache_share: 0.25,
         }
@@ -207,22 +197,6 @@ pub(super) fn synchronize_transport_settings(
     mut field: ResMut<super::VoxelEnergyField>,
     mut stats: ResMut<super::VoxelGiStats>,
 ) {
-    if field.cpu_statistics != settings.cpu_statistics {
-        // Attach empty statistics (they fill as faces are traced or mirrored)
-        // or free them all.
-        field.cpu_statistics = settings.cpu_statistics;
-        let keep = settings.cpu_statistics;
-        let order = field.order.clone();
-        for voxel in order {
-            if let Some(probe) = field.probes.get_mut(&voxel) {
-                if keep {
-                    probe.stats_mut();
-                } else {
-                    probe.stats = None;
-                }
-            }
-        }
-    }
     let transport = settings.transport.normalized();
     if runtime.transport == transport {
         return;

@@ -1594,15 +1594,14 @@ mod tests {
             .find(|(f, _)| f.voxel == voxel && f.face == face)
             .expect("the CPU-traced face is also in the mirror");
         let mut published = probe.clone();
-        let settings = crate::voxel_gi::VoxelGiSettings::default();
-        next.probes[0].publish(&next.faces, &mut published, Instant::now(), &settings);
+        next.probes[0].publish(&next.faces, &mut published, Instant::now());
         assert!(mirror.sequence < published.stats().sequence[face]);
         assert!(
             mirror.predates(&published),
             "dispatch would publish the older record"
         );
         let mut slim = SurfaceProbe::new_slim(probe.voxel, probe.face_mask);
-        next.probes[0].publish(&next.faces, &mut slim, Instant::now(), &settings);
+        next.probes[0].publish(&next.faces, &mut slim, Instant::now());
         assert!(slim.stats.is_none());
         assert!(
             mirror.predates(&slim),
@@ -1618,7 +1617,6 @@ mod tests {
         let (scene, _, probes) = super::super::tests::open_floor_fixture();
         let sources = TransportSources::default();
         let emitters = Arc::new(EmissionDistribution::default());
-        let settings = crate::voxel_gi::VoxelGiSettings::default();
         let mut probe = SurfaceProbe::new_slim(probes[0].voxel, probes[0].face_mask);
         let mut settled = false;
         for batch in 1..=16 {
@@ -1642,7 +1640,7 @@ mod tests {
                 "readback flag must not alter counts"
             );
             settled |= work.faces[0].gpu_settled == Some(true);
-            work.probes[0].publish(&work.faces, &mut probe, Instant::now(), &settings);
+            work.probes[0].publish(&work.faces, &mut probe, Instant::now());
             assert!(probe.stats.is_none());
             let (_, bootstrap, covered, stable) = crate::voxel_gi::probe_metrics(&probe, 0);
             assert_eq!((bootstrap, covered), (8, 1));
@@ -2372,7 +2370,7 @@ mod tests {
                         false,
                     )
                     .unwrap();
-                work.probes[0].publish(&work.faces, probe, Instant::now(), &default());
+                work.probes[0].publish(&work.faces, probe, Instant::now());
                 // A source cap covers the probe's unselected faces too. The
                 // GPU applied it (cap records); mirror that in both CPU
                 // copies, so the next trace of that face checks the GPU.

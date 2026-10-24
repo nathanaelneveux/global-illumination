@@ -192,7 +192,6 @@ fn contents(
                 .on_hover_text("Adaptive compute target per completed batch, not a hard per-frame GPU cap. Includes sky work; asynchronous queue timing varies.");
             ui.add(egui::Slider::new(&mut settings.samples_per_dispatch, 1..=64).text("Paths / face / batch"))
                 .on_hover_text("Cooperative lane count depends on the backend. Larger batches refresh fewer faces per dispatch. Measure settling, frame time and data age together.");
-            ui.checkbox(&mut settings.adaptive_updates, "Let settled faces sleep between audits");
             ui.add(egui::Slider::new(&mut settings.stable_relative_error, 0.01..=0.5).logarithmic(true).text("Settle error tolerance"))
                 .on_hover_text("All-band heuristic, not guaranteed convergence. Lower is stricter; already settled faces reassess on their next audit.");
             ui.add(egui::Slider::new(&mut settings.stable_min_samples, 32..=256).text("Minimum samples"))

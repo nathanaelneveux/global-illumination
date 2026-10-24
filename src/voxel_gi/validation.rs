@@ -12,7 +12,6 @@ mod profiles;
 mod response;
 mod structures;
 mod tunnel;
-pub(super) mod temporal;
 
 use super::render::VoxelTransportMaterial;
 use super::world::FACE_OFFSETS;
@@ -117,11 +116,9 @@ pub(super) struct ValidationRun {
     response: response::ResponseRun,
     tunnel: tunnel::TunnelRun,
     house: house::HouseRun,
-    temporal: temporal::TemporalRun,
     cave_camera_initialized: bool,
     structures: structures::StructuresRun,
     background: background::BackgroundRun,
-    cave: cave::CaveObservations,
     day: day::DayRun,
     memory: memory::MemorySampler,
     max_pages: usize,
@@ -329,26 +326,8 @@ pub(super) fn run_validation(
     if handoff::enabled(profile) {
         handoff::tick(elapsed, player, &cameras, &mut lights);
     }
-    if matches!(
-        profile,
-        Profile::Cave | Profile::Structures | Profile::LiveCave
-    ) {
-        run.cave.record(elapsed, &field);
-    }
     if profile == Profile::DayCycle {
         run.day.tick(elapsed, &mut commands, &field, &stats, &runtime);
-    }
-    if matches!(
-        profile,
-        Profile::House
-            | Profile::HouseEdits
-            | Profile::Cave
-            | Profile::Structures
-            | Profile::LiveCave
-            | Profile::LiveHallway
-    ) {
-        run.temporal
-            .record(elapsed, profile, &field, &runtime);
     }
     if matches!(profile, Profile::House | Profile::HouseEdits) {
         run.house.tick(
@@ -624,18 +603,6 @@ pub(super) fn run_validation(
         return;
     }
     let config = configs.get(&assets.prototype_config);
-    if let Err(error) = run.temporal.save(evidence.output.as_ref().unwrap()) {
-        evidence.fail(&format!("Could not save temporal sequence: {error}"));
-        commands.write_message(AppExit::error());
-        return;
-    }
-    if matches!(profile, Profile::Cave | Profile::Structures | Profile::LiveCave)
-        && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("cave.json"),
-            json!({"samples": run.cave.samples, "note": "Fixed wall receivers; all five measured bands, RGB display, history and measurement age. No ground-truth/convergence claim."}).to_string()) {
-        evidence.fail(&format!("Could not save cave sequence: {error}"));
-        commands.write_message(AppExit::error());
-        return;
-    }
     if profile == Profile::DayCycle
         && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("day.json"),
             json!({"settings": run.day.settings(), "samples": run.day.samples,
@@ -700,18 +667,17 @@ pub(super) fn run_validation(
             "samples_per_dispatch": settings.batch_samples(),
             "spatial_reconstruction": settings.spatial_reconstruction,
             "spatial_evidence_target": settings.spatial_evidence_target,
-            "temporal_trace_scope": "world-cache receivers only; use captures for presentation",
             "trace_budget_ms": settings.trace_budget_ms, "gpu_time_share": settings.gpu_time_share,
             "max_probes_per_dispatch": settings.max_probes_per_dispatch,
             "scene_publish_budget_ms": settings.scene_publish_budget.as_secs_f32() * 1000.0,
-            "adaptive_updates": settings.adaptive_updates, "display_response_ms": settings.display_response.as_secs_f32() * 1000.0,
+            "display_response_ms": settings.display_response.as_secs_f32() * 1000.0,
             "measured_retention": settings.measured_retention,
             "stable_min_samples": settings.stable_min_samples, "stable_relative_error": settings.stable_relative_error,
             "stable_audit_interval_ms": settings.stable_audit_interval.as_secs_f32() * 1000.0},
         "terrain": config.map(|c| json!({"seed": c.world_seed, "period": c.terrain_period, "ambient_occlusion": c.ambient_occlusion})),
         "captures": evidence.completed, "capture_windows": evidence.windows,
         "edits": run.edits, "edit_attempts": run.edit_attempts, "moves": run.moves, "mode_changes": run.mode_changes,
-        "max_loaded_pages": run.max_pages, "coverage": stats.interactive_coverage, "sampled_mean_history": stats.mean_history_samples,
+        "max_loaded_pages": run.max_pages, "coverage": stats.interactive_coverage,
         "sky_rays_scheduled": stats.sky_rays_scheduled, "sky_cached_corners": stats.sky_cached_corners,
         "transport_batches": stats.transport_batches, "sky_only_batches": stats.sky_only_batches,
         "traced_paths": stats.traced_paths, "packed_geometry_bytes": stats.packed_geometry_bytes,

@@ -134,7 +134,7 @@ pub(super) fn start_trace_task(
         settings.world_budget_fraction() > 0.0
             && !field.order.is_empty() && runtime.gpu_pending.len() < 3 && runtime.gpu_allowance_ms > 0.0;
     let mut selected = if can_submit {
-        info_span!("gi_select").in_scope(|| select_transport(&mut runtime, &field, &settings))
+        info_span!("gi_select").in_scope(|| select_transport(&mut runtime, &field))
     } else {
         TraceWork::default()
     };
@@ -361,7 +361,7 @@ pub(super) fn select_probes(
 ) -> Vec<super::world::SurfaceProbe> {
     // Reference view for existing policy tests. Production never materializes
     // these full receiver copies; it transfers only TraceWork.
-    let work = select_transport(runtime, field, &VoxelGiSettings::default());
+    let work = select_transport(runtime, field);
     work.probes
         .iter()
         .map(|job| {
@@ -393,9 +393,7 @@ pub(super) fn select_probes(
 pub(super) fn select_transport(
     runtime: &mut VoxelGiRuntime,
     field: &VoxelEnergyField,
-    settings: &VoxelGiSettings,
 ) -> TraceWork {
-    let now = Instant::now();
     let mut selected = std::mem::take(&mut runtime.trace_scratch);
     selected.clear();
     let mut seen = std::mem::take(&mut runtime.selection_seen);
@@ -416,7 +414,7 @@ pub(super) fn select_transport(
         let Some(probe) = field.probes.get(&voxel) else {
             continue;
         };
-        let mask = scheduling::due_faces(probe, field.transport_revision, now, settings, true);
+        let mask = probe.face_mask;
         if mask == 0 {
             continue;
         }
@@ -591,7 +589,6 @@ pub(super) fn apply_trace_task(
             &batch.work.faces[job.faces()],
             old,
             merge_started,
-            &settings,
         );
         let (_, new_samples, new_covered, new_settled) = probe_metrics(old, transport_revision);
         runtime.completed_samples =
@@ -643,7 +640,7 @@ pub(super) fn apply_trace_task(
             batch.work.transport_revision,
             batch.work.source_revision,
         );
-        job.publish(std::slice::from_ref(face), old, merge_started, &settings);
+        job.publish(std::slice::from_ref(face), old, merge_started);
         let (_, new_samples, new_covered, new_settled) = probe_metrics(old, transport_revision);
         runtime.completed_samples =
             runtime.completed_samples.saturating_sub(old_samples) + new_samples;

@@ -33,7 +33,13 @@ One Cargo workspace in this repository:
 | --- | --- | --- |
 | `voxel_gi` | Transport scene (16³ pages), GPU path tracer and world cache, view tier (prepass discovery, shared receiver pool, two-way cache, presentation), shared-corner sun, settings, WGSL shading functions | `bevy` |
 | `voxel_gi_bvw` | `bevy_voxel_world` adapter: chunk spawn/despawn/edit events to pages and dirty voxels, material ID to optics table, material attached to BVW meshes | `voxel_gi`, `bevy_voxel_world` |
-| `gi_lab` (this app) | Terrain scenes, player, crosshair, validation profiles, diagnostics HUD/tuning, `tools/`, `config/` | both |
+| `voxel_gi_debug` | HUD overlay, tuning panel (egui), terminal stats logging, debug shading modes (face validity, coverage, sun/indirect components). Reads `voxel_gi`'s public stats resources; core never depends on it | `voxel_gi`, `bevy_egui` |
+| `gi_lab` (this app) | Terrain scenes, player, crosshair, validation profiles, `tools/`, `config/` | all three |
+
+The debug split keeps production lean: core exposes counters and GPU timing
+receipts as plain resources and compiles its debug shading branches only behind
+a shader def the debug plugin enables (today they are uniform-selected branches
+inside the material shader). Like avian's debug plugin, it is opt-in.
 
 The core crate's input surface is small and storage-agnostic:
 
@@ -139,9 +145,8 @@ Keep public, with RON presets for the Neo, the M4 and larger GPUs:
 - `spatial_reconstruction` and `spatial_evidence_target`;
 - `transport.reach` and `transport.bounces`.
 
-Candidates to drop or make internal: `adaptive_updates` (A/B only),
-`statistics_mirror_per_batch` and `cpu_statistics` (with the CPU field),
-`simulation_sampling_importance` (with the bands), `measured_retention` (keep
+Removed: `adaptive_updates`, `cpu_statistics`, `simulation_sampling_importance`.
+Candidates to make internal: `statistics_mirror_per_batch`, `measured_retention` (keep
 only if pass 3 shows a visible benefit), `stable_*` and `display_response` unless
 a preset needs them.
 
@@ -188,6 +193,21 @@ Traced from the `Update` chain in `mod.rs` and `dispatch::start_trace_task`:
   publication writes for new faces (`publication.rs`, `seed_face`). Slim it; do not
   delete it.
 - **`reconstruction.rs`** has no non-test users: test oracle only.
+- **Statistics mirror is live**: besides HUD progress it keeps each probe's CPU
+  presentation copy current, which publication reuses to seed neighbouring new
+  world-cache slots. Removing it means seeding on the GPU (as view faces do in
+  `bootstrap_face`): a design change, like the sky cache.
+
+### Removals done (pass 3)
+
+All gated with `tools/gates.sh` against an adjacent baseline (see each commit):
+
+| Commit | Removed | Lines |
+| --- | --- | ---: |
+| `b47f6f8` | CPU path-tracing oracle, offline reference profile, CPU/GPU parity tests | -4034 |
+| `f42e5de` | Infrared/ionizing bands and emitter importance (CPU) | -707 |
+| `fe27835` | Band lanes in the path and accumulation shaders | |
+| (next) | `cpu_statistics` mode, CPU stability/display twins in production, `adaptive_updates`, the temporal recorder, F8/F9 face watch, cave receiver recorder | -1895 |
 
 ### Preliminary inventory (to verify in pass 2)
 
@@ -208,7 +228,7 @@ research, 1.2k diagnostics) and 3.3k of WGSL.
 | CPU field | `field.rs` | per decision 2 | |
 | CPU oracle | `tracer.rs`, `sampling.rs`, `emission/tree.rs`, `reconstruction.rs`, `gpu/correctness_audit*`, `research.rs` | lab tests or delete | Dead in release |
 | BVW adapter | `bvw.rs` | connector | Includes residency (`update_receiver_residency`), which belongs in core |
-| Diagnostics | `diagnostics*.rs` | lab | HUD, tuning UI, face watch |
+| Diagnostics | `diagnostics*.rs` | `voxel_gi_debug` | HUD, tuning UI |
 | Validation | `validation*.rs`, `tools/`, `config/` | lab | |
 
 ## Staging

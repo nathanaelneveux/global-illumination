@@ -63,27 +63,7 @@ impl DayRun {
             return;
         }
         self.last_sample = elapsed;
-        // A strided sample of faces: sorting every face each second cost
-        // ~30 ms of Update and would itself be the measured frame spike.
-        let mut counts: Vec<u32> = field
-            .order
-            .iter()
-            .step_by(16)
-            .filter_map(|voxel| field.probes.get(voxel))
-            .flat_map(|probe| {
-                (0..6)
-                    .filter(|face| probe.face_mask & (1 << face) != 0)
-                    .map(|face| probe.stats().samples[face])
-            })
-            .collect();
-        let mut at = |q: f32| {
-            let last = counts.len().checked_sub(1)?;
-            let index = (last as f32 * q) as usize;
-            Some(*counts.select_nth_unstable(index).1)
-        };
-        let (p10, p50, p90) = (at(0.1), at(0.5), at(0.9));
-        self.samples.push(json!({"at_s": elapsed, "angle_deg": angle, "sampled_faces": counts.len(),
-            "samples_p10": p10, "samples_p50": p50, "samples_p90": p90,
+        self.samples.push(json!({"at_s": elapsed, "angle_deg": angle,
             "traced_paths": stats.traced_paths, "sky_corners_traced": stats.sky_corners_traced,
             "sky_corner_requests": stats.sky_corner_requests, "sky_rays": stats.sky_rays_scheduled,
             "transport_batches": stats.transport_batches, "sky_only_batches": stats.sky_only_batches,

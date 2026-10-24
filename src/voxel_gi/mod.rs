@@ -28,6 +28,7 @@ mod sky;
 mod sky_cache;
 mod sources;
 mod spectrum;
+#[cfg(test)]
 mod statistics;
 mod telemetry;
 mod tracer;
@@ -198,10 +199,9 @@ pub struct VoxelGiStats {
     pub last_decode_ms: f32,
     pub packed_geometry_bytes: usize,
     pub fully_bootstrapped: bool,
-    /// Approximate mean over at most 1,024 evenly spaced receivers, populated
-    /// by opt-in terminal/validation diagnostics every five seconds. Not convergence.
-    pub mean_history_samples: f32,
-    /// Oldest among that sampled subset, not a certified world-wide maximum.
+    /// Oldest update among at most 1,024 evenly spaced receivers, populated by
+    /// opt-in terminal/validation diagnostics every five seconds. Not a
+    /// certified world-wide maximum.
     pub oldest_sample_age_ms: f32,
     pub backend: &'static str,
 }

@@ -109,12 +109,9 @@ impl ProbeWork {
         faces: &[FaceWork],
         probe: &mut SurfaceProbe,
         now: Instant,
-        settings: &super::VoxelGiSettings,
     ) {
         let same_revision =
             probe.transport_revision == self.transport_revision && self.retention.is_none();
-        let previous_stable = probe.stats().stable_batches;
-        let previous_display_time = probe.display_updated_at;
         if let Some(revision) = self.retention {
             probe.retention_revision = revision;
         }
@@ -124,6 +121,7 @@ impl ProbeWork {
         if !same_revision || self.restart {
             probe.fresh_mask = 0;
             probe.progress.settled = 0;
+            #[cfg(test)]
             if let Some(stats) = probe.stats.as_mut() {
                 stats.stable_batches = [0; 6];
             }
@@ -131,6 +129,7 @@ impl ProbeWork {
         if self.restart {
             probe.progress.bootstrap = [0; 6];
         }
+        #[cfg(test)]
         if self.restart
             && let Some(stats) = probe.stats.as_mut()
         {
@@ -151,33 +150,14 @@ impl ProbeWork {
         probe.transport_revision = self.transport_revision;
         for measurement in faces {
             let face = measurement.face;
-            let previous_time = probe.stats().face_updated_at[face].or(previous_display_time);
-            let before = probe.stats().radiance[face];
             measurement.write(probe);
-            if measurement.resident.y == 0 {
-                probe.resolve_face(
-                    face,
-                    previous_time,
-                    now,
-                    settings.display_response_seconds(),
-                );
-            } else {
+            // The GPU resolved this face's presentation; a face without a
+            // resident slot keeps its current display.
+            if measurement.resident.y != 0 {
                 probe.display[face].indirect = measurement.presentation.truncate();
                 probe.display[face].confidence = measurement.presentation.w;
             }
-            super::scheduling::record_face_batch(
-                probe,
-                face,
-                before,
-                previous_stable[face],
-                same_revision,
-                if measurement.resident.y == 0 {
-                    now
-                } else {
-                    measurement.updated_at.unwrap_or(now)
-                },
-                settings,
-            );
+            probe.fresh_mask |= 1 << face;
         }
         probe.display_updated_at = Some(now);
     }
@@ -256,6 +236,7 @@ impl TraceWork {
         stale_limit: u32,
         source_history_limit: u32,
     ) {
+        let measured = probe.measured(face);
         self.faces.push(FaceWork {
             gpu_settled: None,
             voxel: probe.voxel,
@@ -263,19 +244,19 @@ impl TraceWork {
             radiance: if restart {
                 Vec3::ZERO
             } else {
-                probe.stats().radiance[face]
+                measured.radiance
             },
             second_moment: if restart {
                 Vec3::ZERO
             } else {
-                probe.stats().second_moment[face]
+                measured.second_moment
             },
-            direct: probe.stats().direct[face],
-            custom_direct: probe.stats().custom_direct[face],
+            direct: measured.direct,
+            custom_direct: measured.custom_direct,
             samples: if restart {
                 0
             } else {
-                probe.stats().samples[face]
+                measured.samples
                     .min(stale_limit)
                     .min(source_history_limit)
             },
@@ -304,7 +285,7 @@ impl TraceWork {
             updated_at: if restart {
                 None
             } else {
-                probe.stats().face_updated_at[face]
+                measured.updated_at
             },
         });
     }
@@ -414,6 +395,7 @@ impl FaceWork {
         if self.gpu_settled == Some(true) {
             probe.progress.settled |= 1 << face;
         }
+        #[cfg(test)]
         if let Some(stats) = probe.stats.as_mut() {
             stats.radiance[face] = self.radiance;
             stats.second_moment[face] = self.second_moment;
@@ -445,7 +427,7 @@ mod tests {
         work.faces[0].resident = UVec2::new(0, 1);
         work.faces[0].gpu_settled = Some(true);
         let mut slim = SurfaceProbe::new_slim(IVec3::ZERO, 4);
-        work.probes[0].publish(&work.faces, &mut slim, Instant::now(), &default());
+        work.probes[0].publish(&work.faces, &mut slim, Instant::now());
         assert!(slim.stats.is_none());
         assert_eq!(super::super::probe_metrics(&slim, 0), (1, 8, 1, 1));
         assert!(!work.faces[0].predates(&slim));
@@ -461,7 +443,7 @@ mod tests {
             "unchanged face retains progress"
         );
         work.probes[0].restart = true;
-        work.probes[0].publish(&[], &mut slim, Instant::now(), &default());
+        work.probes[0].publish(&[], &mut slim, Instant::now());
         assert_eq!(super::super::probe_metrics(&slim, 0), (2, 0, 0, 0));
         assert!(slim.stats.is_none());
     }
@@ -478,7 +460,7 @@ mod tests {
         work.probes[0].retention = Some(7);
         work.faces[0].samples += 16;
         work.faces[0].sequence += 16;
-        work.probes[0].publish(&work.faces, &mut probe, Instant::now(), &default());
+        work.probes[0].publish(&work.faces, &mut probe, Instant::now());
         // Counts come from the GPU, which already applied the change.
         assert_eq!(probe.stats().samples, [272, 4096, 4096, 4096, 4096, 4096]);
         assert_eq!(probe.stats().sequence, [9016, 9000, 9000, 9000, 9000, 9000]);
@@ -489,110 +471,6 @@ mod tests {
         assert_eq!(probe.fresh_mask, 1);
         assert_eq!(probe.stats().radiance, [Vec3::ONE; 6]);
         assert_eq!(probe.stats().second_moment, [Vec3::ONE * 2.0; 6]);
-    }
-
-    #[test]
-    fn compact_publication_matches_full_probe_reference_for_partial_faces_and_resets() {
-        let now = Instant::now();
-        let settings = super::super::VoxelGiSettings::default();
-        for mask in 1..64 {
-            for mode in 0..3 {
-                let mut previous = SurfaceProbe::new(IVec3::new(8, 2, 6), 63);
-                previous.stats_mut().samples = [128; 6];
-                previous.stats_mut().sequence = [1050; 6];
-                previous.stats_mut().radiance = [Vec3::ONE; 6];
-                previous.stats_mut().second_moment = [Vec3::ONE; 6];
-                previous.stats_mut().stable_batches = [4; 6];
-                previous.stats_mut().face_updated_at =
-                    [Some(now - std::time::Duration::from_millis(40)); 6];
-                previous.updated_at = previous.stats().face_updated_at[0];
-                previous.order_index = 123;
-                for display in &mut previous.display {
-                    display.indirect = Vec3::splat(0.7);
-                    display.confidence = 0.75;
-                    display.sky = [27; 4];
-                }
-                let revision = u64::from(mode != 0);
-                let restart = mode == 2;
-                let mut work = TraceWork::default();
-                work.push(&previous, mask, revision, revision, restart, 64, u32::MAX);
-                let mut reference = previous.clone();
-                reference.trace_mask = mask;
-                if revision != 0 {
-                    reference.transport_revision = revision;
-                    reference.fresh_mask = 0;
-                    reference.stats_mut().stable_batches = [0; 6];
-                    for face in 0..6 {
-                        if mask & (1 << face) != 0 {
-                            reference.stats_mut().samples[face] = 64;
-                        }
-                    }
-                }
-                if restart {
-                    reference.restart_measurements();
-                }
-                reference.source_revision = revision;
-                for face in &mut work.faces {
-                    let index = face.face;
-                    assert_eq!(face.samples, reference.stats().samples[index]);
-                    assert_eq!(face.radiance, reference.stats().radiance[index]);
-                    for sample in 0..4 {
-                        reference.accumulate_sample(
-                            index,
-                            Vec3::splat(sample as f32 * 0.2),
-                        );
-                    }
-                    face.radiance = reference.stats().radiance[index];
-                    face.second_moment = reference.stats().second_moment[index];
-                    face.samples = reference.stats().samples[index];
-                    face.sequence = reference.stats().sequence[index];
-                    face.updated_at = Some(now);
-                    reference.stats_mut().face_updated_at[index] = Some(now);
-                }
-                reference.updated_at = Some(now);
-                reference.resolve_display(&previous, now, settings.display_response_seconds());
-                super::super::scheduling::record_batch(&mut reference, &previous, now, &settings);
-                // A moved topology index and changed live display are not part
-                // of worker ownership. Publication must retain the live index.
-                let mut actual = previous;
-                actual.order_index = 999;
-                work.probes[0].publish(&work.faces, &mut actual, now, &settings);
-                assert_eq!(actual.order_index, 999);
-                assert_eq!(actual.stats().samples, reference.stats().samples);
-                assert_eq!(actual.stats().sequence, reference.stats().sequence);
-                assert_eq!(actual.stats().radiance, reference.stats().radiance);
-                assert_eq!(
-                    actual.stats().second_moment,
-                    reference.stats().second_moment
-                );
-                assert_eq!(actual.stats().direct, reference.stats().direct);
-                assert_eq!(
-                    actual.stats().custom_direct,
-                    reference.stats().custom_direct
-                );
-                assert_eq!(
-                    actual.stats().stable_batches,
-                    reference.stats().stable_batches
-                );
-                assert_eq!(actual.fresh_mask, reference.fresh_mask);
-                assert_eq!(
-                    actual.stats().face_updated_at,
-                    reference.stats().face_updated_at
-                );
-                assert_eq!(actual.updated_at, reference.updated_at);
-                for face in 0..6 {
-                    assert_eq!(
-                        actual.display[face].indirect,
-                        reference.display[face].indirect
-                    );
-                    assert_eq!(
-                        actual.display[face].confidence,
-                        reference.display[face].confidence
-                    );
-                    assert_eq!(actual.display[face].sky, reference.display[face].sky);
-                }
-            }
-        }
     }
 
     #[test]
@@ -650,7 +528,7 @@ mod tests {
                 .iter()
                 .all(|f| f.revision_cap == super::super::geometry::NEAR_HISTORY)
         );
-        work.probes[0].publish(&work.faces, &mut probe, Instant::now(), &Default::default());
+        work.probes[0].publish(&work.faces, &mut probe, Instant::now());
         assert_eq!(probe.relit_mask, 0, "an accepted job consumes the relight");
         // A refresh (nearby edit) changes the revision but caps nothing.
         probe.request_refresh();
@@ -673,7 +551,7 @@ mod tests {
         work.push(&probe, 4, 1, 1, false, u32::MAX, u32::MAX);
         assert_eq!(work.faces[0].samples, 4096);
         assert_eq!(work.faces[0].sequence, 8000);
-        work.probes[0].publish(&work.faces, &mut probe, Instant::now(), &Default::default());
+        work.probes[0].publish(&work.faces, &mut probe, Instant::now());
         assert_eq!(probe.transport_revision, 1);
         assert_eq!(probe.source_revision, 1);
         assert_eq!(probe.fresh_mask, 4);

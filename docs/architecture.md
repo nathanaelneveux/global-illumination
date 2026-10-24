@@ -734,26 +734,20 @@ history (the GPU measures the cap; the CPU only walks the graph). A pick whose s
 revision tag is older than the probe's revision traced pre-change light: the
 CPU's next job for the probe undoes it, unless one is already in flight.
 
-The GPU state is the statistics authority. Probes keep no CPU statistics by
-default (`ProbeStatistics`, ~600 B per probe, is attached only with
-`cpu_statistics`, by the CPU reference tracer and in tests); the core record
-keeps topology, display and sun-corner words, revision flags and resident
-addresses. A 32-byte `ProbeProgress` additionally retains per-face sequence,
-bootstrap-saturated count and the GPU's settled verdict. This supplies HUD
-coverage/bootstrap and rejects older mirrors without allocating full moments.
-The verdict occupies spare bits in the existing readback count, never the
-resident count; no additional readback is needed. These bounded, delayed progress
-observations are not a convergence measure. With statistics on, the CPU keeps a bounded mirror for diagnostics,
-validation recorders and the CPU fallback display. A pick marks
-its face's mirror stale, and selection emits at most
-`statistics_mirror_per_batch` (default 1,024) stale faces' full state per
-batch; the CPU merges those records unless the probe changed since. The
-per-pick merge was most of the main-thread GI cost (gameplay Tracy, 59e7346:
-~1.4 of 2.9 ms/frame). `config/gi-mirror-full.ron` mirrors every pick, for
-validation recorders that need current CPU statistics (house-edits, cave):
-recorder metrics of other profiles read a lagging mirror, so rendered frames
-(FLIP) judge them. The first bounded mirror was shelved because CPU code still
-fed the GPU from mirrored statistics. Two such paths were fixed independently
+The GPU state is the statistics authority. Production probes keep no CPU
+measurements (test fixtures attach `ProbeStatistics`); the core record keeps
+topology, display and sun-corner words, revision flags and resident addresses.
+A 32-byte `ProbeProgress` retains per-face sequence, bootstrap-saturated count
+and the GPU's settled verdict, which supply HUD coverage/bootstrap and reject
+older mirror records. The verdict occupies spare bits in the existing readback
+count, never the resident count. These bounded, delayed progress observations
+are not a convergence measure. A pick marks its face's mirror stale, and
+selection emits at most `statistics_mirror_per_batch` (default 1,024) stale
+faces' records per batch: progress and the presentation seed that publication
+reuses for neighbouring new faces. The per-pick merge was most of the
+main-thread GI cost (gameplay Tracy, 59e7346: ~1.4 of 2.9 ms/frame).
+The first bounded mirror was shelved because CPU code still fed
+the GPU from mirrored statistics. Two such paths were fixed independently
 (eager-slot addresses, 8f361af; relight caps derived from mirrored counts, now
 explicit). The rest was edit handling: an
 edit's flux (`brightest_outgoing`) and which nearby faces it wakes

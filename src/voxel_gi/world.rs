@@ -481,10 +481,9 @@ pub struct SurfaceProbe {
     pub order_index: usize,
     pub emission: Vec3,
     pub face_mask: u8,
-    /// The CPU copy of this probe's measurement statistics, when something
-    /// needs it: the CPU reference tracer, tests, and validation recorders or
-    /// diagnostics (`VoxelGiSettings::cpu_statistics`). The GPU state is the
-    /// authority; by default probes carry none (~600 B each).
+    /// Test-only CPU measurements (`ProbeStatistics`); the GPU state is the
+    /// authority and production probes carry none.
+    #[cfg(test)]
     pub(crate) stats: Option<Box<ProbeStatistics>>,
     /// Small publication/diagnostic mirror, present without full moments.
     pub(crate) progress: ProbeProgress,
@@ -526,9 +525,19 @@ pub(crate) struct ProbeProgress {
     pub settled: u8,
 }
 
-/// A probe's measurement statistics on the CPU (the GPU state is the
-/// authority). Present only where something reads them; see
-/// `SurfaceProbe::stats`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct FaceMeasurement {
+    pub radiance: Vec3,
+    pub second_moment: Vec3,
+    pub direct: Vec3,
+    pub custom_direct: Vec3,
+    pub samples: u32,
+    pub updated_at: Option<Instant>,
+}
+
+/// Test-only CPU copy of a probe's measurements, filled by the native GPU test
+/// harness and fixtures. Production keeps none: the GPU state is the authority.
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProbeStatistics {
     /// Unfiltered indirect transport measurements. Presentation history is
@@ -547,6 +556,7 @@ pub struct ProbeStatistics {
     pub second_moment: [Vec3; 6],
 }
 
+#[cfg(test)]
 impl ProbeStatistics {
     pub(crate) const EMPTY: Self = Self {
         radiance: [Vec3::ZERO; 6],
@@ -560,6 +570,7 @@ impl ProbeStatistics {
     };
 }
 
+#[cfg(test)]
 impl Default for ProbeStatistics {
     fn default() -> Self {
         Self::EMPTY
@@ -567,7 +578,8 @@ impl Default for ProbeStatistics {
 }
 
 impl SurfaceProbe {
-    /// A probe with CPU statistics (the reference tracer, tests, recorders).
+    /// A probe with test-only CPU statistics.
+    #[cfg(test)]
     pub(crate) fn new(voxel: IVec3, face_mask: u8) -> Self {
         Self {
             stats: Some(Box::default()),
@@ -583,6 +595,7 @@ impl SurfaceProbe {
             order_index: 0,
             emission: Vec3::ZERO,
             face_mask,
+            #[cfg(test)]
             stats: None,
             progress: default(),
             display: [super::history::FaceDisplay::default(); 6],
@@ -615,23 +628,50 @@ impl SurfaceProbe {
     }
 
     /// CPU statistics, or empty ones when this probe keeps none.
+    #[cfg(test)]
     pub(crate) fn stats(&self) -> &ProbeStatistics {
         self.stats.as_deref().unwrap_or(&ProbeStatistics::EMPTY)
     }
 
     /// CPU statistics, allocated on first write.
+    #[cfg(test)]
     pub(crate) fn stats_mut(&mut self) -> &mut ProbeStatistics {
         self.stats.get_or_insert_with(Box::default)
     }
 
+    /// A face's CPU measurement for a job input: radiance, second moment,
+    /// direct, custom direct, samples and time. Production probes keep none
+    /// (the GPU slot is the authority), so this is empty outside tests.
+    pub(crate) fn measured(&self, face: usize) -> FaceMeasurement {
+        #[cfg(test)]
+        if let Some(stats) = &self.stats {
+            return FaceMeasurement {
+                radiance: stats.radiance[face],
+                second_moment: stats.second_moment[face],
+                direct: stats.direct[face],
+                custom_direct: stats.custom_direct[face],
+                samples: stats.samples[face],
+                updated_at: stats.face_updated_at[face],
+            };
+        }
+        let _ = face;
+        FaceMeasurement::default()
+    }
+
     pub(crate) fn sequence(&self, face: usize) -> u32 {
-        self.stats.as_ref().map_or(self.progress.sequence[face], |stats| stats.sequence[face])
+        #[cfg(test)]
+        if let Some(stats) = &self.stats {
+            return stats.sequence[face];
+        }
+        self.progress.sequence[face]
     }
 
     pub(crate) fn bootstrap_samples(&self, face: usize) -> u32 {
-        self.stats.as_ref().map_or(u32::from(self.progress.bootstrap[face]), |stats| {
-            stats.samples[face].min(super::tracer::BOOTSTRAP_SAMPLES)
-        })
+        #[cfg(test)]
+        if let Some(stats) = &self.stats {
+            return stats.samples[face].min(super::tracer::BOOTSTRAP_SAMPLES);
+        }
+        u32::from(self.progress.bootstrap[face])
     }
 
     pub(crate) fn update_face_mask(&mut self, face_mask: u8) {
@@ -648,6 +688,7 @@ impl SurfaceProbe {
             self.resident[face] = UVec2::ZERO;
             self.progress.bootstrap[face] = 0;
             self.progress.settled &= !(1 << face);
+            #[cfg(test)]
             if let Some(stats) = self.stats.as_mut() {
                 stats.radiance[face] = Vec3::ZERO;
                 stats.second_moment[face] = Vec3::ZERO;
@@ -669,6 +710,7 @@ impl SurfaceProbe {
         self.relit_mask |= self.face_mask;
         let limit = super::geometry::NEAR_HISTORY;
         self.progress.bootstrap = self.progress.bootstrap.map(|count| u32::from(count).min(limit) as u8);
+        #[cfg(test)]
         if let Some(stats) = self.stats.as_mut() {
             stats.samples = stats.samples.map(|count| count.min(limit));
         }
@@ -681,6 +723,7 @@ impl SurfaceProbe {
         self.revision = self.revision.wrapping_add(1);
         self.fresh_mask = 0;
         self.progress.settled = 0;
+        #[cfg(test)]
         if let Some(stats) = self.stats.as_mut() {
             stats.stable_batches = [0; 6];
         }

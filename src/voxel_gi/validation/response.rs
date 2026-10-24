@@ -127,10 +127,7 @@ impl ResponseRun {
                         .filter(|p| p.face_mask & (1 << face) != 0);
                     json!({"voxel": voxel.to_array(), "face": face,
                         "display": probe.map(|p| p.display[face].indirect.to_array()),
-                        "measured": probe.map(|p| p.stats().radiance[face].to_array()),
-                        "second_moment": probe.map(|p| p.stats().second_moment[face].to_array()),
-                        "samples": probe.map(|p| p.stats().samples[face]),
-                        "sequence": probe.map(|p| p.stats().sequence[face]),
+                        "sequence": probe.map(|p| p.sequence(face)),
                         "transport_revision": probe.map(|p| p.transport_revision),
                         "sky": probe.map(|p| p.display[face].sky),
                         "source_revision": probe.map(|p| p.source_revision),

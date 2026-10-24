@@ -274,11 +274,7 @@ fn reconcile_scene_page(
         let mut probe = old_affected.remove(&descriptor.voxel).unwrap_or_else(|| {
             invalidated.insert(descriptor.voxel);
             added.push(descriptor.voxel);
-            let mut probe = if field.cpu_statistics {
-                SurfaceProbe::new(descriptor.voxel, descriptor.face_mask)
-            } else {
-                SurfaceProbe::new_slim(descriptor.voxel, descriptor.face_mask)
-            };
+            let mut probe = SurfaceProbe::new_slim(descriptor.voxel, descriptor.face_mask);
             probe.revision = runtime.generation << 32;
             // Timestamp the new display prior independently of material ID.
             // This is not measurement evidence or a transport freshness stamp.
