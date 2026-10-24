@@ -77,9 +77,10 @@ default lab when promising. Per-stage view times come from `far_stages_ms`.
 | Per-pixel sun past 0.5 or 0.25 world units per pixel (user idea) | p50 +0.6 / +1.7 ms: faces a few pixels wide already borrow corners from owned neighbours cheaply | rejected |
 | Faces with >= 256 samples traced every 4th frame (NAADF 0.25 spp with history) | no settling gain; slower edit response (remove-300ms FLIP 0.096 -> 0.121) | rejected |
 | Path and shadow rays capped at 128 steps (NAADF budgets) | known/completed unchanged (99.4%); rays rarely need more here | not needed now |
+| Traced discovery threshold removed | discovery unchanged (streaming 1.50 vs 1.48 ms, cave 0.43); no host LOD assumption | adopted `e607385` |
+| At most 8 discovery rounds per tile per frame | far discovery 5.31 -> 2.53 ms, uncovered 668 -> 516, p50 23.9 -> 23.4 | adopted `96bfd69` |
+| Camera-relative dense top level | not built: rays already cache their region and the 255-region cap is not reached at 48 chunks; revisit for larger worlds | deferred |
 
-Not yet tried: a camera-relative dense top level (the bounding-box field
-still switches off past 255 regions per axis), GPU construction, capping
-discovery rounds per tile per frame (discovery is now the largest far
-stage, 4-5 ms), and the reconstruction cost at receiver saturation (0.5 ms
-at 48 chunks, 8-12 ms in the 200-chunk lod test).
+Not yet tried: GPU construction, and the reconstruction cost at receiver
+saturation (0.5 ms at 48 chunks, 8-12 ms in the 200-chunk lod test). See
+also [the 2026-10-24 review](review-2026-10-24.md).
