@@ -105,6 +105,10 @@ fn geometry_ahead(start: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> 
     return true;
 }
 fn trace_domain(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, visible_geometry: bool) -> RayResult {
+    return trace_domain_limited(origin, direction, max_distance, visible_geometry, 2048u);
+}
+// As `trace_domain`, stopping after `max_steps` traversal steps with status 2.
+fn trace_domain_limited(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, visible_geometry: bool, max_steps: u32) -> RayResult {
     var result: RayResult;
     var near = -1e30;
     var far = 1e30;
@@ -130,7 +134,7 @@ fn trace_domain(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32, visi
     var position = origin + direction * distance;
     var last_region = vec3<i32>(0x7fffffff);
     var metadata = vec4<u32>(0u);
-    for (var step = 0u; step < 2048u; step += 1u) {
+    for (var step = 0u; step < max_steps; step += 1u) {
         if distance > max_distance { return result; }
         let voxel = vec3<i32>(floor(position));
         let region = voxel >> vec3<u32>(4u);

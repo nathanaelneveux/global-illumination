@@ -223,7 +223,15 @@ fn resolve_sky_corners(corners: vec4<u32>, axis: vec3<f32>, position: vec2<f32>)
 // the view does not own takes each corner from an owned face sharing it.
 // Borrowing a coplanar face's corners from up to 16 voxels away (as before)
 // gave a face another voxel's shadow at some camera poses. A corner no owned
-// face shares is traced. No screen-space or history reuse.
+// face shares is traced, per fragment, under NAADF's kind of budget: a
+// bounded step count (its sun rays stop at 80-120) where running out counts as
+// lit, and one ray from the face centre for faces about two pixels or less,
+// whose corner interpolation is invisible anyway. No screen-space or history
+// reuse.
+const FALLBACK_SUN_STEPS: u32 = 128u;
+// World units per pixel at this fragment; set by `fragment` before lighting.
+var<private> fragment_footprint: f32 = 0.0;
+
 fn far_sun(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     let reach = f32(params.counts.x);
     if reach == 0.0 { return vec4(0.0); }
@@ -256,16 +264,27 @@ fn far_sun(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     }
     if any(words == vec4(0u)) {
         let base = vec3<f32>(voxel) + max(axis, vec3(0.0));
+        let tiny = fragment_footprint >= 0.5;
+        var center_word = 0u;
         for (var c = 0u; c < 4u; c++) {
             if words[c] != 0u { continue; }
+            if tiny && center_word != 0u {
+                words[c] = center_word;
+                continue;
+            }
             var word = 0x80000000u;
             for (var light = 0u; light < min(transport_settings.sun_count, 4u); light += 1u) {
                 let direction = transport_settings.sun_direction[light].xyz;
                 if dot(axis, direction) <= 0.0 { continue; }
-                let origin = base + vec3<f32>(u) * f32(c & 1u) + vec3<f32>(v) * f32(c >> 1u) + direction * 0.002;
-                if trace_domain(origin, direction, reach, true).status == 0u { word |= 1u << light; }
+                var corner = vec3<f32>(u) * f32(c & 1u) + vec3<f32>(v) * f32(c >> 1u);
+                if tiny { corner = vec3<f32>(u + v) * 0.5; }
+                let origin = base + corner + direction * 0.002;
+                if trace_domain_limited(origin, direction, reach, true, FALLBACK_SUN_STEPS).status != 1u {
+                    word |= 1u << light;
+                }
             }
             words[c] = word;
+            if tiny { center_word = word; }
         }
     }
     let local = position - vec3<f32>(voxel);
@@ -425,6 +444,9 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
     standard_in.color = in.color;
     standard_in.instance_index = in.instance_index;
     var pbr_input = pbr_input_from_standard_material(standard_in, is_front);
+    // Derivatives before any divergent branch.
+    let world_per_pixel = fwidth(in.world_position.xyz);
+    fragment_footprint = max(world_per_pixel.x, max(world_per_pixel.y, world_per_pixel.z));
 
     var tex_face = 0;
     if in.world_normal.y == 0.0 {
