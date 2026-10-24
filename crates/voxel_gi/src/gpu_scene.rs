@@ -49,10 +49,24 @@ struct SharedBrick {
 /// complete corresponding array; these deltas only patch an existing buffer.
 #[derive(Default)]
 pub(crate) struct SceneDelta {
-    pub directory_changed: bool,
+    /// The directory was reallocated (first build or a capacity change):
+    /// upload it whole. Otherwise only `directory` slot ranges changed.
+    pub directory_rebuilt: bool,
+    pub directory: Vec<Range<usize>>,
     pub headers: Vec<Range<usize>>,
     pub cells: Vec<Range<usize>>,
 }
+
+#[cfg(test)]
+impl SceneDelta {
+    pub(crate) fn directory_changed(&self) -> bool {
+        self.directory_rebuilt || !self.directory.is_empty()
+    }
+}
+
+const EMPTY_SLOT: IVec4 = IVec4::new(0, 0, 0, -1);
+/// The shader's `lookup_region` probes at most this many slots.
+const MAX_PROBES: usize = 32;
 
 impl PackedScene {
     pub fn update(&mut self, scene: &TransportScene) -> SceneDelta {
@@ -92,11 +106,16 @@ impl PackedScene {
             .filter(|key| !scene.regions.contains_key(*key))
             .copied()
             .collect();
-        let mut delta = SceneDelta {
-            directory_changed: !removed.is_empty() || self.directory.is_empty(),
-            ..default()
-        };
+        let mut delta = SceneDelta::default();
+        // The directory is maintained in place: a full rebuild (and upload)
+        // only for the first build or a capacity change. Streaming used to
+        // rebuild and re-upload the whole table on every region change.
+        let mut rebuild = self.directory.is_empty();
+        let mut inserted = Vec::new();
         for key in removed {
+            if !rebuild {
+                self.directory_remove(key, &mut delta.directory);
+            }
             let Some(allocation) = self.regions.remove(&key) else {
                 continue;
             };
@@ -133,8 +152,11 @@ impl PackedScene {
                 }
                 continue;
             }
-            let mut allocation = self.regions.remove(&key).unwrap_or_else(|| {
-                delta.directory_changed = true;
+            let existing = self.regions.remove(&key);
+            if existing.is_none() {
+                inserted.push(key);
+            }
+            let mut allocation = existing.unwrap_or_else(|| {
                 let header = self.free_headers.pop().unwrap_or_else(|| {
                     self.headers.push(UVec4::ZERO);
                     self.headers.len() - 1
@@ -237,9 +259,23 @@ impl PackedScene {
                 }
             }
         }
-        if delta.directory_changed {
-            self.rebuild_directory();
+        let capacity = (self.regions.len() * 2).next_power_of_two().max(1);
+        rebuild |= capacity > self.directory.len() || capacity * 8 < self.directory.len();
+        if !rebuild {
+            for key in inserted {
+                let header = self.regions[&key].header;
+                if !self.directory_insert(key, header, &mut delta.directory) {
+                    rebuild = true;
+                    break;
+                }
+            }
         }
+        if rebuild {
+            self.rebuild_directory();
+            delta.directory.clear();
+            delta.directory_rebuilt = true;
+        }
+        delta.directory = merge_ranges(delta.directory);
         delta.cells = merge_ranges(dirty);
         delta.headers = merge_ranges(delta.headers);
         self.stamp = Some(scene.stamp());
@@ -286,10 +322,66 @@ impl PackedScene {
         }
     }
 
+    /// Linear-probing insert; false when the probe chain would exceed what the
+    /// shader searches (the caller then rebuilds at a larger capacity).
+    fn directory_insert(&mut self, key: IVec3, header: usize, dirty: &mut Vec<Range<usize>>) -> bool {
+        let mask = self.directory.len() - 1;
+        let mut slot = hash_region(key) as usize & mask;
+        let mut distance = 0;
+        while self.directory[slot].w != -1 {
+            slot = (slot + 1) & mask;
+            distance += 1;
+            if distance >= MAX_PROBES {
+                return false;
+            }
+        }
+        self.directory[slot] = key.extend(header as i32);
+        dirty.push(slot..slot + 1);
+        true
+    }
+
+    /// Backward-shift deletion: no tombstones, so lookups still stop at the
+    /// first empty slot, and no probe chain gets longer.
+    fn directory_remove(&mut self, key: IVec3, dirty: &mut Vec<Range<usize>>) {
+        let mask = self.directory.len() - 1;
+        let mut slot = hash_region(key) as usize & mask;
+        while self.directory[slot].xyz() != key || self.directory[slot].w == -1 {
+            if self.directory[slot].w == -1 {
+                return;
+            }
+            slot = (slot + 1) & mask;
+        }
+        self.directory[slot] = EMPTY_SLOT;
+        dirty.push(slot..slot + 1);
+        let mut hole = slot;
+        let mut next = slot;
+        loop {
+            next = (next + 1) & mask;
+            let entry = self.directory[next];
+            if entry.w == -1 {
+                return;
+            }
+            let home = hash_region(entry.xyz()) as usize & mask;
+            // The entry may stay when its home lies cyclically in (hole, next].
+            let stays = if hole <= next {
+                hole < home && home <= next
+            } else {
+                hole < home || home <= next
+            };
+            if !stays {
+                self.directory[hole] = entry;
+                self.directory[next] = EMPTY_SLOT;
+                dirty.push(hole..hole + 1);
+                dirty.push(next..next + 1);
+                hole = next;
+            }
+        }
+    }
+
     pub(super) fn rebuild_directory(&mut self) {
         let mut capacity = (self.regions.len() * 2).next_power_of_two().max(1);
         loop {
-            self.directory = vec![IVec4::new(0, 0, 0, -1); capacity];
+            self.directory = vec![EMPTY_SLOT; capacity];
             let mut fits = true;
             for (&key, allocation) in &self.regions {
                 let mut slot = hash_region(key) as usize & (capacity - 1);
@@ -371,14 +463,94 @@ mod tests {
             if step < 5 || step == 17 || step >= 31 {
                 let a = incremental.update(&scene);
                 let b = control.update(&scene);
-                assert_eq!(incremental.directory, control.directory);
+                assert_eq!(directory_entries(&incremental), directory_entries(&control));
+                assert_eq!(incremental.directory.len(), control.directory.len());
                 assert_eq!(incremental.headers, control.headers);
                 assert_eq!(incremental.cells, control.cells);
-                assert_eq!(a.directory_changed, b.directory_changed);
+                assert_eq!(a.directory_changed(), b.directory_changed());
                 assert_eq!(a.headers, b.headers);
                 assert_eq!(a.cells, b.cells);
             }
         }
+    }
+
+    #[test]
+    fn incremental_directory_matches_lookups_through_streaming_churn() {
+        // A camera streaming through a world: regions enter and leave in
+        // waves. Every live region must be found within the shader's probe
+        // limit, removed ones must miss, and slot patches must reproduce the
+        // CPU table without whole-table uploads between capacity changes.
+        let mut packed = PackedScene::default();
+        let mut scene = TransportScene::default();
+        let mut gpu = Vec::new();
+        let mut live = bevy::platform::collections::HashSet::<IVec3>::new();
+        let mut rebuilds = 0;
+        let mut solid = vec![AIR; volume_len(PAGE_SIZE)];
+        solid[linear_index(UVec3::splat(3), PAGE_SIZE)] = 7;
+        for step in 0..60i32 {
+            let enter: Vec<_> = (0..6).map(|i| IVec3::new(step + i, (i * 7 + step) % 5 - 2, i - 3)).collect();
+            let leave: Vec<_> = live
+                .iter()
+                .copied()
+                .filter(|page: &IVec3| page.x < step - 4 || (page.x + page.y * 3 + step) % 11 == 0)
+                .collect();
+            let changed: Vec<_> = enter.iter().map(|&page| (page, solid.clone())).collect();
+            scene = TransportScene::with_page_delta(&scene, changed, &leave);
+            for page in &leave {
+                live.remove(page);
+            }
+            live.extend(enter);
+            let delta = packed.update(&scene);
+            if delta.directory_rebuilt {
+                rebuilds += 1;
+                gpu.clone_from(&packed.directory);
+            } else {
+                for range in delta.directory {
+                    gpu[range.clone()].copy_from_slice(&packed.directory[range]);
+                }
+            }
+            assert_eq!(gpu, packed.directory, "patched directory at step {step}");
+            let mask = gpu.len() - 1;
+            let lookup = |key: IVec3| {
+                let mut slot = hash_region(key) as usize & mask;
+                for _ in 0..MAX_PROBES {
+                    let entry = gpu[slot];
+                    if entry.w == -1 {
+                        return None;
+                    }
+                    if entry.xyz() == key {
+                        return Some(entry.w as usize);
+                    }
+                    slot = (slot + 1) & mask;
+                }
+                None
+            };
+            for (&key, allocation) in &packed.regions {
+                assert_eq!(lookup(key), Some(allocation.header), "region {key} at step {step}");
+            }
+            for page in &leave {
+                for z in 0..2 {
+                    for y in 0..2 {
+                        for x in 0..2 {
+                            assert_eq!(lookup(*page * 2 + IVec3::new(x, y, z)), None);
+                        }
+                    }
+                }
+            }
+            assert_eq!(gpu.iter().filter(|entry| entry.w != -1).count(), packed.regions.len());
+        }
+        assert!(rebuilds < 12, "{rebuilds} whole-table uploads in 60 streaming steps");
+    }
+
+    fn directory_entries(packed: &PackedScene) -> Vec<[i32; 4]> {
+        let mut entries: Vec<_> = packed
+            .directory
+            .iter()
+            .filter(|entry| entry.w != -1)
+            .map(|entry| entry.to_array())
+            .collect();
+        entries.sort_unstable();
+        entries
     }
 
     fn decoded_material(packed: &PackedScene, voxel: IVec3) -> u16 {
@@ -446,7 +618,7 @@ mod tests {
             TransportScene::with_page_delta(&scene, vec![(IVec3::ZERO, page.clone())], &[]);
         let dirty = packed.update(&edited);
         assert!(dirty.cells.iter().map(|r| r.len()).sum::<usize>() <= TABLE_WORDS + BRICK_WORDS);
-        assert!(!dirty.directory_changed);
+        assert!(!dirty.directory_changed());
         assert!(dirty.headers.is_empty());
         assert_eq!(decoded_material(&packed, IVec3::new(4, 4, 4)), AIR);
         assert_eq!(
@@ -513,11 +685,11 @@ mod tests {
         let mut packed = PackedScene::default();
         let dirty = packed.update(&scene);
         assert_eq!(dirty.cells.len(), 1);
-        assert!(dirty.directory_changed);
+        assert!(dirty.directory_changed());
         assert_eq!(packed.cells.len(), TABLE_WORDS + BRICK_WORDS);
         assert_eq!((packed.cells[TABLE_WORDS] & 65535) >> 1, 255);
         let unchanged = packed.update(&scene);
-        assert!(!unchanged.directory_changed);
+        assert!(!unchanged.directory_changed());
         assert!(unchanged.cells.is_empty() && unchanged.headers.is_empty());
         let empty = TransportScene::with_page_delta(
             &scene,
@@ -572,8 +744,12 @@ mod tests {
             };
             scene = TransportScene::with_page_delta(&scene, changed, &removed);
             let delta = packed.update(&scene);
-            if delta.directory_changed {
+            if delta.directory_rebuilt {
                 gpu_directory.clone_from(&packed.directory);
+            } else {
+                for range in delta.directory {
+                    gpu_directory[range.clone()].copy_from_slice(&packed.directory[range]);
+                }
             }
             if packed.headers.len() > header_capacity {
                 header_capacity = packed.headers.len().next_power_of_two();

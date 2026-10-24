@@ -29,7 +29,7 @@ impl GpuTracer {
         let delta = if self.full_geometry_uploads_for_benchmark {
             self.packed.rebuild_directory();
             super::super::gpu_scene::SceneDelta {
-                directory_changed: true,
+                directory_rebuilt: true,
                 headers: std::iter::once(0..self.packed.headers.len()).collect(),
                 ..delta
             }
@@ -83,7 +83,7 @@ impl GpuTracer {
                 bytes.extend_from_slice(&data);
             }
         };
-        if delta.directory_changed {
+        if delta.directory_rebuilt {
             stage(
                 0,
                 0,
@@ -91,6 +91,16 @@ impl GpuTracer {
                     .data
                     .unwrap(),
             );
+        } else {
+            for range in delta.directory {
+                stage(
+                    0,
+                    range.start * 16,
+                    ShaderBuffer::from(self.packed.directory[range].to_vec())
+                        .data
+                        .unwrap(),
+                );
+            }
         }
         for range in delta.headers {
             stage(
