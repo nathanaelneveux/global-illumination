@@ -114,9 +114,15 @@ fn main() -> AppExit {
     // explicitly request resampling. BVW remains the terrain/mesh host.
     app.insert_resource(voxel_gi::VoxelGiInput::tracked());
     app.add_plugins(gi_lab::GiLabPlugin);
+    if gi_lab::gi_enabled() {
+        app.add_plugins((
+            VoxelGiPlugin,
+            voxel_gi_bvw::VoxelGiBvwPlugin::<terrain::PrototypeWorld>::default(),
+        ));
+    } else {
+        gi_lab::init_gi_off_resources(&mut app);
+    }
     app.add_plugins((
-        VoxelGiPlugin,
-        voxel_gi_bvw::VoxelGiBvwPlugin::<terrain::PrototypeWorld>::default(),
         TerrainPlugin,
         ChunkColliderPlugin,
         PlayerPlugin,

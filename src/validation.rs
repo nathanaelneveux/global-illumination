@@ -267,7 +267,8 @@ pub(super) fn run_validation(
             commands.write_message(AppExit::error());
             return;
         }
-        if !ready || handle.is_none() {
+        // The GI-off control (VOXEL_GI_LAB_GI=0) has BVW's own material.
+        if !ready || (handle.is_none() && crate::gi_lab::gi_enabled()) {
             return;
         }
         run.started = Some(Instant::now());

@@ -147,13 +147,18 @@ impl Plugin for TerrainPlugin {
                 table.set(global.index(), cave.get(local));
             }
         }
-        let texture = app.world().resource::<crate::assets::TemplateAssets>().voxel_texture.clone();
-        let data = app.world().resource::<VoxelGiMaterialData>().clone();
-        app.add_plugins(
-            VoxelWorldPlugin::with_config(PrototypeWorld::default())
-                .with_material(material_template(texture, &data)),
-        )
-        .add_systems(Update, apply_live_prototype_config);
+        if crate::gi_lab::gi_enabled() {
+            let texture = app.world().resource::<crate::assets::TemplateAssets>().voxel_texture.clone();
+            let data = app.world().resource::<VoxelGiMaterialData>().clone();
+            app.add_plugins(
+                VoxelWorldPlugin::with_config(PrototypeWorld::default())
+                    .with_material(material_template(texture, &data)),
+            );
+        } else {
+            // GI-off control: BVW's own standard voxel material.
+            app.add_plugins(VoxelWorldPlugin::with_config(PrototypeWorld::default()));
+        }
+        app.add_systems(Update, apply_live_prototype_config);
     }
 }
 

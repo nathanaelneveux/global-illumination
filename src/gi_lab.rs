@@ -103,6 +103,22 @@ fn spawn_actions(mut commands: Commands) {
     });
 }
 
+/// `VOXEL_GI_LAB_GI=0` is a host-cost control: the same world, streaming and
+/// validation workload without GI (no GI plugins, BVW's standard material).
+pub fn gi_enabled() -> bool {
+    std::env::var("VOXEL_GI_LAB_GI").as_deref() != Ok("0")
+}
+
+/// The GI resources the lab and validation read, left at their defaults so
+/// the control runs the same harness. Nothing updates them.
+pub fn init_gi_off_resources(app: &mut App) {
+    app.init_resource::<voxel_gi::VoxelGiStats>()
+        .init_resource::<voxel_gi::VoxelGiDisplay>()
+        .init_resource::<voxel_gi::VoxelGiEnvironment>()
+        .init_resource::<voxel_gi::VoxelMaterialTransportTable>()
+        .init_resource::<VoxelGiSettings>();
+}
+
 #[cfg(test)]
 mod tests {
     use voxel_gi::VoxelGiSettings;
