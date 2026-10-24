@@ -10,6 +10,7 @@ mod memory;
 mod metrics;
 mod profiles;
 mod response;
+mod skylight;
 mod structures;
 mod tunnel;
 
@@ -155,6 +156,7 @@ pub(super) struct ValidationRun {
     response: response::ResponseRun,
     tunnel: tunnel::TunnelRun,
     house: house::HouseRun,
+    skylight: skylight::SkylightRun,
     cave_camera_initialized: bool,
     structures: structures::StructuresRun,
     background: background::BackgroundRun,
@@ -236,7 +238,9 @@ pub(super) fn run_validation(
             return;
         }
         run.profile = profile;
-        if matches!(profile, Profile::Motion | Profile::Tunnel | Profile::Streaming) {
+        if matches!(profile, Profile::Motion | Profile::Tunnel | Profile::Streaming)
+            || (profile == Profile::Cave && skylight::mode().is_some())
+        {
             run.motion_static = std::env::var_os("VOXEL_GI_VALIDATE_MOTION_STATIC").is_some();
             run.motion_walk = profiles::motion_walk();
             let component = std::env::var("VOXEL_GI_VALIDATE_LIGHT_COMPONENT").ok();
@@ -387,6 +391,9 @@ pub(super) fn run_validation(
             &mut lights,
         );
     }
+    if profile == Profile::Cave {
+        run.skylight.tick(elapsed, &mut world, &mut dirty);
+    }
     if profile == Profile::Tunnel {
         run.tunnel.tick(elapsed, &mut world, &mut dirty, &mut commands, &cameras, &mut lights);
     }
@@ -438,7 +445,9 @@ pub(super) fn run_validation(
     }
     let mut next = *display;
     profile.configure(elapsed, &mut next);
-    if matches!(profile, Profile::Motion | Profile::Tunnel | Profile::Streaming) {
+    if matches!(profile, Profile::Motion | Profile::Tunnel | Profile::Streaming)
+        || (profile == Profile::Cave && skylight::mode().is_some())
+    {
         next.debug_view = voxel_gi::GiDebugView::from_index(run.motion_diagnostic);
     }
     if next != *display {

@@ -133,6 +133,9 @@ impl Profile {
     }
 
     pub fn duration(self) -> f32 {
+        if self == Self::Cave && super::skylight::mode().is_some() {
+            return 46.0;
+        }
         if self == Self::Cave && std::env::var_os("VOXEL_GI_VALIDATE_CAVE_LONG").is_some() {
             return 182.0;
         }
@@ -214,6 +217,9 @@ impl Profile {
                 (60.0, "cave-36s"),
             ]
         } else if self == Self::Cave {
+            if super::skylight::mode().is_some() {
+                return super::skylight::CAPTURES;
+            }
             if std::env::var_os("VOXEL_GI_VALIDATE_CAVE_LONG").is_some() {
                 return &[
                     (15.0, "cave-15s"),
