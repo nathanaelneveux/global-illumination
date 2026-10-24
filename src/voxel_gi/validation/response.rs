@@ -21,7 +21,6 @@ impl ResponseRun {
         edits: bool,
         world: &mut VoxelWorld<PrototypeWorld>,
         dirty: &mut VoxelGiInput,
-        field: &VoxelEnergyField,
         materials: &mut VoxelMaterialTransportTable,
         commands: &mut Commands,
         cameras: &Query<Entity, With<Camera3d>>,
@@ -110,35 +109,6 @@ impl ResponseRun {
             dirty.set_voxel(world, position, material);
             self.stage = stage;
             self.samples.push(json!({"event": stage, "at_s": elapsed}));
-        }
-        // Observe each Update so short source responses are not lost between
-        // samples. This fixture is opt-in and its receiver set is bounded.
-        {
-            let faces: Vec<_> = FACE_OFFSETS
-                .into_iter()
-                .enumerate()
-                .filter(|(_, normal)| *normal != IVec3::NEG_Y)
-                .map(|(face, normal)| (HOLE - normal, face))
-                .chain([(IVec3::new(9, 38, -9), 2), (IVec3::new(10, 38, -9), 2)])
-                .chain((0..6).map(|face| (HOLE + IVec3::Y, face)))
-                .map(|(voxel, face)| {
-                    let probe = field
-                        .probes
-                        .get(&voxel)
-                        .filter(|p| p.face_mask & (1 << face) != 0);
-                    json!({"voxel": voxel.to_array(), "face": face,
-                        "display": probe.map(|p| p.display[face].indirect.to_array()),
-                        "sequence": probe.map(|p| p.sequence(face)),
-                        "transport_revision": probe.map(|p| p.transport_revision),
-                        "sky": probe.map(|p| p.display[face].sky),
-                        "source_revision": probe.map(|p| p.source_revision),
-                        "confidence": probe.map(|p| p.display[face].confidence)})
-                })
-                .collect();
-            self.samples.push(
-                json!({"at_s": elapsed, "source_revision": field.source_revision,
-                    "transport_revision": field.transport_revision, "faces": faces}),
-            );
         }
     }
 }

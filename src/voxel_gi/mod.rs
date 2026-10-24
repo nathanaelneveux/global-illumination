@@ -58,6 +58,7 @@ use pages::{ingest_input, start_scene_task};
 pub use bvw::{BvwVoxelEdits, GiFallbackVoxel, VoxelGiBvwPlugin};
 pub use input::{VoxelGiInput, VoxelGiSource, VoxelSource, dense_page};
 pub use render::{GiDebugView, VoxelGiDisplay};
+pub use telemetry::MAIN_STAGE_NAMES as GI_MAIN_STAGE_NAMES;
 pub(crate) use diagnostics::{VoxelGiDiagnosticsPlugin, configure_demo_launch};
 use dispatch::{apply_trace_task, start_trace_task};
 use publication::apply_scene_task;

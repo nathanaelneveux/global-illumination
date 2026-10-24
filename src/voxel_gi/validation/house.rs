@@ -29,9 +29,7 @@ const OPENINGS: &[(f32, &str, &[IVec3])] = &[
 #[derive(Default)]
 pub(super) struct HouseRun {
     initialized: bool,
-    last_sample: f32,
     stage: usize,
-    pub samples: Vec<serde_json::Value>,
     pub events: Vec<serde_json::Value>,
     pub captures: Vec<serde_json::Value>,
 }
@@ -43,8 +41,6 @@ impl HouseRun {
         edits: bool,
         world: &mut VoxelWorld<PrototypeWorld>,
         dirty: &mut VoxelGiInput,
-        field: &VoxelEnergyField,
-        runtime: &super::super::VoxelGiRuntime,
         commands: &mut Commands,
         cameras: &Query<Entity, With<Camera3d>>,
         transforms: &mut Query<&mut Transform, Without<Player>>,
@@ -88,40 +84,9 @@ impl HouseRun {
                 }
                 self.events.push(json!({"name": name, "scheduled_s": at,
                     "at_s": elapsed, "requested_voxels": voxels.iter().map(|v| v.to_array()).collect::<Vec<_>>(),
-                    "removed_solid_voxels": removed, "transport_revision": field.transport_revision,
-                    "pages": runtime.loaded_pages.len()}));
+                    "removed_solid_voxels": removed}));
                 self.stage += 1;
             }
         }
-        if elapsed - self.last_sample < 0.1 {
-            return;
-        }
-        self.last_sample = elapsed;
-        let mut faces = Vec::new();
-        for z in [-23, -22, -18, -14, -13] {
-            for x in [-5, -4, 0, 4, 5] {
-                let voxel = IVec3::new(x, 17, z);
-                let face = 3; // Downward-facing roof underside.
-                let probe = field
-                    .probes
-                    .get(&voxel)
-                    .filter(|p| p.face_mask & (1 << face) != 0);
-                faces.push(json!({"voxel": voxel.to_array(),
-                    "sequence": probe.map(|p| p.sequence(face)),
-                    "display": probe.map(|p| p.display[face].indirect.to_array()),
-                    "sky": probe.map(|p| p.display[face].sky),
-                    "fresh_mask": probe.map(|p| p.fresh_mask),
-                    "transport_revision": probe.map(|p| p.transport_revision),
-                    "source_revision": probe.map(|p| p.source_revision),
-                    "geometry_revision": probe.map(|p| p.revision)}));
-            }
-        }
-        self.samples
-            .push(json!({"at_s": elapsed, "opposite": opposite,
-            "transport_revision": field.transport_revision,
-            "source_revision": field.source_revision,
-            "generation": runtime.generation, "pages": runtime.loaded_pages.len(),
-            "publishing_pages": field.publishing_pages.len(),
-            "scene_build_pending": runtime.scene_task.is_some(), "faces": faces}));
     }
 }

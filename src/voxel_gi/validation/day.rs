@@ -47,9 +47,7 @@ impl DayRun {
         &mut self,
         elapsed: f32,
         commands: &mut Commands,
-        field: &VoxelEnergyField,
         stats: &VoxelGiStats,
-        runtime: &super::super::VoxelGiRuntime,
     ) {
         let mut angle = self.offset + self.rate * elapsed;
         if self.step > 0.0 {
@@ -67,8 +65,6 @@ impl DayRun {
             "traced_paths": stats.traced_paths, "sky_corners_traced": stats.sky_corners_traced,
             "sky_corner_requests": stats.sky_corner_requests, "sky_rays": stats.sky_rays_scheduled,
             "transport_batches": stats.transport_batches, "sky_only_batches": stats.sky_only_batches,
-            "batch_size": runtime.batch_size, "sky_batch_size": runtime.sky_batch_size,
-            "gpu_ms_per_frame": stats.gpu_ms_per_frame, "trace_batch_ms": stats.last_trace_batch_ms,
-            "source_revision": field.source_revision, "transport_revision": field.transport_revision}));
+            "gpu_ms_per_frame": stats.gpu_ms_per_frame, "trace_batch_ms": stats.last_trace_batch_ms}));
     }
 }

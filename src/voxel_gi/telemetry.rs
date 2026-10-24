@@ -8,7 +8,7 @@ use super::VoxelGiStats;
 const REPORT_INTERVAL: Duration = Duration::from_millis(250);
 
 #[cfg(debug_assertions)]
-pub(super) const MAIN_STAGE_NAMES: [&str; 6] = [
+pub const MAIN_STAGE_NAMES: [&str; 6] = [
     "ingestion",
     "sources",
     "scene_publication",

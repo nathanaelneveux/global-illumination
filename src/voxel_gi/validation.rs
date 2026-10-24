@@ -14,9 +14,10 @@ mod structures;
 mod tunnel;
 
 use super::render::VoxelTransportMaterial;
-use super::world::FACE_OFFSETS;
+/// Face normals in the lab's face order (+X, -X, +Y, -Y, +Z, -Z).
+const FACE_OFFSETS: [IVec3; 6] = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
 use super::{
-    BvwVoxelEdits, EnergyEmitter, MaterialTransport, VoxelEnergyField, VoxelGiInput,
+    BvwVoxelEdits, EnergyEmitter, MaterialTransport, VoxelGiInput,
     VoxelGiSettings, VoxelGiStats, VoxelMaterialTransportTable,
 };
 use crate::assets::{PrototypeConfig, TemplateAssets};
@@ -130,13 +131,8 @@ pub(super) fn run_validation(
     mut run: Local<ValidationRun>,
     mut evidence: ResMut<CaptureEvidence>,
     time: Res<Time<Real>>,
-    gi: (
-        Res<VoxelGiStats>,
-        Res<super::VoxelGiRuntime>,
-        Option<Res<host_timing::HostTiming>>,
-    ),
+    gi: (Res<VoxelGiStats>, Option<Res<host_timing::HostTiming>>),
     settings: Res<VoxelGiSettings>,
-    field: Res<VoxelEnergyField>,
     mut dirty: ResMut<VoxelGiInput>,
     mut world: VoxelWorld<PrototypeWorld>,
     mut player_state: Single<&mut Transform, (With<Player>, With<bevy_ahoy::CharacterLook>)>,
@@ -159,7 +155,7 @@ pub(super) fn run_validation(
     if std::env::var_os("VOXEL_GI_VALIDATE").is_none() || evidence.failed {
         return;
     }
-    let (stats, runtime, host_timing) = gi;
+    let (stats, host_timing) = gi;
     let (assets, asset_server, configs, generator) = asset_context;
     if run.startup.is_none() {
         // Shared Cargo build directories can reuse another worktree's package
@@ -327,7 +323,7 @@ pub(super) fn run_validation(
         handoff::tick(elapsed, player, &cameras, &mut lights);
     }
     if profile == Profile::DayCycle {
-        run.day.tick(elapsed, &mut commands, &field, &stats, &runtime);
+        run.day.tick(elapsed, &mut commands, &stats);
     }
     if matches!(profile, Profile::House | Profile::HouseEdits) {
         run.house.tick(
@@ -335,8 +331,6 @@ pub(super) fn run_validation(
             profile == Profile::HouseEdits,
             &mut world,
             &mut dirty,
-            &field,
-            &runtime,
             &mut commands,
             &cameras,
             &mut lights,
@@ -348,7 +342,6 @@ pub(super) fn run_validation(
             profile == Profile::Edits,
             &mut world,
             &mut dirty,
-            &field,
             &mut transport_materials,
             &mut commands,
             &cameras,
@@ -456,11 +449,7 @@ pub(super) fn run_validation(
         &stats,
         host_timing.as_ref().map(|timing| timing.completed_ms),
     );
-    run.metrics.poll_edit(&field);
-    run.metrics
-        .record_work(elapsed, phase, &stats, &runtime, &field);
-    run.metrics
-        .sample(&field, player.translation, elapsed, phase);
+    run.metrics.record_work(elapsed, phase, &stats);
     run.max_pages = run.max_pages.max(stats.loaded_pages);
 
     if profile.sources() && (25.0..65.0).contains(&elapsed) {
@@ -513,14 +502,19 @@ pub(super) fn run_validation(
         && ((elapsed - 25.0) * 4.0) as u32 > run.edit_attempts
     {
         let edit = if let Some((voxel, material)) = run.removed.take() {
-            Some((voxel, material, false))
+            Some((voxel, material))
         } else {
-            let eye = player.translation;
-            let target = field
-                .probes
-                .keys()
-                .copied()
-                .filter(|voxel| (9.0..144.0).contains(&voxel.as_vec3().distance_squared(eye)))
+            // An exposed solid voxel 3-12 voxels from the eye, chosen by a
+            // deterministic hash so repeated runs edit the same surface.
+            let eye = player.translation.floor().as_ivec3();
+            let exposed = |voxel: IVec3| {
+                matches!(world.get_voxel(voxel), WorldVoxel::Solid(_))
+                    && FACE_OFFSETS.iter().any(|normal| !matches!(world.get_voxel(voxel + *normal), WorldVoxel::Solid(_)))
+            };
+            let target = (-12..=12)
+                .flat_map(|z| (-12..=12).flat_map(move |y| (-12..=12).map(move |x| eye + IVec3::new(x, y, z))))
+                .filter(|voxel| (9.0..144.0).contains(&(voxel.as_vec3() + 0.5).distance_squared(player.translation)))
+                .filter(|voxel| exposed(*voxel))
                 .min_by_key(|voxel| {
                     (
                         (((voxel.x as i64 * 73_856_093) ^ (voxel.z as i64 * 19_349_663))
@@ -537,12 +531,10 @@ pub(super) fn run_validation(
                     return None;
                 }
                 run.removed = Some((voxel, material));
-                Some((voxel, WorldVoxel::Air, true))
+                Some((voxel, WorldVoxel::Air))
             })
         };
-        if let Some((voxel, material, removing)) = edit {
-            let targets = edit_receivers(voxel, removing, |position| world.get_voxel(position));
-            run.metrics.edit(&field, targets);
+        if let Some((voxel, material)) = edit {
             dirty.set_voxel(&mut world, voxel, material);
             run.edits += 1;
         }
@@ -560,8 +552,6 @@ pub(super) fn run_validation(
     if elapsed >= 45.0
         && let Some((voxel, material)) = run.removed.take()
     {
-        let targets = edit_receivers(voxel, false, |position| world.get_voxel(position));
-        run.metrics.edit(&field, targets);
         dirty.set_voxel(&mut world, voxel, material);
         run.edits += 1;
     }
@@ -605,7 +595,7 @@ pub(super) fn run_validation(
     }
     if matches!(profile, Profile::House | Profile::HouseEdits)
         && let Err(error) = std::fs::write(evidence.output.as_ref().unwrap().join("house.json"),
-            json!({"samples": run.house.samples, "events": run.house.events, "captures": run.house.captures,
+            json!({"events": run.house.events, "captures": run.house.captures,
                 "note": "Prototype house, fixed eye, opposite ceiling corners at 30/50/70s. House-edits opens a skylight at 90s, west door at 120s, east door plus third-corner turn at 150s. Fixed warm-up is not certified convergence. Normal terrain streaming and adaptive scheduling remain enabled. Not a windowed FPS benchmark."}).to_string()) {
             evidence.fail(&format!("Could not save house sequence: {error}"));
             commands.write_message(AppExit::error());
@@ -704,25 +694,6 @@ pub(super) fn run_validation(
     }
 }
 
-fn edit_receivers(
-    voxel: IVec3,
-    removing: bool,
-    lookup: impl Fn(IVec3) -> WorldVoxel<u8>,
-) -> Vec<(IVec3, usize)> {
-    FACE_OFFSETS
-        .iter()
-        .enumerate()
-        .filter_map(|(face, offset)| {
-            let neighbor = voxel + *offset;
-            match (removing, lookup(neighbor)) {
-                (true, WorldVoxel::Solid(_)) => Some((neighbor, face ^ 1)),
-                (false, WorldVoxel::Air) => Some((voxel, face)),
-                _ => None,
-            }
-        })
-        .collect()
-}
-
 fn check_capture(
     capture: On<ScreenshotCaptured>,
     mut evidence: ResMut<CaptureEvidence>,
@@ -795,23 +766,4 @@ mod tests {
         assert!(has_rgb_variation(&[100, 180, 240, 100, 179, 240]));
     }
 
-    #[test]
-    fn edit_receivers_follow_new_faces_not_the_removed_face() {
-        assert_eq!(
-            edit_receivers(IVec3::ZERO, true, |v| if v == IVec3::NEG_Y {
-                WorldVoxel::Solid(1)
-            } else {
-                WorldVoxel::Air
-            }),
-            vec![(IVec3::NEG_Y, 2)]
-        );
-        assert_eq!(
-            edit_receivers(IVec3::ZERO, false, |v| if v == IVec3::Y {
-                WorldVoxel::Air
-            } else {
-                WorldVoxel::Solid(1)
-            }),
-            vec![(IVec3::ZERO, 2)]
-        );
-    }
 }
