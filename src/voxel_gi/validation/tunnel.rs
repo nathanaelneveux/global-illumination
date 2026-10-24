@@ -1,6 +1,7 @@
 //! Repeated one-wide, two-high digging from daylight into a hillside. The
 //! renderer and asynchronous mesh/transport publication remain unmodified.
 use super::*;
+use crate::voxel_gi::BvwVoxelEdits;
 
 #[derive(Default)]
 pub(super) struct TunnelRun {
@@ -14,7 +15,7 @@ impl TunnelRun {
         &mut self,
         elapsed: f32,
         world: &mut VoxelWorld<PrototypeWorld>,
-        dirty: &mut VoxelGiDirty,
+        dirty: &mut VoxelGiInput,
         commands: &mut Commands,
         cameras: &Query<Entity, With<Camera3d>>,
         transforms: &mut Query<&mut Transform, Without<Player>>,

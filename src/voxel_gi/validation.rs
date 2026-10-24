@@ -16,7 +16,7 @@ mod tunnel;
 use super::render::VoxelTransportMaterial;
 use super::world::FACE_OFFSETS;
 use super::{
-    EnergyEmitter, Vec3, MaterialTransport, VoxelEnergyField, VoxelGiDirty,
+    BvwVoxelEdits, EnergyEmitter, MaterialTransport, VoxelEnergyField, VoxelGiInput,
     VoxelGiSettings, VoxelGiStats, VoxelMaterialTransportTable,
 };
 use crate::assets::{PrototypeConfig, TemplateAssets};
@@ -137,7 +137,7 @@ pub(super) fn run_validation(
     ),
     settings: Res<VoxelGiSettings>,
     field: Res<VoxelEnergyField>,
-    mut dirty: ResMut<VoxelGiDirty>,
+    mut dirty: ResMut<VoxelGiInput>,
     mut world: VoxelWorld<PrototypeWorld>,
     mut player_state: Single<&mut Transform, (With<Player>, With<bevy_ahoy::CharacterLook>)>,
     mut lights: Query<&mut Transform, Without<Player>>,

@@ -1,388 +1,181 @@
-//! Host adapter: BVW chunk notifications and prototype generator snapshots.
-//! Transport workers consume immutable dense pages, not BVW chunks or meshes.
-//! Replace this boundary for a different storage engine; do not teach traversal,
-//! source sampling or display history about gameplay material IDs or generators.
-use super::telemetry::GiWorkTimings;
-use super::world::{
-    AIR, PAGE_EDGE, PAGE_SIZE, TransportScene, affected_probe_pages, scan_surface_probe_pages,
-};
-use super::{SceneBuildResult, VoxelGiDirty, VoxelGiRuntime, naadf, page_of};
-use crate::terrain::PrototypeWorld;
-use bevy::platform::collections::{HashMap, HashSet};
+//! `bevy_voxel_world` connector: forwards chunk spawn/update/despawn as GI page
+//! events and samples pages from BVW chunk data. Any `VoxelWorldConfig` with
+//! `u8` materials works; a BVW chunk is exactly one GI page (32³).
+use super::input::{VoxelGiInput, VoxelGiSource, VoxelSource, dense_page};
+use super::VoxelGiSystems;
 use bevy::prelude::*;
-use bevy::tasks::AsyncComputeTaskPool;
 use bevy_voxel_world::prelude::*;
+use std::marker::PhantomData;
 use std::sync::Arc;
-use std::time::Instant;
 
-/// Receivers are kept until a page is this much farther than the radius, so a
-/// camera moving back and forth across it does not churn pages.
-const RECEIVER_HYSTERESIS: f32 = PAGE_EDGE as f32;
-
-/// Which loaded pages have world-cache receivers: those within
-/// `cache_radius` of any active camera (distance to the page's nearest point),
-/// kept until beyond the radius plus a hysteresis. Geometry is unaffected.
-pub(super) fn update_receiver_residency(
-    mut runtime: ResMut<VoxelGiRuntime>,
-    settings: Res<super::VoxelGiSettings>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
-) {
-    let Some(radius) = settings.cache_radius() else {
-        let left = runtime.receiver_pages.take().unwrap_or_else(|| runtime.loaded_pages.clone());
-        runtime.receiver_pages = Some(HashSet::new());
-        mark_receivers(&mut runtime, Vec::new(), left.into_iter().collect());
-        return;
-    };
-    let foci: Vec<Vec3> = cameras.iter()
-        .filter(|(camera, _)| camera.is_active)
-        .map(|(_, transform)| transform.translation()).collect();
-    if foci.is_empty() {
-        return;
-    }
-    let distance = |page: IVec3| {
-        let minimum = (page * PAGE_EDGE as i32).as_vec3();
-        let maximum = minimum + Vec3::splat(PAGE_EDGE as f32);
-        foci.iter()
-            .map(|focus| focus.clamp(minimum, maximum).distance(*focus))
-            .fold(f32::INFINITY, f32::min)
-    };
-    let first = runtime.receiver_pages.is_none();
-    let mut allowed = runtime.receiver_pages.take().unwrap_or_default();
-    let (mut entered, mut left) = (Vec::new(), Vec::new());
-    for &page in &runtime.loaded_pages {
-        let d = distance(page);
-        if allowed.contains(&page) {
-            if d > radius + RECEIVER_HYSTERESIS {
-                left.push(page);
-            }
-        } else if d <= radius {
-            entered.push(page);
-        } else if first {
-            // Startup: pages outside lose their receivers.
-            left.push(page);
-        }
-    }
-    allowed.retain(|page| runtime.loaded_pages.contains(page));
-    for page in &entered {
-        allowed.insert(*page);
-    }
-    for page in &left {
-        allowed.remove(page);
-    }
-    runtime.receiver_pages = Some(allowed);
-    if first {
-        // Pages already allowed keep their receivers; only changes rescan.
-        entered.clear();
-    }
-    mark_receivers(&mut runtime, entered, left);
-}
-
-fn mark_receivers(runtime: &mut VoxelGiRuntime, entered: Vec<IVec3>, left: Vec<IVec3>) {
-    if entered.is_empty() && left.is_empty() {
-        return;
-    }
-    for page in entered {
-        runtime.receiver_retired.remove(&page);
-        runtime.receiver_dirty.insert(page);
-    }
-    for page in left {
-        runtime.receiver_dirty.remove(&page);
-        runtime.receiver_retired.insert(page);
+/// Voxels a loaded chunk does not store (and unloaded positions) come from
+/// the world's own generator when it has one. The default treats them as air.
+pub trait GiFallbackVoxel {
+    fn fallback_voxel(&self, _position: IVec3) -> WorldVoxel<u8> {
+        WorldVoxel::Unset
     }
 }
 
-/// Sparse authoritative edits, grouped by page. Immutable worker views use
-/// copy-on-write only for pages edited again while a task holds a snapshot.
-/// Keep edits across unload/reload: a BVW mesh snapshot may lag current writes.
-/// Explicit unknown changes discard the affected overlay and resample the host.
-#[derive(Default)]
-pub(super) struct PageEdits(HashMap<IVec3, Arc<HashMap<IVec3, u16>>>);
+/// Connects the `VoxelWorld<C>` to voxel GI.
+pub struct VoxelGiBvwPlugin<C>(PhantomData<C>);
 
-impl PageEdits {
-    fn insert(&mut self, voxel: IVec3, material: u16) {
-        Arc::make_mut(self.0.entry(page_of(voxel)).or_default()).insert(voxel, material);
+impl<C> Default for VoxelGiBvwPlugin<C> {
+    fn default() -> Self {
+        Self(PhantomData)
     }
 }
 
-impl VoxelGiDirty {
-    /// The prototype's edit gateway: forward the same value to BVW and GI.
-    /// Last write wins, including multiple writes to one voxel in one frame.
-    pub fn set_voxel(
+impl<C> Plugin for VoxelGiBvwPlugin<C>
+where
+    C: VoxelWorldConfig<MaterialIndex = u8> + GiFallbackVoxel + Resource + Clone,
+{
+    fn build(&self, app: &mut App) {
+        assert_eq!(
+            bevy_voxel_world::custom_meshing::CHUNK_SIZE_U,
+            super::input::VOXEL_GI_PAGE_EDGE,
+            "a BVW chunk must be one GI page"
+        );
+        app.add_systems(
+            Update,
+            (forward_chunk_events::<C>, refresh_source::<C>)
+                .chain()
+                .before(VoxelGiSystems),
+        );
+    }
+}
+
+/// Edits through BVW that GI must see: the same value goes to both.
+pub trait BvwVoxelEdits {
+    fn set_voxel<C: VoxelWorldConfig<MaterialIndex = u8>>(
         &mut self,
-        world: &mut VoxelWorld<PrototypeWorld>,
+        world: &mut VoxelWorld<C>,
+        position: IVec3,
+        voxel: WorldVoxel<u8>,
+    );
+}
+
+impl BvwVoxelEdits for VoxelGiInput {
+    fn set_voxel<C: VoxelWorldConfig<MaterialIndex = u8>>(
+        &mut self,
+        world: &mut VoxelWorld<C>,
         position: IVec3,
         voxel: WorldVoxel<u8>,
     ) {
         world.set_voxel(position, voxel);
         match voxel {
-            WorldVoxel::Solid(material) => {
-                self.edits.insert(position, material as u16);
-            }
-            WorldVoxel::Air => {
-                self.edits.insert(position, AIR);
-            }
-            WorldVoxel::Unset => {
-                self.edits.remove(&position);
-                self.mark_voxel(position);
-            }
+            WorldVoxel::Solid(material) => self.edit_voxel(position, Some(material)),
+            WorldVoxel::Air => self.edit_voxel(position, None),
+            WorldVoxel::Unset => self.mark_voxel(position),
         }
     }
 }
 
-pub(super) fn collect_chunk_changes(
-    mut runtime: ResMut<VoxelGiRuntime>,
-    mut explicit_dirty: ResMut<VoxelGiDirty>,
-    mut spawned: MessageReader<ChunkWillSpawn<PrototypeWorld>>,
-    mut updated: MessageReader<ChunkWillUpdate<PrototypeWorld>>,
-    mut despawned: MessageReader<ChunkWillDespawn<PrototypeWorld>>,
-    mut timings: ResMut<GiWorkTimings>,
+fn forward_chunk_events<C: VoxelWorldConfig>(
+    mut input: ResMut<VoxelGiInput>,
+    mut spawned: MessageReader<ChunkWillSpawn<C>>,
+    mut updated: MessageReader<ChunkWillUpdate<C>>,
+    mut despawned: MessageReader<ChunkWillDespawn<C>>,
 ) {
-    let _timing = timings.main_scope(super::telemetry::MainStage::Ingestion);
     for event in spawned.read() {
-        runtime.loaded_pages.insert(event.chunk_key);
-        runtime.removed_pages.remove(&event.chunk_key);
-        runtime.dirty_pages.insert(event.chunk_key);
+        input.page_loaded(event.chunk_key);
     }
     for event in updated.read() {
-        runtime.loaded_pages.insert(event.chunk_key);
-        runtime.removed_pages.remove(&event.chunk_key);
-        runtime.dirty_pages.insert(event.chunk_key);
-        if !explicit_dirty.complete_edit_tracking {
-            runtime.full_resample_pages.insert(event.chunk_key);
-            runtime.page_edits.0.remove(&event.chunk_key);
-        }
+        input.page_changed(event.chunk_key);
     }
     for event in despawned.read() {
-        runtime.loaded_pages.remove(&event.chunk_key);
-        runtime.dirty_pages.remove(&event.chunk_key);
-        runtime.full_resample_pages.remove(&event.chunk_key);
-        runtime.removed_pages.insert(event.chunk_key);
-    }
-    if explicit_dirty.all_loaded {
-        runtime.page_edits.0.clear();
-        let pages: Vec<_> = runtime.loaded_pages.iter().copied().collect();
-        runtime.dirty_pages.extend(pages.iter().copied());
-        runtime.full_resample_pages.extend(pages.iter().copied());
-        explicit_dirty.all_loaded = false;
-    }
-    for voxel in explicit_dirty.voxels.drain() {
-        let page = page_of(voxel);
-        runtime.page_edits.0.remove(&page);
-        if runtime.loaded_pages.contains(&page) {
-            runtime.dirty_pages.insert(page);
-            runtime.full_resample_pages.insert(page);
-            runtime.dirty_voxels.insert(voxel);
-            runtime.urgent_edit = true;
-        }
-    }
-    for (voxel, material) in explicit_dirty.edits.drain() {
-        let page = page_of(voxel);
-        runtime.page_edits.insert(voxel, material);
-        if runtime.loaded_pages.contains(&page) {
-            runtime.dirty_pages.insert(page);
-            runtime.dirty_voxels.insert(voxel);
-            runtime.urgent_edit = true;
-        }
+        input.page_unloaded(event.chunk_key);
     }
 }
 
-pub(super) fn start_scene_task(
-    mut runtime: ResMut<VoxelGiRuntime>,
-    generator: Res<PrototypeWorld>,
-    voxel_world: VoxelWorld<PrototypeWorld>,
-    input: Res<VoxelGiDirty>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
-    mut timings: ResMut<GiWorkTimings>,
-) {
-    let _timing = timings.main_scope(super::telemetry::MainStage::SceneDispatch);
-    let pending = !runtime.dirty_pages.is_empty()
-        || !runtime.removed_pages.is_empty()
-        || !runtime.receiver_dirty.is_empty()
-        || !runtime.receiver_retired.is_empty();
-    // No quiet period: a build in flight already batches whatever arrives
-    // meanwhile. Waiting for streaming or an edit to go quiet only kept
-    // freshly drawn terrain and edits without GI geometry (pending, black)
-    // for up to a second while their meshes were already visible.
-    if runtime.scene_task.is_some()
-        || (runtime.scene_publication.is_some() && !runtime.urgent_edit)
-        || !pending
-    {
+type ChunkPage = dyn Fn(IVec3, &dyn Fn(IVec3) -> WorldVoxel<u8>) -> Option<Vec<u16>> + Send + Sync;
+
+struct BvwSource<C: VoxelWorldConfig<MaterialIndex = u8>> {
+    /// A loaded chunk's page, with unstored voxels from the fallback.
+    chunk_page: Arc<ChunkPage>,
+    voxels: Arc<dyn Fn(IVec3) -> WorldVoxel<u8> + Send + Sync>,
+    config: C,
+}
+
+fn solid(voxel: WorldVoxel<u8>) -> Option<u8> {
+    match voxel {
+        WorldVoxel::Solid(material) => Some(material),
+        WorldVoxel::Air | WorldVoxel::Unset => None,
+    }
+}
+
+impl<C> VoxelSource for BvwSource<C>
+where
+    C: VoxelWorldConfig<MaterialIndex = u8> + GiFallbackVoxel + Send + Sync + 'static,
+{
+    fn sample_page(&self, page: IVec3, resample: bool) -> Vec<u16> {
+        let lookup = |position| match (self.voxels)(position) {
+            WorldVoxel::Unset => self.config.fallback_voxel(position),
+            voxel => voxel,
+        };
+        if !resample
+            && let Some(materials) =
+                (self.chunk_page)(page, &|position| self.config.fallback_voxel(position))
+        {
+            return materials;
+        }
+        dense_page(page, |position| solid(lookup(position)))
+    }
+}
+
+/// A new source snapshot whenever GI input changed (chunk events, edits).
+fn refresh_source<C>(
+    input: Res<VoxelGiInput>,
+    world: VoxelWorld<C>,
+    config: Res<C>,
+    mut source: ResMut<VoxelGiSource>,
+) where
+    C: VoxelWorldConfig<MaterialIndex = u8> + GiFallbackVoxel + Resource + Clone,
+{
+    if source.0.is_some() && !input.is_changed() && !config.is_changed() {
         return;
     }
-
-    let mut dirty_pages: Vec<_> = runtime.dirty_pages.drain().collect();
-    dirty_pages.sort_unstable_by_key(|p| (p.z, p.y, p.x));
-    let full_resample = std::mem::take(&mut runtime.full_resample_pages);
-    let edits: HashMap<_, _> = dirty_pages
-        .iter()
-        .filter_map(|page| {
-            runtime
-                .page_edits
-                .0
-                .get(page)
-                .map(|edits| (*page, Arc::clone(edits)))
-        })
-        .collect();
-    let exact_edits: Vec<_> = runtime.dirty_voxels.drain().collect();
-    let mut removed_pages: Vec<_> = runtime.removed_pages.drain().collect();
-    removed_pages.sort_unstable_by_key(|p| (p.z, p.y, p.x));
-    runtime.urgent_edit = false;
-
-    let mut affected_pages = affected_probe_pages(&dirty_pages, &removed_pages);
-    // Receiver radius: pages entering it are rescanned and pages leaving it
-    // publish no receivers, without a geometry change. Scanning is limited to
-    // allowed pages; every other affected page publishes none.
-    let mut receiver_pages = std::mem::take(&mut runtime.receiver_dirty);
-    receiver_pages.extend(runtime.receiver_retired.drain());
-    let receivers_changed = !receiver_pages.is_empty();
-    affected_pages.extend(receiver_pages);
-    let allowed = runtime.receiver_pages.clone();
-    let previous_scene = Arc::clone(&runtime.scene);
-    let retention_radius = super::retention::INFLUENCE_RADIUS;
-    let voxel_lookup = (!full_resample.is_empty() || !input.complete_edit_tracking)
-        .then(|| voxel_world.get_voxel_fn());
-    let chunk_lookup = voxel_world.get_chunk_data_fn();
-    let generator = generator.clone();
-    let materials = Arc::clone(&runtime.materials);
-    let focus_page = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
-        page_of(camera.translation().floor().as_ivec3())
+    let chunks = world.get_chunk_data_fn();
+    let chunk_page: Arc<ChunkPage> = Arc::new(move |page, fallback| {
+        let chunk = chunks(page)?;
+        if chunk.is_empty() {
+            return Some(dense_page(page, |_| None));
+        }
+        Some(dense_page(page, |position| {
+            solid(chunk.get_voxel_at_world_position(position).unwrap_or_else(|| fallback(position)))
+        }))
     });
-    runtime.scene_task = Some(AsyncComputeTaskPool::get().spawn(async move {
-        let _span = info_span!("gi_scene_build").entered();
-        let started = Instant::now();
-        let changed_pages: Vec<_> = dirty_pages
-            .into_iter()
-            .map(|page| {
-                let origin = page * PAGE_EDGE as i32;
-                let mut materials = if !full_resample.contains(&page) {
-                    if let Some(chunk) = chunk_lookup(page) {
-                        if chunk.is_empty() {
-                            vec![AIR; PAGE_SIZE.element_product() as usize]
-                        } else {
-                            sample_dense_page(origin, |position| {
-                                chunk
-                                    .get_voxel_at_world_position(position)
-                                    .unwrap_or_else(|| generator.generated_voxel(position))
-                            })
-                        }
-                    } else if let Some(lookup) = &voxel_lookup {
-                        sample_dense_page(origin, |position| match lookup(position) {
-                            WorldVoxel::Unset => generator.generated_voxel(position),
-                            voxel => voxel,
-                        })
-                    } else {
-                        sample_dense_page(origin, |position| generator.generated_voxel(position))
-                    }
-                } else {
-                    let lookup = voxel_lookup
-                        .as_ref()
-                        .expect("unknown updates capture a host lookup");
-                    sample_dense_page(origin, |position| match lookup(position) {
-                        WorldVoxel::Unset => generator.generated_voxel(position),
-                        voxel => voxel,
-                    })
-                };
-                if let Some(edits) = edits.get(&page) {
-                    apply_page_edits(&mut materials, origin, edits);
-                }
-                (page, materials)
-            })
-            .collect();
-        let scene = Arc::new(TransportScene::with_page_delta(
-            &previous_scene,
-            changed_pages,
-            &removed_pages,
-        ));
-        let changes = super::geometry::SceneChanges::with_materials(
-            &previous_scene,
-            &scene,
-            retention_radius,
-            Some(&materials),
-        );
-        let descriptors = if changes.changed || receivers_changed {
-            let scanned: HashSet<_> = match &allowed {
-                Some(allowed) => affected_pages.intersection(allowed).copied().collect(),
-                None => affected_pages.clone(),
-            };
-            scan_surface_probe_pages(&scene, &scanned, focus_page)
-        } else {
-            Vec::new()
-        };
-        // Publication units are spatial pages, prepared and prioritized on the
-        // worker. A turn can discover hundreds of thousands of receivers; never
-        // install that entire world-sized delta in a single game frame.
-        let mut by_page: HashMap<_, Vec<_>> = affected_pages
-            .into_iter()
-            .map(|page| (page, Vec::new()))
-            .collect();
-        for descriptor in descriptors {
-            by_page
-                .entry(page_of(descriptor.voxel))
-                .or_default()
-                .push(descriptor);
-        }
-        let mut pages: Vec<_> = by_page.into_iter().collect();
-        pages.sort_unstable_by_key(|(page, _)| {
-            (
-                !exact_edits.iter().any(|v| page_of(*v) == *page),
-                (page.as_i64vec3() - focus_page.as_i64vec3()).length_squared(),
-            )
-        });
-        SceneBuildResult {
-            scene,
-            changed: changes.changed,
-            geometry_change: changes.transport,
-            pages: pages.into(),
-            receivers_changed,
-            exact_edits,
-            build_time: started.elapsed(),
-        }
+    source.0 = Some(Arc::new(BvwSource {
+        chunk_page,
+        voxels: world.get_voxel_fn(),
+        config: config.clone(),
     }));
-}
-
-fn apply_page_edits(materials: &mut [u16], origin: IVec3, edits: &HashMap<IVec3, u16>) {
-    for (&position, &material) in edits {
-        let local = (position - origin).as_uvec3();
-        materials[naadf::linear_index(local, PAGE_SIZE)] = material;
-    }
-}
-
-fn sample_dense_page(origin: IVec3, sample: impl Fn(IVec3) -> WorldVoxel<u8>) -> Vec<u16> {
-    let mut materials = vec![AIR; PAGE_SIZE.element_product() as usize];
-    for z in 0..PAGE_EDGE {
-        for y in 0..PAGE_EDGE {
-            for x in 0..PAGE_EDGE {
-                let local = UVec3::new(x, y, z);
-                let position = origin + local.as_ivec3();
-                materials[naadf::linear_index(local, PAGE_SIZE)] = match sample(position) {
-                    WorldVoxel::Solid(material) => material as u16,
-                    WorldVoxel::Air | WorldVoxel::Unset => AIR,
-                };
-            }
-        }
-    }
-    materials
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::input::{VoxelGiInput, dense_page};
+    use super::super::pages::{apply_page_edits, ingest_input};
+    use super::super::telemetry::GiWorkTimings;
+    use super::super::world::{AIR, PAGE_SIZE};
+    use super::super::{VoxelGiRuntime, naadf, page_of};
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
 
+    #[derive(Resource, Clone, Default)]
+    struct TestWorld;
+    impl VoxelWorldConfig for TestWorld {
+        type MaterialIndex = u8;
+        type ChunkUserBundle = ();
+    }
+    impl GiFallbackVoxel for TestWorld {}
+
     fn app(tracked: bool) -> App {
         let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            VoxelWorldPlugin::<PrototypeWorld>::minimal(),
-        ))
-        .insert_resource(if tracked {
-            VoxelGiDirty::tracked()
-        } else {
-            VoxelGiDirty::default()
-        })
-        .init_resource::<VoxelGiRuntime>()
-        .init_resource::<GiWorkTimings>()
-        .add_systems(Update, collect_chunk_changes);
+        app.add_plugins((MinimalPlugins, VoxelWorldPlugin::<TestWorld>::minimal()))
+            .insert_resource(if tracked { VoxelGiInput::tracked() } else { VoxelGiInput::default() })
+            .init_resource::<VoxelGiRuntime>()
+            .init_resource::<GiWorkTimings>()
+            .add_systems(Update, (forward_chunk_events::<TestWorld>, ingest_input).chain());
         app.update();
         app
     }
@@ -392,63 +185,36 @@ mod tests {
         let mut app = app(true);
         let position = IVec3::new(-1, 31, 32);
         let page = page_of(position);
+        app.world_mut().resource_mut::<VoxelGiRuntime>().loaded_pages.insert(page);
         app.world_mut()
-            .resource_mut::<VoxelGiRuntime>()
-            .loaded_pages
-            .insert(page);
-        app.world_mut()
-            .run_system_once(
-                move |mut world: VoxelWorld<PrototypeWorld>, mut dirty: ResMut<VoxelGiDirty>| {
-                    dirty.set_voxel(&mut world, position, WorldVoxel::Solid(1));
-                    dirty.set_voxel(&mut world, position, WorldVoxel::Air);
-                    dirty.set_voxel(&mut world, position, WorldVoxel::Solid(2));
-                },
-            )
+            .run_system_once(move |mut world: VoxelWorld<TestWorld>, mut input: ResMut<VoxelGiInput>| {
+                input.set_voxel(&mut world, position, WorldVoxel::Solid(1));
+                input.set_voxel(&mut world, position, WorldVoxel::Air);
+                input.set_voxel(&mut world, position, WorldVoxel::Solid(2));
+            })
             .unwrap();
         app.update();
-        app.world_mut()
-            .write_message(ChunkWillUpdate::<PrototypeWorld>::new(
-                page,
-                Entity::PLACEHOLDER,
-            ));
+        app.world_mut().write_message(ChunkWillUpdate::<TestWorld>::new(page, Entity::PLACEHOLDER));
         app.update();
         let snapshot = app.world().resource::<VoxelGiRuntime>().page_edits.0[&page].clone();
         assert_eq!(snapshot[&position], 2);
-        assert!(
-            !app.world()
-                .resource::<VoxelGiRuntime>()
-                .full_resample_pages
-                .contains(&page)
-        );
+        assert!(!app.world().resource::<VoxelGiRuntime>().full_resample_pages.contains(&page));
         app.world_mut()
-            .run_system_once(
-                move |mut world: VoxelWorld<PrototypeWorld>, mut dirty: ResMut<VoxelGiDirty>| {
-                    assert_eq!(world.get_voxel(position), WorldVoxel::Solid(2));
-                    dirty.set_voxel(&mut world, position, WorldVoxel::Air);
-                },
-            )
+            .run_system_once(move |mut world: VoxelWorld<TestWorld>, mut input: ResMut<VoxelGiInput>| {
+                assert_eq!(world.get_voxel(position), WorldVoxel::Solid(2));
+                input.set_voxel(&mut world, position, WorldVoxel::Air);
+            })
             .unwrap();
-        app.world_mut()
-            .write_message(ChunkWillDespawn::<PrototypeWorld>::new(
-                page,
-                Entity::PLACEHOLDER,
-            ));
+        app.world_mut().write_message(ChunkWillDespawn::<TestWorld>::new(page, Entity::PLACEHOLDER));
         app.update();
         assert_eq!(snapshot[&position], 2, "worker view must not change");
-        app.world_mut()
-            .write_message(ChunkWillSpawn::<PrototypeWorld>::new(
-                page,
-                Entity::PLACEHOLDER,
-            ));
+        app.world_mut().write_message(ChunkWillSpawn::<TestWorld>::new(page, Entity::PLACEHOLDER));
         app.update();
         let runtime = app.world().resource::<VoxelGiRuntime>();
         assert!(runtime.dirty_pages.contains(&page));
-        let mut data = sample_dense_page(page * 32, |_| WorldVoxel::Solid(1));
+        let mut data = dense_page(page, |_| Some(1));
         apply_page_edits(&mut data, page * 32, &runtime.page_edits.0[&page]);
-        assert_eq!(
-            data[naadf::linear_index((position - page * 32).as_uvec3(), PAGE_SIZE)],
-            AIR
-        );
+        assert_eq!(data[naadf::linear_index((position - page * 32).as_uvec3(), PAGE_SIZE)], AIR);
         assert_eq!(data.iter().filter(|&&m| m == AIR).count(), 1);
     }
 
@@ -462,15 +228,10 @@ mod tests {
                 runtime.page_edits.insert(IVec3::ONE, 7);
             }
             if tracked {
-                app.world_mut()
-                    .resource_mut::<VoxelGiDirty>()
-                    .mark_voxel(IVec3::ONE);
+                app.world_mut().resource_mut::<VoxelGiInput>().mark_voxel(IVec3::ONE);
             } else {
                 app.world_mut()
-                    .write_message(ChunkWillUpdate::<PrototypeWorld>::new(
-                        IVec3::ZERO,
-                        Entity::PLACEHOLDER,
-                    ));
+                    .write_message(ChunkWillUpdate::<TestWorld>::new(IVec3::ZERO, Entity::PLACEHOLDER));
             }
             app.update();
             let runtime = app.world().resource::<VoxelGiRuntime>();
@@ -478,16 +239,4 @@ mod tests {
             assert!(!runtime.page_edits.0.contains_key(&IVec3::ZERO));
         }
     }
-
-    #[test]
-    fn unknown_notification_supersedes_an_exact_value_in_the_same_frame() {
-        let mut dirty = VoxelGiDirty::tracked();
-        dirty.edits.insert(IVec3::ONE, 7);
-        dirty.mark_voxel(IVec3::ONE);
-        assert!(dirty.edits.is_empty());
-        dirty.edits.insert(IVec3::ZERO, 4);
-        dirty.mark_all_loaded();
-        assert!(dirty.edits.is_empty());
-    }
-
 }

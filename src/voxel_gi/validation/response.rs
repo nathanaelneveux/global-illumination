@@ -1,6 +1,7 @@
 //! Focused visual fixture for cavity initialization and voxel-emitter removal.
 //! Opt-in only; never changes ordinary terrain, settings, or materials on disk.
 use super::*;
+use crate::voxel_gi::BvwVoxelEdits;
 
 const HOLE: IVec3 = IVec3::new(8, 38, -9);
 const EMITTER: IVec3 = IVec3::new(10, 41, -9);
@@ -19,7 +20,7 @@ impl ResponseRun {
         elapsed: f32,
         edits: bool,
         world: &mut VoxelWorld<PrototypeWorld>,
-        dirty: &mut VoxelGiDirty,
+        dirty: &mut VoxelGiInput,
         field: &VoxelEnergyField,
         materials: &mut VoxelMaterialTransportTable,
         commands: &mut Commands,

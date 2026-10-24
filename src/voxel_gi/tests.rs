@@ -905,7 +905,7 @@ fn cache_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
     world.spawn((Camera3d::default(), Camera { is_active: false, ..default() },
         GlobalTransform::from_translation(Vec3::new(304.0, 16.0, 16.0))));
     world
-        .run_system_once(bvw::update_receiver_residency)
+        .run_system_once(pages::update_receiver_residency)
         .unwrap();
     let runtime = world.resource::<VoxelGiRuntime>();
     let allowed = runtime.receiver_pages.as_ref().unwrap();
@@ -922,7 +922,7 @@ fn cache_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
             120.0, 16.0, 16.0,
         )));
     world
-        .run_system_once(bvw::update_receiver_residency)
+        .run_system_once(pages::update_receiver_residency)
         .unwrap();
     assert!(
         world
@@ -942,7 +942,7 @@ fn cache_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
         .receiver_retired
         .clear();
     world
-        .run_system_once(bvw::update_receiver_residency)
+        .run_system_once(pages::update_receiver_residency)
         .unwrap();
     let runtime = world.resource::<VoxelGiRuntime>();
     assert!(
@@ -966,7 +966,7 @@ fn cacheless_residency_retires_every_page_without_a_camera_or_geometry_changes()
         cache_radius: 0.0,
         ..default()
     });
-    world.run_system_once(bvw::update_receiver_residency).unwrap();
+    world.run_system_once(pages::update_receiver_residency).unwrap();
     let runtime = world.resource::<VoxelGiRuntime>();
     assert!(runtime.receiver_pages.as_ref().unwrap().is_empty());
     assert_eq!(runtime.receiver_retired, runtime.loaded_pages);

@@ -12,7 +12,7 @@ use crate::structures::{Bounds, StructureLayer, VoxelOp, showcase};
 use crate::terrain_meshing::build_chunk_mesh;
 use crate::terrain_noise::{BEDROCK_FLOOR_Y, MAX_SURFACE_Y, TerrainColumn, TerrainNoise};
 use crate::voxel_gi::{
-    MaterialTransport, VoxelGiDirty, VoxelMaterialTransportTable,
+    MaterialTransport, VoxelGiInput, VoxelMaterialTransportTable,
     render::{VoxelTransportAssets, material_template},
 };
 
@@ -205,6 +205,13 @@ impl PrototypeWorld {
     }
 }
 
+/// GI samples unmaterialized voxels from the same generator BVW uses.
+impl crate::voxel_gi::GiFallbackVoxel for PrototypeWorld {
+    fn fallback_voxel(&self, position: IVec3) -> WorldVoxel<MaterialIndex> {
+        self.generated_voxel(position)
+    }
+}
+
 impl VoxelWorldConfig for PrototypeWorld {
     type MaterialIndex = MaterialIndex;
     type ChunkUserBundle = ();
@@ -352,7 +359,7 @@ fn apply_live_prototype_config(
     prototype_configs: Res<Assets<PrototypeConfig>>,
     mut prototype_config_events: MessageReader<AssetEvent<PrototypeConfig>>,
     mut prototype_world: ResMut<PrototypeWorld>,
-    mut voxel_gi_dirty: ResMut<VoxelGiDirty>,
+    mut voxel_gi_dirty: ResMut<VoxelGiInput>,
     mut commands: Commands,
     chunks: Query<Entity, (With<Chunk<PrototypeWorld>>, Without<NeedsDespawn>)>,
 ) {

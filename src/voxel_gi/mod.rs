@@ -6,6 +6,8 @@
 //! simulation measurements. `bvw` is the current host adapter, `diagnostics` the
 //! optional demo tooling. This module is not yet a storage-independent crate.
 mod bvw;
+mod input;
+mod pages;
 mod diagnostics;
 mod dispatch;
 mod emission;
@@ -52,7 +54,9 @@ pub use sources::VoxelGiEnvironment;
 pub use spectrum::EnergyEmitter;
 pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 
-use bvw::{collect_chunk_changes, start_scene_task};
+use pages::{ingest_input, start_scene_task};
+pub use bvw::{BvwVoxelEdits, GiFallbackVoxel, VoxelGiBvwPlugin};
+pub use input::{VoxelGiInput, VoxelGiSource, VoxelSource, dense_page};
 pub(crate) use diagnostics::{VoxelGiDiagnosticsPlugin, configure_demo_launch};
 use dispatch::{apply_trace_task, start_trace_task};
 use publication::apply_scene_task;
@@ -80,7 +84,8 @@ pub struct VoxelGiSystems;
 impl Plugin for VoxelGiPlugin {
     fn build(&self, app: &mut App) {
         install_render_assets(app, self.voxel_texture.clone());
-        app.init_resource::<VoxelGiDirty>()
+        app.init_resource::<VoxelGiInput>()
+            .init_resource::<VoxelGiSource>()
             .init_resource::<VoxelGiRuntime>()
             .init_resource::<VoxelEnergyField>()
             .init_resource::<VoxelGiStats>()
@@ -91,8 +96,8 @@ impl Plugin for VoxelGiPlugin {
             .add_systems(
                 Update,
                 (
-                    collect_chunk_changes,
-                    bvw::update_receiver_residency,
+                    ingest_input,
+                    pages::update_receiver_residency,
                     synchronize_transport_sources,
                     synchronize_material_table,
                     settings::synchronize_transport_settings,
@@ -124,37 +129,6 @@ impl Plugin for VoxelGiPlugin {
         if let Some(context) = context {
             app.insert_resource(context);
         }
-    }
-}
-
-#[derive(Resource, Default)]
-pub struct VoxelGiDirty {
-    voxels: HashSet<IVec3>,
-    edits: bevy::platform::collections::HashMap<IVec3, u16>,
-    complete_edit_tracking: bool,
-    all_loaded: bool,
-}
-
-impl VoxelGiDirty {
-    /// Opt in only when every host write uses the adapter's `set_voxel`, or
-    /// explicitly marks an unknown edit with `mark_voxel`/`mark_all_loaded`.
-    /// BVW chunk-update messages alone cannot distinguish tracked/untracked writes.
-    pub fn tracked() -> Self {
-        Self {
-            complete_edit_tracking: true,
-            ..default()
-        }
-    }
-
-    pub fn mark_voxel(&mut self, voxel: IVec3) {
-        // A later untracked write supersedes an earlier exact value, including
-        // when both notifications arrive before the adapter drains this frame.
-        self.edits.remove(&voxel);
-        self.voxels.insert(voxel);
-    }
-    pub fn mark_all_loaded(&mut self) {
-        self.edits.clear();
-        self.all_loaded = true;
     }
 }
 
@@ -215,7 +189,7 @@ struct VoxelGiRuntime {
     loaded_pages: HashSet<IVec3>,
     dirty_pages: HashSet<IVec3>,
     full_resample_pages: HashSet<IVec3>,
-    page_edits: bvw::PageEdits,
+    page_edits: pages::PageEdits,
     dirty_voxels: HashSet<IVec3>,
     removed_pages: HashSet<IVec3>,
     urgent_edit: bool,

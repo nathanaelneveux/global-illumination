@@ -2,6 +2,7 @@
 //! Inspect fixed world-space receivers even while offscreen. Sources, normal
 //! terrain streaming and adaptive scheduling remain enabled and unchanged.
 use super::*;
+use crate::voxel_gi::BvwVoxelEdits;
 
 const OPENINGS: &[(f32, &str, &[IVec3])] = &[
     (90.0, "skylight", &[IVec3::new(0, 17, -18)]),
@@ -41,7 +42,7 @@ impl HouseRun {
         elapsed: f32,
         edits: bool,
         world: &mut VoxelWorld<PrototypeWorld>,
-        dirty: &mut VoxelGiDirty,
+        dirty: &mut VoxelGiInput,
         field: &VoxelEnergyField,
         runtime: &super::super::VoxelGiRuntime,
         commands: &mut Commands,

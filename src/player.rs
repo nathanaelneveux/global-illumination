@@ -10,7 +10,7 @@ use bevy_enhanced_input::prelude::*;
 use bevy_voxel_world::prelude::{VoxelWorld, VoxelWorldCamera, WorldVoxel};
 
 use crate::terrain::{PrototypeWorld, TERRAIN_VIEW_DISTANCE, TerrainMaterial};
-use crate::voxel_gi::VoxelGiDirty;
+use crate::voxel_gi::{BvwVoxelEdits, VoxelGiInput};
 use crate::world_environment::sky_color;
 
 const FOG_START: f32 = 96.0;
@@ -380,7 +380,7 @@ fn edit_voxels(
     cursor_options: Single<&CursorOptions, With<PrimaryWindow>>,
     camera: Single<&GlobalTransform, (With<PlayerCamera>, Without<Player>)>,
     mut voxel_world: VoxelWorld<PrototypeWorld>,
-    mut voxel_gi_dirty: ResMut<VoxelGiDirty>,
+    mut voxel_gi_dirty: ResMut<VoxelGiInput>,
 ) {
     let hud_requested = hud_requests.read().count() > 0;
     let hud_bomb = bomb_requests.read().count() > 0;
