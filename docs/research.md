@@ -85,6 +85,16 @@ builder/cache, not copied shader implementations.
   checks; weighted selection is followed by visibility testing. Direct sun still
   gets a separate visibility ray. This is much more than temporal blending.
 
+- **The world is GPU-resident and primary visibility is ray traced; no LOD.**
+  The README (same revision) supports worlds up to 16384³ and shows an
+  8256²-voxel world rendered "without using LOD". World generation runs on the
+  GPU, and `chunkCalc.fx`/`boundsCalc.fx` build voxel, block and chunk AADFs from
+  raw voxels there. `renderFirstHit.fx` traces primary rays into the same
+  structure, so every visible pixel is in it by construction. Here, host
+  meshes are rasterized, faces are looked up in a CPU-built, CPU-copied scene,
+  and a BVW LOD host has no full-resolution voxels for distant chunks at all
+  (see [asteroids integration](asteroids-integration.md)).
+
 **Implications for this engine:** exact uniform-field construction and topology-keyed
 top-level reuse are now measured wins in [the experiment record](history/experiments.md#naadf-construction-experiments).
 Retained-path reuse remains unimplemented. The current direction applies the
