@@ -1415,6 +1415,34 @@ pub(super) mod tests {
 
     #[test]
     #[ignore = "requires a native compute adapter"]
+    fn error_scopes_are_thread_local() {
+        // GI validates its pipelines inside error scopes on worker threads
+        // while Bevy's pipeline cache does the same on its own. Shared scope
+        // stacks (wgpu without "std") interleave them: a pop out of order
+        // panics ("Mismatched pop_error_scope call").
+        let device = native_tracer().context.device;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let outer = device.wgpu_device().push_error_scope(wgpu::ErrorFilter::Validation);
+        let worker = {
+            let (device, barrier) = (device.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                let held = device.wgpu_device().push_error_scope(wgpu::ErrorFilter::Validation);
+                barrier.wait(); // held while the other thread pushes and pops
+                barrier.wait();
+                assert!(bevy::tasks::block_on(held.pop()).is_none());
+            })
+        };
+        barrier.wait();
+        let inner = device.wgpu_device().push_error_scope(wgpu::ErrorFilter::Validation);
+        assert!(bevy::tasks::block_on(inner.pop()).is_none());
+        // With one shared stack the worker's scope is on top here: panic.
+        assert!(bevy::tasks::block_on(outer.pop()).is_none());
+        barrier.wait();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a native compute adapter"]
     fn static_dispatch_resources_reuse_and_rebind_after_growth() {
         let mut gpu = native_tracer();
         let (scene, mut sources, mut probes) = super::super::sky::contact_shadow_fixture();

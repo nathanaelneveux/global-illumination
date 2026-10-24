@@ -90,7 +90,9 @@ The default-gate run of that branch crashed once in a GI worker: wgpu
 "Mismatched pop_error_scope call: error scopes must be popped in reverse
 order" (tunnel profile). Unrelated to the shader change; GI pushes
 validation scopes when it creates pipelines on worker threads
-(`gpu.rs` quality variants). Not yet reproduced or fixed.
+(`gpu.rs` quality variants). Fixed 2026-10-24: wgpu without its `std`
+feature shares one scope stack across threads; the workspace enables it
+(`error_scopes_are_thread_local`).
 
 Raising the top-level field's size cap (it was off above 262,144 region
 cells) took the baseline from 24.5 to 23.2 ms p50 on its own (GI off:

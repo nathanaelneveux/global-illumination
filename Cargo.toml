@@ -19,7 +19,10 @@ bevy_voxel_world = "0.17"
 voxel_gi = { path = "crates/voxel_gi" }
 voxel_gi_bvw = { path = "crates/voxel_gi_bvw" }
 voxel_gi_debug = { path = "crates/voxel_gi_debug" }
-wgpu = { version = "29", default-features = false, features = ["wgsl"] }
+# "std" makes error scopes thread-local. Without it (Bevy disables wgpu's
+# defaults) every thread shares one scope stack, and GI pipeline validation on
+# a worker interleaved with Bevy's pipeline cache: "Mismatched pop_error_scope".
+wgpu = { version = "29", default-features = false, features = ["std", "wgsl"] }
 naga = { version = "29", features = ["wgsl-in"] }
 serde = { version = "1", features = ["derive"] }
 ron = "0.11"
