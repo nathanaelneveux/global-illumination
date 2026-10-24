@@ -21,10 +21,12 @@ pub struct VoxelGiSettings {
     /// Zero is the unfiltered corner display; one enables evidence-weighted
     /// coplanar filtering. Never changes transport data.
     pub spatial_reconstruction: f32,
-    /// View presentation evidence target: the filter gathers coplanar
-    /// neighbours until this much support. Not physical history or an
-    /// accuracy guarantee.
-    pub spatial_evidence_target: u32,
+    /// Relative standard error below which a face's own estimate is shown
+    /// without spatial help (noise there is under this fraction of its
+    /// brightness). Below it the filter pools coplanar neighbours with
+    /// MSE-optimal weights from their measured variance and bias. 0.031 is
+    /// the former 1024-sample target for a relative sigma of one.
+    pub spatial_noise_threshold: f32,
     /// GPU time per transport batch: its size, and how coarsely the GPU
     /// share below is spent.
     pub trace_budget_ms: f32,
@@ -127,7 +129,7 @@ impl Default for VoxelGiSettings {
             samples_per_dispatch: 16,
             measured_retention: 1.0,
             spatial_reconstruction: 1.0,
-            spatial_evidence_target: 1024,
+            spatial_noise_threshold: 0.031,
             trace_budget_ms: 4.0,
             gpu_time_share: 0.2,
             max_probes_per_dispatch: 8192,
@@ -159,7 +161,16 @@ impl VoxelGiSettings {
             .clamp(Duration::from_millis(10), Duration::from_millis(500));
         self.scene_publish_budget = self.scene_publish_budget.min(Duration::from_millis(8));
         self.view_receivers = self.view_receiver_limit();
+        self.spatial_noise_threshold = self.noise_threshold();
         self
+    }
+
+    pub(super) fn noise_threshold(&self) -> f32 {
+        if self.spatial_noise_threshold.is_finite() {
+            self.spatial_noise_threshold.clamp(0.005, 0.25)
+        } else {
+            0.031
+        }
     }
 
     pub(super) fn view_receiver_limit(&self) -> u32 {

@@ -28,7 +28,7 @@ struct ViewSettings {
     inner_radius: f32,
     view_first: bool,
     share: f32,
-    evidence: u32,
+    noise_threshold: f32,
     spatial: f32,
     response: f32,
     measured_retention: f32,
@@ -60,7 +60,7 @@ pub(crate) fn install(app: &mut App, output: Handle<ShaderBuffer>) {
         inner_radius: 0.0,
         view_first: false,
         share: 0.0,
-        evidence: 1024,
+        noise_threshold: 0.031,
         spatial: 1.0,
         response: 0.075,
         measured_retention: 1.0,
@@ -149,7 +149,7 @@ fn configure_views(
     view.inner_radius = 0.0;
     view.view_first = true;
     view.share = settings.gpu_share() * (1.0 - settings.world_budget_fraction());
-    view.evidence = settings.spatial_evidence_target;
+    view.noise_threshold = settings.noise_threshold();
     view.spatial = settings.spatial_reconstruction.clamp(0.0, 1.0);
     view.response = settings.display_response_seconds();
     view.measured_retention = settings.measured_retention();
@@ -568,7 +568,7 @@ fn render_view(
         grid: UVec4::new(grid.x, grid.y, count, hash_mask),
         history: UVec4::new(if camera.valid { count } else { 0 }, hash_mask, frame.0, u32::from(settings.view_first)),
         display: Vec4::new(
-            settings.evidence as f32,
+            settings.noise_threshold,
             settings.spatial,
             1.0 - (-renderer.frame_seconds.max(1.0 / 240.0) / settings.response).exp(),
             settings.measured_retention,

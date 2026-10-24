@@ -1,4 +1,4 @@
 (
     spatial_reconstruction: 1.0,
-    spatial_evidence_target: 2048,
+    spatial_noise_threshold: 0.031,
 )

@@ -105,9 +105,11 @@ checks the closed-form integral and reproduces the faulty visibility as a
 test-only legacy ablation; the ordinary CPU `grazing_emitter_connection...` test
 also checks real blockers. All three native checks are opt-in/ignored.
 
-The preferred resident display now uses uncapped 1024-evidence reconstruction
-after the frozen surface-cache qualification (2,048 remains the historical
-independent-path visual target, not a changed sampler gate).
+The view display pools spatially with MSE-optimal weights from measured
+variance and bias (`spatial_noise_threshold`, 2026-10-24); it replaced the
+uncapped 1024-evidence reconstruction chosen in the frozen surface-cache
+qualification (2,048 remains the historical independent-path visual target,
+not a changed sampler gate).
 Do not let that hide estimator regressions or inflate apparent sample efficiency:
 
 - **Sampler qualification:** compare raw frozen-scene prefixes at matched path

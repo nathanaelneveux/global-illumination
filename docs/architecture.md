@@ -816,7 +816,7 @@ never become measurements or moments.
 View presentation reconstructs each virtual unit-face corner from up to four
 coplanar view-owned faces, excluding disconnected diagonals, then bilinearly
 interpolates across the face. `spatial_reconstruction` and
-`spatial_evidence_target` configure the view tier's nonrecursive coplanar
+`spatial_noise_threshold` configure the view tier's nonrecursive coplanar
 filter (`config/gi-display-unfiltered.ron` turns it off). Direct sun uses the
 same four-corner visibility, from the view tier's corners or, for faces the
 reduced grid missed, traced directly.

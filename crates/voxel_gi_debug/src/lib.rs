@@ -74,7 +74,7 @@ enum Knob {
     ViewReceivers,
     CacheShare,
     Spatial,
-    Evidence,
+    NoiseThreshold,
     Response,
     Gain,
     Reach,
@@ -89,7 +89,7 @@ impl Knob {
             Self::ViewReceivers => "Visible receivers (k)",
             Self::CacheShare => "Cache share of budget",
             Self::Spatial => "Spatial smoothing",
-            Self::Evidence => "Smoothing target",
+            Self::NoiseThreshold => "Smoothing noise target (%)",
             Self::Response => "Temporal response (ms)",
             Self::Gain => "Indirect gain",
             Self::Reach => "Light reach (voxels)",
@@ -105,7 +105,7 @@ impl Knob {
             Self::ViewReceivers => (8.0, 128.0, 8.0, 0),
             Self::CacheShare => (0.1, 0.5, 0.05, 2),
             Self::Spatial => (0.0, 1.0, 0.05, 2),
-            Self::Evidence => (0.0, 4096.0, 128.0, 0),
+            Self::NoiseThreshold => (0.5, 25.0, 0.1, 1),
             Self::Response => (10.0, 500.0, 5.0, 0),
             Self::Gain => (0.0, 3.0, 0.05, 2),
             Self::Reach => (16.0, 768.0, 16.0, 0),
@@ -121,7 +121,7 @@ impl Knob {
             Self::ViewReceivers => settings.view_receivers as f32 / 1024.0,
             Self::CacheShare => settings.cache_share,
             Self::Spatial => settings.spatial_reconstruction,
-            Self::Evidence => settings.spatial_evidence_target as f32,
+            Self::NoiseThreshold => settings.spatial_noise_threshold * 100.0,
             Self::Response => settings.display_response.as_secs_f32() * 1000.0,
             Self::Gain => display.intensity,
             Self::Reach => model.reach,
@@ -136,7 +136,7 @@ impl Knob {
             Self::ViewReceivers => settings.view_receivers = (value * 1024.0) as u32,
             Self::CacheShare => settings.cache_share = value,
             Self::Spatial => settings.spatial_reconstruction = value,
-            Self::Evidence => settings.spatial_evidence_target = value as u32,
+            Self::NoiseThreshold => settings.spatial_noise_threshold = value * 0.01,
             Self::Response => settings.display_response = Duration::from_secs_f32(value * 0.001),
             Self::Gain => display.intensity = value,
             // Changing the light model restarts every measurement: stage it.
@@ -301,7 +301,7 @@ fn spawn_ui(mut commands: Commands, settings: Res<VoxelGiSettings>, open: Res<Pa
             knob_row(Knob::CacheShare, s),
             heading("Look"),
             knob_row(Knob::Spatial, s),
-            knob_row(Knob::Evidence, s),
+            knob_row(Knob::NoiseThreshold, s),
             knob_row(Knob::Response, s),
             knob_row(Knob::Gain, s),
             heading("Light model (Apply restarts measurements)"),
@@ -637,7 +637,7 @@ mod tests {
     fn knobs_and_toggles_write_back_what_they_read() {
         let knobs = [
             Knob::GpuShare, Knob::CacheRadius, Knob::ViewReceivers, Knob::CacheShare, Knob::Spatial,
-            Knob::Evidence, Knob::Response, Knob::Gain, Knob::Reach, Knob::Bounces,
+            Knob::NoiseThreshold, Knob::Response, Knob::Gain, Knob::Reach, Knob::Bounces,
         ];
         let (mut settings, mut display, mut panel) =
             (VoxelGiSettings::default(), VoxelGiDisplay::default(), PanelState::default());

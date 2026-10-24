@@ -264,6 +264,33 @@ fn retain_view_history(@builtin(global_invocation_id) id: vec3<u32>) {
 // Presentation only: raw measurements and unfinished rays above never read
 // this output. Only unique, coplanar owners contribute support; duplicate
 // screen pixels do not masquerade as additional independent evidence.
+// Spatial pooling is MSE-optimal rather than count-targeted: each estimate
+// is weighted by 1 / (variance of its mean + squared bias against this
+// face), the spatial counterpart of the temporal history rule c sigma^2/D^2.
+// A neighbour's bias is what its difference exceeds the two estimates'
+// noise by, so light gradients and other surfaces fall away by themselves,
+// and a lower-variance sampler needs less help without retuning. A face is
+// shown alone once its relative standard error is under the noise threshold
+// (`view.display.x`, `spatial_noise_threshold`).
+//
+// Per-sample variance from few samples is unreliable, and heavy-tailed light
+// (emitters) hides its variance until rare bright paths arrive: it is shrunk
+// toward relative sigma one, the Monte Carlo prior, with this many pseudo
+// samples (4 let cave faces stop borrowing too early; a hard floor at one
+// would stop a quieter sampler from ever needing less).
+const VARIANCE_PRIOR_SAMPLES: f32 = 64.0;
+const LUMINANCE = vec3(0.2126, 0.7152, 0.0722);
+
+fn mean_variance(estimate: ViewEstimate) -> f32 {
+    let n = max(estimate.mean.w, 1.0);
+    let mean = dot(estimate.mean.rgb, LUMINANCE);
+    let observed = max(dot(estimate.moment.rgb, LUMINANCE) - mean * mean, 0.0);
+    let prior = mean * mean;
+    let shrunk = (observed * max(n - 1.0, 0.0) + prior * VARIANCE_PRIOR_SAMPLES)
+        / (max(n - 1.0, 0.0) + VARIANCE_PRIOR_SAMPLES);
+    return shrunk / n;
+}
+
 @compute @workgroup_size(64)
 fn reconstruct_view(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= view.grid.z { return; }
@@ -274,10 +301,21 @@ fn reconstruct_view(@builtin(global_invocation_id) id: vec3<u32>) {
     let tiles = tile_shape();
     let tile = pool.slots[id.x].tile;
     let xy = vec2<i32>(i32(tile % tiles.x), i32(tile / tiles.x));
-    let radius = i32(clamp(ceil(sqrt(view.display.x / max(center.mean.w, 1.0) / 3.14159) * 0.5), 1.0, 4.0));
-    var sum = center.mean.rgb * center.mean.w;
-    var weight = center.mean.w;
-    if center.mean.w < view.display.x && view.display.y > 0.0 {
+    let center_luminance = dot(center.mean.rgb, LUMINANCE);
+    let center_variance = mean_variance(center);
+    let tolerance = view.display.x * center_luminance;
+    // How many times more evidence this face needs, as a gather radius.
+    let deficit = center_variance / max(tolerance * tolerance, 1e-12);
+    let radius = i32(clamp(ceil(sqrt(deficit / 3.14159) * 0.5), 1.0, 4.0));
+    let unsampled = center.mean.w <= 0.0;
+    var sum = vec3(0.0);
+    var weight = 0.0;
+    if !unsampled {
+        let w = 1.0 / max(center_variance, 1e-12);
+        sum = center.mean.rgb * w;
+        weight = w;
+    }
+    if (unsampled || center_variance > tolerance * tolerance) && view.display.y > 0.0 {
         for (var y = -radius; y <= radius; y++) {
             for (var x = -radius; x <= radius; x++) {
                 let q = xy + vec2(x, y);
@@ -292,16 +330,23 @@ fn reconstruct_view(@builtin(global_invocation_id) id: vec3<u32>) {
                     let delta = donor.surface - receiver.surface;
                     let d2 = dot(delta, delta);
                     if abs(dot(delta, normal)) > 0.05 || d2 > 256.0 || owner_of(donor) != candidate { continue; }
-                    let value = estimates[candidate].mean;
-                    let w = min(value.w, 1024.0) / (1.0 + d2 * 0.0625);
-                    sum += value.rgb * w;
+                    let value = estimates[candidate];
+                    if value.mean.w <= 0.0 { continue; }
+                    let variance = mean_variance(value);
+                    var bias2 = 0.0;
+                    if !unsampled {
+                        let difference = dot(value.mean.rgb, LUMINANCE) - center_luminance;
+                        bias2 = max(difference * difference - variance - center_variance, 0.0);
+                    }
+                    let w = 1.0 / max(variance + bias2, 1e-12);
+                    sum += value.mean.rgb * w;
                     weight += w;
                 }
             }
         }
     }
     if weight <= 0.0 { return; }
-    let desired = mix(sum / weight, center.mean.rgb, select(0.0, 1.0 - view.display.y, center.mean.w > 0.0));
+    let desired = mix(sum / weight, center.mean.rgb, select(0.0, 1.0 - view.display.y, !unsampled));
     let blend = select(1.0, view.display.z, center.shown.w > 0.0);
     estimates[id.x].shown = vec4(mix(center.shown.rgb, desired, blend), 1.0);
 }

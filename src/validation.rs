@@ -696,7 +696,7 @@ pub(super) fn run_validation(
             "cache_share": settings.cache_share,
             "samples_per_dispatch": settings.clone().normalized().samples_per_dispatch,
             "spatial_reconstruction": settings.spatial_reconstruction,
-            "spatial_evidence_target": settings.spatial_evidence_target,
+            "spatial_noise_threshold": settings.spatial_noise_threshold,
             "trace_budget_ms": settings.trace_budget_ms, "gpu_time_share": settings.gpu_time_share,
             "max_probes_per_dispatch": settings.max_probes_per_dispatch,
             "scene_publish_budget_ms": settings.scene_publish_budget.as_secs_f32() * 1000.0,

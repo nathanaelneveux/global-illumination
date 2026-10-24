@@ -109,7 +109,7 @@ target 256 1.36, 512 1.04, **1024 0.93**.
 1024 meets both calibrations: the raw count that passes FLIP, and
 smoothness inside the envelope at every prefix. It is the branch default.
 Its footprint is about 1/sqrt(2) of 2048's, so less detail is smeared.
-`config/gi-display-evidence-2048.ron` restores the old target.
+(Superseded 2026-10-24 by variance-weighted pooling with `spatial_noise_threshold`; the 2048 config was removed.)
 `tools/cache_flip_gate.py` reproduces the FLIP table.
 
 ## Rejected: 256-sample gameplay history

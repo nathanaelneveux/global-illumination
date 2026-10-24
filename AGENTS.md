@@ -30,5 +30,5 @@
 
 - Default to shared-corner direct sunlight and corner-reconstructed indirect GI, textures on, baked AO off. Keep the per-pixel sunlight comparison available.
 - Every visible face is view-owned, with a persistent two-way world cache of radius 64 (`cache_radius`, the performance knob; chosen 2026-10-23, `docs/history/option-comparison-2026-10-23.md`). The hybrid and all-near strategies are removed.
-- View presentation uses evidence target 1024 (chosen with the calibrated FLIP gate for the former resident display; not re-qualified for the view filter). Keep `config/gi-display-unfiltered.ron` as the explicit no-adaptive-spatial control.
+- View presentation pools spatially with MSE-optimal weights from measured variance and bias, `spatial_noise_threshold` 0.031 (2026-10-24; replaced the fixed 1024 evidence target, qualified on house/cave settling). Keep `config/gi-display-unfiltered.ron` as the explicit no-adaptive-spatial control.
 - Do not add debounce or promote corner-based indirect transport or other architectural experiments without relevant evidence and the user's intended scope.

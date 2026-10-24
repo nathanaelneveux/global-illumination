@@ -80,11 +80,13 @@ The game always uses resident GPU accumulation; the synchronous and CPU
 runtime backends were removed on this branch (last present at `c68a924`). The
 CPU tracer remains as a test oracle.
 
-The view tier's spatial RGB filter uses a **1024 evidence target**, the value
-chosen with the user-calibrated FLIP gate for the former resident display (see
-[surface cache](docs/surface-cache.md#display-evidence-target)); it has not been
-re-qualified for the view filter. `config/gi-display-evidence-2048.ron` raises
-it. It filters presentation only, never physical samples. Use
+The view tier's spatial RGB filter pools coplanar neighbours with MSE-optimal
+weights, 1 / (variance of the mean + squared bias), from each face's measured
+moments: the spatial counterpart of the temporal `c sigma^2 / D^2` history
+rule. A face is shown alone once its relative standard error is under
+`spatial_noise_threshold` (default 0.031, the former 1024-sample target for a
+relative sigma of one), so a lower-variance sampler needs less smoothing
+without retuning. It filters presentation only, never physical samples. Use
 `VOXEL_GI_SETTINGS=config/gi-display-unfiltered.ron` for the unfiltered
 control; sampler accuracy must be qualified separately from this reconstruction.
 

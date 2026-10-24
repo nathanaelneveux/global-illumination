@@ -131,10 +131,9 @@ mod tests {
     #[test]
     fn lab_configs_parse_and_keep_their_meaning() {
         let settings = VoxelGiSettings::default();
-        assert_eq!(config(include_str!("../config/gi-display-evidence-1024.ron")), settings);
+        assert_eq!(config(include_str!("../config/gi-display-spatial.ron")), settings);
         let control = config(include_str!("../config/gi-display-unfiltered.ron"));
         assert_eq!(control.spatial_reconstruction, 0.0);
-        assert_eq!(control.spatial_evidence_target, 0);
         assert_eq!(control.transport, settings.transport);
         let cacheless = config(include_str!("../config/gi-cacheless.ron"));
         assert_eq!(cacheless.cache_radius, 0.0);

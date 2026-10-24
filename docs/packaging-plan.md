@@ -145,7 +145,7 @@ Keep public, with RON presets for the Neo, the M4 and larger GPUs:
 - view receiver density (today the fixed 4-pixel grid capped by
   `MAX_PIXELS = 65536`; at 1440p cells are already ~7.5 px, so better GPUs can
   afford a finer grid);
-- `spatial_reconstruction` and `spatial_evidence_target`;
+- `spatial_reconstruction` and `spatial_noise_threshold`;
 - `transport.reach` and `transport.bounces`.
 
 Removed: `adaptive_updates`, `cpu_statistics`, `simulation_sampling_importance`.
