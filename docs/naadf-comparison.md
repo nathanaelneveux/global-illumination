@@ -35,7 +35,8 @@ by component.
 | LOD | None | BVW LOD meshes; LOD hosts have no full-resolution far voxels |
 
 What NAADF does not have: streaming, a host engine's meshes and voxel
-store, or a persistent world-space cache. Its world is fixed and complete.
+store, or a persistent world-space cache. Its world is complete and editable
+(its demo blasts large holes to show TAA response), but never streamed.
 
 ## What we are missing
 
