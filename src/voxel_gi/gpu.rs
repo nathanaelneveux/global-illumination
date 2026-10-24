@@ -432,15 +432,9 @@ impl GpuTracer {
         Self::with_kernel(context, true)
     }
 
+    /// `cooperative` selects the production multi-lane kernel; the serial
+    /// one-invocation-per-face kernel serves path-matched native tests.
     fn with_kernel(context: GpuTransportDevice, cooperative: bool) -> Result<Self, String> {
-        Self::with_shader(context, cooperative, &SHADER)
-    }
-
-    fn with_shader(
-        context: GpuTransportDevice,
-        cooperative: bool,
-        shader: &str,
-    ) -> Result<Self, String> {
         let (entry, faces_per_workgroup) = if cooperative {
             ("trace_faces_parallel", 16)
         } else {
@@ -455,7 +449,7 @@ impl GpuTracer {
             .push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
             label: Some("World-space voxel transport"),
-            source: ShaderSource::Wgsl(Cow::Borrowed(shader)),
+            source: ShaderSource::Wgsl(Cow::Borrowed(SHADER.as_str())),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("World-space voxel face tracing"),
@@ -500,7 +494,7 @@ impl GpuTracer {
             pipeline,
             faces_per_workgroup,
             // Legacy test/reference shaders keep their original fixed layout.
-            adaptive_lanes: cooperative && shader.contains("override PATH_LANES"),
+            adaptive_lanes: cooperative,
             #[cfg(test)]
             fixed_path_lanes: None,
             sky_pipeline,
