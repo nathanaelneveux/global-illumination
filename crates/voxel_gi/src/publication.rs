@@ -2,7 +2,7 @@
 //! publish atomically with retained measurements and display-only initialization.
 use super::{
     SceneBuildResult, VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats,
-    advance_transport_revision, enqueue_sky, enqueue_urgent, history, page_of,
+    advance_transport_revision, enqueue_urgent, history, page_of,
     probe_metrics,
     telemetry::GiWorkTimings,
     update_stats_from_counters,
@@ -353,13 +353,11 @@ fn finish_scene_page(
     added: Vec<IVec3>,
     publish_started: Instant,
 ) {
-    // Shadows near an edit are the sky cache's: it invalidates the corners
-    // the changed geometry can shade and requests them first (the band). The
-    // light itself is the GPU's: retention events wake the faces whose
-    // history it binds. Enumerating every probe within the relight radius
-    // here cost ~3 ms of main thread per edited page.
+    // The light is the GPU's: retention events (and the edit's shadow
+    // footprint) wake the faces whose history it binds. Enumerating every
+    // probe within the relight radius here cost ~3 ms of main thread per
+    // edited page.
     let relit_probes = invalidated.len();
-    enqueue_sky(runtime, added.iter().copied());
     // Existing probes whose revision changed here (material or exposed faces:
     // relit, history capped) are event work: only a CPU job carries the new
     // revision and its cap to the GPU, and until one does, the mirror rejects
@@ -372,7 +370,6 @@ fn finish_scene_page(
         .collect();
     relit.sort_unstable_by_key(|voxel| voxel.to_array());
     enqueue_urgent(runtime, relit);
-    runtime.sky_remaining = field.order.len();
     // New faces' coverage and the world sweep are the GPU's picks.
     result.exact_edits.clear();
     field.publishing_pages.remove(&page);
@@ -533,10 +530,8 @@ mod donor_tests {
             pointer
         );
         assert_eq!(field.probes[&voxel].display[2].indirect, Vec3::splat(2.0));
-        // Its shadows refresh through the sky cache's invalidated corners
-        // (the band), and whether its light is urgent is the GPU's decision
-        // (retention events): no CPU enumeration of the edit's neighbourhood.
-        assert!(!runtime.sky_queued.contains(&voxel));
+        // Whether its light is urgent is the GPU's decision (retention
+        // events): no CPU enumeration of the edit's neighbourhood.
         assert!(!runtime.urgent_queued.contains(&voxel));
         // The count stays for measured retention to cap.
         assert_eq!(field.probes[&voxel].stats().samples[2], 64);
@@ -620,8 +615,8 @@ mod donor_tests {
             let a = seed(p, false);
             let b = seed(p, true);
             assert_eq!(
-                (a.indirect, a.sky, a.confidence),
-                (b.indirect, b.sky, b.confidence)
+                (a.indirect, a.confidence),
+                (b.indirect, b.confidence)
             );
         }
         let mut times: [Vec<Duration>; 2] = default();

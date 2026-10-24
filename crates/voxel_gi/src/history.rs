@@ -14,8 +14,6 @@ pub(super) const DONOR_REACH: i32 = 3;
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct FaceDisplay {
     pub indirect: Vec3,
-    /// Packed RGBE corners, with zero reserved for unknown visibility.
-    pub sky: [u32; 4],
     /// Reconstruction weight, not a statistical confidence interval.
     pub confidence: f32,
 }
@@ -39,7 +37,6 @@ pub(crate) fn seed_face<'a>(
         return FaceDisplay::default();
     }
     let mut indirect = Vec3::ZERO;
-    let mut sky = [0; 4];
     let mut weight = 0.0;
     for offset in FACE_OFFSETS {
         let donor_voxel = voxel + offset;
@@ -54,18 +51,6 @@ pub(crate) fn seed_face<'a>(
             continue;
         };
         indirect += display.indirect * w;
-        // Direct visibility may be reused only at the SAME geometric corner.
-        // Face-center averaging would erase sub-voxel contact shadows.
-        for (corner, value) in sky.iter_mut().enumerate() {
-            for donor_corner in 0..4 {
-                if super::sky::corner_position(voxel, face, corner)
-                    == super::sky::corner_position(donor_voxel, face, donor_corner)
-                    && display.sky[donor_corner] != 0
-                {
-                    *value = display.sky[donor_corner];
-                }
-            }
-        }
         weight += w;
     }
     if weight == 0.0 {
@@ -84,8 +69,7 @@ pub(crate) fn seed_face<'a>(
                     continue;
                 };
                 // A face beside the receiver gets precedence over one across
-                // the next air cell. Never rotate/reuse direct-sun visibility:
-                // that is directional, unlike this approximate diffuse prior.
+                // the next air cell.
                 let w = w * if offset == IVec3::ZERO { 1.0 } else { 0.5 };
                 indirect += display.indirect * w;
                 weight += w;
@@ -97,7 +81,6 @@ pub(crate) fn seed_face<'a>(
     }
     FaceDisplay {
         indirect: indirect / weight,
-        sky,
         confidence: 0.125,
     }
 }
@@ -134,14 +117,11 @@ fn measured_display(
 
 impl SurfaceProbe {
     /// Run only when a validated worker result is merged. Use current display
-    /// history, never a potentially old worker copy. Analytic sun visibility is
-    /// deterministic, so it responds immediately rather than being denoised.
+    /// history, never a potentially old worker copy.
     #[cfg(test)]
     pub(crate) fn resolve_display(&mut self, previous: &Self, now: Instant, response_seconds: f32) {
-        let incoming_sky = self.display.map(|face| face.sky);
         self.display = previous.display;
-        for (face, sky) in incoming_sky.into_iter().enumerate() {
-            self.display[face].sky = sky;
+        for face in 0..6 {
             if self.face_mask & self.trace_mask & (1 << face) == 0 || self.stats().samples[face] == 0 {
                 continue;
             }
@@ -249,7 +229,6 @@ mod tests {
         probe.updated_at = Some(now);
         probe.display[2] = FaceDisplay {
             indirect: Vec3::splat(energy),
-            sky: [super::super::sky::KNOWN | u32::from(energy > 0.0); 4],
             confidence: 0.9,
         };
         probe
@@ -332,13 +311,11 @@ mod tests {
         let mut probe = measured(voxel, 4.0, now);
         let sequence = probe.stats().sequence;
         let weight = probe.display[2].confidence;
-        let sky = probe.display[2].sky;
         probe.restart_measurements();
         assert_eq!(
             probe.display[2].confidence, weight,
             "restarting measurements cannot change retained corner reconstruction weights"
         );
-        assert_eq!(probe.display[2].sky, sky);
         assert_eq!(probe.display[2].indirect, Vec3::splat(4.0));
         assert_eq!(probe.stats().samples, [0; 6]);
         assert_eq!(probe.stats().radiance, [Vec3::ZERO; 6]);
@@ -347,40 +324,17 @@ mod tests {
     }
 
     #[test]
-    fn sky_seeding_reuses_only_identical_geometric_corners() {
-        let now = Instant::now();
-        let voxel = IVec3::splat(8);
-        let neighbor = voxel + IVec3::X;
-        let scene = scene_with(&[voxel, neighbor]);
-        let mut donor = measured(neighbor, 2.0, now);
-        donor.display[2].sky = [1, 0, 1, 0];
-        let seed = seed_face(&scene, voxel, 2, 0, now, |v| {
-            (v == neighbor).then_some(&donor)
-        });
-        assert_eq!(
-            seed.sky,
-            [0, 1, 0, 1],
-            "shared shadows stay black, other corners stay unknown"
-        );
-    }
-
-    #[test]
-    fn placement_inherits_covered_face_without_copying_its_sun_or_measurements() {
+    fn placement_inherits_covered_face_without_copying_its_measurements() {
         let now = Instant::now();
         let floor = IVec3::splat(8);
         let placed = floor + IVec3::Y;
         let mut donor = measured(floor, 2.0, now);
-        donor.display[2].sky = [super::super::sky::KNOWN | 1; 4];
         let scene = scene_with(&[floor, placed]);
         let prior = seed_face(&scene, placed, 2, 0, now, |v| {
             (v == floor).then_some(&donor)
         });
         assert_eq!(prior.indirect, Vec3::splat(2.0));
         assert_eq!(prior.confidence, 0.125);
-        assert_eq!(
-            prior.sky, [0; 4],
-            "translated corners are not the same sun ray"
-        );
         let mut receiver = SurfaceProbe::new(placed, 4);
         receiver.display[2] = prior;
         assert_eq!(receiver.stats().samples[2], 0);
@@ -418,7 +372,6 @@ mod tests {
             });
             assert_eq!(seed.indirect, Vec3::splat(2.0), "face {face}");
             assert_eq!(seed.confidence, 0.125);
-            assert_eq!(seed.sky, [0; 4], "no invented sky in the cavity");
         }
     }
 

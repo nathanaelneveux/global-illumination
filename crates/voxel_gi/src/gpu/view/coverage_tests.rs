@@ -40,7 +40,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
     let materials = VoxelMaterialTransportTable::default();
     let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
     gpu.submit_compact(scene, &TransportSources::default(), &materials,
-        &mut TraceWork::default(), 0, &emitters, true).unwrap();
+        &mut TraceWork::default(), 0, &emitters).unwrap();
     let scene = gpu.view_scene().unwrap();
     let device = &gpu.context.device;
     let queue = &gpu.context.queue;
@@ -56,7 +56,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
         ("prepare_receiver_pool", [&[0, 1, 2, 3, 6], &[], &[0, 1, 5, 6, 7, 8, 9, 10, 17, 18]]),
         ("discover_receivers", [&[0, 1, 2, 3, 6], &[], &[0, 5, 7, 8, 9, 17]]),
         ("index_receivers", [&[6], &[], &[0, 7, 10]]),
-        ("reproject_paths", [&[0, 1, 2, 3, 5, 6, 7], &[0], &[0, 1, 2, 3, 4, 5, 6, 7, 10]]),
+        ("reproject_paths", [&[0, 1, 2, 3, 4, 5, 6, 7], &[0], &[0, 1, 2, 3, 4, 5, 6, 7, 10]]),
     ];
     let kernels = specs.map(|(name, bindings)| Kernel {
         pipeline: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -141,6 +141,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                             let resource = match (group, binding) {
                                 (0, 0) => camera.params.buffer.as_entire_binding(),
                                 (0, 1..=3) => scene.buffers[binding as usize - 1].as_entire_binding(),
+                                (0, 4) => scene.buffers[3].as_entire_binding(),
                                 (0, 5) => scene.buffers[4].as_entire_binding(),
                                 (0, 6) => current.receivers.buffer.as_entire_binding(),
                                 (0, 7) => current.paths.buffer.as_entire_binding(),

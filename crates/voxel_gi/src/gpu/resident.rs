@@ -95,6 +95,15 @@ pub(super) struct ResidentAccumulator {
     finish_edits: ComputePipeline,
     measure_bindings: Option<CachedBindings<7>>,
     finish_bindings: Option<CachedBindings<4>>,
+    /// Shadow footprints of this batch's changes (`plan_footprints`), traced
+    /// by the transport module before preparation applies the events.
+    footprint_bytes: Vec<u8>,
+    /// Tests of the CPU-planned events alone turn footprints off.
+    pub(super) trace_footprints: bool,
+    footprint_threads: u32,
+    footprint_count: u32,
+    pub(super) footprint_tasks: UploadBuffer,
+    pub(super) footprint_sums: UploadBuffer,
     /// Luminance (albedo, emission) per material id, for edit measurement.
     material_light: UploadBuffer,
     material_light_values: Vec<[f32; 2]>,
@@ -233,6 +242,12 @@ impl ResidentAccumulator {
             finish_edits,
             measure_bindings: None,
             finish_bindings: None,
+            footprint_bytes: Vec::new(),
+            trace_footprints: true,
+            footprint_threads: 0,
+            footprint_count: 0,
+            footprint_tasks: UploadBuffer::new(device, "GI change footprints", storage),
+            footprint_sums: UploadBuffer::new(device, "GI change footprint sums", storage),
             material_light: UploadBuffer::new(device, "GI material light", storage),
             material_light_values: Vec::new(),
             events_buffer: UploadBuffer::new(
@@ -562,7 +577,25 @@ impl ResidentAccumulator {
         self.seeds.upload(device, queue, &self.seed_bytes)?;
         self.events.append(&mut work.retention_events);
         self.publish_view_changes = work.view_transport;
+        let footprints = if self.trace_footprints {
+            plan_footprints(&mut self.events)
+        } else {
+            Vec::new()
+        };
         let encoded = encode_events(&mut self.event_bytes, &mut self.measure_bytes, &self.events);
+        self.footprint_count = footprints.len() as u32;
+        self.footprint_threads =
+            encode_footprints(&mut self.footprint_bytes, &footprints, &self.events);
+        if self.footprint_count > 0 {
+            self.footprint_tasks.upload(device, queue, &self.footprint_bytes)?;
+            let mut sums = Vec::with_capacity(footprints.len() * 32);
+            for _ in &footprints {
+                for word in [u32::MAX, u32::MAX, u32::MAX, 0, 0, 0, 0, 0] {
+                    sums.extend_from_slice(&word.to_le_bytes());
+                }
+            }
+            self.footprint_sums.upload(device, queue, &sums)?;
+        }
         if self.high_water == 0 {
             // With no world receivers there is no outgoing-light measurement.
             // Zero observations are not evidence of a dark edit: advertise
@@ -833,6 +866,15 @@ impl ResidentAccumulator {
 
     /// Ordinary updates remain queue-ordered, in-place transactions. Only
     /// allocation changes freeze an old pair; this is not a per-batch snapshot.
+    /// Threads and tasks of the prepared batch's shadow footprints.
+    pub(super) fn footprints(&self) -> Option<(u32, u32)> {
+        (self.footprint_count > 0).then_some((self.footprint_threads, self.footprint_count))
+    }
+
+    pub(super) fn events_buffer(&self) -> &UploadBuffer {
+        &self.events_buffer
+    }
+
     pub(super) fn cache_buffers(&self) -> (&UploadBuffer, &UploadBuffer) {
         (&self.state, &self.face_index_buffer)
     }
@@ -1135,6 +1177,93 @@ impl ResidentAccumulator {
     }
 }
 
+/// Changed boxes per batch whose shadows the GPU traces; the rest keep only
+/// their own retention (loads past it, typically far streaming).
+const MAX_FOOTPRINTS: usize = 64;
+/// Tubes per footprint side: one per voxel of the box's diagonal, at most this.
+const FOOTPRINT_GRID: f32 = 64.0;
+
+/// Reserve one Light event per changed box (edits first, then unknown
+/// changes and loads), with an empty bound the GPU fills with where the
+/// box's shadow lands (`trace_footprints`). Returns each box and its event.
+fn plan_footprints(
+    events: &mut Vec<super::super::retention::RetentionEvent>,
+) -> Vec<(super::super::geometry::Bounds, usize)> {
+    use super::super::geometry::{Bounds, ChangeKind, ChangeWeight};
+    let mut boxes = Vec::new();
+    for edits in [true, false] {
+        for event in events.iter().filter(|event| event.source_cap.is_none()) {
+            for (bounds, weight) in event.bounds.iter().zip(&event.weights) {
+                let wanted = match weight.kind {
+                    ChangeKind::Edit { .. } => edits,
+                    ChangeKind::Unknown | ChangeKind::Load { .. } => !edits,
+                    ChangeKind::Unload | ChangeKind::Light => false,
+                };
+                if wanted && boxes.len() < MAX_FOOTPRINTS {
+                    boxes.push(*bounds);
+                }
+            }
+        }
+    }
+    let empty = Bounds {
+        min: IVec3::splat(1 << 29),
+        max: IVec3::splat(-(1 << 29)),
+    };
+    boxes
+        .into_iter()
+        .map(|bounds| {
+            events.push(super::super::retention::RetentionEvent {
+                bounds: vec![empty],
+                weights: vec![ChangeWeight { kind: ChangeKind::Light, flux: 0.0 }],
+                union: empty,
+                urgent: vec![false],
+                source_cap: None,
+                spheres: Vec::new(),
+            });
+            (bounds, events.len() - 1)
+        })
+        .collect()
+}
+
+/// Footprint tasks for `trace_footprints`: a count, then per task `(min,
+/// header record) (max, bound record) (first thread, grid, 0, 0)`, records
+/// as `encode_events` lays them out. Returns the thread count.
+fn encode_footprints(
+    bytes: &mut Vec<u8>,
+    footprints: &[(super::super::geometry::Bounds, usize)],
+    events: &[super::super::retention::RetentionEvent],
+) -> u32 {
+    bytes.clear();
+    // Bounds follow every header, each event's after the previous event's.
+    let mut first = 0u32;
+    let mut first_bound = Vec::with_capacity(events.len());
+    for event in events {
+        first_bound.push(first);
+        first += if event.source_cap.is_some() {
+            event.spheres.len() as u32
+        } else {
+            event.bounds.len() as u32
+        };
+    }
+    let records = events.len() as u32 * 3;
+    let push = |bytes: &mut Vec<u8>, words: [i32; 4]| {
+        for word in words {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+    };
+    push(bytes, [footprints.len() as i32, 0, 0, 0]);
+    let mut threads = 0u32;
+    for &(bounds, event) in footprints {
+        let (min, max) = (bounds.min, bounds.max);
+        let grid = ((max - min + IVec3::ONE).as_vec3().length().ceil()).clamp(1.0, FOOTPRINT_GRID) as u32;
+        push(bytes, [min.x, min.y, min.z, event as i32 * 3]);
+        push(bytes, [max.x, max.y, max.z, (records + first_bound[event] * 2) as i32]);
+        push(bytes, [threads as i32, grid as i32, 0, 0]);
+        threads += grid * grid;
+    }
+    threads
+}
+
 /// Event headers `(union.min, flags) (union.max, 0) (cap, 0, first bound,
 /// bounds)`, then bounds `(min, flux) (max, kind | top << 3)`. Kinds: 0
 /// unknown, 1 unload, 2 load, 3 edit, 4 light. Tops saturate to 28 bits (an
@@ -1390,7 +1519,7 @@ mod tests {
         sources.environment = Vec3::new(0.3, 0.1, 0.8);
         let materials = VoxelMaterialTransportTable::default();
         let emitters = Arc::new(EmissionDistribution::default());
-        let mut work = TraceWork::from_probes(&probes[..8], false);
+        let mut work = TraceWork::from_probes(&probes[..8]);
         let trace = |gpu: &mut GpuTracer, work: &mut TraceWork| {
             gpu.trace_compact(
                 Arc::clone(&scene),
@@ -1399,7 +1528,6 @@ mod tests {
                 work,
                 16,
                 &emitters,
-                false,
             )
             .unwrap();
             let words = read_state(gpu);
@@ -1451,7 +1579,7 @@ mod tests {
         let (scene, sources, probes) = super::super::tests::open_floor_fixture();
         let materials = VoxelMaterialTransportTable::default();
         let emitters = Arc::new(EmissionDistribution::default());
-        let mut work = TraceWork::from_probes(&probes[264..265], false);
+        let mut work = TraceWork::from_probes(&probes[264..265]);
         work.faces[0].samples = 4096;
         work.faces[0].radiance = Vec3::splat(0.4);
         work.faces[0].second_moment = Vec3::splat(0.17);
@@ -1473,7 +1601,6 @@ mod tests {
             &mut work,
             16,
             &emitters,
-            false,
         )
         .unwrap();
         let retained = work.faces[0].samples;
@@ -1483,7 +1610,7 @@ mod tests {
         work.retention_events.clear();
         work.faces[0].rollback = true;
         work.probes[0].revision += 1;
-        gpu.trace_compact(scene, &sources, &materials, &mut work, 16, &emitters, false)
+        gpu.trace_compact(scene, &sources, &materials, &mut work, 16, &emitters)
             .unwrap();
         assert!(
             work.faces[0].samples <= retained + 16,
@@ -1500,9 +1627,9 @@ mod tests {
         let (scene, sources, probes) = super::super::tests::open_floor_fixture();
         let materials = VoxelMaterialTransportTable::default();
         let emitters = Arc::new(EmissionDistribution::default());
-        let mut work = TraceWork::from_probes(&probes[..1], false);
+        let mut work = TraceWork::from_probes(&probes[..1]);
         work.measured_retention = 1.0;
-        gpu.trace_compact(scene, &sources, &materials, &mut work, 16, &emitters, false)
+        gpu.trace_compact(scene, &sources, &materials, &mut work, 16, &emitters)
             .unwrap();
         let slot =
             gpu.resident.as_ref().unwrap().slots[&(work.faces[0].voxel, work.faces[0].face)].index;
@@ -1559,9 +1686,6 @@ mod tests {
         let materials = VoxelMaterialTransportTable::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let run = |gpu: &mut GpuTracer, work: &mut TraceWork| {
-            for job in &mut work.probes {
-                job.sky_requested = false;
-            }
             work.picks = 64;
             work.mirror_budget = 1024;
             gpu.trace_compact(
@@ -1571,7 +1695,6 @@ mod tests {
                 work,
                 16,
                 &emitters,
-                false,
             )
             .unwrap();
         };
@@ -1585,7 +1708,7 @@ mod tests {
         let probe = probes.iter().find(|p| p.voxel == voxel).unwrap();
         // Same classification quarter: the picked face is mirror-stale while
         // a CPU job traces it.
-        let mut next = TraceWork::from_probes(std::slice::from_ref(probe), false);
+        let mut next = TraceWork::from_probes(std::slice::from_ref(probe));
         next.batch_id = 5;
         run(&mut gpu, &mut next);
         let (mirror, _) = next
@@ -1620,7 +1743,7 @@ mod tests {
         let mut probe = SurfaceProbe::new_slim(probes[0].voxel, probes[0].face_mask);
         let mut settled = false;
         for batch in 1..=16 {
-            let mut work = TraceWork::from_probes(std::slice::from_ref(&probe), false);
+            let mut work = TraceWork::from_probes(std::slice::from_ref(&probe));
             work.stable_error = 0.12;
             work.stable_samples = 32;
             work.batch_id = batch;
@@ -1631,7 +1754,6 @@ mod tests {
                 &mut work,
                 64,
                 &emitters,
-                false,
             )
             .unwrap();
             assert_eq!(
@@ -1660,12 +1782,9 @@ mod tests {
         let (scene, sources, probes) = super::super::tests::open_floor_fixture();
         let materials = VoxelMaterialTransportTable::default();
         let emitters = Arc::new(EmissionDistribution::default());
-        let mut pending = TraceWork::from_probes(&probes[..1], false);
+        let mut pending = TraceWork::from_probes(&probes[..1]);
         pending.batch_id = 1;
         pending.picks = 1;
-        for job in &mut pending.probes {
-            job.sky_requested = false;
-        }
         for probe in &probes {
             pending.ensure_slots(probe);
         }
@@ -1678,7 +1797,6 @@ mod tests {
                 &mut pending,
                 16,
                 &emitters,
-                false,
             )
             .unwrap()
             .unwrap();
@@ -1689,7 +1807,7 @@ mod tests {
         next.batch_id = 4;
         next.picks = 1024;
         next.mirror_budget = 1024;
-        gpu.trace_compact(scene, &sources, &materials, &mut next, 16, &emitters, false)
+        gpu.trace_compact(scene, &sources, &materials, &mut next, 16, &emitters)
             .unwrap();
         assert!(!next.pick_tags.is_empty());
         assert!(
@@ -1714,7 +1832,7 @@ mod tests {
             }
         }
         // Trace one probe; ensure eight others (and one face that does not exist).
-        let mut work = TraceWork::from_probes(&probes[..1], false);
+        let mut work = TraceWork::from_probes(&probes[..1]);
         // A model reset has advanced the source revision past the untraced
         // probes' own (0): bindings carry the batch's, or publication would
         // reject them and the faces would never get an address.
@@ -1738,7 +1856,6 @@ mod tests {
             &mut work,
             16,
             &emitters,
-            false,
         )
         .unwrap();
         let resident = gpu.resident.as_ref().unwrap();
@@ -1821,17 +1938,15 @@ mod tests {
         ] {
             let mut gpu = super::super::tests::native_tracer();
             gpu.enable_resident().unwrap();
+            gpu.without_footprints();
             let (scene, sources, probes) = super::super::tests::open_floor_fixture();
             let materials = VoxelMaterialTransportTable::default();
             let emitters = Arc::new(EmissionDistribution::default());
             let trace =
                 |gpu: &mut GpuTracer, probes: &[SurfaceProbe], events: Vec<RetentionEvent>| {
-                    let mut work = TraceWork::from_probes(probes, false);
+                    let mut work = TraceWork::from_probes(probes);
                     work.measured_retention = measured;
                     work.retention_events = events;
-                    for job in &mut work.probes {
-                        job.sky_requested = false;
-                    }
                     gpu.trace_compact(
                         Arc::clone(&scene),
                         &sources,
@@ -1839,7 +1954,6 @@ mod tests {
                         &mut work,
                         16,
                         &emitters,
-                        false,
                     )
                     .unwrap();
                 };
@@ -1910,12 +2024,9 @@ mod tests {
         let mut run =
             |gpu: &mut GpuTracer, cpu: &[SurfaceProbe], ensure: &[SurfaceProbe], picks: u32| {
                 batch += 1;
-                let mut work = TraceWork::from_probes(cpu, false);
+                let mut work = TraceWork::from_probes(cpu);
                 for probe in ensure {
                     work.ensure_slots(probe);
-                }
-                for job in &mut work.probes {
-                    job.sky_requested = false;
                 }
                 work.picks = picks;
                 work.focus = focus;
@@ -1931,7 +2042,6 @@ mod tests {
                     &mut work,
                     16,
                     &emitters,
-                    false,
                 )
                 .unwrap();
                 work.picked
@@ -2038,6 +2148,72 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "native GPU change footprints: a skylight's sunlight lands far below it"]
+    fn skylight_footprint_lands_on_the_floor_below_and_a_covered_one_nowhere() {
+        use crate::geometry::{Bounds, ChangeKind, ChangeWeight};
+        use crate::naadf::{linear_index, volume_len};
+        use crate::sources::DirectionalTransportLight;
+        use crate::world::{AIR, PAGE_SIZE};
+        let materials = VoxelMaterialTransportTable::default();
+        let emitters = Arc::new(EmissionDistribution::default());
+        let sources = TransportSources {
+            directional: vec![DirectionalTransportLight {
+                direction: Vec3::Y,
+                radiance: Vec3::ONE,
+                custom_visible: Vec3::ZERO,
+            }],
+            ..default()
+        };
+        let hole = Bounds { min: IVec3::new(8, 20, 8), max: IVec3::new(10, 20, 10) };
+        // A floor 16 voxels under a ceiling whose hole is the edit, with or
+        // without a roof that shadows the hole anyway.
+        let footprint = |roof: bool| {
+            let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+            for z in 0..32 {
+                for x in 0..32 {
+                    page[linear_index(UVec3::new(x, 4, z), PAGE_SIZE)] = 2;
+                    let p = IVec3::new(x as i32, 20, z as i32);
+                    if p.cmplt(hole.min).any() || p.cmpgt(hole.max).any() {
+                        page[linear_index(UVec3::new(x, 20, z), PAGE_SIZE)] = 2;
+                    }
+                    if roof {
+                        page[linear_index(UVec3::new(x, 28, z), PAGE_SIZE)] = 2;
+                    }
+                }
+            }
+            let scene = Arc::new(TransportScene::with_page_delta(
+                &TransportScene::default(),
+                vec![(IVec3::ZERO, page)],
+                &[],
+            ));
+            let probes: Vec<_> = (0..32)
+                .flat_map(|z| (0..32).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
+                .collect();
+            let mut gpu = super::super::tests::native_tracer();
+            gpu.enable_resident().unwrap();
+            let mut work = TraceWork::from_probes(&probes);
+            work.retention_events = vec![crate::retention::RetentionEvent::single(hole, ChangeWeight {
+                kind: ChangeKind::Edit { voxels: 9, measure: false },
+                flux: 0.0,
+            })];
+            gpu.trace_compact(scene, &sources, &materials, &mut work, 4, &emitters)
+                .unwrap();
+            // Two events (the edit, its footprint): six header records, the
+            // edit's bound, then the footprint's.
+            let words = read_words(&gpu, &gpu.resident.as_ref().unwrap().events_buffer.buffer, 10 * 16);
+            let ints = |r: usize| IVec3::new(words[r * 4] as i32, words[r * 4 + 1] as i32, words[r * 4 + 2] as i32);
+            (ints(8), ints(9), f32::from_bits(words[8 * 4 + 3]), words[9 * 4 + 3] & 7)
+        };
+        let (min, max, flux, kind) = footprint(false);
+        assert_eq!((min, max, kind), (IVec3::new(8, 4, 8), IVec3::new(10, 4, 10), 4));
+        // Nine voxels of white sunlight reflected by the floor's albedo.
+        let albedo = materials.get(2).diffuse.dot(Vec3::new(0.2126, 0.7152, 0.0722));
+        assert!((flux - 9.0 * albedo).abs() <= 0.25 * 9.0 * albedo, "{flux} vs {}", 9.0 * albedo);
+        let (min, _, _, _) = footprint(true);
+        assert_eq!(min, IVec3::splat(1 << 29), "a hole under a roof changes no sunlight");
+    }
+
+    #[test]
     #[ignore = "native GPU edit flux measurement and edit urgency against their CPU statements"]
     fn gpu_measures_edit_flux_and_marks_faces_whose_history_it_binds() {
         use crate::geometry::{
@@ -2046,16 +2222,14 @@ mod tests {
         use crate::retention::SpatialHistory;
         let mut gpu = super::super::tests::native_tracer();
         gpu.enable_resident().unwrap();
+        gpu.without_footprints();
         let (scene, sources, probes) = super::super::tests::open_floor_fixture();
         let materials = VoxelMaterialTransportTable::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let trace = |gpu: &mut GpuTracer, probes: &[SurfaceProbe], events| {
-            let mut work = TraceWork::from_probes(probes, false);
+            let mut work = TraceWork::from_probes(probes);
             work.measured_retention = 1.0;
             work.retention_events = events;
-            for job in &mut work.probes {
-                job.sky_requested = false;
-            }
             gpu.trace_compact(
                 Arc::clone(&scene),
                 &sources,
@@ -2063,7 +2237,6 @@ mod tests {
                 &mut work,
                 16,
                 &emitters,
-                false,
             )
             .unwrap();
         };
@@ -2217,20 +2390,15 @@ mod tests {
                     .iter()
                     .map(|&i| expected[i].clone())
                     .collect::<Vec<_>>(),
-                false,
             );
             let mut b = TraceWork::from_probes(
                 &indices
                     .iter()
                     .map(|&i| actual[i].clone())
                     .collect::<Vec<_>>(),
-                false,
             );
             for work in [&mut a, &mut b] {
                 work.response_seconds = 0.075;
-                for job in &mut work.probes {
-                    job.sky_requested = false;
-                }
                 if step == 6 {
                     for face in &mut work.faces {
                         face.samples = face.samples.min(3);
@@ -2259,7 +2427,6 @@ mod tests {
                         work,
                         16,
                         &emitters,
-                        false,
                     )
                     .unwrap();
                 for face in &mut work.faces {
@@ -2356,7 +2523,6 @@ mod tests {
                     u32::MAX,
                     cap,
                 );
-                work.probes[0].sky_requested = false;
                 work.probes[0].retention = Some(step as u64);
                 work.response_seconds = 0.075;
                 tracer
@@ -2367,7 +2533,6 @@ mod tests {
                         &mut work,
                         16,
                         &emitters,
-                        false,
                     )
                     .unwrap();
                 work.probes[0].publish(&work.faces, probe);
@@ -2436,13 +2601,10 @@ mod tests {
                 probe.stats_mut().sequence = [*traced * 16; 6];
                 *traced += 1;
             }
-            let mut expected = TraceWork::from_probes(&probes, false);
-            let mut actual = TraceWork::from_probes(&probes, false);
+            let mut expected = TraceWork::from_probes(&probes);
+            let mut actual = TraceWork::from_probes(&probes);
             for work in [&mut expected, &mut actual] {
                 work.response_seconds = 0.075;
-                for job in &mut work.probes {
-                    job.sky_requested = false;
-                }
                 // Each step's revision change restarts the probes (the
                 // control traces them fresh): an explicit zero cap.
                 for face in &mut work.faces {
@@ -2457,7 +2619,6 @@ mod tests {
                     &mut actual,
                     16,
                     &emitters,
-                    false,
                 )
                 .unwrap()
                 .unwrap();
@@ -2469,7 +2630,6 @@ mod tests {
                     &mut expected,
                     16,
                     &emitters,
-                    false,
                 )
                 .unwrap();
             pending.push((snapshot, actual, expected));

@@ -290,13 +290,6 @@ impl TopLevelAadf {
         }
     }
 
-    #[cfg(test)]
-    pub fn contains(&self, coordinate: IVec3) -> bool {
-        self.size != UVec3::ZERO
-            && coordinate.cmpge(self.minimum).all()
-            && coordinate.cmple(self.maximum).all()
-    }
-
     pub fn field(&self, coordinate: IVec3) -> Aadf {
         if self.fields.is_empty() {
             return Aadf::default();
@@ -420,15 +413,6 @@ impl TransportScene {
             .map(|region| region.material(local.as_uvec3()))
     }
 
-    #[cfg(test)]
-    pub fn world_bounds(&self) -> Option<(Vec3, Vec3)> {
-        (self.top_level.size != UVec3::ZERO).then(|| {
-            (
-                (self.top_level.minimum * REGION_EDGE as i32).as_vec3(),
-                ((self.top_level.maximum + IVec3::ONE) * REGION_EDGE as i32).as_vec3(),
-            )
-        })
-    }
 }
 
 #[derive(Clone, Debug)]

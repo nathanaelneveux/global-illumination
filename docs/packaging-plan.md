@@ -182,24 +182,23 @@ Traced from the `Update` chain in `mod.rs` and `dispatch::start_trace_task`:
 
 - **World-cache batches.** The CPU selects only event work (edited or relit
   faces, `select_transport`); the GPU picks the rest of each batch. Every batch
-  also carries CPU-planned sky corners (`append_sky_work`), retention events,
-  slot retirements, and an emitter distribution prepared on the worker. One
+  also carries retention events (with GPU-traced shadow footprints), slot
+  retirements, and an emitter distribution prepared on the worker. One
   readback per batch merges up to `statistics_mirror_per_batch` faces into the
   CPU field.
-- **Sun corners.** View faces trace their own corners on the GPU when admitted
-  (`sky_corner_visibility` in `reproject_paths`). The CPU sky cache (`sky_cache.rs`,
-  ~1k lines) serves only world-cache faces and the sun-change retention events.
-  Candidate: trace world-cache corners on the GPU the same way and remove the CPU
-  sky cache. That is a design change, measured like a removal.
+- **Sun corners.** View faces trace their own corners on the GPU
+  (`sky_corner_visibility` in `reproject_paths`) and report flips, which become
+  Light retention events (`sun_changes.rs`); edits' shadows are GPU footprints
+  (`trace_footprints`). The CPU sky cache was removed on 2026-10-24 (see the
+  removals table).
 - **`history.rs` is live**, despite the world display's removal: `FaceDisplay`
-  carries each probe's sky corners (`dispatch.rs`) and the presentation seed that
-  publication writes for new faces (`publication.rs`, `seed_face`). Slim it; do not
-  delete it.
+  carries the presentation seed that publication writes for new faces
+  (`publication.rs`, `seed_face`).
 - **`reconstruction.rs`** has no non-test users: test oracle only.
 - **Statistics mirror is live**: besides HUD progress it keeps each probe's CPU
   presentation copy current, which publication reuses to seed neighbouring new
   world-cache slots. Removing it means seeding on the GPU (as view faces do in
-  `bootstrap_face`): a design change, like the sky cache.
+  `bootstrap_face`): a design change.
 
 ### Removals done (pass 3)
 
@@ -213,6 +212,7 @@ All gated with `tools/gates.sh` against an adjacent baseline (see each commit):
 | `99fac1d` | `cpu_statistics` mode, CPU stability/display twins in production, `adaptive_updates`, the temporal recorder, F8/F9 face watch, cave receiver recorder | -1895 |
 | `caf04ba` | Nineteen one-off benchmarks and cost studies (test-only) | -1159 |
 | `26041f3`, `90a14a7` | Empty world-display leftovers, write-only probe fields, archived-shader loader | |
+| (2026-10-24) | CPU sky cache, sky-only batches and readbacks, probe sky corners; replaced by GPU shadow footprints and view-tier sun flips | -1.3k |
 
 Considered and kept, with reasons:
 - **Non-resident GPU mode.** Production always runs resident; the few
@@ -221,8 +221,8 @@ Considered and kept, with reasons:
 - **Whole-range retention curve.** Also the fallback for edits of unknown flux
   with measured retention on; only the `measured_retention: 0` switch is optional.
 - **Serial trace kernel.** The path-matched native view tests use it.
-- **Statistics mirror, CPU sky cache.** Live; replacing them is GPU-side design
-  work (seeding and corner tracing), listed under pass 2.
+- **Statistics mirror.** Live; replacing it is GPU-side seeding, listed under
+  pass 2.
 
 Still to examine: `gpu.rs`/`resident.rs` beyond tests (~3k production lines),
 `publication.rs`/`bvw.rs` split between core and connector, the resident record
@@ -239,11 +239,11 @@ research, 1.2k diagnostics) and 3.3k of WGSL.
 | GPU tracer, world cache | `gpu.rs`, `gpu/resident.rs`, `gpu/face_index.rs`, `gpu/readback.rs`, `gpu/scatter.rs`, `voxel_trace/path/accumulate/retention.wgsl` | core | `gpu.rs` and `resident.rs` (5.3k lines) likely still carry world-display leftovers; record 8 is unused |
 | Scheduling and publication | `dispatch.rs`, `work.rs`, `scheduling.rs`, `publication.rs`, `statistics.rs`, `telemetry.rs` | core | CPU event jobs and the stats mirror need pass 2 |
 | Retention | `retention.rs`, `geometry.rs` | core | Edit-flux retention for the world cache; check its value against a no-retention run |
-| Sun | `sky.rs`, `sky_cache.rs` | core, possibly replaced | Only world-cache faces use the CPU sky cache (pass 2) |
+| Sun | `sky.rs`, `sun_changes.rs` | core | Corner words from the view tier; footprints in `voxel_trace.wgsl` |
 | Sources, materials | `sources.rs`, `spectrum.rs`, `emission.rs` | core | Shrinks with band removal |
 | View tier | `gpu/view.rs`, `gpu/view/runtime.rs`, `gpu/view/timing.rs`, `voxel_view_*.wgsl` | core | Timing receipts: optional feature |
 | Rendering | `render.rs`, `voxel_transport.wgsl` | core, split per decision 1 | |
-| Display history | `history.rs`, `FaceDisplay` in `SurfaceProbe` | core, slimmed | Still carries probe sky corners and publication's presentation seeds (pass 2) |
+| Display history | `history.rs`, `FaceDisplay` in `SurfaceProbe` | core, slimmed | Publication's presentation seeds (pass 2) |
 | CPU field | `field.rs` | per decision 2 | |
 | CPU oracle | `tracer.rs`, `sampling.rs`, `emission/tree.rs`, `reconstruction.rs`, `gpu/correctness_audit*`, `research.rs` | lab tests or delete | Dead in release |
 | BVW adapter | `bvw.rs` | connector | Includes residency (`update_receiver_residency`), which belongs in core |

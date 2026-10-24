@@ -163,6 +163,7 @@ fn reproject_paths(@builtin(global_invocation_id) id: vec3<u32>) {
             packed |= ((word & 15u) | ((word >> 24u) & 128u)) << (corner * 8u);
         }
         estimate.identity.z = packed;
+        if previous != 0xffffffffu && old_corners != 0u { report_sun_flips(receiver, normal, material, old_corners, packed); }
     }
     receiver.sequence = estimate.identity.x;
     receivers[id.x].sequence = receiver.sequence;
@@ -180,6 +181,42 @@ fn reproject_paths(@builtin(global_invocation_id) id: vec3<u32>) {
     let entry = atomicAdd(&queue[0], 1u);
     atomicStore(&queue[12u + entry], id.x);
     atomicStore(&queue[12u + view.grid.z + id.x], entry);
+}
+
+// A face whose corner sunlight flipped (both measurements known) reports the
+// reflected change, a quarter face per corner, for Light retention events:
+// a moving sun's shadow borders cut the bounce history around them. The CPU
+// bins these (`sun_changes.rs`); edits' shadows are traced as footprints.
+// Flips follow the owner queue: a count, then (voxel, flux) records.
+const MAX_SUN_FLIPS: u32 = 2048u;
+fn report_sun_flips(receiver: ViewReceiver, normal: vec3<f32>, material: u32, before: u32, after: u32) {
+    let w = vec3(0.2126, 0.7152, 0.0722);
+    var flux = 0.0;
+    var bit = 0u;
+    for (var i = 0u; i < u32(params.maximum.w) && bit < 4u; i += 1u) {
+        let light = lights[i];
+        let color = max(light.energy.rgb - light.extra.yzw, vec3(0.0));
+        if all(color == vec3(0.0)) { continue; }
+        let cosine = max(dot(normal, normalize(light.position_range.xyz)), 0.0);
+        for (var corner = 0u; corner < 4u; corner++) {
+            let a = (before >> (corner * 8u)) & 255u;
+            let b = (after >> (corner * 8u)) & 255u;
+            if (a & b & 128u) != 0u && ((a ^ b) & (1u << bit)) != 0u {
+                flux += 0.25 * dot(color, w) * cosine;
+            }
+        }
+        bit += 1u;
+    }
+    if flux <= 0.0 { return; }
+    flux *= dot(materials[material & 255u].diffuse.rgb, w);
+    let base = 12u + 2u * view.grid.z;
+    let slot = atomicAdd(&queue[base], 1u);
+    if slot >= MAX_SUN_FLIPS { return; }
+    let record = base + 4u + slot * 4u;
+    atomicStore(&queue[record], bitcast<u32>(receiver.voxel.x));
+    atomicStore(&queue[record + 1u], bitcast<u32>(receiver.voxel.y));
+    atomicStore(&queue[record + 2u], bitcast<u32>(receiver.voxel.z));
+    atomicStore(&queue[record + 3u], bitcast<u32>(flux));
 }
 
 @compute @workgroup_size(64)

@@ -278,7 +278,7 @@ impl TransportSettings {
 }
 
 /// Reuse the discrete source/model epoch: reject old in-flight measurements,
-/// reset each receiver only when selected, and leave geometry/sky caches intact.
+/// reset each receiver only when selected, and leave geometry intact.
 pub(super) fn synchronize_transport_settings(
     settings: Res<VoxelGiSettings>,
     mut runtime: ResMut<super::VoxelGiRuntime>,
@@ -371,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn only_model_changes_restart_measurements_without_rebuilding_geometry_or_sky() {
+    fn only_model_changes_restart_measurements_without_rebuilding_geometry() {
         let mut app = App::new();
         app.init_resource::<VoxelGiSettings>()
             .init_resource::<super::super::VoxelGiRuntime>()
@@ -404,7 +404,6 @@ mod tests {
         assert_eq!(runtime.source_revision, 1);
         assert_eq!(runtime.model_reset_source_revision, 1);
         assert_eq!(runtime.generation, 0);
-        assert_eq!(runtime.sky_revision, 0);
         app.update();
         assert_eq!(
             app.world()

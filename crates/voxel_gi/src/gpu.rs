@@ -65,7 +65,6 @@ fn include_retention(source: &str) -> String {
     )
 }
 const RESULT_BYTES: usize = 96;
-const SKY_RESULT_BYTES: usize = 32;
 const TASK_BYTES: usize = 32;
 
 mod face_index;
@@ -138,19 +137,18 @@ struct GpuFaceTask {
 }
 
 /// Encode the fixed WGSL task layout directly into reusable upload storage.
-/// Faces precede sky corners; integer words are explicitly little-endian, with
-/// all three padding words initialized. No Rust struct layout or unsafe cast.
-fn encode_tasks(bytes: &mut Vec<u8>, work: &TraceWork, sky: &[IVec3]) {
+/// Integer words are explicitly little-endian, with all three padding words
+/// initialized. No Rust struct layout or unsafe cast.
+fn encode_tasks(bytes: &mut Vec<u8>, work: &TraceWork) {
     bytes.clear();
-    bytes.reserve((work.faces.len() + work.picks as usize + sky.len()) * TASK_BYTES);
+    bytes.reserve((work.faces.len() + work.picks as usize) * TASK_BYTES);
     // GPU pick capacity follows the CPU's faces; `select_emit` fills it and
     // the tracer skips what stays face 0xffffffff.
     let tasks = work
         .faces
         .iter()
         .map(|face| (face.voxel, face.face as u32, face.sequence))
-        .chain((0..work.picks).map(|_| (IVec3::ZERO, u32::MAX, 0)))
-        .chain(sky.iter().map(|&position| (position, 0, 0)));
+        .chain((0..work.picks).map(|_| (IVec3::ZERO, u32::MAX, 0)));
     for (voxel, face, sequence) in tasks {
         let record = [
             voxel.x as u32,
@@ -312,10 +310,10 @@ pub(crate) struct GpuTracer {
     adaptive_lanes: bool,
     #[cfg(test)]
     fixed_path_lanes: Option<u32>,
-    sky_pipeline: ComputePipeline,
-    pub sky_cache: super::sky_cache::SkyCache,
-    #[cfg(test)]
-    duplicate_sky_for_benchmark: bool,
+    footprint_pipeline: ComputePipeline,
+    finish_footprint_pipeline: ComputePipeline,
+    footprint_bindings: Option<CachedBindings<8>>,
+    finish_footprint_bindings: Option<CachedBindings<3>>,
     #[cfg(test)]
     full_geometry_uploads_for_benchmark: bool,
     #[cfg(test)]
@@ -342,7 +340,6 @@ pub(crate) struct GpuTracer {
     /// lookup misses, so paths continue explicitly (synchronous comparison
     /// backend). Diagnostics may bind another tracer's frozen cache instead.
     external_cache: (UploadBuffer, UploadBuffer),
-    sky_bindings: Option<CachedBindings<7>>,
     readbacks: Vec<UploadBuffer>,
     timestamps: Option<wgpu::QuerySet>,
     timestamp_resolve: UploadBuffer,
@@ -408,6 +405,14 @@ impl GpuTracer {
         }
     }
 
+    /// Plan only the CPU's retention events (tests of their exact rule).
+    #[cfg(test)]
+    pub(crate) fn without_footprints(&mut self) {
+        if let Some(resident) = &mut self.resident {
+            resident.trace_footprints = false;
+        }
+    }
+
     pub(super) fn enable_resident(&mut self) -> Result<(), String> {
         if self.resident.is_none() {
             self.resident = Some(resident::ResidentAccumulator::new(&self.context)?);
@@ -460,14 +465,19 @@ impl GpuTracer {
             compilation_options: default(),
             cache: None,
         });
-        let sky_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Shared world-space sky corners"),
-            layout: None,
-            module: &module,
-            entry_point: Some("trace_sky_corners"),
-            compilation_options: default(),
-            cache: None,
-        });
+        let entry_pipeline = |label, entry_point| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(label),
+                layout: None,
+                module: &module,
+                entry_point: Some(entry_point),
+                compilation_options: default(),
+                cache: None,
+            })
+        };
+        let footprint_pipeline = entry_pipeline("GI change footprints", "trace_footprints");
+        let finish_footprint_pipeline =
+            entry_pipeline("GI change footprint events", "finish_footprints");
         if let Some(error) = bevy::tasks::block_on(error_scope.pop()) {
             return Err(error.to_string());
         }
@@ -498,10 +508,11 @@ impl GpuTracer {
             adaptive_lanes: cooperative,
             #[cfg(test)]
             fixed_path_lanes: None,
-            sky_pipeline,
-            sky_cache: default(),
+            footprint_pipeline,
+            finish_footprint_pipeline,
+            footprint_bindings: None,
+            finish_footprint_bindings: None,
             #[cfg(test)]
-            duplicate_sky_for_benchmark: false,
             #[cfg(test)]
             full_geometry_uploads_for_benchmark: false,
             #[cfg(test)]
@@ -564,7 +575,6 @@ impl GpuTracer {
                     .write_buffer(&index.buffer, 0, &encode_words(&words));
                 (state, index)
             },
-            sky_bindings: None,
             readbacks: Vec::new(),
             timestamps,
             timestamp_resolve: UploadBuffer::new(
@@ -592,7 +602,7 @@ impl GpuTracer {
         samples: u32,
         emitters: &Arc<EmissionDistribution>,
     ) -> Result<(), String> {
-        self.trace_work(scene, sources, materials, probes, samples, emitters, false)
+        self.trace_work(scene, sources, materials, probes, samples, emitters)
     }
 
     #[cfg(test)]
@@ -604,17 +614,12 @@ impl GpuTracer {
         probes: &mut [SurfaceProbe],
         samples: u32,
         emitters: &Arc<EmissionDistribution>,
-        sky_only: bool,
     ) -> Result<(), String> {
-        let mut work = TraceWork::from_probes(probes, sky_only);
-        self.trace_compact(
-            scene, sources, materials, &mut work, samples, emitters, sky_only,
-        )?;
+        let mut work = TraceWork::from_probes(probes);
+        self.trace_compact(scene, sources, materials, &mut work, samples, emitters)?;
         work.copy_measurements(probes);
-        if !sky_only {
-            for probe in probes {
-                probe.emission = materials.get(probe.material).emission;
-            }
+        for probe in probes {
+            probe.emission = materials.get(probe.material).emission;
         }
         Ok(())
     }
@@ -628,10 +633,9 @@ impl GpuTracer {
         work: &mut TraceWork,
         samples: u32,
         emitters: &Arc<EmissionDistribution>,
-        sky_only: bool,
     ) -> Result<(), String> {
         if let Some(mut snapshot) =
-            self.submit_compact(scene, sources, materials, work, samples, emitters, sky_only)?
+            self.submit_compact(scene, sources, materials, work, samples, emitters)?
         {
             snapshot.wait(&self.context.device)?;
             self.complete_readback(snapshot, work)?;
@@ -647,42 +651,11 @@ impl GpuTracer {
         work: &mut TraceWork,
         samples: u32,
         emitters: &Arc<EmissionDistribution>,
-        sky_only: bool,
     ) -> Result<Option<readback::Readback>, String> {
         let work_started = Instant::now();
         let geometry_changed = self.needs_geometry(&scene);
         self.synchronize_geometry(&scene)?;
-        if !sky_only {
-            self.select_quality_pipeline(work.transport.normalized(), samples)?;
-        }
-        self.sky_cache.set_materials(materials);
-        self.sky_cache.retire_pages(&work.retire_pages);
-        let sky_pending = self.sky_cache.prepare(&scene, sources, &work.probes);
-        #[cfg(test)]
-        let sky_pending = if self.duplicate_sky_for_benchmark {
-            let duplicate: Vec<_> = work
-                .faces
-                .iter()
-                .filter(|face| {
-                    self.sky_cache.lights.iter().any(|light| {
-                        super::world::FACE_OFFSETS[face.face]
-                            .as_vec3()
-                            .dot(light.direction)
-                            > 0.0
-                    })
-                })
-                .flat_map(|face| {
-                    (0..4).map(move |corner| {
-                        super::sky::corner_position(face.voxel, face.face, corner)
-                    })
-                })
-                .collect();
-            self.sky_cache.stats.traced = duplicate.len();
-            self.sky_cache.stats.rays = duplicate.len() * self.sky_cache.lights.len();
-            duplicate
-        } else {
-            sky_pending
-        };
+        self.select_quality_pipeline(work.transport.normalized(), samples)?;
         // Reconcile ownership even without rays. A retirement must remove the
         // GPU face index and live metadata, not merely the CPU slot map.
         let prepare_resident = self.resident.is_some()
@@ -701,8 +674,9 @@ impl GpuTracer {
         // Model publication is independent of receiver work. Far views may
         // have no near receivers, but still need the current optical scene.
         self.view_transport = work.transport.normalized();
-        let device = &self.context.device;
-        let queue = &self.context.queue;
+        let context = self.context.clone();
+        let device = &context.device;
+        let queue = &context.queue;
         if self
             .emission
             .as_ref()
@@ -792,44 +766,12 @@ impl GpuTracer {
             )?;
         }
         self.sources = Some(sources.clone());
-        // Geometry, ownership and model are now current. Maintenance needs
-        // neither a ray dispatch nor a readback allocation.
-        if work.faces.is_empty() && work.picks == 0 && sky_pending.is_empty() {
-            if prepare_resident {
-                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("GI receiver maintenance"),
-                });
-                self.resident.as_mut().unwrap().dispatch_prepare(
-                    device,
-                    &mut encoder,
-                    &self.tasks,
-                    0,
-                    None,
-                );
-                queue.submit([encoder.finish()]);
-            }
-            self.last_dispatch_ms = 0.0;
-            self.last_gpu_ms = Some(0.0);
-            self.last_prepare_ms = work_started.elapsed().as_secs_f32() * 1000.0;
-            self.last_snapshot_latency_ms = 0.0;
-            self.last_decode_ms = 0.0;
-            self.sky_cache.apply(&mut work.probes);
-            return Ok(None);
-        }
         let picks = if self.resident.is_some() {
             work.picks
         } else {
             0
         };
         let face_count = work.faces.len() + picks as usize;
-        #[cfg(not(test))]
-        encode_tasks(&mut self.task_bytes, work, &sky_pending);
-        #[cfg(test)]
-        if self.legacy_task_encoding_for_benchmark {
-            self.task_bytes = task_tests::legacy_task_bytes(work, &sky_pending);
-        } else {
-            encode_tasks(&mut self.task_bytes, work, &sky_pending);
-        }
         let transport = work.transport.normalized();
         let params = GpuParams {
             counts: UVec4::new(
@@ -838,7 +780,7 @@ impl GpuTracer {
                 self.packed.directory.len() as u32 - 1,
                 light_count,
             ),
-            minimum: scene.top_level.minimum.extend(sky_pending.len() as i32),
+            minimum: scene.top_level.minimum.extend(0),
             maximum: scene
                 .top_level
                 .maximum
@@ -857,14 +799,45 @@ impl GpuTracer {
             queue,
             &ShaderBuffer::from(vec![params]).data.unwrap(),
         )?;
+        // Geometry, ownership and model are now current. Maintenance needs
+        // neither a ray dispatch nor a readback allocation.
+        if work.faces.is_empty() && work.picks == 0 {
+            if prepare_resident {
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("GI receiver maintenance"),
+                });
+                dispatch_footprints(self, &mut encoder);
+                self.resident.as_mut().unwrap().dispatch_prepare(
+                    device,
+                    &mut encoder,
+                    &self.tasks,
+                    0,
+                    None,
+                );
+                queue.submit([encoder.finish()]);
+            }
+            self.last_dispatch_ms = 0.0;
+            self.last_gpu_ms = Some(0.0);
+            self.last_prepare_ms = work_started.elapsed().as_secs_f32() * 1000.0;
+            self.last_snapshot_latency_ms = 0.0;
+            self.last_decode_ms = 0.0;
+            return Ok(None);
+        }
+        #[cfg(not(test))]
+        encode_tasks(&mut self.task_bytes, work);
+        #[cfg(test)]
+        if self.legacy_task_encoding_for_benchmark {
+            self.task_bytes = task_tests::legacy_task_bytes(work);
+        } else {
+            encode_tasks(&mut self.task_bytes, work);
+        }
         self.tasks.upload(device, queue, &self.task_bytes)?;
-        // Readback: the CPU's faces, sky corners, then (with GPU picks) the
+        // Readback: the CPU's faces, then (with GPU picks) the
         // statistics-mirror count and records. Picks themselves are not read
         // back: the mirror catches up with them under a fixed budget.
         let face_bytes = face_count * RESULT_BYTES;
         let cpu_bytes = work.faces.len() * RESULT_BYTES;
-        let sky_bytes = sky_pending.len() * SKY_RESULT_BYTES;
-        let mirror_offset = cpu_bytes + sky_bytes;
+        let mirror_offset = cpu_bytes;
         let mirror_records = if picks > 0 {
             work.mirror_budget.max(1)
         } else {
@@ -885,7 +858,7 @@ impl GpuTracer {
             2
         };
         let timestamp_bytes = timestamp_count as u64 * 8;
-        self.output.ensure(device, face_bytes + sky_bytes)?;
+        self.output.ensure(device, face_bytes)?;
         let mut readback = self.readbacks.pop().unwrap_or_else(|| {
             UploadBuffer::new(
                 device,
@@ -894,6 +867,14 @@ impl GpuTracer {
             )
         });
         readback.ensure(device, readback_bytes + timestamp_bytes as usize)?;
+        if prepare_resident && self.resident.as_ref().is_some_and(|r| r.footprints().is_some()) {
+            // Its own submission, ahead of the batch that applies the events.
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("GI change footprints"),
+            });
+            dispatch_footprints(self, &mut encoder);
+            queue.submit([encoder.finish()]);
+        }
         let (cache_state, cache_index) = self.resident.as_ref().map_or(
             (&self.external_cache.0, &self.external_cache.1),
             |resident| resident.cache_buffers(),
@@ -911,8 +892,7 @@ impl GpuTracer {
             cache_state,
             cache_index,
         ];
-        // Retire stale groups even when their pass is idle. Otherwise a warm
-        // sky cache could retain an obsolete, large output buffer indefinitely.
+        // Retire stale groups: never retain an obsolete, large output buffer.
         let ids = buffers.map(|buffer| buffer.buffer.id());
         if self
             .bindings
@@ -921,32 +901,12 @@ impl GpuTracer {
         {
             self.bindings = None;
         }
-        let sky_ids = [0, 1, 2, 3, 5, 6, 7].map(|index| ids[index]);
-        if self
-            .sky_bindings
-            .as_ref()
-            .is_some_and(|cached| cached.buffers != sky_ids)
-        {
-            self.sky_bindings = None;
-        }
-        let bindings = (!sky_only).then(|| {
-            cached_bindings(
-                &mut self.bindings,
-                device,
-                || self.pipeline.get_bind_group_layout(0).into(),
-                std::array::from_fn(|index| (index as u32, buffers[index])),
-            )
-        });
-        let sky_bindings = if sky_pending.is_empty() {
-            None
-        } else {
-            Some(cached_bindings(
-                &mut self.sky_bindings,
-                device,
-                || self.sky_pipeline.get_bind_group_layout(0).into(),
-                [0, 1, 2, 3, 5, 6, 7].map(|index| (index as u32, buffers[index])),
-            ))
-        };
+        let bindings = cached_bindings(
+            &mut self.bindings,
+            device,
+            || self.pipeline.get_bind_group_layout(0).into(),
+            std::array::from_fn(|index| (index as u32, buffers[index])),
+        );
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("GI bounded transport batch"),
         });
@@ -974,20 +934,13 @@ impl GpuTracer {
                     }
                 }),
             });
-            if let Some(bindings) = bindings {
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &**bindings, &[]);
-                pass.dispatch_workgroups(
-                    (face_count as u32).div_ceil(self.faces_per_workgroup),
-                    1,
-                    1,
-                );
-            }
-            if let Some(bindings) = sky_bindings {
-                pass.set_pipeline(&self.sky_pipeline);
-                pass.set_bind_group(0, &**bindings, &[]);
-                pass.dispatch_workgroups((sky_pending.len() as u32).div_ceil(64), 1, 1);
-            }
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &**bindings, &[]);
+            pass.dispatch_workgroups(
+                (face_count as u32).div_ceil(self.faces_per_workgroup),
+                1,
+                1,
+            );
         }
         if face_count > 0
             && let Some(resident) = &mut self.resident
@@ -1007,15 +960,6 @@ impl GpuTracer {
                 &readback.buffer,
                 0,
                 cpu_bytes as u64,
-            );
-        }
-        if sky_bytes > 0 {
-            encoder.copy_buffer_to_buffer(
-                &self.output.buffer,
-                face_bytes as u64,
-                &readback.buffer,
-                cpu_bytes as u64,
-                sky_bytes as u64,
             );
         }
         if picks > 0
@@ -1079,8 +1023,6 @@ impl GpuTracer {
             bytes: readback_bytes,
             timestamp_bytes: timestamp_bytes as usize,
             samples,
-            sky_pending,
-            sky_ticket: self.sky_cache.ticket(),
             prepare_ms: self.last_prepare_ms,
             ready: false,
         }))
@@ -1101,8 +1043,6 @@ impl GpuTracer {
             bytes: readback_bytes,
             timestamp_bytes,
             samples,
-            sky_pending,
-            sky_ticket,
             prepare_ms,
             ..
         } = snapshot;
@@ -1171,7 +1111,7 @@ impl GpuTracer {
             face.custom_direct = Vec3::new(values[21], values[22], values[23]);
             face.updated_at = Some(submitted);
         }
-        let mirror_offset = face_bytes + sky_pending.len() * SKY_RESULT_BYTES;
+        let mirror_offset = face_bytes;
         if picks > 0
             && let Some(resident) = &self.resident
         {
@@ -1228,21 +1168,9 @@ impl GpuTracer {
                 }
             }
         }
-        for (position, bytes) in sky_pending
-            .into_iter()
-            .zip(view[face_bytes..mirror_offset].chunks_exact(SKY_RESULT_BYTES))
-        {
-            // The first word is the corner's visibility; the rest is padding.
-            self.sky_cache.store_ticket(
-                sky_ticket,
-                position,
-                u32::from_le_bytes(bytes[..4].try_into().unwrap()),
-            );
-        }
         drop(view);
         readback.buffer.unmap();
         self.readbacks.push(readback);
-        self.sky_cache.apply(&mut work.probes);
         self.last_decode_ms = now.elapsed().as_secs_f32() * 1000.0;
         Ok(())
     }
@@ -1305,7 +1233,7 @@ impl GpuTracer {
         self.faces_per_workgroup = 64 / lanes;
 
         // Auto-layout bind groups belong to their pipeline, even when every
-        // buffer ID and binding type is unchanged. Sky has its own pipeline.
+        // buffer ID and binding type is unchanged.
         self.bindings = None;
         Ok(())
     }
@@ -1318,6 +1246,61 @@ impl GpuTracer {
 }
 
 /// RGB in a vec4 lane group; the fourth lane (formerly infrared) is zero.
+/// Trace a batch's change footprints into their reserved Light events, before
+/// preparation applies (and the view tier copies) the events.
+fn dispatch_footprints(tracer: &mut GpuTracer, encoder: &mut wgpu::CommandEncoder) {
+    let GpuTracer {
+        resident: Some(resident),
+        context,
+        params,
+        directory,
+        regions,
+        cells,
+        materials,
+        lights,
+        footprint_pipeline,
+        finish_footprint_pipeline,
+        footprint_bindings,
+        finish_footprint_bindings,
+        ..
+    } = tracer
+    else {
+        return;
+    };
+    let Some((threads, tasks)) = resident.footprints() else { return };
+    let bindings = cached_bindings(
+        footprint_bindings,
+        &context.device,
+        || footprint_pipeline.get_bind_group_layout(0).into(),
+        [
+            (0, &*params),
+            (1, &*directory),
+            (2, &*regions),
+            (3, &*cells),
+            (4, &*materials),
+            (5, &*lights),
+            (20, &resident.footprint_tasks),
+            (21, &resident.footprint_sums),
+        ],
+    );
+    let finish = cached_bindings(
+        finish_footprint_bindings,
+        &context.device,
+        || finish_footprint_pipeline.get_bind_group_layout(0).into(),
+        [(20, &resident.footprint_tasks), (21, &resident.footprint_sums), (22, resident.events_buffer())],
+    );
+    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some("GI change footprints"),
+        timestamp_writes: None,
+    });
+    pass.set_pipeline(footprint_pipeline);
+    pass.set_bind_group(0, &**bindings, &[]);
+    pass.dispatch_workgroups(threads.div_ceil(64), 1, 1);
+    pass.set_pipeline(finish_footprint_pipeline);
+    pass.set_bind_group(0, &**finish, &[]);
+    pass.dispatch_workgroups(tasks.div_ceil(64), 1, 1);
+}
+
 fn spectrum_vec(energy: Vec3) -> Vec4 {
     energy.extend(0.0)
 }
@@ -1444,14 +1427,9 @@ pub(super) mod tests {
             &mut probes,
             4,
             &emitters,
-            true,
         )
         .unwrap();
-        assert_eq!(
-            gpu.materials.uploads, 1,
-            "sky-only work still publishes a complete optical scene for views"
-        );
-        let initial_sky = gpu.sky_bindings.as_ref().unwrap().group.id();
+        assert_eq!(gpu.materials.uploads, 1);
         gpu.trace(
             scene.clone(),
             &sources,
@@ -1474,16 +1452,11 @@ pub(super) mod tests {
         assert_eq!(gpu.materials.uploads, 1);
         assert_eq!(gpu.lights.uploads, 1);
         assert_eq!(gpu.bindings.as_ref().unwrap().group.id(), initial_faces);
-        assert_eq!(gpu.sky_bindings.as_ref().unwrap().group.id(), initial_sky);
 
         let mut many = vec![probes[0].clone(); 1024];
         gpu.trace(scene.clone(), &sources, &materials, &mut many, 4, &emitters)
             .unwrap();
         let grown_faces = gpu.bindings.as_ref().unwrap().group.id();
-        assert!(
-            gpu.sky_bindings.is_none(),
-            "idle sky pass must release superseded buffers"
-        );
         assert_ne!(grown_faces, initial_faces, "work/output growth must rebind");
         gpu.trace(
             scene.clone(),
@@ -1497,8 +1470,6 @@ pub(super) mod tests {
         assert_eq!(gpu.bindings.as_ref().unwrap().group.id(), grown_faces);
 
         sources.directional[0].radiance *= 2.0;
-        // Color alone keeps cached visibility; leaving the sun's quantization
-        // cell makes the sky cold again.
         sources.directional[0].direction =
             Quat::from_rotation_z(2.0_f32.to_radians()) * sources.directional[0].direction;
         let mut optical = materials.get(2);
@@ -1509,11 +1480,6 @@ pub(super) mod tests {
             .unwrap();
         assert_eq!(gpu.materials.uploads, 2);
         assert_eq!(gpu.lights.uploads, 2);
-        assert_ne!(
-            gpu.sky_bindings.as_ref().unwrap().group.id(),
-            initial_sky,
-            "cold sky must bind the grown work/output buffers"
-        );
     }
 
     #[test]

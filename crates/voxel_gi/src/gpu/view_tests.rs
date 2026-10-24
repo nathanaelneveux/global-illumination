@@ -285,13 +285,10 @@ fn view_paths_match_near_prefixes_across_sources_and_reach() {
             [(0, 16, 1, 768.0), (257, 64, 3, 768.0), (2048, 17, 3, 32.0)]
         {
             let mut gpu = GpuTracer::with_kernel(native.context.clone(), false).unwrap();
-            let mut work = TraceWork::from_probes(&probes, false);
+            let mut work = TraceWork::from_probes(&probes);
             work.transport = super::super::TransportSettings { bounces, reach };
             for face in &mut work.faces {
                 face.sequence = first;
-            }
-            for probe in &mut work.probes {
-                probe.sky_requested = false;
             }
             gpu.trace_compact(
                 fixture.scene.clone(),
@@ -300,7 +297,6 @@ fn view_paths_match_near_prefixes_across_sources_and_reach() {
                 &mut work,
                 samples,
                 &emitters,
-                false,
             )
             .unwrap();
             let (hits, unknown) = compare(&gpu, &work, first, samples);
@@ -334,11 +330,8 @@ fn view_paths_preserve_dark_unknown_and_inactive_measurements() {
         } else {
             scene.clone()
         };
-        let mut work = TraceWork::from_probes(&probes[400..405], false);
-        for probe in &mut work.probes {
-            probe.sky_requested = false;
-        }
-        gpu.trace_compact(scene, &sources, &default(), &mut work, 17, &emitters, false)
+        let mut work = TraceWork::from_probes(&probes[400..405]);
+        gpu.trace_compact(scene, &sources, &default(), &mut work, 17, &emitters)
             .unwrap();
         let (_, unknown) = compare(&gpu, &work, 0, 17);
         assert_eq!(unknown > 0, gap);
@@ -372,7 +365,7 @@ fn view_paths_match_near_at_the_surface_cache_boundary() {
     let mut warm = super::tests::native_tracer();
     warm.enable_resident().unwrap();
     let all_faces = super::cache_tests::all_interior_faces(&fixture);
-    let mut history = TraceWork::from_probes(&all_faces, false);
+    let mut history = TraceWork::from_probes(&all_faces);
     for _ in 0..4 {
         warm.trace_compact(
             fixture.scene.clone(),
@@ -381,19 +374,15 @@ fn view_paths_match_near_at_the_surface_cache_boundary() {
             &mut history,
             16,
             &emitters,
-            false,
         )
         .unwrap();
     }
     // Freeze the raw cache. No resident accumulator runs on the readers.
     let mut gpu = GpuTracer::with_kernel(warm.context.clone(), false).unwrap();
     gpu.share_cache_from(&warm).unwrap();
-    let mut work = TraceWork::from_probes(&fixture.receivers, false);
+    let mut work = TraceWork::from_probes(&fixture.receivers);
     for face in &mut work.faces {
         face.sequence = 4096;
-    }
-    for probe in &mut work.probes {
-        probe.sky_requested = false;
     }
     gpu.trace_compact(
         fixture.scene.clone(),
@@ -402,7 +391,6 @@ fn view_paths_match_near_at_the_surface_cache_boundary() {
         &mut work,
         17,
         &emitters,
-        false,
     )
     .unwrap();
     let (hits, unknown) = compare(&gpu, &work, 4096, 17);
@@ -428,13 +416,10 @@ fn view_cache_misses_measure_the_missing_multibounce_tail() {
         let mut count = 0u32;
         let mut unknown = 0u32;
         for batch in 0..32 {
-            let mut work = TraceWork::from_probes(&fixture.receivers, false);
+            let mut work = TraceWork::from_probes(&fixture.receivers);
             let first = batch * 1024;
             for face in &mut work.faces {
                 face.sequence = first;
-            }
-            for probe in &mut work.probes {
-                probe.sky_requested = false;
             }
             gpu.trace_compact(
                 fixture.scene.clone(),
@@ -443,7 +428,6 @@ fn view_cache_misses_measure_the_missing_multibounce_tail() {
                 &mut work,
                 1024,
                 &emitters,
-                false,
             )
             .unwrap();
             let words = view_paths_with_depth(&gpu, &receivers(&work, first), 1024, depth);

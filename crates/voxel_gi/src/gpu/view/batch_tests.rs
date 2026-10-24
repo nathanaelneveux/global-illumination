@@ -19,7 +19,7 @@ fn native_view_batches_preserve_raw_prefixes_and_pending_tails() {
     let emitters = Arc::new(EmissionDistribution::build(&fixture.scene, &fixture.materials));
     let mut work = TraceWork::default();
     gpu.submit_compact(fixture.scene.clone(), &fixture.sources, &fixture.materials,
-        &mut work, 0, &emitters, true).unwrap();
+        &mut work, 0, &emitters).unwrap();
     let mut scene = gpu.view_scene().unwrap();
     let mut inputs = Vec::new();
     for probe in &fixture.receivers {

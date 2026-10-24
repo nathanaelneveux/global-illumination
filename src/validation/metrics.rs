@@ -31,7 +31,6 @@ pub(super) struct Metrics {
     work_samples: Vec<Value>,
     last_work_sample: f32,
     last_batch: u64,
-    last_transport_batch: u64,
     frame_timeline: Vec<Value>,
     previous_gi: [f32; 6],
     frame_timing_enabled: Option<bool>,
@@ -68,18 +67,13 @@ impl Metrics {
     /// page set can be fully covered while most terrain is still unpublished;
     /// keep its denominator, not a misleading first-100% time.
     pub fn record_work(&mut self, elapsed: f32, phase: &'static str, stats: &VoxelGiStats) {
-        let batches = stats.transport_batches + stats.sky_only_batches;
-        if batches != self.last_batch {
-            self.last_batch = batches;
+        if stats.transport_batches != self.last_batch {
+            self.last_batch = stats.transport_batches;
             let phase = self.phases.entry(phase).or_default();
             phase.selection_ms.push(stats.last_selection_ms);
             phase.merge_ms.push(stats.last_merge_ms);
             phase.worker_ms.push(stats.last_worker_ms);
-            // Last transport timestamp is not updated by a sky-only batch.
-            if stats.transport_batches != self.last_transport_batch {
-                self.last_transport_batch = stats.transport_batches;
-                phase.gpu_ms.push(stats.last_trace_batch_ms);
-            }
+            phase.gpu_ms.push(stats.last_trace_batch_ms);
         }
         if elapsed - self.last_work_sample < 0.25 {
             return;
@@ -152,14 +146,14 @@ mod tests {
         for elapsed in [0.3, 0.6] {
             metrics.record_work(elapsed, "startup", &stats);
         }
-        stats.sky_only_batches = 1;
+        stats.transport_batches = 2;
         metrics.record_work(0.9, "startup", &stats);
         let report = metrics.report();
         assert_eq!(report["work_timeline"].as_array().unwrap().len(), 3);
         assert_eq!(report["work_timeline"][0]["loaded_pages"], 3);
         assert_eq!(report["work_timeline"][0]["bootstrap"], 0.5);
         assert_eq!(report["phases"][0]["worker_ms"]["count"], 2);
-        assert_eq!(report["phases"][0]["transport_execution_ms"]["count"], 1);
+        assert_eq!(report["phases"][0]["transport_execution_ms"]["count"], 2);
     }
 
     #[test]

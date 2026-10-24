@@ -15,9 +15,6 @@ pub(super) fn compare_probes(a: &[SurfaceProbe], b: &[SurfaceProbe]) {
         assert_eq!(a.stats().custom_direct, b.stats().custom_direct);
         assert_eq!(a.stats().samples, b.stats().samples);
         assert_eq!(a.stats().sequence, b.stats().sequence);
-        for face in 0..6 {
-            assert_eq!(a.display[face].sky, b.display[face].sky);
-        }
     }
 }
 

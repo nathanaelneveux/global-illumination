@@ -1,5 +1,5 @@
-//! Bounded asynchronous timing receipts. Only 224 bytes per view dispatch cross
-//! back to the CPU: timestamps and queue counters, never lighting.
+//! Bounded asynchronous timing receipts. Only timestamps, queue counters and
+//! corner-sunlight flips cross back to the CPU per view dispatch, never lighting.
 use super::*;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -79,8 +79,14 @@ pub(super) struct Budget {
     pub uncovered: u32,
     pub displayed: u32,
     pub paused: u32,
+    /// Received corner-sunlight flips (voxel, flux), taken by the main world.
+    pub sun_flips: Vec<(IVec3, f32)>,
     period: f64,
 }
+
+/// Timestamps, counters and pool words, then the flip region.
+const RECEIPT_BYTES: u64 = 224;
+const TICKET_BYTES: u64 = RECEIPT_BYTES + super::runtime::SUN_FLIP_BYTES;
 
 impl Budget {
     pub fn new(device: &RenderDevice, queue: &RenderQueue) -> Self {
@@ -106,7 +112,7 @@ impl Budget {
             .map(|_| {
                 device.create_buffer(&BufferDescriptor {
                     label: Some("Far GI asynchronous timing receipt"),
-                    size: 224,
+                    size: TICKET_BYTES,
                     usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
                     mapped_at_creation: false,
                 })
@@ -143,6 +149,7 @@ impl Budget {
             uncovered: 0,
             displayed: 0,
             paused: 0,
+            sun_flips: Vec::new(),
             period: f64::from(queue.get_timestamp_period()),
         }
     }
@@ -167,7 +174,7 @@ impl Budget {
                 _ => panic!("far GPU timing mapping failed"),
             }
             let ticket = self.pending.swap_remove(index);
-            let bytes = ticket.buffer.slice(..224).get_mapped_range();
+            let bytes = ticket.buffer.slice(..TICKET_BYTES).get_mapped_range();
             let stamp = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
             let costs: [f32; 10] = std::array::from_fn(|stage| {
                 if ticket.stages & (1 << stage) == 0 {
@@ -220,6 +227,13 @@ impl Budget {
                 self.wave_cost = trace.max(0.01);
             }
             self.allowance += ticket.reserved - trace;
+            let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+            let flips = (word(RECEIPT_BYTES as usize) as u64).min(super::runtime::MAX_SUN_FLIPS) as usize;
+            for record in bytes[RECEIPT_BYTES as usize + 16..].chunks_exact(16).take(flips) {
+                let word = |i: usize| u32::from_le_bytes(record[i * 4..i * 4 + 4].try_into().unwrap());
+                let voxel = IVec3::new(word(0) as i32, word(1) as i32, word(2) as i32);
+                self.sun_flips.push((voxel, f32::from_bits(word(3))));
+            }
             drop(bytes);
             ticket.buffer.unmap();
             self.free.push(ticket.buffer);
@@ -251,6 +265,7 @@ impl Budget {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         counters: &Buffer,
+        sun_flips: u64,
         pool: &Buffer,
         mut ticket: Ticket,
         stages: u32,
@@ -260,8 +275,11 @@ impl Budget {
         encoder.copy_buffer_to_buffer(&self.resolve, 0, &ticket.buffer, 0, 160);
         encoder.copy_buffer_to_buffer(counters, 0, &ticket.buffer, 160, 48);
         encoder.copy_buffer_to_buffer(pool, 0, &ticket.buffer, 208, 16);
+        encoder.copy_buffer_to_buffer(
+            counters, sun_flips, &ticket.buffer, RECEIPT_BYTES, super::runtime::SUN_FLIP_BYTES,
+        );
         let ready = ticket.ready.clone();
-        encoder.map_buffer_on_submit(&ticket.buffer, wgpu::MapMode::Read, ..224, move |result| {
+        encoder.map_buffer_on_submit(&ticket.buffer, wgpu::MapMode::Read, ..TICKET_BYTES, move |result| {
             ready.store(if result.is_ok() { 1 } else { 2 }, Ordering::Release)
         });
         self.pending.push(ticket);

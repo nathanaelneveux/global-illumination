@@ -27,8 +27,8 @@ mod sampling;
 mod scheduling;
 mod settings;
 mod sky;
-mod sky_cache;
 mod sources;
+mod sun_changes;
 mod spectrum;
 #[cfg(test)]
 mod statistics;
@@ -147,7 +147,7 @@ pub struct VoxelGiStats {
     /// Last app frame's GI system-body times, in telemetry stage order.
     /// Excludes workers/render work; unlike the overlay average, retains spikes.
     pub last_main_stage_ms: [f32; 6],
-    /// Completed transport/sky compute-pass timestamps per app frame over the
+    /// Completed transport compute-pass timestamps per app frame over the
     /// same window. None until available, or on CPU/unsupported GPU backends.
     /// Excludes queue waits, transfers and graphics; do not add to main time.
     pub gpu_ms_per_frame: Option<f32>,
@@ -156,11 +156,6 @@ pub struct VoxelGiStats {
     pub traced_paths: u64,
     pub last_scene_build_ms: f32,
     pub last_trace_batch_ms: f32,
-    pub sky_corner_requests: u64,
-    pub sky_corners_traced: u64,
-    pub sky_rays_scheduled: u64,
-    pub sky_cached_corners: usize,
-    pub sky_only_batches: u64,
     pub transport_batches: u64,
     pub idle_scheduler_frames: u64,
     pub last_worker_ms: f32,
@@ -176,10 +171,8 @@ pub struct VoxelGiStats {
     /// (world-cache transport), presentation and discovery are not limited by
     /// `gpu_time_share`; `view_receivers` scales them.
     pub view_gpu: ViewReceipts,
-    /// World-cache faces the next batch may select, and sun corners per
-    /// sky-only batch (adaptive to measured GPU time).
+    /// World-cache faces the next batch may select.
     pub dispatch_budget: usize,
-    pub sky_dispatch_budget: usize,
     pub backend: &'static str,
 }
 
@@ -224,15 +217,8 @@ struct VoxelGiRuntime {
     selection_seen: bevy::platform::collections::HashSet<IVec3>,
     gpu_tracer: Option<gpu::GpuTracer>,
     emission_cache: Option<emission::EmissionCache>,
-    sky_pending: VecDeque<IVec3>,
-    sky_queued: HashSet<IVec3>,
-    sky_cursor: usize,
-    sky_remaining: usize,
-    /// Sky requests along moving shadow borders, before the world sweep
-    /// (popped nearest the focus first).
-    sky_band: Vec<IVec3>,
-    sky_revision: u64,
-    sky_batch_size: usize,
+    /// Visible faces' corner-sunlight flips, merged into Light changes.
+    sun_changes: sun_changes::SunChanges,
     /// Pages allowed cache receivers under `cache_radius` (None before the
     /// first residency update: all loaded).
     receiver_pages: Option<HashSet<IVec3>>,
@@ -287,13 +273,7 @@ impl Default for VoxelGiRuntime {
             selection_seen: default(),
             gpu_tracer: None,
             emission_cache: None,
-            sky_pending: default(),
-            sky_queued: default(),
-            sky_cursor: 0,
-            sky_remaining: 0,
-            sky_band: Vec::new(),
-            sky_revision: 0,
-            sky_batch_size: 512,
+            sun_changes: default(),
             receiver_pages: None,
             receiver_dirty: HashSet::new(),
             receiver_retired: HashSet::new(),
@@ -319,14 +299,10 @@ struct TraceBatchResult {
     batch: Option<TransportBatch>,
     pending: VecDeque<PendingTransport>,
     bindings: Vec<gpu::ResidentBinding>,
-    sky_stats: Option<sky_cache::SkyCacheStats>,
     trace_time: Duration,
     gpu_tracer: Option<gpu::GpuTracer>,
     emission_cache: Option<emission::EmissionCache>,
     gpu_error: Option<String>,
-    sunlight_change: Option<geometry::GeometryChange>,
-    /// Voxels around the shadow borders a sun step moved, nearest last.
-    sky_band: Vec<IVec3>,
     /// Geometry buffers and bounds for the terrain material (far sun).
     geometry: Option<(
         [bevy::render::render_resource::Buffer; 3],
@@ -345,12 +321,8 @@ struct TransportBatch {
     paths: u64,
     gpu_ms: Option<f32>,
     execution_ms: Option<f32>,
-    sky_only: bool,
-    sky_count: usize,
     /// GPU milliseconds reserved from the allowance at submission.
     gpu_reserved_ms: f32,
-    scene_generation: u64,
-    sky_revision: u64,
 }
 
 fn page_of(voxel: IVec3) -> IVec3 {
@@ -368,14 +340,6 @@ fn enqueue_urgent(runtime: &mut VoxelGiRuntime, voxels: impl IntoIterator<Item =
     for voxel in voxels {
         if runtime.urgent_queued.insert(voxel) {
             runtime.urgent_pending.push_back(voxel);
-        }
-    }
-}
-
-fn enqueue_sky(runtime: &mut VoxelGiRuntime, voxels: impl IntoIterator<Item = IVec3>) {
-    for voxel in voxels {
-        if runtime.sky_queued.insert(voxel) {
-            runtime.sky_pending.push_back(voxel);
         }
     }
 }
@@ -403,7 +367,6 @@ fn update_stats_from_counters(
     let faces = runtime.active_faces;
     stats.surface_probes = field.probes.len();
     stats.dispatch_budget = runtime.batch_size;
-    stats.sky_dispatch_budget = runtime.sky_batch_size;
     stats.pending_probes = runtime.urgent_pending.len();
     stats.bootstrap_coverage = if faces == 0 {
         1.0

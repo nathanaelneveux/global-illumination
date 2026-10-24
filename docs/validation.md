@@ -329,8 +329,8 @@ do not require the solved toggle stress workload.
 bytes with the generic shader-layout encoder, including signed coordinates,
 large sequences and shrinking/mixed task arrays. The opt-in
 `task_encoding_benchmark` compares preparation and worker time at 17, 1,024 and
-8,192 faces with identical transport outputs. Native sky-only/partial dispatch
-and resource-growth tests cover the integration without a toggle-stress run.
+8,192 faces with identical transport outputs. Native partial-dispatch and
+resource-growth tests cover the integration without a toggle-stress run.
 
 ### Quality-lever comparisons
 
@@ -382,7 +382,7 @@ Durations start after required assets are ready and exclude process compilation.
 | `sources` | 72 | Analytic/emissive source changes, multi-band field and streaming |
 | `cave` | 62 | Fixed view of many-emitter chamber; automatically selects cave geometry/palette |
 | `structures` | 62 | Normal-world house/path, cave entrance, and underground interior |
-| `day-cycle` | 183 | Canyon under a rotating sun: history, sky retrace and flicker |
+| `day-cycle` | 183 | Canyon under a rotating sun: lag behind fixed-sun references and flicker |
 | `compare` | 29 | Controlled display-mode visual comparison |
 | `stress` | 72 | Optional toggle/buffer lifetime stress |
 
@@ -506,6 +506,16 @@ chamber uses a four-chunk spawning distance; do not compare its cadence against
 the normal ten-chunk terrain workload. RGB, IR and ionizing transport use the
 same fixture palette as the native compute studies, with no cavity-specific GI.
 
+`VOXEL_GI_VALIDATE_CAVE_SKYLIGHT=open` turns `cave` into a high-skylight
+response test (`src/validation/skylight.rs`): a 7×7 ceiling hole opens at 15 s
+and its sun lands 38 voxels below, on stone laid over the lava so the bounce
+onto the east wall changes. `=pre` opens it at startup and is the settled
+same-time reference. Captures run 0.1 s to 30 s after the opening;
+`tools/skylight_quality.py PRE label=OPEN ...` prints FLIP and the worst 32 px
+luminance tile against the reference. `VOXEL_GI_VALIDATE_LIGHT_COMPONENT`
+applies (`indirect` isolates bounce). The distance rule alone leaves the floor's
+history; the edit's shadow footprint is what relights it.
+
 The `structures` profile stays in the normal world, moving its detached view at
 12/24 seconds and capturing at 10/22/45/60 seconds. It checks integration of the
 nearby cave and house through ordinary streaming, not character locomotion.
@@ -522,7 +532,12 @@ reference is rate 0 with the offset the moving run reaches at a capture time;
 compares them.
 Captures come in pairs one second apart (30/31 ... 180/181 s): the sun moves a
 fraction of a degree between them, so their FLIP is mostly flicker. `day.json`
-records traced paths, sky-corner retraces and revisions each second.
+records traced paths and batches each second.
+
+Current receipts (2026-10-24, Apple M4, headless): FLIP of the moving run
+against ref18/ref36/ref54 is .018/.023/.034 (tile max .04/.05/.02), paired
+frames .005-.011; reference self-noise is .002. Removing all sunlight-flip
+retention events raises the lag to .024/.042/.059, so shadow borders matter.
 
 First results (gi-day-night on 4915387, Apple M4, headless, full mirror). A
 fixed sun settles to median history ~1,000 samples by 180 s at ~4.3M paths/s,

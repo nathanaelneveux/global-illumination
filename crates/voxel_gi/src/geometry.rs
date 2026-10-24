@@ -18,6 +18,8 @@ pub(super) const RELIGHT_RADIUS: i32 = 48;
 /// rule, wakes every face within RELIGHT_RADIUS.
 pub(super) const MEASURED_RELIGHT_RADIUS: i32 = 64;
 pub(super) const NEAR_HISTORY: u32 = 16;
+/// History kept by reference work built outside the scheduler (tests).
+#[cfg(test)]
 pub(super) const UNTRACKED_HISTORY: u32 = 64;
 
 /// What a change can do to existing receivers' light, for measured retention.

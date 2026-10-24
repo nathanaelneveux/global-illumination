@@ -1,17 +1,18 @@
 """Day-cycle analysis: day_cycle_analysis.py label=run_dir ...
 
-Prints each run's day.json series (traced paths, sky
-retraces), FLIP between the paired captures one second apart, and, for runs
+Prints each run's day.json series (traced paths; CPU sky-corner retraces
+in runs from before 2026-10-24), FLIP between the paired captures one second apart, and, for runs
 not labelled ref*, FLIP of the 60/120/180 s captures against fixed-sun
 references labelled ref18/ref36/ref54 (their settled 180 s captures).
 Run with: uv run --python 3.12 --with numpy --with pillow --with flip-evaluator."""
 import sys, json, os
 sys.path.insert(0, 'tools')
-from cave_sample_analysis import load_rgb, perceptual_difference
-runs = dict(a.split('=', 1) for a in sys.argv[1:])
+from view_cache_quality import compare, image
+from skylight_quality import tile_max
+runs = dict(a.split('=', 1) for a in sys.argv[1:] if '=' in a)
 def flip(a, b):
-    d = perceptual_difference(load_rgb(a), load_rgb(b), 67)
-    return d['flip']['mean'], d['flip_32px_tile_means']['max']
+    a, b = image(a), image(b)
+    return compare(a, b)['flip_mean'], tile_max(a, b)
 for label, r in runs.items():
     d = json.load(open(os.path.join(r, 'day.json')))
     s = d['samples']
@@ -23,7 +24,7 @@ for label, r in runs.items():
             if prev is not None:
                 dt = t - prev['at_s']
                 paths = (x['traced_paths'] - prev['traced_paths']) / dt / 1e6
-                sky = (x['sky_corners_traced'] - prev['sky_corners_traced']) / dt / 1e3
+                sky = (x.get('sky_corners_traced', 0) - prev.get('sky_corners_traced', 0)) / dt / 1e3
             else:
                 paths = sky = 0
             print(f"  t={t:6.1f} angle={x['angle_deg']:5.1f} paths={paths:6.2f}M/s sky={sky:7.1f}k/s")

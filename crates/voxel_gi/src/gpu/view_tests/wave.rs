@@ -180,12 +180,9 @@ fn prepare(
 ) -> TraceWork {
     let emitters = Arc::new(EmissionDistribution::build(&fixture.scene,
         &fixture.materials));
-    let mut work = TraceWork::from_probes(&fixture.receivers, false);
+    let mut work = TraceWork::from_probes(&fixture.receivers);
     for face in &mut work.faces {
         face.sequence = first;
-    }
-    for probe in &mut work.probes {
-        probe.sky_requested = false;
     }
     gpu.trace_compact(
         fixture.scene.clone(),
@@ -194,7 +191,6 @@ fn prepare(
         &mut work,
         samples,
         &emitters,
-        false,
     )
     .unwrap();
     work

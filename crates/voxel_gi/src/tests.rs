@@ -1,7 +1,7 @@
 //! Integration contracts for scheduling and asynchronous publication.
 use super::*;
 use super::{
-    dispatch::{append_sky_work, select_probes, select_transport},
+    dispatch::{select_probes, select_transport},
     publication::publish_scene_page,
     sources::{SourceChange, invalidate_source_change},
 };
@@ -35,13 +35,10 @@ fn transport_failure_worker_error_is_fatal_at_publication() {
             batch: None,
             pending: default(),
             bindings: default(),
-            sky_stats: None,
             trace_time: Duration::ZERO,
             gpu_tracer: None,
             emission_cache: None,
             gpu_error: Some("injected readback failure".into()),
-            sunlight_change: None,
-            sky_band: Vec::new(),
         }
     });
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -60,7 +57,7 @@ fn transport_failure_worker_error_is_fatal_at_publication() {
 }
 
 #[test]
-fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches() {
+fn settled_counter_follows_accepted_transport_not_untraced_or_rejected_batches() {
     use bevy::ecs::system::RunSystemOnce;
     let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(1).build();
     // Settled is the GPU's verdict, carried by each merged face.
@@ -99,7 +96,7 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
                 .unwrap();
             probe.stats_mut().radiance[2] = Vec3::ONE * 100.0;
         }
-        let mut work = TraceWork::from_probes(&[probe], case == 1);
+        let mut work = TraceWork::from_probes(&[probe]);
         for face in &mut work.faces {
             face.gpu_settled = Some(case != 3);
         }
@@ -109,19 +106,14 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
                 batch: Some(TransportBatch {
                     work,
                     paths: 4,
-                    sky_only: case == 1,
-                    sky_count: usize::from(case == 1),
                     ..default()
                 }),
                 pending: default(),
                 bindings: default(),
-                sky_stats: None,
                 trace_time: Duration::from_millis(1),
                 gpu_tracer: None,
                 emission_cache: None,
                 gpu_error: None,
-                sunlight_change: None,
-                sky_band: Vec::new(),
             }
         });
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -445,19 +437,16 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
                 TraceBatchResult {
                     geometry: None,
                     batch: Some(TransportBatch {
-                        work: TraceWork::from_probes(&[late], false),
+                        work: TraceWork::from_probes(&[late]),
                         paths: 4,
                         ..default()
                     }),
                     pending: default(),
                     bindings: default(),
-                    sky_stats: None,
                     trace_time: Duration::from_millis(1),
                     gpu_tracer: None,
                     emission_cache: None,
                     gpu_error: None,
-                    sunlight_change: None,
-                    sky_band: Vec::new(),
                 }
             });
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -664,7 +653,7 @@ fn in_flight_lighting_cannot_restore_indices_moved_by_streaming() {
     }
     field.update_indices(&voxels, &HashMap::new());
     let pending_result =
-        TraceWork::from_probes(std::slice::from_ref(&field.probes[&IVec3::Z]), false);
+        TraceWork::from_probes(std::slice::from_ref(&field.probes[&IVec3::Z]));
     let mut removed = HashMap::new();
     removed.insert(IVec3::ZERO, field.probes.remove(&IVec3::ZERO).unwrap());
     field.update_indices(&[], &removed);
@@ -680,62 +669,6 @@ fn in_flight_lighting_cannot_restore_indices_moved_by_streaming() {
     for (index, voxel) in field.order.iter().enumerate() {
         assert_eq!(field.probes[voxel].order_index, index);
     }
-}
-
-#[test]
-fn sky_queue_piggybacks_without_duplicating_rays_or_changing_history() {
-    let initial = SurfaceProbe::new(IVec3::ZERO, 4);
-    let mut transport = TraceWork::from_probes(std::slice::from_ref(&initial), false);
-    transport.probes[0].sky_requested = false;
-    let mut sky_only = SurfaceProbe::new(IVec3::X, 5);
-    sky_only.stats_mut().samples = [128; 6];
-    sky_only.stats_mut().sequence = [1000; 6];
-    let duplicate = initial;
-    let mut field = VoxelEnergyField::default();
-    for probe in [duplicate, sky_only] {
-        field.probes.insert(probe.voxel, probe);
-    }
-    let mut runtime = VoxelGiRuntime::default();
-    // Includes an already-selected transport receiver and a repeated sky
-    // candidate. Neither should allocate or overwrite another probe clone.
-    runtime
-        .sky_pending
-        .extend([IVec3::ZERO, IVec3::X, IVec3::X]);
-    assert_eq!(append_sky_work(&mut runtime, &field, &mut transport), 1);
-    assert_eq!(transport.probes.len(), 2);
-    assert_eq!(transport.probes[0].trace_mask, 4);
-    assert!(transport.probes.iter().all(|job| job.sky_requested));
-    assert_eq!(transport.probes[1].face_mask, 5);
-    assert_eq!(transport.probes[1].trace_mask, 0);
-    assert_eq!(
-        transport.faces.len(),
-        1,
-        "sky-only work carries no transport history"
-    );
-    assert_eq!(field.probes[&IVec3::X].stats().samples, [128; 6]);
-    assert_eq!(field.probes[&IVec3::X].stats().sequence, [1000; 6]);
-}
-
-#[test]
-fn indirect_work_requests_only_unknown_sky_without_the_explicit_queue() {
-    let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
-    let push = |probe: &SurfaceProbe| {
-        let mut work = TraceWork::default();
-        work.push(probe, 4, 0, 0, false, 64, u32::MAX);
-        work
-    };
-    assert!(push(&probe).probes[0].sky_requested);
-    probe.display[2].sky = [sky::KNOWN; 4]; // measured black is valid, not missing
-    assert!(!push(&probe).probes[0].sky_requested);
-    let work = push(&probe);
-    work.copy_measurements(std::slice::from_mut(&mut probe));
-    assert_eq!(
-        probe.display[2].sky,
-        [sky::KNOWN; 4],
-        "unrequested zero output must never replace valid sky"
-    );
-    probe.display[2].sky[3] = 0; // incomplete/unknown ray must retry
-    assert!(push(&probe).probes[0].sky_requested);
 }
 
 #[test]
@@ -768,7 +701,7 @@ fn dispatch_reuses_returned_storage_without_retaining_candidates() {
 }
 
 #[test]
-fn cpu_selects_only_event_work_and_sky_requests() {
+fn cpu_selects_only_event_work() {
     let now = Instant::now();
     let mut field = VoxelEnergyField::default();
     for x in 0..64 {
@@ -802,17 +735,6 @@ fn cpu_selects_only_event_work_and_sky_requests() {
             .values()
             .all(|probe| probe.stats().samples[2] == 256),
         "scheduling must not mutate published histories"
-    );
-    enqueue_sky(&mut runtime, field.order.iter().copied());
-    let mut sky = TraceWork::default();
-    append_sky_work(&mut runtime, &field, &mut sky);
-    assert_eq!(sky.probes.len(), 64);
-    assert!(sky.faces.is_empty());
-    assert!(
-        field
-            .probes
-            .values()
-            .all(|probe| probe.stats().samples[2] == 256)
     );
 }
 

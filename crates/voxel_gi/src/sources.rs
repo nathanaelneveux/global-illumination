@@ -3,7 +3,7 @@
 use super::spectrum::Radiance;
 use super::{
     EnergyEmitter, VoxelEnergyField, VoxelGiRuntime, VoxelGiStats, VoxelMaterialTransportTable,
-    advance_transport_revision, sky_cache, telemetry::GiWorkTimings,
+    advance_transport_revision, telemetry::GiWorkTimings,
     update_stats_from_counters,
 };
 use bevy::ecs::system::SystemParam;
@@ -179,13 +179,6 @@ pub(super) fn synchronize_transport_sources(
         return;
     }
     let change = next.change_from(&runtime.sources);
-    // Corner visibility depends only on quantized sun directions.
-    if sky_cache::visibility_key(&sky_cache::sky_lights(&next))
-        != sky_cache::visibility_key(&sky_cache::sky_lights(&runtime.sources))
-    {
-        runtime.sky_revision = runtime.sky_revision.wrapping_add(1);
-        runtime.sky_remaining = field.order.len();
-    }
     std::mem::swap(&mut runtime.sources, &mut *next);
     if !matches!(change, SourceChange::Sun) {
         invalidate_source_change(&mut runtime, &mut field, &mut stats, change);

@@ -50,7 +50,7 @@ fn cached_furnace_converges_to_infinite_bounce_series() {
     let probes = all_interior_faces(&fixture);
     let faces: u32 = probes.iter().map(|p| p.face_mask.count_ones()).sum();
     assert_eq!(faces, 6 * 14 * 14);
-    let mut work = TraceWork::from_probes(&probes, false);
+    let mut work = TraceWork::from_probes(&probes);
     work.history_limit = 256;
     let expected: Vec<f32> = channels(material.emission)
         .into_iter()
@@ -66,7 +66,6 @@ fn cached_furnace_converges_to_infinite_bounce_series() {
             &mut work,
             16,
             &emitters,
-            false,
         )
         .unwrap();
         if batch % 50 == 49 {
@@ -108,13 +107,13 @@ fn cached_furnace_lag_by_history_policy() {
     for (limit, recency) in [(65_536, 1.0), (65_536, 1.5), (65_536, 2.0), (8_192, 1.0), (2_048, 1.0)] {
         let mut gpu = GpuTracer::new(native.context.clone()).unwrap();
         gpu.enable_resident().unwrap();
-        let mut work = TraceWork::from_probes(&probes, false);
+        let mut work = TraceWork::from_probes(&probes);
         work.history_limit = limit;
         work.history_recency = recency;
         let mut line = String::new();
         for batch in 1..=400 {
             gpu.trace_compact(fixture.scene.clone(), &fixture.sources, &fixture.materials,
-                &mut work, 16, &emitters, false).unwrap();
+                &mut work, 16, &emitters).unwrap();
             if [25, 50, 100, 200, 400].contains(&batch) {
                 let mean: f64 = work.faces.iter().map(|f| f64::from(channels(f.radiance)[2])).sum::<f64>()
                     / work.faces.len() as f64;

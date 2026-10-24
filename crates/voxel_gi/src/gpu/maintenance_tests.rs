@@ -111,7 +111,7 @@ fn cacheless_retention_publishes_even_when_geometry_and_sources_are_unchanged() 
     let (scene, sources, _) = super::tests::open_floor_fixture();
     let mut work = TraceWork { view_transport: true, ..default() };
     assert!(tracer.submit_compact(scene, &sources, &default(), &mut work, 0,
-        &Arc::new(EmissionDistribution::default()), true).unwrap().is_none());
+        &Arc::new(EmissionDistribution::default())).unwrap().is_none());
     let packets = tracer.take_view_changes();
     assert_eq!(packets.len(), 1);
     let words = read_words(&tracer.context, &packets[0].events, packets[0].events.size());
@@ -128,7 +128,7 @@ fn retirements_survive_poll_only_and_empty_receiver_dispatch() {
         let mut gpu = GpuTracer::new(device.clone()).unwrap();
         gpu.enable_resident().unwrap();
         let (scene, sources, probes) = super::tests::open_floor_fixture();
-        let mut work = TraceWork::from_probes(&probes[..1], false);
+        let mut work = TraceWork::from_probes(&probes[..1]);
         gpu.trace_compact(
             scene.clone(),
             &sources,
@@ -136,7 +136,6 @@ fn retirements_survive_poll_only_and_empty_receiver_dispatch() {
             &mut work,
             1,
             &Arc::new(EmissionDistribution::default()),
-            false,
         )
         .unwrap();
         let address = work.faces[0].resident;
@@ -206,6 +205,9 @@ fn scene_edits_reach_view_history_without_world_cache_pages() {
     {
         let mut runtime = world.resource_mut::<gi::VoxelGiRuntime>();
         runtime.gpu_tracer = first.gpu_tracer;
+        if let Some(tracer) = &mut runtime.gpu_tracer {
+            tracer.without_footprints();
+        }
         runtime.emission_cache = first.emission_cache;
         runtime.scene_task = Some(AsyncComputeTaskPool::get().spawn(async move {
             gi::SceneBuildResult {
@@ -242,19 +244,20 @@ fn edit_flux_distinguishes_missing_cache_support_from_observed_darkness() {
     use gi::geometry::{Bounds, ChangeKind, ChangeWeight};
     let mut gpu = super::tests::native_tracer();
     gpu.enable_resident().unwrap();
+    gpu.without_footprints();
     let (scene, mut sources, probes) = super::tests::open_floor_fixture();
     sources.environment = default();
     sources.directional.clear();
     let emitters = Arc::new(EmissionDistribution::default());
-    let mut work = TraceWork::from_probes(&probes[..1], false);
-    gpu.trace_compact(scene.clone(), &sources, &default(), &mut work, 4, &emitters, false).unwrap();
+    let mut work = TraceWork::from_probes(&probes[..1]);
+    gpu.trace_compact(scene.clone(), &sources, &default(), &mut work, 4, &emitters).unwrap();
     for (position, expected_kind) in [(probes[0].voxel, 3), (IVec3::splat(1000), 0)] {
         let event = gi::retention::RetentionEvent::single(Bounds::point(position), ChangeWeight {
             kind: ChangeKind::Edit { voxels: 1, measure: true }, flux: 0.0,
         });
         let mut work = TraceWork { view_transport: true, retention_events: vec![event], ..default() };
         gpu.queue_retention(&mut work.retention_events);
-        gpu.submit_compact(scene.clone(), &sources, &default(), &mut work, 0, &emitters, true).unwrap();
+        gpu.submit_compact(scene.clone(), &sources, &default(), &mut work, 0, &emitters).unwrap();
         let packets = gpu.take_view_changes();
         assert_eq!(packets.len(), 1);
         let words = read_words(&gpu.context, &packets[0].events, packets[0].events.size());
@@ -309,16 +312,16 @@ fn retained_cache_pairs_stay_coherent_when_either_member_grows() {
     let (scene, sources, probes) = super::tests::open_floor_fixture();
     let materials = VoxelMaterialTransportTable::default();
     let emitters = Arc::new(EmissionDistribution::default());
-    let mut work = TraceWork::from_probes(&probes[..1], false);
-    gpu.trace_compact(scene.clone(), &sources, &materials, &mut work, 16, &emitters, false).unwrap();
+    let mut work = TraceWork::from_probes(&probes[..1]);
+    gpu.trace_compact(scene.clone(), &sources, &materials, &mut work, 16, &emitters).unwrap();
     for (count, grow_index) in [(2, false), (600, true)] {
         let resident = gpu.resident.as_ref().unwrap();
         let (state, index) = resident.cache_buffers();
         let held = (state.shared(), index.shared());
         let state_words = read_words(&gpu.context, &held.0.buffer, held.0.capacity);
         let index_words = read_words(&gpu.context, &held.1.buffer, held.1.capacity);
-        let mut work = TraceWork::from_probes(&probes[..count], false);
-        gpu.trace_compact(scene.clone(), &sources, &materials, &mut work, 16, &emitters, false).unwrap();
+        let mut work = TraceWork::from_probes(&probes[..count]);
+        gpu.trace_compact(scene.clone(), &sources, &materials, &mut work, 16, &emitters).unwrap();
         let (state, index) = gpu.resident.as_ref().unwrap().cache_buffers();
         assert_ne!(state.buffer.id(), held.0.buffer.id());
         assert_ne!(index.buffer.id(), held.1.buffer.id());

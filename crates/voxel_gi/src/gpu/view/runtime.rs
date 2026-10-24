@@ -35,6 +35,8 @@ struct ViewSettings {
     receivers: u32,
     /// Last frame's view-tier GPU milliseconds, written by the render world.
     receipts: std::sync::Arc<std::sync::Mutex<ViewReceipts>>,
+    /// Corner-sunlight flips read back by the render world (voxel, flux).
+    sun_flips: std::sync::Arc<std::sync::Mutex<Vec<(IVec3, f32)>>>,
 }
 
 /// View-tier GPU time per frame (timestamp queries; zero when unavailable).
@@ -66,6 +68,7 @@ pub(crate) fn install(app: &mut App, output: Handle<ShaderBuffer>) {
         measured_retention: 1.0,
         receivers: 65_536,
         receipts: default(),
+        sun_flips: default(),
     });
     app.add_plugins(ExtractResourcePlugin::<ViewSettings>::default());
     app.add_systems(Update, configure_views);
@@ -95,6 +98,7 @@ fn configure_views(
     mut view: ResMut<ViewSettings>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut material_data: ResMut<VoxelGiMaterialData>,
+    runtime: Option<ResMut<crate::VoxelGiRuntime>>,
     cameras: Query<
         (
             Entity,
@@ -109,6 +113,16 @@ fn configure_views(
     let receipts = *view.receipts.lock().unwrap();
     if stats.view_gpu != receipts {
         stats.view_gpu = receipts;
+    }
+    let flips = std::mem::take(&mut *view.sun_flips.lock().unwrap());
+    if let Some(mut runtime) = runtime {
+        let runtime = &mut *runtime;
+        runtime.sun_changes.add(flips);
+        if let Some(change) = runtime.sun_changes.take(&runtime.scene, std::time::Instant::now()) {
+            // Events carry no page allocations: retired world pages must not
+            // suppress the change for view-owned receivers.
+            runtime.spatial_history.record(change, &[]);
+        }
     }
     let enabled = true;
     if enabled != view.enabled {
@@ -254,7 +268,7 @@ impl CameraState {
             control: uniform("Far view control"),
             params: uniform("Far transport parameters"),
             wave: uniform("Far wave allowance"),
-            queue: storage(device, "Far visible owner queue and sequence reservations", (count as usize * 2 + 12) * 4),
+            queue: storage(device, "Far visible owner queue and sequence reservations", (count as usize * 2 + 12) * 4 + SUN_FLIP_BYTES as usize),
             cursor: 0,
             last_frame: 0,
             binding_keys: [None, None],
@@ -350,7 +364,7 @@ impl FromWorld for ViewRenderer {
                 "reproject_paths",
                 0,
                 false,
-                [&[0, 1, 2, 3, 5, 6, 7], &[0], &[0, 1, 2, 3, 4, 5, 6, 7, 10]],
+                [&[0, 1, 2, 3, 4, 5, 6, 7], &[0], &[0, 1, 2, 3, 4, 5, 6, 7, 10]],
             ),
             trace: [false, true].map(|limited| {
                 make(
@@ -380,6 +394,15 @@ impl FromWorld for ViewRenderer {
             changes: Vec::new(),
         }
     }
+}
+
+/// Corner-sunlight flips (`report_sun_flips`) follow the owner queue: a count,
+/// then up to this many (voxel, flux) records.
+pub(super) const MAX_SUN_FLIPS: u64 = 2048;
+pub(super) const SUN_FLIP_BYTES: u64 = 16 + MAX_SUN_FLIPS * 16;
+
+fn sun_flip_offset(count: u32) -> u64 {
+    (12 + 2 * u64::from(count)) * 4
 }
 
 fn grid_size(viewport: UVec2, receivers: u32) -> UVec2 {
@@ -497,6 +520,7 @@ fn render_view(
         renderer
             .budget
             .begin_frame(&device, elapsed, settings.share, settings.view_first);
+        settings.sun_flips.lock().unwrap().append(&mut renderer.budget.sun_flips);
         *settings.receipts.lock().unwrap() = ViewReceipts {
             trace_ms: renderer.budget.trace_ms,
             presentation_ms: renderer.budget.presentation_ms,
@@ -639,6 +663,7 @@ fn render_view(
     encoder.clear_buffer(&current.hash.buffer, 0, None);
     encoder.clear_buffer(&current.pool.buffer, 0, Some(POOL_PREFIX_BYTES as u64));
     encoder.clear_buffer(&camera.queue.buffer, 0, Some(48));
+    encoder.clear_buffer(&camera.queue.buffer, sun_flip_offset(count), Some(16));
     let multisampled = msaa.samples() > 1;
     let limited = scene.params.transport.x < crate::tracer::MAX_PATH_DISTANCE;
     let kernels = [
@@ -771,7 +796,7 @@ fn render_view(
     if let Some(ticket) = ticket {
         renderer
             .budget
-            .finish(encoder, &camera.queue.buffer, &current.pool.buffer, ticket, executed);
+            .finish(encoder, &camera.queue.buffer, sun_flip_offset(count), &current.pool.buffer, ticket, executed);
     }
     camera.current = 1 - camera.current;
     camera.valid = true;

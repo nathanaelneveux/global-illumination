@@ -56,10 +56,6 @@ pub(crate) struct TraceWork {
 
 pub(crate) struct ProbeWork {
     pub voxel: IVec3,
-    pub face_mask: u8,
-    /// Explicit sky demand, independent of indirect refinement. Unknown corners
-    /// request a retry; already measured corners wait for the sky change queue.
-    pub sky_requested: bool,
     pub trace_mask: u8,
     pub revision: u64,
     pub source_revision: u64,
@@ -69,7 +65,6 @@ pub(crate) struct ProbeWork {
     /// (its page stamp), when one woke it. Its statistics were already
     /// capped on the GPU; publication restarts its stability.
     pub retention: Option<u64>,
-    pub sky: [[u32; 4]; 6],
     start: usize,
 }
 
@@ -84,15 +79,12 @@ impl ProbeWork {
     ) -> Self {
         Self {
             voxel: probe.voxel,
-            face_mask: probe.face_mask,
-            sky_requested: false,
             trace_mask: 1 << face,
             revision: probe.revision,
             source_revision,
             transport_revision,
             restart: false,
             retention: None,
-            sky: [[0; 4]; 6],
             start: 0,
         }
     }
@@ -311,31 +303,23 @@ impl TraceWork {
         }
         self.probes.push(ProbeWork {
             voxel: probe.voxel,
-            face_mask: probe.face_mask,
-            sky_requested: mask == 0
-                || (0..6).any(|face| {
-                    probe.face_mask & (1 << face) != 0 && probe.display[face].sky.contains(&0)
-                }),
             trace_mask: mask,
             revision: probe.revision,
             source_revision,
             transport_revision,
             restart,
             retention: None,
-            // Filled by SkyCache before return; old presentation never crosses
-            // the worker boundary, and stale sky is rejected by the publisher.
-            sky: [[0; 4]; 6],
             start,
         });
     }
 
     #[cfg(test)]
-    pub fn from_probes(probes: &[SurfaceProbe], sky_only: bool) -> Self {
+    pub fn from_probes(probes: &[SurfaceProbe]) -> Self {
         let mut work = Self::default();
         for probe in probes {
             work.push(
                 probe,
-                if sky_only { 0 } else { probe.trace_mask },
+                probe.trace_mask,
                 probe.transport_revision,
                 probe.source_revision,
                 false,
@@ -344,10 +328,6 @@ impl TraceWork {
             );
             // Reference/benchmark inputs already own their history policy.
             let header = work.probes.last_mut().unwrap();
-            // Reference calls explicitly request current sky, including when
-            // testing geometry/source changes without the production scheduler.
-            header.sky_requested = true;
-            header.sky = probe.display.map(|face| face.sky);
             for face in &mut work.faces[header.faces()] {
                 face.samples = probe.stats().samples[face.face];
                 face.history_cap = u32::MAX;
@@ -360,11 +340,6 @@ impl TraceWork {
     pub fn copy_measurements(&self, probes: &mut [SurfaceProbe]) {
         for (job, probe) in self.probes.iter().zip(probes) {
             debug_assert_eq!(job.voxel, probe.voxel);
-            if job.sky_requested {
-                for face in 0..6 {
-                    probe.display[face].sky = job.sky[face];
-                }
-            }
             for face in &self.faces[job.faces()] {
                 face.write(probe);
             }
@@ -418,7 +393,7 @@ mod tests {
         let mut full = SurfaceProbe::new(IVec3::ZERO, 4);
         full.stats_mut().samples[2] = 2048;
         full.stats_mut().sequence[2] = 4096;
-        let mut work = TraceWork::from_probes(&[full], false);
+        let mut work = TraceWork::from_probes(&[full]);
         work.faces[0].resident = UVec2::new(0, 1);
         work.faces[0].gpu_settled = Some(true);
         let mut slim = SurfaceProbe::new_slim(IVec3::ZERO, 4);
@@ -552,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn single_face_work_is_less_than_half_a_full_probe_and_sky_copies_no_history() {
+    fn single_face_work_is_less_than_half_a_full_probe() {
         let bytes = size_of::<ProbeWork>() + size_of::<FaceWork>();
         let full = size_of::<SurfaceProbe>() + size_of::<super::super::world::ProbeStatistics>();
         assert!(bytes < full / 2);

@@ -62,9 +62,7 @@ impl DayRun {
         }
         self.last_sample = elapsed;
         self.samples.push(json!({"at_s": elapsed, "angle_deg": angle,
-            "traced_paths": stats.traced_paths, "sky_corners_traced": stats.sky_corners_traced,
-            "sky_corner_requests": stats.sky_corner_requests, "sky_rays": stats.sky_rays_scheduled,
-            "transport_batches": stats.transport_batches, "sky_only_batches": stats.sky_only_batches,
+            "traced_paths": stats.traced_paths, "transport_batches": stats.transport_batches,
             "gpu_ms_per_frame": stats.gpu_ms_per_frame, "trace_batch_ms": stats.last_trace_batch_ms}));
     }
 }

@@ -34,7 +34,7 @@ impl Fixture {
                 f.scene,
                 f.sources,
                 f.materials,
-                TraceWork::from_probes(&f.receivers[..1], false),
+                TraceWork::from_probes(&f.receivers[..1]),
             )
         } else {
             let (scene, sources, probes) = crate::gpu::tests::open_floor_fixture();
@@ -42,7 +42,7 @@ impl Fixture {
                 scene,
                 sources,
                 VoxelMaterialTransportTable::default(),
-                TraceWork::from_probes(&probes[264..265], false),
+                TraceWork::from_probes(&probes[264..265]),
             )
         };
         let emitters = Arc::new(EmissionDistribution::build(&scene,
@@ -55,7 +55,6 @@ impl Fixture {
             &mut work,
             16,
             &emitters,
-            false,
         )
         .unwrap();
         let device = &gpu.context.device;
@@ -278,7 +277,6 @@ impl Fixture {
                 &mut self.work,
                 16,
                 &self.emitters,
-                false,
             )
             .unwrap();
         self.control();

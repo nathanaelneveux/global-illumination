@@ -1,23 +1,41 @@
-//! Deterministic direct-sun visibility at virtual unit-face corners,
-//! independent of greedy mesh vertices. A corner stores which directional
-//! lights it sees, not their energy: the display applies each light's current
-//! direction and color, so a moving or recolored sun changes only shadow
-//! borders in this cache.
+//! Direct-sun visibility at virtual unit-face corners, independent of greedy
+//! mesh vertices. A corner word stores which directional lights it sees, not
+//! their energy: the display applies each light's current direction and
+//! color. The view tier traces the words of visible faces.
 use bevy::prelude::*;
 
+use super::sources::TransportSources;
+#[cfg(test)]
 use super::world::FACE_OFFSETS;
 
-/// A measured corner word. Zero is unknown/unmeasured; a known word has this
-/// bit plus one lit bit per directional light (source order).
-pub(crate) const KNOWN: u32 = 1 << 31;
-/// Directional lights the corner cache and display carry.
-pub(crate) const MAX_SKY_LIGHTS: usize = 4;
-
-/// Is `light` visible from a known corner word?
-pub(crate) fn lit(word: u32, light: usize) -> bool {
-    word & KNOWN != 0 && word & (1 << light) != 0
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SkyLight {
+    pub direction: Vec3,
+    pub color: Vec3,
 }
 
+/// The directional lights corner words count: those with visible color, in
+/// source order, at most `MAX_SKY_LIGHTS` (a corner's lit bit `i` is light
+/// `i` of this list; `sky_corner_visibility` counts the same way).
+pub(crate) fn sky_lights(sources: &TransportSources) -> Vec<SkyLight> {
+    sources
+        .directional
+        .iter()
+        .filter_map(|light| {
+            let color = (light.radiance - light.custom_visible).max(Vec3::ZERO);
+            (color.max_element() > 0.0).then_some(SkyLight {
+                direction: light.direction.normalize_or_zero(),
+                color,
+            })
+        })
+        .take(MAX_SKY_LIGHTS)
+        .collect()
+}
+
+/// Directional lights corner words and the display carry.
+pub(crate) const MAX_SKY_LIGHTS: usize = 4;
+
+#[cfg(test)]
 pub(crate) fn face_axes(face: usize) -> (IVec3, IVec3) {
     match face / 2 {
         0 => (IVec3::Y, IVec3::Z),
@@ -26,6 +44,8 @@ pub(crate) fn face_axes(face: usize) -> (IVec3, IVec3) {
     }
 }
 
+/// A face corner's lattice position: the same for every face sharing it.
+#[cfg(test)]
 pub(crate) fn corner_position(voxel: IVec3, face: usize, corner: usize) -> IVec3 {
     let (u, v) = face_axes(face);
     voxel
@@ -73,15 +93,6 @@ pub(crate) fn contact_shadow_fixture() -> (
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn visibility_words_distinguish_unknown_shadowed_and_each_light() {
-        assert!(!lit(0, 0));
-        assert!(!lit(KNOWN, 0));
-        let word = KNOWN | 0b101;
-        assert!(lit(word, 0) && !lit(word, 1) && lit(word, 2));
-        assert_ne!(KNOWN, 0);
-    }
 
     #[test]
     fn shared_corner_positions_are_identical_for_all_face_directions_and_negative_coordinates() {

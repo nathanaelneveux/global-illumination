@@ -11,14 +11,12 @@ pub(crate) struct Readback {
     pub(super) completion: std::sync::Mutex<mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>>,
     pub(super) submitted: Instant,
     pub(super) face_bytes: usize,
-    /// GPU picks this batch: the statistics mirror follows the sky results.
+    /// GPU picks this batch: the statistics mirror follows the CPU's faces.
     pub(super) picks: u32,
     pub(super) mirror_records: u32,
     pub(super) bytes: usize,
     pub(super) timestamp_bytes: usize,
     pub(super) samples: u32,
-    pub(super) sky_pending: Vec<IVec3>,
-    pub(super) sky_ticket: super::super::sky_cache::SkyTicket,
     pub(super) prepare_ms: f32,
     pub(super) ready: bool,
 }

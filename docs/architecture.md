@@ -54,7 +54,7 @@ a test oracle. Rendering does not wait for CPU delivery of lighting statistics.
 | Bidirectional RGB face ownership (two-way cache) | `voxel_view_cache.wgsl`, `gpu/view/cache_tests.rs` |
 | Stable GPU ownership, accumulation and bounded snapshots | `gpu/resident.rs`, `gpu/readback.rs`, `voxel_accumulate.wgsl` |
 | Shared uncertainty heuristic | `statistics.rs` |
-| Direct-sun visibility cache | `sky.rs`, `sky_cache.rs` |
+| Direct-sun corner words and change footprints | `sky.rs`, `voxel_path.wgsl`, `voxel_trace.wgsl` (`trace_footprints`) |
 | Temporal display and initialization | `history.rs` |
 | Material data and shared buffers | `render.rs` |
 | BVW mesh material (connector crate) | `voxel_gi_bvw/src/material.rs`, `voxel_gi_bvw/shaders/voxel_transport.wgsl` |
@@ -482,57 +482,49 @@ or stochastic diffuse environment radiance. The latter belongs to path transport
 
 ## Shared sunlight, separate estimator
 
-A directional visibility query has a known ray direction. The cache interns
-integer corner positions; one ray per corner and visibly colored sun (at most
-four) records whether that sun is visible. The canonical origin is displaced
-toward the source, not toward a particular face normal. Grid-plane ties are
-consistent on CPU and GPU.
+Direct sunlight is evaluated at virtual face corners. One ray per corner and
+visibly colored sun (at most four) records whether that sun is visible; the
+canonical origin is displaced toward the source, not toward a particular face
+normal, so faces sharing a corner agree (`sky_corner_visibility`).
 
 A corner stores a visibility word, not energy: zero is unknown, otherwise a
-known bit plus one lit bit per sun (source order of the visibly colored suns;
-CPU and GPU count the same way). The display shader applies each sun's current
-direction and transport color (`GpuTransportSettings` sun fields, kept by
-`synchronize_sun_display`) with the face's axis normal, so a sun that moves or
-changes color relights every frame without a retrace. Four corner words per
-face preserve the 208-byte display probe.
+known bit plus one lit bit per sun (source order of the visibly colored suns,
+`sky::sky_lights`). The display shader applies each sun's current direction and
+transport color (`GpuTransportSettings` sun fields) with the face's axis
+normal, so a sun that moves or changes color relights every frame without a
+retrace. The view tier traces the words of every visible face it owns,
+refreshing each face every `SUN_REFRESH_FRAMES` frames (a new or re-identified
+face at once); the material traces faces the view tier does not own.
 
-`SkyCache` persists across batches and uses spatial buckets to invalidate corners
-intersecting changed geometry's shadow sweeps, including distant receivers.
-Visibility generations are keyed by a cube-projected grid of sun directions
-with ~0.5° cells (`visibility_key`): a sun leaving its cell invalidates
-visibility (corners keep showing the previous word until retraced); color
-changes, motion within a cell, camera motion, display toggles, points and
-environment changes do not. Retired receiver corners are pruned. Unknown
-corners retry. A corner whose lit bits flip records a Light change (luminance
-at the current sun), which measured retention spreads to nearby faces: an
-opening far above a floor reaches the floor, and a moving shadow border caps
-the bounce history it changes. A flip's flux is the reflected change (times
-the most reflective solid voxel at the corner), as edit flux is measured;
-while the sun moves (a visibility step in the last 10 s) flips merge in their
-buckets and publish at most every 250 ms, while under a still sun they publish
-at once. A gradually moving sun is not a source reset (`SourceChange::Sun`, see
-below); the day-cycle validation profile measures it.
+Sunlight changes also change bounce light far from where they happen. A
+changed box's shadow lands along each sun direction, so every batch's changed
+boxes (edits first, then loads and unknown changes, at most 64) get a **shadow
+footprint** on the GPU (`trace_footprints`, `voxel_trace.wgsl`): tubes through
+the box toward each sun whose sun side is clear land on surfaces whose
+sunlight depends only on the box's content. The landing patch becomes a Light
+change event there, with the reflected flux (sunlight across the tube's
+section times the albedo), reserved by the CPU and filled before preparation
+applies the events, so both tiers' retention sees it in the same batch. A
+skylight 38 voxels above a cave floor relights the floor and the walls it
+lights, which the edit's own distance rule would leave alone
+(`skylight_footprint_lands_on_the_floor_below_and_a_covered_one_nowhere`; the
+`cave` profile's skylight variant). A gradually moving sun is not a source
+reset (`SourceChange::Sun`, see below). Its shadow borders move instead: a
+visible face whose refreshed corner word differs from its last one, both
+known, reports the reflected change (a quarter face per flipped corner and
+sun; `report_sun_flips`). The flips ride back with the view tier's timing
+receipt, merge into region-sized buckets (`sun_changes.rs`) and publish as
+Light changes at most every 250 ms, which cut the bounce history the border
+changes. Edits flip corners too; a second cut a few frames after the footprint
+only caps again, losing those frames' samples.
 
-Sky requests come in three tiers: explicit requests (new probes), then the
-band, then the world sweep. The band holds the voxels touching corners whose
-lit bits flipped in the previous visibility generation and their axis
-neighbours (shadow borders move about a voxel per 0.5° step), and the voxels
-touching corners that changed geometry invalidated (shadows near an edit and
-under new terrain). The worker sorts each band nearest the batch focus; bands
-accumulate on the main thread, bounded, with the sweep as fallback. The
-publication path does not scan an edit's neighbourhood for sky.
-
-Sky jobs share the indirect worker/submission, geometry and scratch buffers.
-`ProbeWork::sky_requested` records explicit sunlight demand. Indirect refinement
-requests missing corners, but does not repeatedly look up or copy measured sun
-values. Geometry and sun changes use the existing urgent/global sky queues;
-overlapping requests attach to the same receiver job in linear time. Publication
-ignores unrequested sky output rather than interpreting zeroed scratch as dark.
-Sky-only receivers carry no transport faces, cannot alter simulation history,
-and submit no GPU work when all corners are cached. Deterministic sky changes
-bypass the normal display upload interval. Separate eligibility is useful here:
-one deterministic visibility measurement and a noisy hemisphere integral do not
-have the same convergence or invalidation requirements.
+Until 2026-10-24 a CPU sky cache traced world-cache corners in sky-only GPU
+batches, kept them in spatial buckets, and published corner flips as Light
+events. Nothing displayed its corners. The GPU paths replaced both roles with
+less lag: on the day cycle (0.3°/s, M4 headless) FLIP against fixed-sun
+references fell from .020/.031/.039 to .018/.023/.034 at 60/120/180 s
+(without any flip events it was .024/.042/.059), and the skylight's
+indirect response matched it within the first second and was lower after.
 
 ## Revisions and history
 

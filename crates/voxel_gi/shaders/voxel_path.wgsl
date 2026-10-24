@@ -223,7 +223,7 @@ fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayResul
     return trace_domain(origin, direction, max_distance, false);
 }
 
-// Canonical grid-corner visibility shared by world and view receiver domains.
+// Canonical grid-corner sun visibility of view-owned faces.
 fn sky_corner_visibility(position: vec3<f32>) -> u32 {
     var word = 0x80000000u;
     // Lit bits count lights with visible color, as `sky_lights` does on CPU.

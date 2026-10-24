@@ -211,7 +211,7 @@ fn synchronize_material_settings(
     let Some(runtime) = runtime else {
         return;
     };
-    let lights = super::sky_cache::sky_lights(&runtime.sources);
+    let lights = super::sky::sky_lights(&runtime.sources);
     let mut next = GpuTransportSettings {
         enabled: u32::from(display.enabled),
         reconstruction: u32::from(display.corner_reconstruction),
