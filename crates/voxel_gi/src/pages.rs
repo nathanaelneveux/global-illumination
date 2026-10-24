@@ -161,6 +161,9 @@ pub(super) fn ingest_input(
     }
 }
 
+/// Dirty pages one scene build samples at most (about 48 MB of dense samples).
+const MAX_SCENE_PAGES: usize = 768;
+
 pub(super) fn start_scene_task(
     mut runtime: ResMut<VoxelGiRuntime>,
     source: Res<VoxelGiSource>,
@@ -187,8 +190,27 @@ pub(super) fn start_scene_task(
     };
 
     let mut dirty_pages: Vec<_> = runtime.dirty_pages.drain().collect();
+    if dirty_pages.len() > MAX_SCENE_PAGES {
+        // Each dirty page is sampled densely (64 KB) in one build. Streaming a
+        // far world queued tens of thousands at once: gigabytes of transient
+        // samples and one very late build. Take edited pages, then the nearest;
+        // the rest wait for the next build.
+        let focus = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
+            page_of(camera.translation().floor().as_ivec3())
+        });
+        let edited: HashSet<IVec3> = runtime.dirty_voxels.iter().map(|voxel| page_of(*voxel)).collect();
+        dirty_pages.sort_unstable_by_key(|page| {
+            (!edited.contains(page), (page.as_i64vec3() - focus.as_i64vec3()).length_squared())
+        });
+        let deferred = dirty_pages.split_off(MAX_SCENE_PAGES);
+        runtime.dirty_pages.extend(deferred);
+    }
     dirty_pages.sort_unstable_by_key(|p| (p.z, p.y, p.x));
-    let full_resample = std::mem::take(&mut runtime.full_resample_pages);
+    let full_resample: HashSet<IVec3> = dirty_pages
+        .iter()
+        .copied()
+        .filter(|page| runtime.full_resample_pages.remove(page))
+        .collect();
     let edits: HashMap<_, _> = dirty_pages
         .iter()
         .filter_map(|page| {
