@@ -260,6 +260,12 @@ research, 1.2k diagnostics) and 3.3k of WGSL.
    `crates/voxel_gi_debug`; the lab stays the root package. Core publishes
    `VoxelGiMaterialData` and touches no material; the connector owns the BVW
    material. Connector tests reach core only through `#[doc(hidden)] testing`.
+   Cost check (M4, headless 1440p streaming, baseline worktree at `37e5117`
+   alternated with `0f0a18b`): two full gate pairs show view-tier GPU receipts
+   within ±0.22 ms with no consistent sign, and static captures identical;
+   four more streaming pairs give frame p50/p95/p99 23.06/25.25/26.13 ms
+   (baseline) vs 23.03/25.26/26.19 (split), GI main p95 0.83 vs 0.77. No
+   measurable cost.
 4. **Public API.** Narrow `pub` items, the material split (decision 1, after
    the 0.20 spike), plugin configuration and tuning presets, docs and a minimal
    example (a few voxels, a sun, one camera).
