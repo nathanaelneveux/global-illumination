@@ -1,7 +1,7 @@
 //! Deterministic transport fixtures shared by opt-in research studies. These
 //! reuse the host scenes' geometry/material policy and allocate only in tests.
 use super::{
-    EnergySpectrum, TransportSources, VoxelMaterialTransportTable,
+    Vec3, TransportSources, VoxelMaterialTransportTable,
     naadf::{linear_index, volume_len},
     sources::DirectionalTransportLight,
     world::{AIR, FACE_OFFSETS, PAGE_SIZE, SurfaceProbe, TransportScene},
@@ -38,7 +38,7 @@ pub(super) fn skylight_room() -> ResearchFixture {
     materials.set(
         3,
         super::MaterialTransport {
-            diffuse: EnergySpectrum::new(Vec3::new(0.8, 0.06, 0.03), 0.5, 0.1),
+            diffuse: Vec3::new(0.8, 0.06, 0.03),
             ..default()
         },
     );
@@ -52,7 +52,7 @@ pub(super) fn skylight_room() -> ResearchFixture {
         sources: TransportSources {
             directional: vec![DirectionalTransportLight {
                 direction: Vec3::new(0.3, 1.0, 0.2).normalize(),
-                radiance: EnergySpectrum::new(Vec3::splat(6.0), 3.0, 1.0),
+                radiance: Vec3::splat(6.0),
                 custom_visible: Vec3::ZERO,
             }],
             ..default()
@@ -79,8 +79,8 @@ pub(super) fn furnace() -> ResearchFixture {
     materials.set(
         4,
         super::MaterialTransport {
-            diffuse: EnergySpectrum::new(Vec3::new(0.3, 0.55, 0.7), 0.2, 0.65),
-            emission: EnergySpectrum::new(Vec3::new(0.7, 1.3, 0.2), 2.2, 0.9),
+            diffuse: Vec3::new(0.3, 0.55, 0.7),
+            emission: Vec3::new(0.7, 1.3, 0.2),
         },
     );
     ResearchFixture {
@@ -91,7 +91,7 @@ pub(super) fn furnace() -> ResearchFixture {
         )),
         materials,
         sources: TransportSources {
-            environment: EnergySpectrum::ZERO,
+            environment: Vec3::ZERO,
             directional: vec![],
             points: vec![],
         },
@@ -161,7 +161,7 @@ pub(super) fn hallway() -> ResearchFixture {
         materials,
         receivers,
         sources: TransportSources {
-            environment: EnergySpectrum::ZERO,
+            environment: Vec3::ZERO,
             directional: vec![],
             points: vec![],
         },
@@ -171,8 +171,6 @@ pub(super) fn hallway() -> ResearchFixture {
 
 /// A 56×40×56 enclosed cavity: extensive lava, a blue-lit central spire,
 /// green ceiling crystals, wall torches and a small far-side skylight.
-/// IR and ionizing emissions are independent, normalized game transport bands,
-/// not a calibrated physical model of lava or thorium.
 pub(super) fn cave() -> ResearchFixture {
     let mut pages = Vec::new();
     for pz in 0..2 {
@@ -235,7 +233,7 @@ pub(super) fn cave() -> ResearchFixture {
             environment: crate::cave_scene::ENVIRONMENT,
             directional: vec![DirectionalTransportLight {
                 direction: crate::cave_scene::sun_direction(),
-                radiance: EnergySpectrum::new(Vec3::splat(4.0), 2.0, 0.0),
+                radiance: Vec3::splat(4.0),
                 custom_visible: Vec3::ZERO,
             }],
             points: vec![],
@@ -243,14 +241,8 @@ pub(super) fn cave() -> ResearchFixture {
     }
 }
 
-pub(super) fn channels(value: EnergySpectrum) -> [f32; 5] {
-    [
-        value.visible.x,
-        value.visible.y,
-        value.visible.z,
-        value.infrared,
-        value.ionizing,
-    ]
+pub(super) fn channels(value: Vec3) -> [f32; 3] {
+    value.to_array()
 }
 
 /// Fully resident canyon volume. Uniform air/rock regions compact naturally in
@@ -329,7 +321,7 @@ pub(super) fn canyon() -> ResearchFixture {
             environment: crate::canyon_scene::ENVIRONMENT,
             directional: vec![DirectionalTransportLight {
                 direction: crate::canyon_scene::sun_direction(),
-                radiance: EnergySpectrum::new(Vec3::splat(2.0), 0.2, 0.0),
+                radiance: Vec3::splat(2.0),
                 custom_visible: Vec3::ZERO,
             }],
             points: vec![],
@@ -372,9 +364,7 @@ fn cave_has_exposed_receivers_many_sources_and_independent_hidden_bands() {
             }
         }
     }
-    assert_eq!(channels(cave.materials.get(4).emission)[4], 0.0);
-    assert_eq!(channels(cave.materials.get(6).emission)[3], 0.0);
-    assert!(cave.sources.environment.visible.max_element() > 0.0);
+    assert!(cave.sources.environment.max_element() > 0.0);
     eprintln!(
         "CAVE_FIXTURE receivers={} emissive_faces={}",
         cave.receivers.len(),

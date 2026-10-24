@@ -16,9 +16,7 @@ struct Receiver {
 fn native_view_batches_preserve_raw_prefixes_and_pending_tails() {
     let mut gpu = crate::voxel_gi::gpu::tests::native_tracer();
     let fixture = research::furnace();
-    let emitters = Arc::new(EmissionDistribution::with_importance(
-        &fixture.scene, &fixture.materials, VoxelGiSettings::default().sampling_importance(),
-    ));
+    let emitters = Arc::new(EmissionDistribution::build(&fixture.scene, &fixture.materials));
     let mut work = TraceWork::default();
     gpu.submit_compact(fixture.scene.clone(), &fixture.sources, &fixture.materials,
         &mut work, 0, &emitters, true).unwrap();

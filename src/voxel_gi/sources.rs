@@ -1,6 +1,6 @@
 //! Analytic source snapshots shared by CPU and GPU transport.
 //! Bevy light adaptation lives here; estimators depend only on these values.
-use super::spectrum::EnergySpectrum;
+use super::spectrum::Radiance;
 use super::{
     EnergyEmitter, VoxelEnergyField, VoxelGiRuntime, VoxelGiStats, VoxelMaterialTransportTable,
     advance_transport_revision, sky_cache, telemetry::GiWorkTimings,
@@ -15,11 +15,11 @@ use std::sync::Arc;
 /// tracer's upper/lower-hemisphere gradient. Independent of the raster sky color.
 /// Insert before `VoxelGiPlugin`, or change at runtime to relight the field.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
-pub struct VoxelGiEnvironment(pub EnergySpectrum);
+pub struct VoxelGiEnvironment(pub Vec3);
 
 impl Default for VoxelGiEnvironment {
     fn default() -> Self {
-        Self(EnergySpectrum::new(Vec3::new(0.16, 0.24, 0.38), 0.08, 0.0))
+        Self(Vec3::new(0.16, 0.24, 0.38))
     }
 }
 
@@ -41,21 +41,21 @@ const SUN_STEP_LIMIT_DEGREES: f32 = 2.0;
 pub struct DirectionalTransportLight {
     /// Direction from a surface toward the light.
     pub direction: Vec3,
-    pub radiance: EnergySpectrum,
+    pub radiance: Vec3,
     pub custom_visible: Vec3,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PointTransportLight {
     pub position: Vec3,
-    pub intensity: EnergySpectrum,
+    pub intensity: Vec3,
     pub range: f32,
     pub custom_visible: Vec3,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TransportSources {
-    pub environment: EnergySpectrum,
+    pub environment: Vec3,
     pub directional: Vec<DirectionalTransportLight>,
     pub points: Vec<PointTransportLight>,
 }
@@ -128,20 +128,20 @@ pub(super) fn synchronize_transport_sources(
     for (light, transform, extra) in &directional_lights {
         let linear = light.color.to_linear();
         let color = Vec3::new(linear.red, linear.green, linear.blue);
-        let mut radiance = EnergySpectrum::new(color * (light.illuminance / 10_000.0), 0.0, 0.0);
+        let mut radiance = color * (light.illuminance / 10_000.0);
         if let Some(extra) = extra {
             radiance += extra.spectrum;
         }
         next.directional.push(DirectionalTransportLight {
             direction: transform.back().as_vec3(),
             radiance: radiance.bounded(1e12),
-            custom_visible: extra.map_or(Vec3::ZERO, |extra| extra.spectrum.bounded(1e12).visible),
+            custom_visible: extra.map_or(Vec3::ZERO, |extra| extra.spectrum.bounded(1e12)),
         });
     }
     for (light, transform, extra) in &point_lights {
         let linear = light.color.to_linear();
         let color = Vec3::new(linear.red, linear.green, linear.blue);
-        let mut intensity = EnergySpectrum::new(color * (light.intensity / 1_000.0), 0.0, 0.0);
+        let mut intensity = color * (light.intensity / 1_000.0);
         if let Some(extra) = extra {
             intensity += extra.spectrum;
         }
@@ -149,7 +149,7 @@ pub(super) fn synchronize_transport_sources(
             position: transform.translation(),
             intensity: intensity.bounded(1e12),
             range: extra.map_or(light.range, |emitter| emitter.range.max(light.range)),
-            custom_visible: extra.map_or(Vec3::ZERO, |extra| extra.spectrum.bounded(1e12).visible),
+            custom_visible: extra.map_or(Vec3::ZERO, |extra| extra.spectrum.bounded(1e12)),
         });
     }
     for (emitter, transform) in &energy_emitters {
@@ -157,7 +157,7 @@ pub(super) fn synchronize_transport_sources(
             position: transform.translation(),
             intensity: emitter.spectrum.bounded(1e12),
             range: emitter.range,
-            custom_visible: emitter.spectrum.bounded(1e12).visible,
+            custom_visible: emitter.spectrum.bounded(1e12),
         });
     }
     // Eliminate empty sources before either backend (and the sunlight cache)
@@ -196,10 +196,10 @@ pub(super) fn synchronize_transport_sources(
 /// changed energy by a small step.
 fn gradual_sun(next: &[DirectionalTransportLight], previous: &[DirectionalTransportLight]) -> bool {
     let limit = SUN_STEP_LIMIT_DEGREES.to_radians().cos();
-    let small = |a: EnergySpectrum, b: EnergySpectrum| {
+    let small = |a: Vec3, b: Vec3| {
         let d = a - b;
-        let change = d.visible.abs().max_element().max(d.infrared.abs()).max(d.ionizing.abs());
-        change <= 0.1 * a.max_component().max(b.max_component()) || change < 0.05
+        let change = d.abs().max_element();
+        change <= 0.1 * a.max_element().max(b.max_element()) || change < 0.05
     };
     next.len() == previous.len()
         && next.iter().zip(previous).all(|(a, b)| {
@@ -210,8 +210,8 @@ fn gradual_sun(next: &[DirectionalTransportLight], previous: &[DirectionalTransp
         })
 }
 
-fn contributes(energy: EnergySpectrum, custom_visible: Vec3) -> bool {
-    energy.max_component() > 0.0 || custom_visible.max_element() > 0.0
+fn contributes(energy: Vec3, custom_visible: Vec3) -> bool {
+    energy.max_element() > 0.0 || custom_visible.max_element() > 0.0
 }
 
 impl TransportSources {
@@ -266,10 +266,8 @@ impl TransportSources {
     }
 }
 
-fn compare_energy(a: EnergySpectrum, b: EnergySpectrum) -> Ordering {
-    compare_vec3(a.visible, b.visible)
-        .then_with(|| a.infrared.total_cmp(&b.infrared))
-        .then_with(|| a.ionizing.total_cmp(&b.ionizing))
+fn compare_energy(a: Vec3, b: Vec3) -> Ordering {
+    compare_vec3(a, b)
 }
 
 fn compare_point(a: &PointTransportLight, b: &PointTransportLight) -> Ordering {
@@ -377,7 +375,7 @@ mod tests {
             .world_mut()
             .spawn((
                 EnergyEmitter {
-                    spectrum: EnergySpectrum::new(Vec3::ZERO, 2.0, 0.0),
+                    spectrum: Vec3::splat(2.0),
                     ..default()
                 },
                 GlobalTransform::IDENTITY,
@@ -398,7 +396,6 @@ mod tests {
         assert!(
             app.world().resource::<VoxelGiRuntime>().sources.points[0]
                 .intensity
-                .visible
                 .max_element()
                 > 0.0
         );
@@ -524,15 +521,15 @@ mod tests {
         let revision = runtime.source_revision;
 
         app.world_mut().entity_mut(point).insert(EnergyEmitter {
-            spectrum: EnergySpectrum::new(Vec3::ZERO, 2.0, 0.0),
+            spectrum: Vec3::splat(2.0),
             ..default()
         });
         app.world_mut().entity_mut(sun).insert(EnergyEmitter {
-            spectrum: EnergySpectrum::new(Vec3::ZERO, 0.0, 3.0),
+            spectrum: Vec3::splat(3.0),
             ..default()
         });
         app.world_mut().entity_mut(emitter).insert(EnergyEmitter {
-            spectrum: EnergySpectrum::new(Vec3::ONE, 0.0, 0.0),
+            spectrum: Vec3::ONE,
             ..default()
         });
         app.update();
@@ -544,7 +541,7 @@ mod tests {
                 .sources
                 .points
                 .iter()
-                .any(|p| p.intensity.infrared == 2.0)
+                .any(|p| p.intensity == Vec3::splat(2.0))
         );
         assert!(
             runtime
@@ -553,8 +550,8 @@ mod tests {
                 .iter()
                 .any(|p| p.custom_visible == Vec3::ONE)
         );
-        assert_eq!(runtime.sources.directional[0].radiance.ionizing, 3.0);
-        assert!(contributes(EnergySpectrum::ZERO, Vec3::ONE));
+        assert_eq!(runtime.sources.directional[0].radiance, Vec3::splat(3.0));
+        assert!(contributes(Vec3::ZERO, Vec3::ONE));
 
         for entity in [point, sun, emitter] {
             app.world_mut().entity_mut(entity).remove::<EnergyEmitter>();
@@ -569,7 +566,7 @@ mod tests {
     fn point(x: f32, power: f32) -> PointTransportLight {
         PointTransportLight {
             position: Vec3::new(x, 0.0, 0.0),
-            intensity: EnergySpectrum::new(Vec3::splat(power), power * 0.5, power * 0.25),
+            intensity: Vec3::splat(power),
             custom_visible: Vec3::ZERO,
             range: 8.0,
         }
@@ -633,7 +630,7 @@ mod tests {
         let sun = |degrees: f32, power: f32| TransportSources {
             directional: vec![DirectionalTransportLight {
                 direction: Quat::from_rotation_z(degrees.to_radians()) * Vec3::Y,
-                radiance: EnergySpectrum::new(Vec3::splat(power), 0.1, 0.0),
+                radiance: Vec3::splat(power),
                 custom_visible: Vec3::ZERO,
             }],
             ..default()
@@ -697,7 +694,7 @@ mod tests {
             app.world().resource::<VoxelGiRuntime>().source_revision,
             revision
         );
-        app.world_mut().resource_mut::<VoxelGiEnvironment>().0 = EnergySpectrum::ZERO;
+        app.world_mut().resource_mut::<VoxelGiEnvironment>().0 = Vec3::ZERO;
         app.update();
         assert_eq!(
             app.world().resource::<VoxelGiRuntime>().source_revision,
@@ -705,7 +702,7 @@ mod tests {
         );
         assert_eq!(
             app.world().resource::<VoxelGiRuntime>().sources.environment,
-            EnergySpectrum::ZERO
+            Vec3::ZERO
         );
         app.world_mut().despawn(light);
         app.update();

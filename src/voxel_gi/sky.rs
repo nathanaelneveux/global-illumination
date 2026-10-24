@@ -40,7 +40,7 @@ pub(crate) fn contact_shadow_fixture() -> (
     super::sources::TransportSources,
     Vec<super::world::SurfaceProbe>,
 ) {
-    use super::EnergySpectrum;
+    use super::Vec3;
     use super::naadf::{linear_index, volume_len};
     use super::sources::{DirectionalTransportLight, TransportSources};
     use super::world::{AIR, PAGE_SIZE, SurfaceProbe, TransportScene};
@@ -59,7 +59,7 @@ pub(crate) fn contact_shadow_fixture() -> (
     let sources = TransportSources {
         directional: vec![DirectionalTransportLight {
             direction: Vec3::new(-0.35, 1.0, 0.0).normalize(),
-            radiance: EnergySpectrum::ONE,
+            radiance: Vec3::ONE,
             custom_visible: Vec3::ZERO,
         }],
         ..default()

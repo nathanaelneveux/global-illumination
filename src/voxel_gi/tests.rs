@@ -93,8 +93,8 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
             probe.revision += 1;
             probe.stats_mut().stable_batches = [0; 6];
         } else if case == 3 {
-            probe.stats_mut().radiance[2] = EnergySpectrum::ONE;
-            probe.stats_mut().second_moment[2] = EnergySpectrum::ONE;
+            probe.stats_mut().radiance[2] = Vec3::ONE;
+            probe.stats_mut().second_moment[2] = Vec3::ONE;
         } else if case == 4 {
             // A batch dispatched before a tuning change must not publish into
             // the new model. Geometry and the last display remain usable.
@@ -102,7 +102,7 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
             world
                 .run_system_once(settings::synchronize_transport_settings)
                 .unwrap();
-            probe.stats_mut().radiance[2] = EnergySpectrum::ONE * 100.0;
+            probe.stats_mut().radiance[2] = Vec3::ONE * 100.0;
         }
         let task = pool.spawn(async move {
             TraceBatchResult {
@@ -142,7 +142,7 @@ fn settled_counter_follows_accepted_transport_not_sky_only_or_rejected_batches()
                 world.resource::<VoxelEnergyField>().probes[&IVec3::ZERO]
                     .stats()
                     .radiance[2],
-                EnergySpectrum::ONE
+                Vec3::ONE
             );
         }
     }
@@ -362,8 +362,8 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             probe.material = 3;
             probe.stats_mut().samples = [1024; 6];
             probe.stats_mut().sequence = [2048; 6];
-            probe.stats_mut().radiance = [EnergySpectrum::ONE; 6];
-            probe.stats_mut().second_moment = [EnergySpectrum::ONE * 2.0; 6];
+            probe.stats_mut().radiance = [Vec3::ONE; 6];
+            probe.stats_mut().second_moment = [Vec3::ONE * 2.0; 6];
             probe.display[2].indirect = Vec3::splat(0.5);
             probe.display[2].confidence = 0.75;
             probe.updated_at = Some(now);
@@ -372,7 +372,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             probe.revision = 7;
             probe.stats_mut().stable_batches = [4; 6];
             let mut late = probe.clone();
-            late.stats_mut().radiance = [EnergySpectrum::ONE * 100.0; 6];
+            late.stats_mut().radiance = [Vec3::ONE * 100.0; 6];
             let mut field = VoxelEnergyField::default();
             field.probes.insert(voxel, probe);
             field.pages.insert(IVec3::ZERO, vec![voxel]);
@@ -381,7 +381,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             materials.set(
                 4,
                 MaterialTransport {
-                    emission: EnergySpectrum::ONE * 8.0,
+                    emission: Vec3::ONE * 8.0,
                     ..default()
                 },
             );
@@ -432,8 +432,8 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             );
             assert_eq!(p.stats().samples[2], geometry::NEAR_HISTORY);
             assert_eq!(p.stats().sequence[2], 2048);
-            assert_eq!(p.stats().radiance[2], EnergySpectrum::ONE);
-            assert_eq!(p.stats().second_moment[2], EnergySpectrum::ONE * 2.0);
+            assert_eq!(p.stats().radiance[2], Vec3::ONE);
+            assert_eq!(p.stats().second_moment[2], Vec3::ONE * 2.0);
             assert_eq!(p.stats().face_updated_at[2], Some(now));
             assert_eq!(p.display_updated_at, Some(now));
             assert_eq!(p.display[2].indirect, Vec3::splat(0.5));
@@ -443,7 +443,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             assert_eq!(p.stats().stable_batches, [0; 6]);
             if face_mask == 5 {
                 assert_eq!(p.stats().samples[0], 0);
-                assert_eq!(p.stats().radiance[0], EnergySpectrum::ZERO);
+                assert_eq!(p.stats().radiance[0], Vec3::ZERO);
             }
             let task = pool.spawn(async move {
                 TraceBatchResult {
@@ -481,7 +481,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
                 world.resource::<VoxelEnergyField>().probes[&voxel]
                     .stats()
                     .radiance[2],
-                EnergySpectrum::ONE,
+                Vec3::ONE,
                 "pre-replacement jobs must not overwrite retained incident energy"
             );
         }
@@ -536,8 +536,8 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
         for voxel in [near, far] {
             let mut probe = SurfaceProbe::new(voxel, 4);
             probe.stats_mut().samples = [4096; 6];
-            probe.stats_mut().radiance = [EnergySpectrum::ONE; 6];
-            probe.stats_mut().second_moment = [EnergySpectrum::ONE; 6];
+            probe.stats_mut().radiance = [Vec3::ONE; 6];
+            probe.stats_mut().second_moment = [Vec3::ONE; 6];
             probe.stats_mut().sequence = [4096; 6];
             probe.display[2].indirect = Vec3::ONE;
             probe.updated_at = Some(Instant::now());
@@ -550,7 +550,7 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
         materials.set(
             4,
             MaterialTransport {
-                emission: EnergySpectrum::ONE,
+                emission: Vec3::ONE,
                 ..default()
             },
         );
@@ -588,7 +588,7 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
                 assert_eq!(cap.min(4096), retained, "material {material}");
                 let probe = &field.probes[&voxel];
                 assert_eq!(probe.stats().samples[2], 4096);
-                assert_eq!(probe.stats().radiance[2], EnergySpectrum::ONE);
+                assert_eq!(probe.stats().radiance[2], Vec3::ONE);
                 assert_eq!(probe.stats().sequence[2], 4096);
                 assert_eq!(probe.display[2].indirect, Vec3::ONE);
             }

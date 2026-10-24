@@ -45,11 +45,8 @@ impl Fixture {
                 TraceWork::from_probes(&probes[264..265], false),
             )
         };
-        let emitters = Arc::new(EmissionDistribution::with_importance(
-            &scene,
-            &materials,
-            VoxelGiSettings::default().sampling_importance(),
-        ));
+        let emitters = Arc::new(EmissionDistribution::build(&scene,
+            &materials));
         work.shared_view_cache = true;
         gpu.trace_compact(
             scene.clone(),
@@ -443,7 +440,7 @@ fn native_two_way_cache_reserved_paths_match_furnace_energy() {
     let result = f.resident();
     let mean = Vec3::from_array(std::array::from_fn(|i| f32::from_bits(result[i])));
     let material = f.materials.get(4);
-    let expected = material.emission.visible / (Vec3::ONE - material.diffuse.visible);
+    let expected = material.emission / (Vec3::ONE - material.diffuse);
     eprintln!(
         "shared furnace: count={} sequence={} mean={mean:?} expected={expected:?}",
         result[5], result[6]

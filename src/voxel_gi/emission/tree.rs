@@ -1,6 +1,6 @@
 //! Receiver-conditioned binary light hierarchy. The approximate importance
 //! changes only the proposal, never visibility or energy. A power mixture at
-//! every branch retains support for every emitting face in all five bands.
+//! every branch retains support for every emitting face.
 use super::*;
 
 #[derive(Clone, Copy, Default)]
@@ -203,11 +203,8 @@ mod tests {
             crate::voxel_gi::research::hallway(),
             crate::voxel_gi::research::cave(),
         ] {
-            let distribution = EmissionDistribution::with_importance(
-                &fixture.scene,
-                &fixture.materials,
-                crate::voxel_gi::VoxelGiSettings::default().sampling_importance(),
-            );
+            let distribution = EmissionDistribution::build(&fixture.scene,
+                &fixture.materials);
             for probe in fixture.receivers.iter().step_by(71).take(3) {
                 let face = probe.face_mask.trailing_zeros() as usize;
                 let normal = FACE_OFFSETS[face].as_vec3();

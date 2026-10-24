@@ -17,7 +17,7 @@ pub(super) mod temporal;
 use super::render::VoxelTransportMaterial;
 use super::world::FACE_OFFSETS;
 use super::{
-    EnergyEmitter, EnergySpectrum, MaterialTransport, VoxelEnergyField, VoxelGiDirty,
+    EnergyEmitter, Vec3, MaterialTransport, VoxelEnergyField, VoxelGiDirty,
     VoxelGiSettings, VoxelGiStats, VoxelMaterialTransportTable,
 };
 use crate::assets::{PrototypeConfig, TemplateAssets};
@@ -503,7 +503,7 @@ pub(super) fn run_validation(
             transport_materials.set(
                 250,
                 MaterialTransport {
-                    emission: EnergySpectrum::new(Vec3::new(12.0, 3.0, 0.3), 4.0, 1.0),
+                    emission: Vec3::new(12.0, 3.0, 0.3),
                     ..default()
                 },
             );
@@ -521,7 +521,7 @@ pub(super) fn run_validation(
                         ..default()
                     },
                     EnergyEmitter {
-                        spectrum: EnergySpectrum::new(Vec3::ZERO, 12.0, 3.0),
+                        spectrum: Vec3::ZERO,
                         range: 24.0,
                     },
                     Transform::from_translation(center + Vec3::Y * 4.0),
@@ -698,7 +698,6 @@ pub(super) fn run_validation(
         "settings": {"transport": settings.transport, "cache_radius": settings.cache_radius,
             "cache_share": settings.cache_share,
             "samples_per_dispatch": settings.batch_samples(),
-            "simulation_sampling_importance": settings.sampling_importance().infrared,
             "spatial_reconstruction": settings.spatial_reconstruction,
             "spatial_evidence_target": settings.spatial_evidence_target,
             "temporal_trace_scope": "world-cache receivers only; use captures for presentation",

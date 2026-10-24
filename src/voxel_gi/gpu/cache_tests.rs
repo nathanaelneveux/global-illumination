@@ -43,11 +43,8 @@ pub(super) fn all_interior_faces(fixture: &crate::voxel_gi::research::ResearchFi
 fn cached_furnace_converges_to_infinite_bounce_series() {
     let fixture = crate::voxel_gi::research::furnace();
     let material = fixture.materials.get(4);
-    let emitters = Arc::new(EmissionDistribution::with_importance(
-        &fixture.scene,
-        &fixture.materials,
-        crate::voxel_gi::VoxelGiSettings::default().sampling_importance(),
-    ));
+    let emitters = Arc::new(EmissionDistribution::build(&fixture.scene,
+        &fixture.materials));
     let mut gpu = tests::native_tracer();
     gpu.enable_resident().unwrap();
     let probes = all_interior_faces(&fixture);
@@ -102,11 +99,8 @@ fn cached_furnace_converges_to_infinite_bounce_series() {
 fn cached_furnace_lag_by_history_policy() {
     let fixture = crate::voxel_gi::research::furnace();
     let material = fixture.materials.get(4);
-    let emitters = Arc::new(EmissionDistribution::with_importance(
-        &fixture.scene,
-        &fixture.materials,
-        crate::voxel_gi::VoxelGiSettings::default().sampling_importance(),
-    ));
+    let emitters = Arc::new(EmissionDistribution::build(&fixture.scene,
+        &fixture.materials));
     let native = tests::native_tracer();
     let probes = all_interior_faces(&fixture);
     let r = channels(material.diffuse)[2];

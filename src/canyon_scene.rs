@@ -1,6 +1,6 @@
 //! Deterministic, opt-in long-range daylight fixture. The host renderer and
 //! offline transport studies share this exact geometry and optical palette.
-use crate::voxel_gi::{EnergySpectrum, MaterialTransport, VoxelMaterialTransportTable};
+use crate::voxel_gi::{MaterialTransport, VoxelMaterialTransportTable};
 use bevy::prelude::*;
 use bevy_voxel_world::prelude::WorldVoxel;
 
@@ -10,7 +10,7 @@ pub const SPAWN: Vec3 = Vec3::new(128.0, 20.0, 80.0);
 pub const EYE: Vec3 = Vec3::new(128.0, 22.0, 80.0);
 #[cfg(debug_assertions)]
 pub const TARGET: Vec3 = Vec3::new(148.0, 125.0, 350.0);
-pub const ENVIRONMENT: EnergySpectrum = EnergySpectrum::new(Vec3::new(0.25, 0.4, 0.7), 0.08, 0.0);
+pub const ENVIRONMENT: Vec3 = Vec3::new(0.25, 0.4, 0.7);
 
 pub fn sun_direction() -> Vec3 {
     Vec3::new(-0.35, 1.0, -0.4).normalize()
@@ -67,8 +67,8 @@ pub fn materials() -> VoxelMaterialTransportTable {
         table.set(
             id,
             MaterialTransport {
-                diffuse: EnergySpectrum::new(color, 0.35, 0.04),
-                emission: EnergySpectrum::ZERO,
+                diffuse: color,
+                emission: Vec3::ZERO,
             },
         );
     }

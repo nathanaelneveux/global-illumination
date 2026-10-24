@@ -36,9 +36,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
         &TransportScene::default(), vec![(IVec3::ZERO, page)], &[],
     ));
     let materials = VoxelMaterialTransportTable::default();
-    let emitters = Arc::new(EmissionDistribution::with_importance(
-        &scene, &materials, VoxelGiSettings::default().sampling_importance(),
-    ));
+    let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
     gpu.submit_compact(scene, &TransportSources::default(), &materials,
         &mut TraceWork::default(), 0, &emitters, true).unwrap();
     let scene = gpu.view_scene().unwrap();

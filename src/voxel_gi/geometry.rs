@@ -91,7 +91,7 @@ fn emission_luminance(
         return 0.0;
     }
     materials.map_or(0.0, |table| {
-        let e = table.get(material as u8).emission.visible;
+        let e = table.get(material as u8).emission;
         0.2126 * e.x + 0.7152 * e.y + 0.0722 * e.z
     })
 }

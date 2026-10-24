@@ -240,7 +240,7 @@ fn compare(gpu: &GpuTracer, work: &TraceWork, first: u32, samples: u32) -> (usiz
             assert!(energy.is_finite() && energy.min_element() >= 0.0);
             sum += energy;
             assert!(
-                (vector(&record[28..]) - near.direct.visible)
+                (vector(&record[28..]) - near.direct)
                     .abs()
                     .max_element()
                     < 2e-5
@@ -251,13 +251,13 @@ fn compare(gpu: &GpuTracer, work: &TraceWork, first: u32, samples: u32) -> (usiz
             "known black paths still count; unknown paths do not"
         );
         let far = sum / count.max(1) as f32;
-        let error = (far - near.radiance.visible).abs().max_element();
+        let error = (far - near.radiance).abs().max_element();
         assert!(
-            error <= 2e-5 * (1.0 + near.radiance.visible.max_element()),
+            error <= 2e-5 * (1.0 + near.radiance.max_element()),
             "{:?}/{} prefix {first}+{samples}: near={:?} far={far:?}",
             receiver.voxel,
             receiver.face,
-            near.radiance.visible
+            near.radiance
         );
     }
     (hits, unknown)
@@ -272,11 +272,8 @@ fn view_paths_match_near_prefixes_across_sources_and_reach() {
         ("skylight", research::skylight_room()),
         ("cave", research::cave()),
     ] {
-        let emitters = Arc::new(EmissionDistribution::with_importance(
-            &fixture.scene,
-            &fixture.materials,
-            crate::voxel_gi::VoxelGiSettings::default().sampling_importance(),
-        ));
+        let emitters = Arc::new(EmissionDistribution::build(&fixture.scene,
+            &fixture.materials));
         let probes: Vec<_> = fixture
             .receivers
             .iter()
@@ -322,7 +319,7 @@ fn view_paths_preserve_dark_unknown_and_inactive_measurements() {
     let mut gpu = GpuTracer::with_kernel(super::tests::native_tracer().context, false).unwrap();
     let (scene, _, probes) = super::tests::open_floor_fixture();
     let sources = TransportSources {
-        environment: EnergySpectrum::ZERO,
+        environment: Vec3::ZERO,
         directional: vec![],
         points: vec![],
     };
@@ -348,7 +345,7 @@ fn view_paths_preserve_dark_unknown_and_inactive_measurements() {
         assert!(
             work.faces
                 .iter()
-                .all(|face| face.radiance.visible == Vec3::ZERO)
+                .all(|face| face.radiance == Vec3::ZERO)
         );
         if !gap {
             assert!(work.faces.iter().all(|face| face.samples == 17));
@@ -370,11 +367,8 @@ fn view_paths_preserve_dark_unknown_and_inactive_measurements() {
 #[ignore = "native near/view termination on the same frozen raw cache"]
 fn view_paths_match_near_at_the_surface_cache_boundary() {
     let fixture = research::furnace();
-    let emitters = Arc::new(EmissionDistribution::with_importance(
-        &fixture.scene,
-        &fixture.materials,
-        crate::voxel_gi::VoxelGiSettings::default().sampling_importance(),
-    ));
+    let emitters = Arc::new(EmissionDistribution::build(&fixture.scene,
+        &fixture.materials));
     let mut warm = super::tests::native_tracer();
     warm.enable_resident().unwrap();
     let all_faces = super::cache_tests::all_interior_faces(&fixture);
@@ -423,14 +417,11 @@ fn view_paths_match_near_at_the_surface_cache_boundary() {
 #[ignore = "native analytic far cache-miss bounce-tail qualification"]
 fn view_cache_misses_measure_the_missing_multibounce_tail() {
     let fixture = research::furnace();
-    let emitters = Arc::new(EmissionDistribution::with_importance(
-        &fixture.scene,
-        &fixture.materials,
-        crate::voxel_gi::VoxelGiSettings::default().sampling_importance(),
-    ));
+    let emitters = Arc::new(EmissionDistribution::build(&fixture.scene,
+        &fixture.materials));
     let mut gpu = GpuTracer::with_kernel(super::tests::native_tracer().context, false).unwrap();
     let material = fixture.materials.get(4);
-    let reference = material.emission.visible / (Vec3::ONE - material.diffuse.visible);
+    let reference = material.emission / (Vec3::ONE - material.diffuse);
     for depth in [3, 16, 32] {
         let mut sum = [0.0f64; 3];
         let mut square = [0.0f64; 3];
@@ -471,7 +462,7 @@ fn view_cache_misses_measure_the_missing_multibounce_tail() {
             }
         }
         let mean = Vec3::from_array(sum.map(|v| (v / f64::from(count)) as f32));
-        let expected = reference * (Vec3::ONE - material.diffuse.visible.powf((depth + 1) as f32));
+        let expected = reference * (Vec3::ONE - material.diffuse.powf((depth + 1) as f32));
         let relative = mean / reference;
         let standard_error = Vec3::from_array(std::array::from_fn(|b| {
             let n = f64::from(count);

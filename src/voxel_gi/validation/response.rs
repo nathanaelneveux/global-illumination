@@ -50,7 +50,7 @@ impl ResponseRun {
             materials.set(
                 251,
                 MaterialTransport {
-                    emission: EnergySpectrum::new(Vec3::splat(2.0), 0.5, 0.0),
+                    emission: Vec3::splat(2.0),
                     ..default()
                 },
             );
@@ -127,11 +127,8 @@ impl ResponseRun {
                         .filter(|p| p.face_mask & (1 << face) != 0);
                     json!({"voxel": voxel.to_array(), "face": face,
                         "display": probe.map(|p| p.display[face].indirect.to_array()),
-                        "measured": probe.map(|p| p.stats().radiance[face].visible.to_array()),
-                        "infrared": probe.map(|p| p.stats().radiance[face].infrared),
-                        "ionizing": probe.map(|p| p.stats().radiance[face].ionizing),
-                        "second_moment": probe.map(|p| [p.stats().second_moment[face].visible.x, p.stats().second_moment[face].visible.y,
-                            p.stats().second_moment[face].visible.z, p.stats().second_moment[face].infrared, p.stats().second_moment[face].ionizing]),
+                        "measured": probe.map(|p| p.stats().radiance[face].to_array()),
+                        "second_moment": probe.map(|p| p.stats().second_moment[face].to_array()),
                         "samples": probe.map(|p| p.stats().samples[face]),
                         "sequence": probe.map(|p| p.stats().sequence[face]),
                         "transport_revision": probe.map(|p| p.transport_revision),

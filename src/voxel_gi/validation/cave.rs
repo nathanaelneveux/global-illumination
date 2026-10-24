@@ -57,12 +57,6 @@ impl CaveObservations {
     }
 }
 
-fn channels(value: EnergySpectrum) -> [f32; 5] {
-    [
-        value.visible.x,
-        value.visible.y,
-        value.visible.z,
-        value.infrared,
-        value.ionizing,
-    ]
+fn channels(value: Vec3) -> [f32; 3] {
+    value.to_array()
 }

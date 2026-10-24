@@ -101,7 +101,6 @@ pub(super) fn start_trace_task(
                     || tracer.needs_model(
                         &runtime.sources,
                         &runtime.materials,
-                        settings.sampling_importance(),
                         runtime.transport,
                     )
             },
@@ -229,7 +228,6 @@ pub(super) fn start_trace_task(
     let mut gpu_tracer = runtime.gpu_tracer.take();
     let mut pending = std::mem::take(&mut runtime.gpu_pending);
     let emission_cache = runtime.emission_cache.take();
-    let sampling_importance = settings.sampling_importance();
     let gpu_device = gpu_device.clone();
     runtime.trace_task = Some(AsyncComputeTaskPool::get().spawn(async move {
         let _span = info_span!("gi_trace_worker").entered();
@@ -239,11 +237,10 @@ pub(super) fn start_trace_task(
         let emission_cache = if !batch_submits && !maintenance {
             emission_cache
         } else {
-            Some(emission::EmissionCache::prepare_with_importance(
+            Some(emission::EmissionCache::prepare(
                 emission_cache,
                 Arc::clone(&scene),
                 Arc::clone(&materials),
-                sampling_importance,
             ))
         };
         let emitters = emission_cache.as_ref().map_or_else(

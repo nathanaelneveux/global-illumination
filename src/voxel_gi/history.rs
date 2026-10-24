@@ -3,7 +3,6 @@
 use bevy::prelude::*;
 use std::time::Instant;
 
-use super::spectrum::EnergySpectrum;
 use super::statistics::{relative_error, relative_error_with_floor};
 use super::world::{AIR, FACE_OFFSETS, SurfaceProbe, TransportScene};
 
@@ -165,8 +164,8 @@ impl SurfaceProbe {
         let time_alpha = 1.0 - (-elapsed / response_seconds.max(0.001)).exp();
         let samples = self.stats().samples[face];
         let uncertainty = relative_error(
-            EnergySpectrum::new(self.stats().radiance[face].visible, 0.0, 0.0),
-            EnergySpectrum::new(self.stats().second_moment[face].visible, 0.0, 0.0),
+            self.stats().radiance[face],
+            self.stats().second_moment[face],
             samples,
         );
         // A long scheduling gap is not evidence of convergence. Bound
@@ -182,13 +181,13 @@ impl SurfaceProbe {
         // Prefer a longer smooth display transition to following a noisy mean.
         // The matched-ray response sweep checks the resulting brightness tail.
         let noise = relative_error_with_floor(
-            EnergySpectrum::new(self.stats().radiance[face].visible, 0.0, 0.0),
-            EnergySpectrum::new(self.stats().second_moment[face].visible, 0.0, 0.0),
+            self.stats().radiance[face],
+            self.stats().second_moment[face],
             samples,
             0.002,
         );
         let alpha = time_alpha.min(evidence / (1.0 + (4.0 * noise).powi(2)));
-        let radiance = self.stats().radiance[face].visible;
+        let radiance = self.stats().radiance[face];
         let display = &mut self.display[face];
         display.indirect = temporal_blend(
             display.indirect,
@@ -238,7 +237,7 @@ mod tests {
     fn measured(voxel: IVec3, energy: f32, now: Instant) -> SurfaceProbe {
         let mut probe = SurfaceProbe::new(voxel, 4);
         probe.stats_mut().samples[2] = 64;
-        probe.stats_mut().radiance[2] = EnergySpectrum::ONE * energy;
+        probe.stats_mut().radiance[2] = Vec3::ONE * energy;
         probe.stats_mut().second_moment[2] = probe.stats().radiance[2] * probe.stats().radiance[2];
         probe.updated_at = Some(now);
         probe.display_updated_at = Some(now);
@@ -336,8 +335,8 @@ mod tests {
         assert_eq!(probe.display[2].sky, sky);
         assert_eq!(probe.display[2].indirect, Vec3::splat(4.0));
         assert_eq!(probe.stats().samples, [0; 6]);
-        assert_eq!(probe.stats().radiance, [EnergySpectrum::ZERO; 6]);
-        assert_eq!(probe.stats().second_moment, [EnergySpectrum::ZERO; 6]);
+        assert_eq!(probe.stats().radiance, [Vec3::ZERO; 6]);
+        assert_eq!(probe.stats().second_moment, [Vec3::ZERO; 6]);
         assert_eq!(probe.stats().sequence, sequence);
     }
 
@@ -379,7 +378,7 @@ mod tests {
         let mut receiver = SurfaceProbe::new(placed, 4);
         receiver.display[2] = prior;
         assert_eq!(receiver.stats().samples[2], 0);
-        assert_eq!(receiver.stats().radiance[2], EnergySpectrum::ZERO);
+        assert_eq!(receiver.stats().radiance[2], Vec3::ZERO);
         // Without an old exposed face, this would be borrowing through a wall.
         donor.face_mask = 0;
         assert_eq!(
@@ -451,7 +450,7 @@ mod tests {
             for batch in 1..=16 {
                 let mut next = previous.clone();
                 next.stats_mut().samples[2] = batch * 4;
-                next.stats_mut().radiance[2] = EnergySpectrum::ONE * target;
+                next.stats_mut().radiance[2] = Vec3::ONE * target;
                 next.stats_mut().second_moment[2] = next.stats().radiance[2] * next.stats().radiance[2];
                 next.resolve_display(
                     &previous,
@@ -480,7 +479,7 @@ mod tests {
         for (initial, raw_second) in [(1.0, 1.0), (0.01, 0.01)] {
             let mut probe = measured(IVec3::ZERO, initial, start);
             probe.stats_mut().samples[2] = 2048;
-            probe.stats_mut().second_moment[2] = EnergySpectrum::ONE * raw_second;
+            probe.stats_mut().second_moment[2] = Vec3::ONE * raw_second;
             probe.request_relight();
             let mut legacy_display = Vec3::splat(initial);
             let mut legacy_crossing = None;
@@ -488,14 +487,14 @@ mod tests {
             for batch in 1..=64 {
                 for _ in 0..4 {
                     // Closing the last opening makes every fresh path dark.
-                    probe.accumulate_sample(2, EnergySpectrum::ZERO);
+                    probe.accumulate_sample(2, Vec3::ZERO);
                 }
                 let mean = probe.stats().radiance[2];
                 let second = probe.stats().second_moment[2];
                 let n = probe.stats().samples[2];
                 let legacy_alpha = (1.0 - (-0.05_f32 / 0.075).exp())
                     .min(n as f32 / (n as f32 + 32.0) / (1.0 + relative_error(mean, second, n)));
-                legacy_display = temporal_blend(legacy_display, mean.visible, legacy_alpha);
+                legacy_display = temporal_blend(legacy_display, mean, legacy_alpha);
                 let at = start + Duration::from_millis(batch * 50);
                 let previous_display = probe.display[2].indirect;
                 probe.resolve_face(2, Some(at - Duration::from_millis(50)), at, 0.075);
@@ -506,7 +505,7 @@ mod tests {
                 );
                 assert_eq!(probe.stats().second_moment[2], second);
                 assert_eq!(probe.stats().samples[2], n);
-                assert!((mean.visible.x - initial * 16.0 / n as f32).abs() < 1e-6);
+                assert!((mean.x - initial * 16.0 / n as f32).abs() < 1e-6);
                 if initial < 0.02 && batch == 1 {
                     assert!(
                         probe.display[2].indirect.x > initial * 0.99,
@@ -546,7 +545,7 @@ mod tests {
         previous.restart_measurements();
         let mut next = previous.clone();
         next.stats_mut().samples[2] = 4;
-        next.stats_mut().radiance[2] = EnergySpectrum::new(Vec3::splat(1000.0), 50.0, 80.0);
+        next.stats_mut().radiance[2] = Vec3::splat(1000.0);
         // Even a falsely reassuring zero within-batch variance must be bounded.
         next.stats_mut().second_moment[2] = next.stats().radiance[2] * next.stats().radiance[2];
         let measurement = next.stats().radiance[2];
@@ -571,7 +570,7 @@ mod tests {
         let voxel = IVec3::ZERO;
         let mut probe = measured(voxel, 1.0, now);
         probe.stats_mut().samples[2] = 128;
-        probe.stats_mut().radiance[2] = EnergySpectrum::new(Vec3::ONE, 10.0, 20.0);
+        probe.stats_mut().radiance[2] = Vec3::ONE;
         let revision = probe.revision;
         probe.request_relight();
         assert_ne!(
@@ -583,7 +582,7 @@ mod tests {
         probe.update_face_mask(5);
         assert_eq!(probe.stats().samples[2], 16, "unchanged face retains its history");
         assert_eq!(probe.stats().samples[0], 0, "new face is genuinely unmeasured");
-        assert_eq!(probe.stats().radiance[0], EnergySpectrum::ZERO);
+        assert_eq!(probe.stats().radiance[0], Vec3::ZERO);
     }
 
     #[test]
@@ -592,13 +591,13 @@ mod tests {
         let previous = measured(IVec3::ZERO, 0.0, now);
         let mut next = previous.clone();
         next.stats_mut().samples[2] = 8;
-        next.stats_mut().radiance[2] = EnergySpectrum::ONE;
-        next.stats_mut().second_moment[2] = EnergySpectrum::ONE * 32.0;
+        next.stats_mut().radiance[2] = Vec3::ONE;
+        next.stats_mut().second_moment[2] = Vec3::ONE * 32.0;
         next.resolve_display(&previous, now + Duration::from_secs(10), 0.075);
         assert!(next.display[2].indirect.x < 0.2);
         assert_eq!(
             next.stats().radiance[2],
-            EnergySpectrum::ONE,
+            Vec3::ONE,
             "only presentation is filtered"
         );
     }

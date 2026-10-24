@@ -7,7 +7,7 @@ use std::time::Instant;
 use bevy::prelude::*;
 
 use super::naadf::{Aadf, build_aadf, linear_index, volume_len};
-use super::spectrum::EnergySpectrum;
+use super::spectrum::Radiance;
 mod delta;
 pub(crate) use delta::SceneStamp;
 
@@ -35,16 +35,16 @@ pub const FACE_OFFSETS: [IVec3; 6] = [
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MaterialTransport {
     /// Fraction of incident energy reflected, clamped to [0, 1] by `set`.
-    pub diffuse: EnergySpectrum,
+    pub diffuse: Vec3,
     /// Emitted energy in normalized solver units, not watts or temperature.
-    pub emission: EnergySpectrum,
+    pub emission: Vec3,
 }
 
 impl Default for MaterialTransport {
     fn default() -> Self {
         Self {
-            diffuse: EnergySpectrum::new(Vec3::splat(0.45), 0.35, 0.04),
-            emission: EnergySpectrum::ZERO,
+            diffuse: Vec3::splat(0.45),
+            emission: Vec3::ZERO,
         }
     }
 }
@@ -479,7 +479,7 @@ pub struct SurfaceProbe {
     pub voxel: IVec3,
     pub material: u8,
     pub order_index: usize,
-    pub emission: EnergySpectrum,
+    pub emission: Vec3,
     pub face_mask: u8,
     /// The CPU copy of this probe's measurement statistics, when something
     /// needs it: the CPU reference tracer, tests, and validation recorders or
@@ -533,9 +533,9 @@ pub(crate) struct ProbeProgress {
 pub struct ProbeStatistics {
     /// Unfiltered indirect transport measurements. Presentation history is
     /// separate; simulations never receive spatial or temporal display filters.
-    pub radiance: [EnergySpectrum; 6],
+    pub radiance: [Vec3; 6],
     /// Direct incident energy in every band.
-    pub direct: [EnergySpectrum; 6],
+    pub direct: [Vec3; 6],
     /// Visible analytic contributions not already rendered by Bevy PBR.
     pub custom_direct: [Vec3; 6],
     pub samples: [u32; 6],
@@ -544,19 +544,19 @@ pub struct ProbeStatistics {
     /// Sampling sequence is independent of history length and invalidation.
     pub sequence: [u32; 6],
     /// Per-band second raw moment.
-    pub second_moment: [EnergySpectrum; 6],
+    pub second_moment: [Vec3; 6],
 }
 
 impl ProbeStatistics {
     pub(crate) const EMPTY: Self = Self {
-        radiance: [EnergySpectrum::ZERO; 6],
-        direct: [EnergySpectrum::ZERO; 6],
+        radiance: [Vec3::ZERO; 6],
+        direct: [Vec3::ZERO; 6],
         custom_direct: [Vec3::ZERO; 6],
         samples: [0; 6],
         stable_batches: [0; 6],
         face_updated_at: [None; 6],
         sequence: [0; 6],
-        second_moment: [EnergySpectrum::ZERO; 6],
+        second_moment: [Vec3::ZERO; 6],
     };
 }
 
@@ -581,7 +581,7 @@ impl SurfaceProbe {
             voxel,
             material: 0,
             order_index: 0,
-            emission: EnergySpectrum::ZERO,
+            emission: Vec3::ZERO,
             face_mask,
             stats: None,
             progress: default(),
@@ -603,7 +603,7 @@ impl SurfaceProbe {
 
     /// Test helper: append one raw sample to the CPU statistics.
     #[cfg(test)]
-    pub(crate) fn accumulate_sample(&mut self, face: usize, sample: EnergySpectrum) {
+    pub(crate) fn accumulate_sample(&mut self, face: usize, sample: Vec3) {
         let sample = sample.finite_or_zero();
         let count = (self.stats().samples[face] + 1).min(super::tracer::HISTORY_LIMIT);
         let alpha = 1.0 / count as f32;
@@ -649,9 +649,9 @@ impl SurfaceProbe {
             self.progress.bootstrap[face] = 0;
             self.progress.settled &= !(1 << face);
             if let Some(stats) = self.stats.as_mut() {
-                stats.radiance[face] = EnergySpectrum::ZERO;
-                stats.second_moment[face] = EnergySpectrum::ZERO;
-                stats.direct[face] = EnergySpectrum::ZERO;
+                stats.radiance[face] = Vec3::ZERO;
+                stats.second_moment[face] = Vec3::ZERO;
+                stats.direct[face] = Vec3::ZERO;
                 stats.custom_direct[face] = Vec3::ZERO;
                 stats.samples[face] = 0;
                 stats.face_updated_at[face] = None;
@@ -695,8 +695,8 @@ impl SurfaceProbe {
         stats.samples = [0; 6];
         stats.stable_batches = [0; 6];
         stats.face_updated_at = [None; 6];
-        stats.radiance = [EnergySpectrum::ZERO; 6];
-        stats.second_moment = [EnergySpectrum::ZERO; 6];
+        stats.radiance = [Vec3::ZERO; 6];
+        stats.second_moment = [Vec3::ZERO; 6];
         // Presentation weights belong to the retained display, not the reset
         // transport statistics. Changing only weights would visibly relight
         // unchanged shared corners on every edit.
@@ -873,15 +873,15 @@ mod tests {
         table.set(
             7,
             MaterialTransport {
-                diffuse: EnergySpectrum::new(Vec3::splat(5.0), -2.0, f32::NAN),
-                emission: EnergySpectrum::new(Vec3::splat(f32::INFINITY), 1e30, -1.0),
+                diffuse: Vec3::splat(5.0),
+                emission: Vec3::splat(f32::INFINITY),
             },
         );
         let material = table.get(7);
-        assert_eq!(material.diffuse, EnergySpectrum::new(Vec3::ONE, 0.0, 0.0));
+        assert_eq!(material.diffuse, Vec3::ONE);
         assert_eq!(
             material.emission,
-            EnergySpectrum::new(Vec3::ZERO, 1e12, 0.0)
+            Vec3::ZERO
         );
     }
 

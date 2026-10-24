@@ -1,8 +1,6 @@
 use bevy::prelude::*;
 use std::time::Duration;
 
-const DEFAULT_SIMULATION_SAMPLING_IMPORTANCE: f32 = 0.0;
-
 /// Quality and work limits. All loaded pages remain eligible.
 /// Insert before `VoxelGiPlugin` or change this resource at runtime.
 #[derive(Resource, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -12,13 +10,6 @@ pub struct VoxelGiSettings {
     /// New paths per selected face, not a lifetime sample limit. Smaller batches
     /// refresh more receivers sooner but pay more scheduling/transfer overhead.
     pub samples_per_dispatch: u32,
-    /// Relative importance of IR/ionizing emission when choosing light samples.
-    /// Changes variance, not physical energy, history validity or band delivery.
-    /// RGB always has importance one. Defaults to zero: GI serves the display,
-    /// and simulation bands are not its responsibility (docs/direction.md);
-    /// sources with only nonvisual emission are then found by paths alone. Use
-    /// one for equal-band sampling. This is not a fixed ratio of sample counts.
-    pub simulation_sampling_importance: f32,
     /// Measured retention constant c (default 1); zero restores the whole-range
     /// distance curve.
     /// Resident only. Each edit, load or sunlight change predicts a luminance
@@ -87,7 +78,6 @@ impl Default for VoxelGiSettings {
         Self {
             transport: TransportSettings::default(),
             samples_per_dispatch: 16,
-            simulation_sampling_importance: DEFAULT_SIMULATION_SAMPLING_IMPORTANCE,
             measured_retention: 1.0,
             spatial_reconstruction: 1.0,
             spatial_evidence_target: 1024,
@@ -109,14 +99,6 @@ impl Default for VoxelGiSettings {
 }
 
 impl VoxelGiSettings {
-    pub(super) fn sampling_importance(&self) -> super::EnergySpectrum {
-        let weight = if self.simulation_sampling_importance.is_finite() {
-            self.simulation_sampling_importance.clamp(0.0, 1.0)
-        } else {
-            DEFAULT_SIMULATION_SAMPLING_IMPORTANCE
-        };
-        super::EnergySpectrum::new(Vec3::ONE, weight, weight)
-    }
     pub(super) fn measured_retention(&self) -> f32 {
         if self.measured_retention.is_finite() {
             self.measured_retention.clamp(0.0, 64.0)
@@ -284,10 +266,6 @@ mod tests {
         assert_eq!(control.spatial_reconstruction, 0.0);
         assert_eq!(control.spatial_evidence_target, 0);
         assert_eq!(control.transport, settings.transport);
-        assert_eq!(
-            control.sampling_importance(),
-            settings.sampling_importance()
-        );
     }
 
     #[test]
@@ -324,37 +302,6 @@ mod tests {
     }
 
     #[test]
-    fn visible_only_is_the_default() {
-        let settings = VoxelGiSettings::default();
-        let expected = super::super::EnergySpectrum::new(Vec3::ONE, 0.0, 0.0);
-        assert_eq!(settings.sampling_importance(), expected);
-        assert_eq!(
-            ron::from_str::<VoxelGiSettings>("()").unwrap().sampling_importance(),
-            expected
-        );
-        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert_eq!(
-                VoxelGiSettings {
-                    simulation_sampling_importance: value,
-                    ..settings.clone()
-                }
-                .sampling_importance(),
-                expected
-            );
-        }
-        for (input, normalized) in [(-1.0, 0.0), (2.0, 1.0)] {
-            assert_eq!(
-                VoxelGiSettings {
-                    simulation_sampling_importance: input,
-                    ..settings.clone()
-                }
-                .sampling_importance(),
-                super::super::EnergySpectrum::new(Vec3::ONE, normalized, normalized)
-            );
-        }
-    }
-
-    #[test]
     fn only_model_changes_restart_measurements_without_rebuilding_geometry_or_sky() {
         let mut app = App::new();
         app.init_resource::<VoxelGiSettings>()
@@ -372,9 +319,6 @@ mod tests {
         app.world_mut()
             .resource_mut::<VoxelGiSettings>()
             .samples_per_dispatch = 1;
-        app.world_mut()
-            .resource_mut::<VoxelGiSettings>()
-            .simulation_sampling_importance = 1.0;
         app.update();
         assert_eq!(
             app.world()

@@ -16,7 +16,7 @@ use bevy::render::storage::ShaderBuffer;
 use super::emission::EmissionDistribution;
 use super::gpu_scene::PackedScene;
 use super::sources::TransportSources;
-use super::spectrum::EnergySpectrum;
+use super::spectrum::Radiance;
 use super::tracer::HISTORY_LIMIT;
 use super::work::TraceWork;
 #[cfg(test)]
@@ -328,7 +328,6 @@ pub(crate) struct GpuTracer {
     geometry_staging: UploadBuffer,
     materials: UploadBuffer,
     material_table: Option<VoxelMaterialTransportTable>,
-    material_importance: super::EnergySpectrum,
     view_transport: super::TransportSettings,
     lights: UploadBuffer,
     sources: Option<TransportSources>,
@@ -545,7 +544,6 @@ impl GpuTracer {
                 storage | BufferUsages::COPY_SRC,
             ),
             material_table: None,
-            material_importance: super::EnergySpectrum::ONE,
             view_transport: default(),
             lights: UploadBuffer::new(device, "GI analytic sources", storage),
             sources: None,
@@ -742,22 +740,15 @@ impl GpuTracer {
             self.emitters.upload_generation(device, queue, &bytes)?;
             self.emission = Some(Arc::clone(emitters));
         }
-        if self.material_table.as_ref() != Some(materials)
-            || self.material_importance != emitters.importance
-        {
+        if self.material_table.as_ref() != Some(materials) {
             let gpu_materials: Vec<_> = (0..=255)
                 .map(|i| {
                     let material = materials.get(i);
                     GpuMaterial {
                         diffuse: spectrum_vec(material.diffuse),
-                        diffuse_extra: Vec4::new(material.diffuse.ionizing, 0.0, 0.0, 0.0),
+                        diffuse_extra: Vec4::ZERO,
                         emission: spectrum_vec(material.emission),
-                        emission_extra: Vec4::new(
-                            material.emission.ionizing,
-                            (material.emission * emitters.importance).max_component(),
-                            0.0,
-                            0.0,
-                        ),
+                        emission_extra: Vec4::new(0.0, material.emission.max_element(), 0.0, 0.0),
                     }
                 })
                 .collect();
@@ -767,7 +758,6 @@ impl GpuTracer {
                 &ShaderBuffer::from(gpu_materials).data.unwrap(),
             )?;
             self.material_table = Some(materials.clone());
-            self.material_importance = emitters.importance;
         }
         let light_count = (sources.directional.len() + sources.points.len()) as u32;
         if self.sources.as_ref().is_none_or(|previous| {
@@ -780,7 +770,7 @@ impl GpuTracer {
                     position_range: light.direction.normalize_or_zero().extend(-1.0),
                     energy: spectrum_vec(light.radiance),
                     extra: Vec4::new(
-                        light.radiance.ionizing,
+                        0.0,
                         light.custom_visible.x,
                         light.custom_visible.y,
                         light.custom_visible.z,
@@ -790,7 +780,7 @@ impl GpuTracer {
                     position_range: light.position.extend(light.range),
                     energy: spectrum_vec(light.intensity),
                     extra: Vec4::new(
-                        light.intensity.ionizing,
+                        0.0,
                         light.custom_visible.x,
                         light.custom_visible.y,
                         light.custom_visible.z,
@@ -860,7 +850,7 @@ impl GpuTracer {
                 .extend(sources.directional.len() as i32),
             environment: spectrum_vec(sources.environment),
             extra: Vec4::new(
-                sources.environment.ionizing,
+                0.0,
                 super::tracer::MAX_PATH_DISTANCE,
                 emitters.total_weight,
                 emitters.faces.len() as f32,
@@ -1332,11 +1322,12 @@ impl GpuTracer {
     }
 }
 
-fn spectrum_vec(energy: EnergySpectrum) -> Vec4 {
-    energy.visible.extend(energy.infrared)
+/// RGB in a vec4 lane group; the fourth lane (formerly infrared) is zero.
+fn spectrum_vec(energy: Vec3) -> Vec4 {
+    energy.extend(0.0)
 }
-fn decode_spectrum(value: &[f32], radiation: f32) -> EnergySpectrum {
-    EnergySpectrum::new(Vec3::new(value[0], value[1], value[2]), value[3], radiation)
+fn decode_spectrum(value: &[f32], _unused: f32) -> Vec3 {
+    Vec3::new(value[0], value[1], value[2])
         .finite_or_zero()
 }
 fn encode_words(words: &[u32]) -> Vec<u8> {
@@ -1441,7 +1432,7 @@ pub(super) mod tests {
             before[0].stats().second_moment[0],
             after[0].stats().second_moment[0]
         );
-        assert!(before[0].stats().radiance[0].visible.max_element() > 0.1);
+        assert!(before[0].stats().radiance[0].max_element() > 0.1);
     }
 
     #[test]
@@ -1516,7 +1507,7 @@ pub(super) mod tests {
         sources.directional[0].direction =
             Quat::from_rotation_z(2.0_f32.to_radians()) * sources.directional[0].direction;
         let mut optical = materials.get(2);
-        optical.diffuse = EnergySpectrum::ONE * 0.2;
+        optical.diffuse = Vec3::ONE * 0.2;
         materials.set(2, optical);
         let mut fresh = super::super::sky::contact_shadow_fixture().2;
         gpu.trace(scene, &sources, &materials, &mut fresh, 4, &emitters)
@@ -1565,7 +1556,7 @@ pub(super) mod tests {
         materials.set(
             4,
             MaterialTransport {
-                emission: EnergySpectrum::new(Vec3::new(12.0, 5.0, 1.0), 4.0, 2.0),
+                emission: Vec3::new(12.0, 5.0, 1.0),
                 ..default()
             },
         );
@@ -1577,11 +1568,9 @@ pub(super) mod tests {
             .unwrap();
         let mut history = probes.remove(0);
         assert!(
-            history.stats().radiance[2].visible.x > 0.01
-                && history.stats().radiance[2].infrared > 0.0
-                && history.stats().radiance[2].ionizing > 0.0
+            history.stats().radiance[2].x > 0.01
         );
-        history.display[2].indirect = history.stats().radiance[2].visible;
+        history.display[2].indirect = history.stats().radiance[2];
         let original = history.display[2].indirect;
         let now = Instant::now();
         history.stats_mut().face_updated_at[2] = Some(now);
@@ -1602,8 +1591,8 @@ pub(super) mod tests {
             next = probes.remove(0);
             assert_eq!(
                 next.stats().radiance[2],
-                EnergySpectrum::ZERO,
-                "no retained RGB/IR/radiation after removal"
+                Vec3::ZERO,
+                "no retained RGB after removal"
             );
             let at = now + std::time::Duration::from_millis(batch * 50);
             next.resolve_display(&history, at, 0.075);
@@ -1659,7 +1648,7 @@ pub(super) mod tests {
         let sources = TransportSources {
             directional: vec![DirectionalTransportLight {
                 direction: Vec3::Y,
-                radiance: EnergySpectrum::ONE,
+                radiance: Vec3::ONE,
                 custom_visible: Vec3::ZERO,
             }],
             ..default()
@@ -1716,17 +1705,17 @@ pub(super) mod tests {
             "settled terrain should stop dispatching continuously: {idle}"
         );
         assert!(paths < 60 * 256 * 4);
-        let expected = sources.environment.visible * (0.65 + 0.35 * 2.0 / 3.0);
+        let expected = sources.environment * (0.65 + 0.35 * 2.0 / 3.0);
         let rms = (probes
             .iter()
-            .map(|probe| (probe.stats().radiance[2].visible - expected).length_squared())
+            .map(|probe| (probe.stats().radiance[2] - expected).length_squared())
             .sum::<f32>()
             / (probes.len() * 3) as f32)
             .sqrt();
         let max_error = probes
             .iter()
             .map(|probe| {
-                (probe.stats().radiance[2].visible - expected)
+                (probe.stats().radiance[2] - expected)
                     .abs()
                     .max_element()
             })
@@ -1806,7 +1795,7 @@ pub(super) mod tests {
         let sources = TransportSources {
             directional: vec![DirectionalTransportLight {
                 direction: Vec3::new(0.2, 1.0, 0.3).normalize(),
-                radiance: EnergySpectrum::ONE,
+                radiance: Vec3::ONE,
                 custom_visible: Vec3::ZERO,
             }],
             ..default()
@@ -1826,7 +1815,7 @@ pub(super) mod tests {
     }
 
     /// Compare an archived shader to the current kernel with identical work,
-    /// alternating order and full five-band moment parity. The baseline path is
+    /// alternating order and full RGB moment parity. The baseline path is
     /// explicit so experiment shaders never become a production runtime mode.
     #[test]
     #[ignore = "requires a native adapter and VOXEL_GI_BASELINE_SHADER"]
@@ -1847,7 +1836,7 @@ pub(super) mod tests {
         materials.set(
             4,
             MaterialTransport {
-                emission: EnergySpectrum::new(Vec3::new(12.0, 3.0, 1.0), 4.0, 2.0),
+                emission: Vec3::new(12.0, 3.0, 1.0),
                 ..default()
             },
         );
@@ -1944,14 +1933,9 @@ pub(super) mod tests {
                         .zip(b.stats().radiance.iter().chain(&b.stats().second_moment))
                     {
                         let delta = *a - *b;
-                        let error = delta
-                            .visible
-                            .abs()
-                            .max_element()
-                            .max(delta.infrared.abs())
-                            .max(delta.ionizing.abs());
+                        let error = delta.abs().max_element();
                         assert!(
-                            error <= 0.00001 * (1.0 + a.max_component()),
+                            error <= 0.00001 * (1.0 + a.max_element()),
                             "parallel path moments differ: {a:?} vs {b:?}"
                         );
                     }

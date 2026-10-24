@@ -48,7 +48,7 @@ use bevy::tasks::Task;
 pub use field::VoxelEnergyField;
 pub use settings::{TransportSettings, VoxelGiSettings};
 pub use sources::VoxelGiEnvironment;
-pub use spectrum::{EnergyEmitter, EnergySpectrum};
+pub use spectrum::EnergyEmitter;
 pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 
 use bvw::{collect_chunk_changes, start_scene_task};

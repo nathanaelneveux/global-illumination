@@ -178,11 +178,8 @@ fn prepare(
     first: u32,
     samples: u32,
 ) -> TraceWork {
-    let emitters = Arc::new(EmissionDistribution::with_importance(
-        &fixture.scene,
-        &fixture.materials,
-        crate::voxel_gi::VoxelGiSettings::default().sampling_importance(),
-    ));
+    let emitters = Arc::new(EmissionDistribution::build(&fixture.scene,
+        &fixture.materials));
     let mut work = TraceWork::from_probes(&fixture.receivers, false);
     for face in &mut work.faces {
         face.sequence = first;
@@ -327,7 +324,7 @@ fn view_wave_uncached_tails_reach_the_multibounce_solution() {
     let mut gpu =
         GpuTracer::with_kernel(super::super::tests::native_tracer().context, false).unwrap();
     let material = fixture.materials.get(4);
-    let expected = material.emission.visible / (Vec3::ONE - material.diffuse.visible);
+    let expected = material.emission / (Vec3::ONE - material.diffuse);
     let mut sum = [0.0f64; 3];
     let mut count = 0;
     let mut longest = 0;

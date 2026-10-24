@@ -13,7 +13,7 @@ const REFINEMENT_ENERGY_FLOOR: f32 = 0.002;
 
 fn required_samples(probe: &SurfaceProbe, face: usize, settings: &VoxelGiSettings) -> u32 {
     let minimum = settings.stable_samples();
-    if probe.stats().radiance[face].visible.max_element() < 0.02 {
+    if probe.stats().radiance[face].max_element() < 0.02 {
         // Zero observed variance after a few missed bright paths is not enough
         // evidence in a dark room. This is still a heuristic, not a guarantee
         // that every small light/portal has been sampled.
@@ -127,7 +127,7 @@ pub(crate) fn record_batch(
 pub(crate) fn record_face_batch(
     probe: &mut SurfaceProbe,
     face: usize,
-    before: super::EnergySpectrum,
+    before: super::Vec3,
     previous_stable_batches: u8,
     same_revision: bool,
     now: Instant,
@@ -140,30 +140,18 @@ pub(crate) fn record_face_batch(
     }
     let error = refinement_error(probe, face);
     let after = probe.stats().radiance[face];
-    let a = [
-        before.visible.x,
-        before.visible.y,
-        before.visible.z,
-        before.infrared,
-        before.ionizing,
-    ];
-    let b = [
-        after.visible.x,
-        after.visible.y,
-        after.visible.z,
-        after.infrared,
-        after.ionizing,
-    ];
+    let a = before.to_array();
+    let b = after.to_array();
     let drift = a
         .into_iter()
         .zip(b)
         .map(|(a, b)| (a - b).abs() / (REFINEMENT_ENERGY_FLOOR + a.abs().max(b.abs())))
         .fold(0.0, f32::max);
-    let display_settled = (probe.display[face].indirect - after.visible)
+    let display_settled = (probe.display[face].indirect - after)
         .abs()
         .max_element()
         <= REFINEMENT_ENERGY_FLOOR * 0.5
-            + after.visible.max_element() * settings.stable_error() * 0.5;
+            + after.max_element() * settings.stable_error() * 0.5;
     let stable = if same_revision
         && display_settled
         && probe.stats().samples[face] >= required_samples(probe, face, settings)
@@ -184,7 +172,7 @@ pub(crate) fn record_face_batch(
 
 #[cfg(test)]
 mod tests {
-    use super::super::EnergySpectrum;
+    use super::super::Vec3;
     use super::*;
     use bevy::prelude::*;
 
@@ -202,8 +190,8 @@ mod tests {
     fn stable_probe(now: Instant) -> SurfaceProbe {
         let mut probe = SurfaceProbe::new(IVec3::new(10_000, 0, 0), 5);
         probe.stats_mut().samples = [128; 6];
-        probe.stats_mut().radiance = [EnergySpectrum::ONE; 6];
-        probe.stats_mut().second_moment = [EnergySpectrum::ONE; 6];
+        probe.stats_mut().radiance = [Vec3::ONE; 6];
+        probe.stats_mut().second_moment = [Vec3::ONE; 6];
         probe.stats_mut().stable_batches = [STABLE_BATCHES; 6];
         probe.stats_mut().face_updated_at = [Some(now); 6];
         probe.updated_at = Some(now);
@@ -275,7 +263,7 @@ mod tests {
         let old = stable_probe(now);
         let mut probe = old.clone();
         probe.trace_mask = 4;
-        probe.stats_mut().second_moment[2].infrared = 1000.0;
+        probe.stats_mut().second_moment[2].x = 1000.0;
         record_batch(&mut probe, &old, now, &settings);
         assert_eq!(probe.stats().stable_batches[2], 0);
         assert_eq!(probe.stats().stable_batches[0], STABLE_BATCHES);
@@ -288,16 +276,16 @@ mod tests {
         );
         probe = old.clone();
         probe.stats_mut().samples[2] = 4;
-        probe.stats_mut().radiance[2] = EnergySpectrum::ZERO;
-        probe.stats_mut().second_moment[2] = EnergySpectrum::ZERO;
+        probe.stats_mut().radiance[2] = Vec3::ZERO;
+        probe.stats_mut().second_moment[2] = Vec3::ZERO;
         record_batch(&mut probe, &old, now, &settings);
         assert_eq!(
             probe.stats().stable_batches[2], 0,
             "a few dark rays are not convergence"
         );
         probe = old.clone();
-        probe.stats_mut().radiance[2].ionizing = 50.0;
-        probe.stats_mut().second_moment[2].ionizing = 2500.0;
+        probe.stats_mut().radiance[2].z = 50.0;
+        probe.stats_mut().second_moment[2].z = 2500.0;
         record_batch(&mut probe, &old, now, &settings);
         assert_eq!(
             probe.stats().stable_batches[2], 0,
@@ -324,9 +312,9 @@ mod tests {
         assert_eq!(probe.stats().stable_batches[2], 0);
 
         probe.stats_mut().samples[2] = 256;
-        probe.stats_mut().radiance[2] = super::super::EnergySpectrum::new(Vec3::splat(0.002), 0.0, 0.0);
-        probe.stats_mut().second_moment[2] = super::super::EnergySpectrum::new(Vec3::splat(0.000128), 0.0, 0.0);
-        probe.display[2].indirect = probe.stats().radiance[2].visible;
+        probe.stats_mut().radiance[2] = super::super::Vec3::splat(0.002);
+        probe.stats_mut().second_moment[2] = super::super::Vec3::splat(0.000128);
+        probe.display[2].indirect = probe.stats().radiance[2];
         assert!(
             super::super::statistics::relative_error(
                 probe.stats().radiance[2],
@@ -379,13 +367,14 @@ mod tests {
         let mut stable = SurfaceProbe::new(IVec3::ZERO, 4);
         stable.stats_mut().samples[2] = 64;
         stable.updated_at = Some(now);
-        stable.stats_mut().radiance[2] = EnergySpectrum::new(Vec3::splat(100.0), 1.0, 1.0);
+        stable.stats_mut().radiance[2] = Vec3::splat(100.0);
         stable.stats_mut().second_moment[2] = stable.stats().radiance[2] * stable.stats().radiance[2];
         let mut uncertain = stable.clone();
-        uncertain.stats_mut().second_moment[2].infrared = 100.0;
+        // One uncertain channel is enough, whichever it is.
+        uncertain.stats_mut().second_moment[2].x += 1.0e6;
         assert!(refinement_error(&uncertain, 2) > refinement_error(&stable, 2) + 1.0);
-        uncertain.stats_mut().second_moment[2].infrared = 1.0;
-        uncertain.stats_mut().second_moment[2].ionizing = 100.0;
+        uncertain = stable.clone();
+        uncertain.stats_mut().second_moment[2].z += 1.0e6;
         assert!(refinement_error(&uncertain, 2) > refinement_error(&stable, 2) + 1.0);
     }
 }

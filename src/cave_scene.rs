@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 use bevy_voxel_world::prelude::WorldVoxel;
 
-use crate::voxel_gi::{EnergySpectrum, MaterialTransport, VoxelMaterialTransportTable};
+use crate::voxel_gi::{MaterialTransport, VoxelMaterialTransportTable};
 
 pub fn enabled() -> bool {
     if background_terrain_requested() {
@@ -28,41 +28,40 @@ pub const SPAWN: Vec3 = Vec3::new(8.0, 6.5, 55.0);
 pub const EYE: Vec3 = Vec3::new(8.0, 21.0, 56.0);
 #[cfg(debug_assertions)]
 pub const TARGET: Vec3 = Vec3::new(38.0, 22.0, 32.0);
-pub const ENVIRONMENT: EnergySpectrum = EnergySpectrum::new(Vec3::new(0.35, 0.45, 0.7), 0.08, 0.0);
+pub const ENVIRONMENT: Vec3 = Vec3::new(0.35, 0.45, 0.7);
 
 pub fn sun_direction() -> Vec3 {
     Vec3::new(-0.2, 1.0, -0.15).normalize()
 }
 
-/// Independent, normalized game transport bands, not calibrated lava/thorium
-/// physics. Visible hue neither creates IR nor implies ionizing emission.
+/// Artistic RGB emission and albedo, not calibrated lava/thorium physics.
 pub fn materials() -> VoxelMaterialTransportTable {
     let mut table = VoxelMaterialTransportTable::default();
     for (id, diffuse, emission) in [
         (
             2,
-            EnergySpectrum::new(Vec3::splat(0.55), 0.35, 0.08),
-            EnergySpectrum::ZERO,
+            Vec3::splat(0.55),
+            Vec3::ZERO,
         ),
         (
             4,
-            EnergySpectrum::new(Vec3::splat(0.15), 0.1, 0.01),
-            EnergySpectrum::new(Vec3::new(3.0, 0.45, 0.02), 9.0, 0.0),
+            Vec3::splat(0.15),
+            Vec3::new(3.0, 0.45, 0.02),
         ),
         (
             5,
-            EnergySpectrum::new(Vec3::splat(0.2), 0.1, 0.01),
-            EnergySpectrum::new(Vec3::new(0.03, 0.4, 12.0), 0.05, 0.0),
+            Vec3::splat(0.2),
+            Vec3::new(0.03, 0.4, 12.0),
         ),
         (
             6,
-            EnergySpectrum::new(Vec3::splat(0.2), 0.1, 0.01),
-            EnergySpectrum::new(Vec3::new(0.3, 6.0, 0.08), 0.0, 15.0),
+            Vec3::splat(0.2),
+            Vec3::new(0.3, 6.0, 0.08),
         ),
         (
             7,
-            EnergySpectrum::new(Vec3::splat(0.2), 0.1, 0.01),
-            EnergySpectrum::new(Vec3::new(14.0, 4.0, 0.8), 5.0, 0.0),
+            Vec3::splat(0.2),
+            Vec3::new(14.0, 4.0, 0.8),
         ),
     ] {
         table.set(id, MaterialTransport { diffuse, emission });

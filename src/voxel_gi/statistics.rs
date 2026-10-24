@@ -2,12 +2,13 @@
 //! These are heuristics over correlated, bounded sample histories, not certified
 //! confidence intervals. Callers choose tolerances; this module has no display,
 //! scene, source, or scheduler state.
-use super::spectrum::EnergySpectrum;
+use super::spectrum::Radiance;
+use bevy::prelude::*;
 
-/// A per-band heuristic for adaptive work allocation. This is NOT a confidence
+/// A per-channel heuristic for adaptive work allocation. This is NOT a confidence
 /// bound: QMC samples and bounded temporal histories are correlated. Normalize
-/// each band independently so bright RGB cannot hide uncertain infrared.
-pub(crate) fn relative_error(mean: EnergySpectrum, second: EnergySpectrum, samples: u32) -> f32 {
+/// each channel independently so a bright channel cannot hide an uncertain one.
+pub(crate) fn relative_error(mean: Vec3, second: Vec3, samples: u32) -> f32 {
     relative_error_with_floor(mean, second, samples, 0.02)
 }
 
@@ -15,8 +16,8 @@ pub(crate) fn relative_error(mean: EnergySpectrum, second: EnergySpectrum, sampl
 /// tolerances. A display-stabilizing floor must not make dark transport appear
 /// well measured. Callers supply a positive floor in normalized energy units.
 pub(crate) fn relative_error_with_floor(
-    mean: EnergySpectrum,
-    second: EnergySpectrum,
+    mean: Vec3,
+    second: Vec3,
     samples: u32,
     floor: f32,
 ) -> f32 {
@@ -24,20 +25,8 @@ pub(crate) fn relative_error_with_floor(
         return 1.0;
     }
     let variance = (second - mean * mean).finite_or_zero();
-    let means = [
-        mean.visible.x,
-        mean.visible.y,
-        mean.visible.z,
-        mean.infrared,
-        mean.ionizing,
-    ];
-    let variances = [
-        variance.visible.x,
-        variance.visible.y,
-        variance.visible.z,
-        variance.infrared,
-        variance.ionizing,
-    ];
+    let means = mean.to_array();
+    let variances = variance.to_array();
     means
         .into_iter()
         .zip(variances)

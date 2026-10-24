@@ -51,12 +51,10 @@ impl GpuTracer {
         &self,
         sources: &TransportSources,
         materials: &VoxelMaterialTransportTable,
-        importance: EnergySpectrum,
         transport: super::super::TransportSettings,
     ) -> bool {
         self.sources.as_ref() != Some(sources)
             || self.material_table.as_ref() != Some(materials)
-            || self.material_importance != importance
             || self.view_transport != transport.normalized()
     }
 
@@ -85,7 +83,7 @@ impl GpuTracer {
                     .extend(sources.directional.len() as i32),
                 environment: spectrum_vec(sources.environment),
                 extra: Vec4::new(
-                    sources.environment.ionizing,
+                    0.0,
                     super::super::tracer::MAX_PATH_DISTANCE,
                     emitters.total_weight,
                     emitters.faces.len() as f32,

@@ -12,7 +12,7 @@ use crate::structures::{Bounds, StructureLayer, VoxelOp, showcase};
 use crate::terrain_meshing::build_chunk_mesh;
 use crate::terrain_noise::{BEDROCK_FLOOR_Y, MAX_SURFACE_Y, TerrainColumn, TerrainNoise};
 use crate::voxel_gi::{
-    EnergySpectrum, MaterialTransport, VoxelGiDirty, VoxelMaterialTransportTable,
+    MaterialTransport, VoxelGiDirty, VoxelMaterialTransportTable,
     render::{VoxelTransportAssets, material_template},
 };
 
@@ -100,7 +100,7 @@ impl Plugin for TerrainPlugin {
                 .world_mut()
                 .resource_mut::<VoxelMaterialTransportTable>();
             let mut optical = table.get(material.index());
-            optical.diffuse.visible = visible;
+            optical.diffuse = visible;
             table.set(material.index(), optical);
         }
         // Register once, not on every placement: editing a lamp uses ordinary
@@ -133,8 +133,8 @@ impl Plugin for TerrainPlugin {
 
 pub(crate) fn emissive_block_transport() -> MaterialTransport {
     MaterialTransport {
-        diffuse: EnergySpectrum::new(Vec3::splat(0.8), 0.35, 0.04),
-        emission: EnergySpectrum::new(Vec3::new(12.0, 5.0, 1.0), 4.0, 0.0),
+        diffuse: Vec3::splat(0.8),
+        emission: Vec3::new(12.0, 5.0, 1.0),
     }
 }
 
@@ -573,12 +573,10 @@ mod tests {
         let mut table = VoxelMaterialTransportTable::default();
         table.set(material.index(), emissive_block_transport());
         let emission = table.get(material.index()).emission;
-        assert!(emission.visible.min_element() > 0.0);
-        assert!(emission.infrared > 0.0);
-        assert_eq!(emission.ionizing, 0.0);
+        assert!(emission.min_element() > 0.0);
         assert_eq!(
             table.get(TerrainMaterial::Grass.index()).emission,
-            EnergySpectrum::ZERO
+            Vec3::ZERO
         );
     }
 }

@@ -51,15 +51,15 @@ fn far_only_model_changes_publish_without_near_receivers() {
         let mut runtime = world.resource_mut::<gi::VoxelGiRuntime>();
         runtime.gpu_tracer = first.gpu_tracer;
         runtime.emission_cache = first.emission_cache;
-        runtime.sources.environment.visible *= 0.5;
+        runtime.sources.environment *= 0.5;
         runtime.sources.directional.clear();
         runtime.sources.points.push(gi::sources::PointTransportLight {
-            position: Vec3::new(8.0, 8.0, 8.0), intensity: gi::EnergySpectrum::ZERO,
+            position: Vec3::new(8.0, 8.0, 8.0), intensity: gi::Vec3::ZERO,
             range: 32.0, custom_visible: Vec3::ONE,
         });
         let mut materials = (*runtime.materials).clone();
         let mut material = materials.get(2);
-        material.emission.visible = Vec3::splat(4.0);
+        material.emission = Vec3::splat(4.0);
         materials.set(2, material);
         runtime.materials = Arc::new(materials);
     }

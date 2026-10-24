@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use std::ops::Range;
 use std::time::Instant;
 
-use super::{EnergySpectrum, world::SurfaceProbe};
+use super::{Vec3, world::SurfaceProbe};
 
 #[derive(Default)]
 pub(crate) struct TraceWork {
@@ -137,8 +137,8 @@ impl ProbeWork {
             for face in 0..6 {
                 if self.trace_mask & (1 << face) == 0 {
                     stats.samples[face] = 0;
-                    stats.radiance[face] = EnergySpectrum::ZERO;
-                    stats.second_moment[face] = EnergySpectrum::ZERO;
+                    stats.radiance[face] = Vec3::ZERO;
+                    stats.second_moment[face] = Vec3::ZERO;
                     stats.face_updated_at[face] = None;
                 }
             }
@@ -197,9 +197,9 @@ pub(crate) struct FaceWork {
     pub gpu_settled: Option<bool>,
     pub voxel: IVec3,
     pub face: usize,
-    pub radiance: EnergySpectrum,
-    pub second_moment: EnergySpectrum,
-    pub direct: EnergySpectrum,
+    pub radiance: Vec3,
+    pub second_moment: Vec3,
+    pub direct: Vec3,
     pub custom_direct: Vec3,
     pub samples: u32,
     /// A change constraint, not a copy of the CPU snapshot's possibly old count.
@@ -261,12 +261,12 @@ impl TraceWork {
             voxel: probe.voxel,
             face,
             radiance: if restart {
-                EnergySpectrum::ZERO
+                Vec3::ZERO
             } else {
                 probe.stats().radiance[face]
             },
             second_moment: if restart {
-                EnergySpectrum::ZERO
+                Vec3::ZERO
             } else {
                 probe.stats().second_moment[face]
             },
@@ -470,8 +470,8 @@ mod tests {
     fn retention_wake_publishes_the_selected_stamp_and_restarts_stability() {
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 63);
         probe.stats_mut().samples = [4096; 6];
-        probe.stats_mut().radiance = [EnergySpectrum::ONE; 6];
-        probe.stats_mut().second_moment = [EnergySpectrum::ONE * 2.0; 6];
+        probe.stats_mut().radiance = [Vec3::ONE; 6];
+        probe.stats_mut().second_moment = [Vec3::ONE * 2.0; 6];
         probe.stats_mut().sequence = [9000; 6];
         let mut work = TraceWork::default();
         work.push(&probe, 1, 1, 0, false, 256, u32::MAX);
@@ -487,8 +487,8 @@ mod tests {
             "publication must retain selection's stamp, not a later worker-result stamp"
         );
         assert_eq!(probe.fresh_mask, 1);
-        assert_eq!(probe.stats().radiance, [EnergySpectrum::ONE; 6]);
-        assert_eq!(probe.stats().second_moment, [EnergySpectrum::ONE * 2.0; 6]);
+        assert_eq!(probe.stats().radiance, [Vec3::ONE; 6]);
+        assert_eq!(probe.stats().second_moment, [Vec3::ONE * 2.0; 6]);
     }
 
     #[test]
@@ -500,8 +500,8 @@ mod tests {
                 let mut previous = SurfaceProbe::new(IVec3::new(8, 2, 6), 63);
                 previous.stats_mut().samples = [128; 6];
                 previous.stats_mut().sequence = [1050; 6];
-                previous.stats_mut().radiance = [EnergySpectrum::ONE; 6];
-                previous.stats_mut().second_moment = [EnergySpectrum::ONE; 6];
+                previous.stats_mut().radiance = [Vec3::ONE; 6];
+                previous.stats_mut().second_moment = [Vec3::ONE; 6];
                 previous.stats_mut().stable_batches = [4; 6];
                 previous.stats_mut().face_updated_at =
                     [Some(now - std::time::Duration::from_millis(40)); 6];
@@ -539,7 +539,7 @@ mod tests {
                     for sample in 0..4 {
                         reference.accumulate_sample(
                             index,
-                            EnergySpectrum::new(Vec3::splat(sample as f32 * 0.2), 0.3, 0.6),
+                            Vec3::splat(sample as f32 * 0.2),
                         );
                     }
                     face.radiance = reference.stats().radiance[index];
@@ -600,7 +600,7 @@ mod tests {
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 4);
         probe.stats_mut().samples[2] = super::super::tracer::HISTORY_LIMIT;
         probe.stats_mut().sequence[2] = 100_000;
-        probe.stats_mut().radiance[2] = EnergySpectrum::ONE;
+        probe.stats_mut().radiance[2] = Vec3::ONE;
         let mut work = TraceWork::default();
         for (revision, geometry_limit, source_limit, restart, expected) in [
             (0, 64, u32::MAX, false, super::super::tracer::HISTORY_LIMIT),
@@ -632,7 +632,7 @@ mod tests {
             assert_eq!(work.faces[0].samples, expected);
             assert_eq!(work.faces[0].sequence, 100_000);
             if restart {
-                assert_eq!(work.faces[0].radiance, EnergySpectrum::ZERO);
+                assert_eq!(work.faces[0].radiance, Vec3::ZERO);
             }
         }
     }
@@ -667,7 +667,7 @@ mod tests {
         let mut probe = SurfaceProbe::new(IVec3::ZERO, 5);
         probe.stats_mut().samples = [4096; 6];
         probe.stats_mut().sequence = [8000; 6];
-        probe.stats_mut().radiance = [EnergySpectrum::ONE; 6];
+        probe.stats_mut().radiance = [Vec3::ONE; 6];
         probe.stats_mut().stable_batches = [4; 6];
         let mut work = TraceWork::default();
         work.push(&probe, 4, 1, 1, false, u32::MAX, u32::MAX);

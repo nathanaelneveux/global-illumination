@@ -77,11 +77,7 @@ fn setup_lighting(mut commands: Commands) {
     ));
     if cave || canyon {
         sun.insert(crate::voxel_gi::EnergyEmitter {
-            spectrum: crate::voxel_gi::EnergySpectrum::new(
-                Vec3::ZERO,
-                if cave { 2.0 } else { 0.2 },
-                0.0,
-            ),
+            spectrum: Vec3::ZERO,
             range: 0.0,
         });
     }

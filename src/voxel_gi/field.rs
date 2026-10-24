@@ -180,8 +180,8 @@ impl std::ops::Index<&IVec3> for ProbeStore {
     }
 }
 
-/// The authoritative world-space energy field. The infrared and ionizing
-/// channels can be read by offscreen simulation systems.
+/// World-cache receivers: identity, exposure, resident slots and scheduling
+/// order. The GPU state is the authority for their measurements.
 #[derive(Resource, Default)]
 pub struct VoxelEnergyField {
     pub(super) probes: ProbeStore,

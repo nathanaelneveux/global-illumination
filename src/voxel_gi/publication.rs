@@ -509,14 +509,14 @@ mod donor_tests {
         ));
         descriptors[0].material = 1;
         let voxel = descriptors[0].voxel;
-        field.probes.get_mut(&voxel).unwrap().emission = super::super::EnergySpectrum::ONE;
+        field.probes.get_mut(&voxel).unwrap().emission = super::super::Vec3::ONE;
         assert!(!page_matches(
             &field,
             IVec3::ZERO,
             &descriptors,
             &runtime.materials
         ));
-        field.probes.get_mut(&voxel).unwrap().emission = super::super::EnergySpectrum::ZERO;
+        field.probes.get_mut(&voxel).unwrap().emission = super::super::Vec3::ZERO;
         assert!(!page_matches(
             &field,
             IVec3::ZERO,
@@ -730,11 +730,11 @@ fn finalize_change_flux(
     sources: &super::sources::TransportSources,
 ) {
     use super::geometry::ChangeKind;
-    let sky = luminance(sources.environment.visible).max(
+    let sky = luminance(sources.environment).max(
         sources
             .directional
             .iter()
-            .map(|light| 0.5 * luminance(light.radiance.visible))
+            .map(|light| 0.5 * luminance(light.radiance))
             .fold(0.0, f32::max),
     );
     let mut budget = FLUX_SCAN_BUDGET as u64;

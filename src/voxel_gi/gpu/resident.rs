@@ -753,7 +753,7 @@ impl ResidentAccumulator {
         let values: Vec<[f32; 2]> = (0..=u8::MAX)
             .map(|i| {
                 let m = materials.get(i);
-                [w.dot(m.diffuse.visible), w.dot(m.emission.visible)]
+                [w.dot(m.diffuse), w.dot(m.emission)]
             })
             .collect();
         if values != self.material_light_values {
@@ -1256,7 +1256,7 @@ fn encode_seed(
         for (i, value) in spectrum_vec(energy)
             .to_array()
             .into_iter()
-            .chain([energy.ionizing])
+            .chain([0.0])
             .enumerate()
         {
             words[base + i] = value.to_bits();
@@ -1387,7 +1387,7 @@ mod tests {
         let mut gpu = super::super::tests::native_tracer();
         gpu.enable_resident().unwrap();
         let (scene, mut sources, probes) = super::super::tests::open_floor_fixture();
-        sources.environment = EnergySpectrum::new(Vec3::new(0.3, 0.1, 0.8), 0.4, 0.2);
+        sources.environment = Vec3::new(0.3, 0.1, 0.8);
         let materials = VoxelMaterialTransportTable::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let mut work = TraceWork::from_probes(&probes[..8], false);
@@ -1453,8 +1453,8 @@ mod tests {
         let emitters = Arc::new(EmissionDistribution::default());
         let mut work = TraceWork::from_probes(&probes[264..265], false);
         work.faces[0].samples = 4096;
-        work.faces[0].radiance = EnergySpectrum::new(Vec3::splat(0.4), 0.0, 0.0);
-        work.faces[0].second_moment = EnergySpectrum::new(Vec3::splat(0.17), 0.0, 0.0);
+        work.faces[0].radiance = Vec3::splat(0.4);
+        work.faces[0].second_moment = Vec3::splat(0.17);
         work.measured_retention = 1.0;
         work.retention_events.push(RetentionEvent::single(
             Bounds::point(work.faces[0].voxel + IVec3::Y),
@@ -2117,8 +2117,8 @@ mod tests {
             if (key.0 - edit).abs().max_element() <= 1 {
                 let base = slot.index as usize * (RECORD_BYTES / 4);
                 brightest = brightest.max(
-                    w.dot(material.diffuse.visible) * light(base)
-                        + w.dot(material.emission.visible),
+                    w.dot(material.diffuse) * light(base)
+                        + w.dot(material.emission),
                 );
             }
         }
@@ -2178,7 +2178,7 @@ mod tests {
         let mut candidate = GpuTracer::new(control.context.clone()).unwrap();
         candidate.enable_resident().unwrap();
         let (mut scene, mut sources, initial) = super::super::tests::open_floor_fixture();
-        sources.environment = EnergySpectrum::new(Vec3::new(0.3, 0.1, 0.8), 0.4, 0.2);
+        sources.environment = Vec3::new(0.3, 0.1, 0.8);
         let materials = VoxelMaterialTransportTable::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let mut expected = initial.clone();
@@ -2247,8 +2247,8 @@ mod tests {
                     for face in &mut work.faces {
                         face.samples = 0;
                         face.history_cap = 0;
-                        face.radiance = EnergySpectrum::ZERO;
-                        face.second_moment = EnergySpectrum::ZERO;
+                        face.radiance = Vec3::ZERO;
+                        face.second_moment = Vec3::ZERO;
                     }
                 }
             }
@@ -2294,13 +2294,7 @@ mod tests {
                 ] {
                     let delta = a - b;
                     assert!(
-                        delta
-                            .visible
-                            .abs()
-                            .max_element()
-                            .max(delta.infrared.abs())
-                            .max(delta.ionizing.abs())
-                            < 1e-5 * (1.0 + a.max_component()),
+                        delta.abs().max_element() < 1e-5 * (1.0 + a.max_element()),
                         "step={step} {a:?} vs {b:?}"
                     );
                 }
@@ -2397,7 +2391,6 @@ mod tests {
             for face in [2, 3] {
                 assert!(
                     (a.stats().radiance[face] - b.stats().radiance[face])
-                        .visible
                         .abs()
                         .max_element()
                         < 1e-5
@@ -2471,7 +2464,7 @@ mod tests {
         // mirror does, so the control traces from the same sequence.
         let mut traced = vec![0u32; 1024];
         for (step, count) in [17, 1024, 128].into_iter().enumerate() {
-            sources.environment = EnergySpectrum::new(Vec3::splat(step as f32 + 0.25), 0.7, 0.3);
+            sources.environment = Vec3::splat(step as f32 + 0.25);
             // Explicit retirement before reuse, while older snapshots are still
             // mapped/pending. Their staging allocations must remain independent.
             if step == 2 {
@@ -2544,12 +2537,7 @@ mod tests {
                 ] {
                     let d = x - y;
                     assert!(
-                        d.visible
-                            .abs()
-                            .max_element()
-                            .max(d.infrared.abs())
-                            .max(d.ionizing.abs())
-                            < 1e-5
+                        d.abs().max_element() < 1e-5
                     );
                 }
             }

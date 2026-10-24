@@ -70,7 +70,7 @@ pub(crate) fn sky_lights(sources: &TransportSources) -> Vec<SkyLight> {
         .directional
         .iter()
         .filter_map(|light| {
-            let color = (light.radiance.visible - light.custom_visible).max(Vec3::ZERO);
+            let color = (light.radiance - light.custom_visible).max(Vec3::ZERO);
             (color.max_element() > 0.0).then_some(SkyLight {
                 direction: light.direction.normalize_or_zero(),
                 color,
@@ -290,7 +290,7 @@ impl SkyCache {
         let weights = Vec3::new(0.2126, 0.7152, 0.0722);
         let table = self.reflectance.get_or_insert_with(|| Box::new([1.0; 256]));
         for (material, value) in table.iter_mut().enumerate() {
-            *value = materials.get(material as u8).diffuse.visible.dot(weights).clamp(0.0, 1.0);
+            *value = materials.get(material as u8).diffuse.dot(weights).clamp(0.0, 1.0);
         }
     }
 
@@ -566,7 +566,6 @@ mod tests {
         naadf::{linear_index, volume_len},
         sky::KNOWN,
         sources::{DirectionalTransportLight, PointTransportLight},
-        spectrum::EnergySpectrum,
         world::{PAGE_EDGE, PAGE_SIZE},
     };
     use super::*;
@@ -655,7 +654,7 @@ mod tests {
         TransportSources {
             directional: vec![DirectionalTransportLight {
                 direction: direction.normalize(),
-                radiance: EnergySpectrum::ONE,
+                radiance: Vec3::ONE,
                 custom_visible: Vec3::ZERO,
             }],
             ..default()
@@ -751,25 +750,23 @@ mod tests {
     }
 
     #[test]
-    fn source_invalidation_ignores_points_environment_and_nonvisible_bands() {
+    fn source_invalidation_ignores_points_and_environment() {
         let scene = floor(&[IVec3::ZERO]);
         let probes = square(IVec3::new(4, 4, 4), 2);
         let mut sources = sun(Vec3::Y);
         let mut cache = SkyCache::default();
         let pending = cache.prepare(&scene, &sources, &probes);
         finish(&mut cache, &scene, pending);
-        sources.environment = EnergySpectrum::ZERO;
+        sources.environment = Vec3::ZERO;
         sources.points.push(PointTransportLight {
             position: Vec3::splat(10.0),
-            intensity: EnergySpectrum::ONE,
+            intensity: Vec3::ONE,
             range: 30.0,
             custom_visible: Vec3::ZERO,
         });
-        sources.directional[0].radiance.infrared = 10.0;
-        sources.directional[0].radiance.ionizing = 2.0;
         sources.directional.push(DirectionalTransportLight {
             direction: Vec3::X,
-            radiance: EnergySpectrum::new(Vec3::ONE, 50.0, 2.0),
+            radiance: Vec3::ONE,
             custom_visible: Vec3::ONE,
         });
         assert!(cache.prepare(&scene, &sources, &probes).is_empty());
@@ -778,7 +775,7 @@ mod tests {
         assert_eq!(pending.len(), 9);
         finish(&mut cache, &scene, pending);
         // Color and sub-step motion are the display's: no retrace.
-        sources.directional[0].radiance.visible *= 2.0;
+        sources.directional[0].radiance *= 2.0;
         sources.directional[0].direction =
             Quat::from_rotation_z(0.1_f32.to_radians()) * sources.directional[0].direction;
         assert!(cache.prepare(&scene, &sources, &probes).is_empty());
