@@ -292,6 +292,12 @@ impl VoxelWorldConfig for PrototypeWorld {
         self.chunk_data_shape(lod_level)
     }
 
+    fn attach_chunks_to_root(&self) -> bool {
+        // Like the BVW example: 100k+ chunk children under one root made
+        // transform propagation dominate PostUpdate.
+        self.scene != ScenePreset::Lod
+    }
+
     fn min_despawn_distance(&self) -> u32 {
         MIN_DESPAWN_DISTANCE
     }
@@ -316,6 +322,18 @@ impl VoxelWorldConfig for PrototypeWorld {
 
     fn voxel_lookup_delegate(&self) -> VoxelLookupDelegate<Self::MaterialIndex> {
         let scene = self.scene;
+        if scene == ScenePreset::Lod {
+            // Like the BVW example: one height per column per chunk task.
+            return Box::new(move |_, _, _| {
+                let mut columns = HashMap::<(i32, i32), f64>::new();
+                Box::new(move |p, _| {
+                    let height = *columns
+                        .entry((p.x, p.z))
+                        .or_insert_with(|| crate::lod_scene::height(p.x, p.z));
+                    crate::lod_scene::voxel_at_height(p, height)
+                })
+            });
+        }
         if scene != ScenePreset::Terrain {
             return Box::new(move |_, _, _| Box::new(move |p, _| scene.voxel(p).unwrap()));
         }

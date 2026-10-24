@@ -34,10 +34,14 @@ pub fn samples(lod: LodLevel) -> u32 {
 }
 
 pub fn voxel(position: IVec3) -> WorldVoxel<u8> {
+    voxel_at_height(position, height(position.x, position.z))
+}
+
+pub fn voxel_at_height(position: IVec3, height: f64) -> WorldVoxel<u8> {
     if position.y < 0 {
         return TerrainMaterial::Brick.voxel();
     }
-    if (position.y as f64) < height(position.x, position.z) {
+    if (position.y as f64) < height {
         TerrainMaterial::Grass.voxel()
     } else {
         WorldVoxel::Air
@@ -47,7 +51,7 @@ pub fn voxel(position: IVec3) -> WorldVoxel<u8> {
 /// The example's fractal parameters (5 octaves, frequency 1.1, lacunarity
 /// 2.8, persistence 0.4) over x/1000 and z/1000, scaled by 50. Plain fBm over
 /// gradient noise rather than the `noise` crate's HybridMulti.
-fn height(x: i32, z: i32) -> f64 {
+pub fn height(x: i32, z: i32) -> f64 {
     let (mut sum, mut amplitude, mut frequency) = (0.0, 1.0, 1.1);
     for octave in 0..5u32 {
         sum += amplitude * gradient_noise(x as f64 / 1000.0 * frequency, z as f64 / 1000.0 * frequency, octave);
