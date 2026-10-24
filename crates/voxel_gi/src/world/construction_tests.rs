@@ -71,17 +71,26 @@ fn full_region_reference(coordinate: IVec3, materials: Vec<u16>) -> NaadfRegion 
 
     let brick_aadf = build_aadf(BRICK_GRID_SIZE, &brick_occupied);
     let any_solid = brick_occupied.iter().any(|occupied| *occupied);
-    NaadfRegion {
+    let region = NaadfRegion {
         coordinate,
         storage: RegionStorage::Dense {
             materials: materials.into_boxed_slice(),
-            voxel_aadf: voxel_aadf.into_boxed_slice(),
             brick_occupied: brick_occupied.into_boxed_slice(),
-            brick_aadf: brick_aadf.into_boxed_slice(),
         },
         any_solid,
         material_mask,
+    };
+    // Bounds are no longer stored; the on-demand ones must equal this
+    // independent per-voxel and per-brick construction.
+    for index in 0..volume_len(REGION_SIZE) {
+        let local = UVec3::new(index as u32 % 16, (index as u32 / 16) % 16, index as u32 / 256);
+        assert_eq!(region.voxel_aadf(local), voxel_aadf[linear_index(local, REGION_SIZE)]);
     }
+    for index in 0..volume_len(BRICK_GRID_SIZE) {
+        let brick = UVec3::new(index as u32 % 4, (index as u32 / 4) % 4, index as u32 / 16);
+        assert_eq!(region.brick_aadf(brick), brick_aadf[linear_index(brick, BRICK_GRID_SIZE)]);
+    }
+    region
 }
 
 fn assert_same_region(actual: NaadfRegion, expected: NaadfRegion) {

@@ -197,6 +197,7 @@ impl PackedScene {
                     self.release_bricks(&allocation.bricks);
                     allocation.bricks.clear();
                     let mut table = [0; TABLE_WORDS];
+                    let brick_bounds = source.brick_bounds();
                     for (index, entry) in table.iter_mut().enumerate() {
                         let brick = UVec3::new(
                             index as u32 & 3,
@@ -204,6 +205,7 @@ impl PackedScene {
                             index as u32 >> 4,
                         );
                         let first = source.material(brick * 4);
+                        let mut voxel_bounds = None;
                         let mut uniform = true;
                         let mut data = [0; BRICK_WORDS];
                         for i in 0..64 {
@@ -213,14 +215,15 @@ impl PackedScene {
                             uniform &= material == first;
                             // NAADF's tagged 16-bit cell: solid+material OR empty+extents.
                             let cell = if material == AIR {
-                                pack_extents(source.voxel_aadf(local)) << 1
+                                let bounds = voxel_bounds.get_or_insert_with(|| source.brick_voxel_bounds(brick));
+                                pack_extents(bounds[i]) << 1
                             } else {
                                 (u32::from(material) << 1) | 1
                             };
                             data[i / 2] |= cell << ((i & 1) * 16);
                         }
                         *entry = if uniform && first == AIR {
-                            pack_extents(source.brick_aadf(brick)) << 2
+                            pack_extents(brick_bounds[index]) << 2
                         } else if uniform {
                             (u32::from(first) << 2) | 1
                         } else {

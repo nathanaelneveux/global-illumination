@@ -94,11 +94,12 @@ pub struct NaadfRegion {
 enum RegionStorage {
     Empty,
     Uniform(u16),
+    /// Materials only. Empty-space bounds are packed into the GPU cells and
+    /// computed there from these materials (`brick_voxel_bounds`,
+    /// `brick_bounds`); the CPU keeps no per-voxel bounds.
     Dense {
         materials: Box<[u16]>,
-        voxel_aadf: Box<[Aadf]>,
         brick_occupied: Box<[bool]>,
-        brick_aadf: Box<[Aadf]>,
     },
 }
 
@@ -123,21 +124,6 @@ impl NaadfRegion {
     }
 
     pub fn build(coordinate: IVec3, materials: Vec<u16>) -> Self {
-        Self::build_reusing::<false>(coordinate, materials, None)
-    }
-
-    fn rebuild(&self, materials: Vec<u16>) -> Self {
-        Self::build_reusing::<true>(self.coordinate, materials, Some(self))
-    }
-
-    /// Bounds depend on occupancy, not material identity. Reuse complete local
-    /// fields when that input is unchanged; snapshots remain immutable and all
-    /// published fields are fully refined, including after solid insertion.
-    fn build_reusing<const REUSE: bool>(
-        coordinate: IVec3,
-        materials: Vec<u16>,
-        previous: Option<&Self>,
-    ) -> Self {
         assert_eq!(materials.len(), volume_len(REGION_SIZE));
 
         if materials.iter().all(|material| *material == AIR) {
@@ -159,87 +145,56 @@ impl NaadfRegion {
             };
         }
 
-        let previous_dense = previous.and_then(|region| match &region.storage {
-            RegionStorage::Dense {
-                materials,
-                voxel_aadf,
-                brick_occupied,
-                brick_aadf,
-            } => Some((materials, voxel_aadf, brick_occupied, brick_aadf)),
-            _ => None,
-        });
-        let mut voxel_aadf = previous_dense.map_or_else(
-            || vec![Aadf::default(); materials.len()],
-            |(_, fields, _, _)| fields.to_vec(),
-        );
         let mut brick_occupied = vec![false; volume_len(BRICK_GRID_SIZE)];
         let mut material_mask = [0; 4];
-
-        for brick_z in 0..BRICKS_PER_AXIS {
-            for brick_y in 0..BRICKS_PER_AXIS {
-                for brick_x in 0..BRICKS_PER_AXIS {
-                    let brick = UVec3::new(brick_x, brick_y, brick_z);
-                    let mut blocked = [false; (BRICK_EDGE * BRICK_EDGE * BRICK_EDGE) as usize];
-                    let brick_size = UVec3::splat(BRICK_EDGE);
-                    let mut occupancy_changed = previous_dense.is_none();
-
-                    for z in 0..BRICK_EDGE {
-                        for y in 0..BRICK_EDGE {
-                            for x in 0..BRICK_EDGE {
-                                let local = UVec3::new(x, y, z);
-                                let region_local = brick * BRICK_EDGE + local;
-                                let region_index = linear_index(region_local, REGION_SIZE);
-                                let material = materials[region_index];
-                                occupancy_changed |= REUSE
-                                    && previous_dense.is_some_and(|(old, _, _, _)| {
-                                        (old[region_index] != AIR) != (material != AIR)
-                                    });
-                                blocked[linear_index(local, brick_size)] = material != AIR;
-                                if material != AIR {
-                                    material_mask[material as usize / 64] |= 1 << (material % 64);
-                                }
-                            }
-                        }
-                    }
-
-                    let brick_index = linear_index(brick, BRICK_GRID_SIZE);
-                    brick_occupied[brick_index] = blocked.iter().any(|occupied| *occupied);
-                    if !occupancy_changed {
-                        continue;
-                    }
-                    let local_aadf = build_aadf(brick_size, &blocked);
-                    for z in 0..BRICK_EDGE {
-                        for y in 0..BRICK_EDGE {
-                            for x in 0..BRICK_EDGE {
-                                let local = UVec3::new(x, y, z);
-                                let region_local = brick * BRICK_EDGE + local;
-                                voxel_aadf[linear_index(region_local, REGION_SIZE)] =
-                                    local_aadf[linear_index(local, brick_size)];
-                            }
-                        }
-                    }
-                }
+        for (index, &material) in materials.iter().enumerate() {
+            if material == AIR {
+                continue;
             }
+            material_mask[material as usize / 64] |= 1 << (material % 64);
+            let local = UVec3::new(
+                index as u32 % REGION_EDGE,
+                (index as u32 / REGION_EDGE) % REGION_EDGE,
+                index as u32 / (REGION_EDGE * REGION_EDGE),
+            );
+            brick_occupied[linear_index(local / BRICK_EDGE, BRICK_GRID_SIZE)] = true;
         }
-
-        let brick_aadf = if let Some((_, _, old_occupied, old_bounds)) = previous_dense
-            && old_occupied.as_ref() == brick_occupied.as_slice()
-        {
-            old_bounds.to_vec()
-        } else {
-            build_aadf(BRICK_GRID_SIZE, &brick_occupied)
-        };
         let any_solid = brick_occupied.iter().any(|occupied| *occupied);
         Self {
             coordinate,
             storage: RegionStorage::Dense {
                 materials: materials.into_boxed_slice(),
-                voxel_aadf: voxel_aadf.into_boxed_slice(),
                 brick_occupied: brick_occupied.into_boxed_slice(),
-                brick_aadf: brick_aadf.into_boxed_slice(),
             },
             any_solid,
             material_mask,
+        }
+    }
+
+    fn rebuild(&self, materials: Vec<u16>) -> Self {
+        Self::build(self.coordinate, materials)
+    }
+
+    /// Empty-space bounds of the 64 voxels in `brick` (within the brick,
+    /// voxel order x fastest); zero for solid voxels and non-dense regions.
+    pub(crate) fn brick_voxel_bounds(&self, brick: UVec3) -> Vec<Aadf> {
+        let brick_size = UVec3::splat(BRICK_EDGE);
+        let RegionStorage::Dense { materials, .. } = &self.storage else {
+            return vec![Aadf::default(); volume_len(brick_size)];
+        };
+        let mut blocked = [false; (BRICK_EDGE * BRICK_EDGE * BRICK_EDGE) as usize];
+        for (index, cell) in blocked.iter_mut().enumerate() {
+            let local = UVec3::new(index as u32 & 3, (index as u32 >> 2) & 3, index as u32 >> 4);
+            *cell = materials[linear_index(brick * BRICK_EDGE + local, REGION_SIZE)] != AIR;
+        }
+        build_aadf(brick_size, &blocked)
+    }
+
+    /// Empty-space bounds of the region's 4^3 bricks (brick order x fastest).
+    pub(crate) fn brick_bounds(&self) -> Vec<Aadf> {
+        match &self.storage {
+            RegionStorage::Dense { brick_occupied, .. } => build_aadf(BRICK_GRID_SIZE, brick_occupied),
+            _ => vec![Aadf::default(); volume_len(BRICK_GRID_SIZE)],
         }
     }
 
@@ -251,11 +206,10 @@ impl NaadfRegion {
         }
     }
 
+    #[cfg(test)]
     pub fn voxel_aadf(&self, local: UVec3) -> Aadf {
-        match &self.storage {
-            RegionStorage::Dense { voxel_aadf, .. } => voxel_aadf[linear_index(local, REGION_SIZE)],
-            _ => Aadf::default(),
-        }
+        let brick = local / BRICK_EDGE;
+        self.brick_voxel_bounds(brick)[linear_index(local % BRICK_EDGE, UVec3::splat(BRICK_EDGE))]
     }
 
     #[cfg(test)]
@@ -269,13 +223,9 @@ impl NaadfRegion {
         }
     }
 
+    #[cfg(test)]
     pub fn brick_aadf(&self, brick: UVec3) -> Aadf {
-        match &self.storage {
-            RegionStorage::Dense { brick_aadf, .. } => {
-                brick_aadf[linear_index(brick, BRICK_GRID_SIZE)]
-            }
-            _ => Aadf::default(),
-        }
+        self.brick_bounds()[linear_index(brick, BRICK_GRID_SIZE)]
     }
 }
 
