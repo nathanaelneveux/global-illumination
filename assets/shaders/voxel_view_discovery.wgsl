@@ -81,7 +81,7 @@ struct PoolSlot { witness: u32, tile: u32, next: u32, free: u32, }
 struct ReceiverPool {
     free_count: atomic<u32>, claimed: atomic<u32>,
     exhausted: atomic<u32>, retained: atomic<u32>,
-    tiles: array<PoolTile, 32768>,
+    tiles: array<PoolTile, 65536>,
     slots: array<PoolSlot>,
 }
 @group(2) @binding(17) var<storage, read_write> pool: ReceiverPool;

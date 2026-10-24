@@ -77,6 +77,10 @@ pub(super) fn setup_capture_target(
         commands
             .entity(camera)
             .insert((RenderTarget::Image(target.clone().into()), ShadowLodOrigin));
+        // Debug-UI captures: the overlay renders into the offscreen target.
+        if std::env::var("VOXEL_GI_VALIDATE_DEBUG_UI").is_ok_and(|value| value == "1") {
+            commands.entity(camera).insert(IsDefaultUiCamera);
+        }
     }
     evidence.render_target = Some(target);
 }

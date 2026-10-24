@@ -11,11 +11,13 @@ use std::collections::BTreeSet;
 
 #[test]
 fn pool_tile_directory_covers_supported_viewports() {
-    for width in [1, 3, 720, 1280, 2560, 3840, 8192, 16384] {
-        for height in [1, 3, 720, 1280, 1440, 2560, 8192, 16384] {
-            let grid = grid_size(UVec2::new(width, height));
-            assert!(grid.element_product() <= MAX_PIXELS);
-            assert!(grid.x.div_ceil(2) * grid.y.div_ceil(2) <= 32768);
+    for limit in [8_192, 32_768, 65_536, MAX_VIEW_RECEIVERS] {
+        for width in [1, 3, 720, 1280, 2560, 3840, 8192, 16384] {
+            for height in [1, 3, 720, 1280, 1440, 2560, 8192, 16384] {
+                let grid = grid_size(UVec2::new(width, height), limit);
+                assert!(grid.element_product() <= limit);
+                assert!(grid.x.div_ceil(2) * grid.y.div_ceil(2) <= 65536);
+            }
         }
     }
 }

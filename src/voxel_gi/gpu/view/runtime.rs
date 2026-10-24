@@ -22,9 +22,8 @@ use bevy::{
     },
 };
 
-const MAX_PIXELS: u32 = 65536;
-const POOL_PREFIX_BYTES: usize = 16 + 32768 * 20;
-const DISPLAY_BYTES: u64 = OUTPUT_PREFIX_BYTES + MAX_PIXELS as u64 * 48;
+const POOL_PREFIX_BYTES: usize = 16 + 65536 * 20;
+const DISPLAY_BYTES: u64 = OUTPUT_PREFIX_BYTES + MAX_VIEW_RECEIVERS as u64 * 48;
 #[derive(Resource, Clone, ExtractResource)]
 struct ViewSettings {
     output: Handle<ShaderBuffer>,
@@ -36,6 +35,17 @@ struct ViewSettings {
     spatial: f32,
     response: f32,
     measured_retention: f32,
+    receivers: u32,
+    /// Last frame's view-tier GPU milliseconds, written by the render world.
+    receipts: std::sync::Arc<std::sync::Mutex<ViewReceipts>>,
+}
+
+/// View-tier GPU time per frame (timestamp queries; zero when unavailable).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ViewReceipts {
+    pub trace_ms: f32,
+    pub presentation_ms: f32,
+    pub discovery_ms: f32,
 }
 
 #[derive(Component)]
@@ -46,6 +56,7 @@ struct AddedPrepasses {
 
 pub(crate) fn install(app: &mut App, output: Handle<ShaderBuffer>) {
     app.init_resource::<VoxelGiSettings>();
+    app.init_resource::<crate::voxel_gi::VoxelGiStats>();
     app.insert_resource(ViewSettings {
         output,
         enabled: false,
@@ -56,6 +67,8 @@ pub(crate) fn install(app: &mut App, output: Handle<ShaderBuffer>) {
         spatial: 1.0,
         response: 0.075,
         measured_retention: 1.0,
+        receivers: 65_536,
+        receipts: default(),
     });
     app.add_plugins(ExtractResourcePlugin::<ViewSettings>::default());
     app.add_systems(Update, configure_views);
@@ -81,6 +94,7 @@ fn retire_views(mut renderer: ResMut<ViewRenderer>, frame: Res<bevy::diagnostic:
 
 fn configure_views(
     settings: Res<VoxelGiSettings>,
+    mut stats: ResMut<crate::voxel_gi::VoxelGiStats>,
     mut view: ResMut<ViewSettings>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut assets: ResMut<VoxelTransportAssets>,
@@ -96,6 +110,10 @@ fn configure_views(
     >,
     mut commands: Commands,
 ) {
+    let receipts = *view.receipts.lock().unwrap();
+    if stats.view_gpu != receipts {
+        stats.view_gpu = receipts;
+    }
     let enabled = true;
     if enabled != view.enabled {
         let mut asset = ShaderBuffer::default();
@@ -142,6 +160,7 @@ fn configure_views(
     view.spatial = settings.spatial_reconstruction.clamp(0.0, 1.0);
     view.response = settings.display_response_seconds();
     view.measured_retention = settings.measured_retention();
+    view.receivers = settings.view_receiver_limit();
 }
 
 #[derive(Clone, Copy, Default, ShaderType)]
@@ -370,12 +389,14 @@ impl FromWorld for ViewRenderer {
     }
 }
 
-fn grid_size(viewport: UVec2) -> UVec2 {
-    // Nominal four-pixel cells, capped storage at larger viewports. Discovery
-    // uses 2x2-cell spatial bins; physical receiver slots are shared globally.
+fn grid_size(viewport: UVec2, receivers: u32) -> UVec2 {
+    // Nominal four-pixel cells, capped at `receivers` (the view_receivers
+    // setting) at larger viewports. Discovery uses 2x2-cell spatial bins;
+    // physical receiver slots are shared globally.
+    let limit = receivers.min(MAX_VIEW_RECEIVERS);
     let mut grid = UVec2::new(viewport.x.div_ceil(4), viewport.y.div_ceil(4)).max(UVec2::ONE);
-    if grid.x * grid.y > MAX_PIXELS {
-        let scale = (MAX_PIXELS as f32 / (grid.x * grid.y) as f32).sqrt();
+    if grid.x * grid.y > limit {
+        let scale = (limit as f32 / (grid.x * grid.y) as f32).sqrt();
         grid = (grid.as_vec2() * scale).floor().as_uvec2().max(UVec2::ONE);
     }
     grid
@@ -483,6 +504,11 @@ fn render_view(
         renderer
             .budget
             .begin_frame(&device, elapsed, settings.share, settings.view_first);
+        *settings.receipts.lock().unwrap() = ViewReceipts {
+            trace_ms: renderer.budget.trace_ms,
+            presentation_ms: renderer.budget.presentation_ms,
+            discovery_ms: renderer.budget.discovery_ms,
+        };
         if frame.0.is_multiple_of(120) {
             info!(
                 far_active = renderer.budget.active,
@@ -518,7 +544,7 @@ fn render_view(
         renderer.changes = std::mem::take(&mut *changes.lock().unwrap());
     }
     let (work, ticket) = renderer.budget.reserve();
-    let grid = grid_size(view.viewport.zw());
+    let grid = grid_size(view.viewport.zw(), settings.receivers);
     let count = grid.x * grid.y;
     let key = view.retained_view_entity;
     let mut camera = renderer

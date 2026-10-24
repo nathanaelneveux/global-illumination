@@ -967,12 +967,13 @@ time constant subject to the existing evidence/uncertainty filter, not a promise
 to settle in that many milliseconds. Display gain/toggles do not change energy
 returned to simulation readers.
 
-`diagnostics/tuning.rs` is the optional host UI: staged model Apply, live work and
-display sliders, session A/B presets, and explicit RON import/export. Presets
-copy only presentation fields, never GPU addressing/generation state. Opening an
-idle panel does not mark settings or material assets changed every frame. The
-demo's `VOXEL_GI_SETTINGS` file loader is opt-in and fails visibly on invalid RON;
-the reusable plugin still accepts a host-provided settings resource directly.
+`diagnostics.rs` is the opt-in `VoxelGiDebugPlugin` (Bevy UI, feathers widgets):
+a HUD, quality presets (`VoxelGiQuality`, performance knobs only), performance
+and look sliders, a staged light model, display switches and RON clipboard
+import/export. Widgets bind to `VoxelGiSettings` and `VoxelGiDisplay` through
+components and observers; a sync system follows changes made elsewhere. The
+lab's `VOXEL_GI_SETTINGS` loader (`src/gi_lab.rs`) is opt-in and fails visibly
+on invalid RON; the plugin accepts a host-provided settings resource directly.
 
 ### Host integration
 

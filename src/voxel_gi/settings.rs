@@ -60,9 +60,64 @@ pub struct VoxelGiSettings {
     /// visible faces. Zero disables it (cacheless). Geometry stays every
     /// loaded page: rays traverse it regardless.
     pub cache_radius: f32,
+    /// Visible-face receivers per camera (8,192-131,072). Receivers are
+    /// discovered on a grid of at least 4-pixel cells; at high resolutions
+    /// this cap sets the cell size instead. More receivers resolve smaller
+    /// distant faces at a higher fixed discovery/presentation cost, which
+    /// `gpu_time_share` does not cover.
+    pub view_receivers: u32,
     /// Fraction of the transport allowance spent refreshing the cache; the
     /// visible faces get the remainder. Not extra budget.
     pub cache_share: f32,
+}
+
+/// Starting points for `VoxelGiSettings` that trade cost for quality. They
+/// change only performance knobs (GPU share, world-cache radius, visible-face
+/// receivers); the look settings stay at their defaults.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VoxelGiQuality {
+    Low,
+    #[default]
+    Default,
+    High,
+}
+
+impl VoxelGiSettings {
+    pub fn quality(quality: VoxelGiQuality) -> Self {
+        let (gpu_time_share, cache_radius, view_receivers) = match quality {
+            VoxelGiQuality::Low => (0.12, 32.0, 32_768),
+            VoxelGiQuality::Default => (0.2, 64.0, 65_536),
+            VoxelGiQuality::High => (0.3, 96.0, 131_072),
+        };
+        Self {
+            gpu_time_share,
+            cache_radius,
+            view_receivers,
+            ..default()
+        }
+    }
+
+    /// Parse RON settings; missing fields default and values are clamped.
+    pub fn from_ron(text: &str) -> Result<Self, String> {
+        ron::from_str::<Self>(text).map(Self::normalized).map_err(|error| error.to_string())
+    }
+
+    /// Pretty RON of every field.
+    pub fn to_ron(&self) -> String {
+        ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()).expect("finite GI settings")
+    }
+
+    /// The preset these settings' performance knobs match, if any.
+    pub fn matching_quality(&self) -> Option<VoxelGiQuality> {
+        [VoxelGiQuality::Low, VoxelGiQuality::Default, VoxelGiQuality::High]
+            .into_iter()
+            .find(|quality| {
+                let preset = Self::quality(*quality);
+                preset.gpu_time_share == self.gpu_time_share
+                    && preset.cache_radius == self.cache_radius
+                    && preset.view_receivers == self.view_receivers
+            })
+    }
 }
 
 impl Default for VoxelGiSettings {
@@ -83,6 +138,7 @@ impl Default for VoxelGiSettings {
             stable_relative_error: 0.12,
             statistics_mirror_per_batch: 1024,
             cache_radius: 64.0,
+            view_receivers: 65_536,
             cache_share: 0.25,
         }
     }
@@ -102,7 +158,12 @@ impl VoxelGiSettings {
             .display_response
             .clamp(Duration::from_millis(10), Duration::from_millis(500));
         self.scene_publish_budget = self.scene_publish_budget.min(Duration::from_millis(8));
+        self.view_receivers = self.view_receiver_limit();
         self
+    }
+
+    pub(super) fn view_receiver_limit(&self) -> u32 {
+        self.view_receivers.clamp(8_192, super::gpu::view::MAX_VIEW_RECEIVERS)
     }
 
     pub(super) fn measured_retention(&self) -> f32 {
@@ -224,6 +285,32 @@ pub(super) fn synchronize_transport_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ron_import_clamps_and_round_trips() {
+        let imported =
+            VoxelGiSettings::from_ron("(transport: (reach: 16.0, bounces: 0), samples_per_dispatch: 999, view_receivers: 1)")
+                .unwrap();
+        assert_eq!(imported.transport, TransportSettings { reach: 16.0, bounces: 1 });
+        assert_eq!(imported.samples_per_dispatch, 64);
+        assert_eq!(imported.view_receivers, 8_192);
+        assert!(VoxelGiSettings::from_ron("broken").is_err());
+        let high = VoxelGiSettings::quality(VoxelGiQuality::High);
+        assert_eq!(VoxelGiSettings::from_ron(&high.to_ron()).unwrap(), high);
+        assert_eq!(VoxelGiSettings::from_ron("()").unwrap(), VoxelGiSettings::default());
+    }
+
+    #[test]
+    fn quality_presets_change_only_cost_knobs_and_round_trip() {
+        for quality in [VoxelGiQuality::Low, VoxelGiQuality::Default, VoxelGiQuality::High] {
+            let preset = VoxelGiSettings::quality(quality);
+            assert_eq!(preset.matching_quality(), Some(quality));
+            assert_eq!(preset.clone().normalized(), preset, "presets are within range");
+            let look = VoxelGiSettings { gpu_time_share: 0.2, cache_radius: 64.0, view_receivers: 65_536, ..preset };
+            assert_eq!(look, VoxelGiSettings::default());
+        }
+        assert_eq!(VoxelGiSettings::quality(VoxelGiQuality::Default), VoxelGiSettings::default());
+    }
 
     #[test]
     fn cache_radius_sets_residency_and_one_shared_budget() {

@@ -47,7 +47,7 @@ use bevy::prelude::*;
 use bevy::tasks::Task;
 
 pub use field::VoxelEnergyField;
-pub use settings::{TransportSettings, VoxelGiSettings};
+pub use settings::{TransportSettings, VoxelGiQuality, VoxelGiSettings};
 pub use sources::VoxelGiEnvironment;
 pub use spectrum::EnergyEmitter;
 pub use world::{MaterialTransport, VoxelMaterialTransportTable};
@@ -55,6 +55,7 @@ pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 use pages::{ingest_input, start_scene_task};
 pub use bvw::{BvwVoxelEdits, GiFallbackVoxel, VoxelGiBvwPlugin};
 pub use input::{VoxelGiInput, VoxelGiSource, VoxelSource, dense_page};
+pub use gpu::view::ViewReceipts;
 pub use render::{GiDebugView, VoxelGiDisplay};
 pub use telemetry::MAIN_STAGE_NAMES as GI_MAIN_STAGE_NAMES;
 pub use diagnostics::{VoxelGiDebugPlugin, parse_settings};
@@ -173,6 +174,10 @@ pub struct VoxelGiStats {
     pub last_decode_ms: f32,
     pub packed_geometry_bytes: usize,
     pub fully_bootstrapped: bool,
+    /// Visible-face (view tier) GPU time last frame. Unlike `gpu_ms_per_frame`
+    /// (world-cache transport), presentation and discovery are not limited by
+    /// `gpu_time_share`; `view_receivers` scales them.
+    pub view_gpu: ViewReceipts,
     /// World-cache faces the next batch may select, and sun corners per
     /// sky-only batch (adaptive to measured GPU time).
     pub dispatch_budget: usize,

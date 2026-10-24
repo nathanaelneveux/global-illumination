@@ -332,10 +332,11 @@ and resource-growth tests cover the integration without a toggle-stress run.
 
 ### Quality-lever comparisons
 
-Use **Esc → Lighting controls…** for exploratory comparisons. Save defaults to A
-and a candidate to B; change one lever at a time. Model Apply/Load resets measured
-history progressively but preserves display history, so a screenshot immediately
-after loading is not an independent candidate result. Compare settled appearance
+Use **Esc → Lighting controls** for exploratory comparisons; change one lever at
+a time. Model Apply resets measured history progressively but preserves display
+history, so a screenshot immediately after applying is not an independent
+candidate result. `VOXEL_GI_VALIDATE_DEBUG_UI=1` renders the overlay (panel
+open) into validation captures to check the UI itself, not lighting. Compare settled appearance
 and edit response as well as cost; a dark field or starved transport is not a win.
 
 For repeatable starts, export applied RON, save it outside tracked source (for

@@ -35,9 +35,9 @@ struct FarOutput {
     viewport: vec4<u32>,
     shape: vec4<u32>,
     optical: array<vec4<f32>, 1024>,
-    keys: array<u32, 131072>, // visible face -> owner pixel + 1; zero is empty
-    heads: array<u32, 32768>, // projected 2x2-cell tile -> first pool slot + 1
-    links: array<u32, 65536>, // spatial list, independent of physical slot order
+    keys: array<u32, 262144>, // visible face -> owner pixel + 1; zero is empty
+    heads: array<u32, 65536>, // projected 2x2-cell tile -> first pool slot + 1
+    links: array<u32, 131072>, // spatial list, independent of physical slot order
     pixels: array<FarPixel>,
 }
 @group(2) @binding(0) var<uniform> view: ViewControl;

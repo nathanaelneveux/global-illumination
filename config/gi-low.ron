@@ -1,0 +1,5 @@
+(
+    gpu_time_share: 0.12,
+    cache_radius: 32.0,
+    view_receivers: 32768,
+)

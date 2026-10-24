@@ -8,11 +8,15 @@ use std::sync::Mutex;
 mod runtime;
 mod timing;
 pub(crate) use runtime::install;
+pub use runtime::ViewReceipts;
 
 // FarOutput's fixed header, optical table, face hash and spatial lists. Shared by
 // the active allocation and material placeholder; the unsized tail needs at
 // least one 48-byte FarPixel even before the first view has been published.
-pub(crate) const OUTPUT_PREFIX_BYTES: u64 = 32 + 16384 + (131072 + 32768 + 65536) * 4;
+/// Most visible-face receivers one camera can hold (`view_receivers` cap).
+pub(crate) const MAX_VIEW_RECEIVERS: u32 = 131_072;
+/// Published face hash (2x receivers), tile heads (receivers / 4) and links.
+pub(crate) const OUTPUT_PREFIX_BYTES: u64 = 32 + 16384 + (262144 + 65536 + 131072) * 4;
 pub(crate) const EMPTY_OUTPUT_BYTES: u64 = OUTPUT_PREFIX_BYTES + 48;
 
 #[derive(Resource, Clone, Default, ExtractResource)]

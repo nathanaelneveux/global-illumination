@@ -134,6 +134,9 @@ What the connector and core must handle for it, beyond the lab:
 
 ## Tuning surface
 
+Done in the lab first (Bevy UI debug panel, `VoxelGiQuality` presets, the
+`view_receivers` setting and view GPU receipts in `VoxelGiStats`).
+
 Keep public, with RON presets for the Neo, the M4 and larger GPUs:
 
 - `cache_radius` (world cache size, the main memory/cost knob);

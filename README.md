@@ -97,11 +97,12 @@ thermal/radiation simulation or a finished art scene. E places a torch and right
 click places rock in this isolated palette. Omit the variable to explore the
 regular world, with both the house and nearby cave.
 
-The top-right HUD reports FPS and near-cache Coverage, Bootstrap, Settled, and
-worker GI CPU/GPU cost. Far view costs are measured separately in runtime logs.
-Coverage means at least one sample; Bootstrap means progress toward eight samples;
-Settled means passing a revisitable stability heuristic. None means convergence.
-CPU and GPU work overlap, so their displayed costs must not be added.
+The top-right HUD reports FPS, world-cache Coverage, Bootstrap and Settled, GI
+main-thread time, world-cache GPU time and the visible-face (view) GPU time split
+into trace, presentation and discovery. Coverage means at least one sample;
+Bootstrap means progress toward eight samples; Settled means passing a
+revisitable stability heuristic. None means convergence. CPU and GPU work
+overlap, so their displayed costs must not be added.
 
 ## Controls
 
@@ -112,7 +113,7 @@ CPU and GPU work overlap, so their displayed costs must not be added.
 | Left / right click | Remove / place a voxel |
 | E / Add emitting block button | Place a warm emitting voxel at the aimed-at face |
 | B / Bomb button | Immediately remove a radius-5 sphere centered on the aimed-at voxel; left-click remains single-block digging. |
-| Lighting controls… button | Quality/work sliders, A/B settings, defaults reset and RON export |
+| Lighting controls button | Quality presets, performance and look sliders, staged light model, display switches, RON copy/paste |
 | F3 | Mesh debug overlay |
 | F4 | Toggle indirect GI display |
 | F5 | Flat faces / virtual-corner interpolation |
@@ -125,17 +126,22 @@ while the cursor is released. Display toggles do not invalidate transport.
 
 ### Visual quality tuning
 
-Press **Esc**, then **Lighting controls…** in the HUD. The light-model section
-stages changes until **Apply model**; work/refinement and presentation sliders
-apply live. Defaults remain 768-voxel reach, three diffuse surface hits, sixteen paths
-per face per batch, a 4 ms batch target and 75 ms display response.
+Press **Esc**, then **Lighting controls** in the HUD (Bevy UI, feathers widgets).
 
-Start by saving defaults to **A**, then compare reach **16 / 32 / 64 / 128 / 256**
-with bounce depth and budget unchanged. Save a candidate to **B**. These restore
-settings, not cached images: a changed model needs fresh refinement. Keep an eye
-on FPS, GI cost, dark-corner quality and response after edits, not just coverage.
-The first use of a depth/range-policy combination also compiles a cached GPU
-variant on the worker; subsequent comparisons reuse it.
+- **Quality preset** (Low / Default / High) sets only the performance knobs:
+  GI GPU share (0.12 / 0.2 / 0.3), world cache radius (32 / 64 / 96 voxels) and
+  visible receivers per camera (32k / 64k / 128k). Receivers set the view grid's
+  cell size and are the only lever on the fixed presentation/discovery cost,
+  which the GPU share does not cover; the HUD's View GPU line shows it.
+- **Look**: spatial smoothing and its target, temporal response, indirect gain.
+- **Light model**: reach and bounces are staged until **Apply model**, which
+  restarts measurements. The first use of a depth/range combination compiles a
+  cached GPU variant on the worker.
+- **Display**: the F4-F7 switches.
+
+Keep an eye on FPS, GI cost, dark-corner quality and response after edits, not
+just coverage. `config/gi-low.ron` and `config/gi-high.ron` start the lab at
+the other presets.
 
 Reach limits each diffuse ray and voxel-emitter connection, not total path length
 or Minecraft-style block-by-block light attenuation. A shorter reach may discard
@@ -204,11 +210,11 @@ measured retention ([research](docs/retention-research.md)) is the default. The
 previous calibrated runtime is preserved at `5381c17`. See the
 [integration record](docs/history/whole-range-history.md#runtime-integration).
 
-**Copy applied RON** exports transport/work settings (not display toggles/gain).
-Paste RON into the same panel to import, or save it to a file and launch with
-`VOXEL_GI_SETTINGS=path.ron cargo run --locked`. Omitted fields use defaults;
-unknown fields or malformed files are errors, and numeric values are clamped to
-supported ranges. A/B slots are session-only and include presentation.
+**Copy** puts the applied settings on the clipboard as RON (display switches
+and gain are not settings); **Paste** applies RON from the clipboard. Save it to
+a file and launch with `VOXEL_GI_SETTINGS=path.ron cargo run --locked`. Omitted
+fields use defaults; unknown fields or malformed files are errors, and numeric
+values are clamped to supported ranges.
 
 ## Current behavior
 

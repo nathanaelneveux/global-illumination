@@ -102,8 +102,8 @@ struct FarPixel {
 }
 struct FarOutput {
     viewport: vec4<u32>, shape: vec4<u32>, optical: array<vec4<f32>, 1024>,
-    keys: array<u32, 131072>,
-    heads: array<u32, 32768>, links: array<u32, 65536>,
+    keys: array<u32, 262144>,
+    heads: array<u32, 65536>, links: array<u32, 131072>,
     pixels: array<FarPixel>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(110)
