@@ -77,6 +77,8 @@ fn prepass_receiver(pixel: vec2<i32>) -> ViewReceiver {
 /// The window grows with the pixel's world footprint (LOD strides grow with
 /// distance); the step budget is bounded like NAADF's primary rays.
 const TRACED_DISCOVERY_STEPS: u32 = 64u;
+/// Footprint-search rounds (new planes) per tile per frame.
+const DISCOVERY_ROUNDS: u32 = 8u;
 
 fn region_loaded(voxel: vec3<i32>) -> bool {
     let region = vec3<i32>(floor(vec3<f32>(voxel) / 16.0));
@@ -372,7 +374,14 @@ fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invoc
 
     // Every newly represented plane removes its candidates from the next round.
     // The bound is the actual footprint, not a per-tile receiver quota.
+    // A crowded tile (distant terrain: many one-pixel planes) needs a round
+    // per new plane; at most DISCOVERY_ROUNDS run per frame and an unfinished
+    // tile stays pending, finishing over the next frames.
     for (var round = 0u; round < pixels; round++) {
+        if round >= DISCOVERY_ROUNDS {
+            if thread == 0u { atomicStore(&pool.tiles[id.x].pending, 1u); }
+            break;
+        }
         if thread == 0u { atomicStore(&pool_winner, 0xffffffffu); }
         workgroupBarrier();
         for (var offset = thread; offset < pixels; offset += 32u) {
