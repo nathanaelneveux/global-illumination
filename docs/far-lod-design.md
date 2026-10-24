@@ -68,3 +68,30 @@ on the default lab.
   coarse one is ready (no gap in GI geometry)?
 - Separately: GI on the BVW fork shows edit-timing regressions in the default
   gate (asteroids-integration item 9); asteroids needs that fixed too.
+
+## Update: traced discovery on the 48-chunk baseline
+
+`VOXEL_GI_LAB_FAR=48` (LOD bands 0/2/4/8), paced, M4 headless 1440p, two
+alternating pairs each, branch `experiment/traced-discovery`:
+
+| Variant | p50 ms | Discovery ms | Uncovered receivers |
+| --- | --- | --- | --- |
+| main (top-level field on, `32697f5`) | 22.7-23.7 | 0.9-1.2 | 3.5k |
+| traced, first version | 30.5 | 5.2 | 2.4k |
+| + identities cached per tile pixel | 28.7 | 3.5-4.0 | 2.5k |
+| + failed lookup on loaded geometry is no receiver | 24.9-25.7 | 3.2-3.3 | 0.55k |
+
+It removes the dark blocky patches LOD meshes left on distant hills. In the
+default lab it costs discovery +1.3-1.7 ms (streaming and cave) with static
+captures identical, because the fallback also fires on ordinary grazing
+and boundary pixels. Not adopted yet; next try limits it to distant pixels.
+
+The default-gate run of that branch crashed once in a GI worker: wgpu
+"Mismatched pop_error_scope call: error scopes must be popped in reverse
+order" (tunnel profile). Unrelated to the shader change; GI pushes
+validation scopes when it creates pipelines on worker threads
+(`gpu.rs` quality variants). Not yet reproduced or fixed.
+
+Raising the top-level field's size cap (it was off above 262,144 region
+cells) took the baseline from 24.5 to 23.2 ms p50 on its own (GI off:
+20.5 ms).
