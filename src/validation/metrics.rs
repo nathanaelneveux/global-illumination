@@ -1,6 +1,6 @@
 //! Frame timing and transport work observations from public GI stats.
 //! Deliberately separate from visual ground truth: captures judge lighting.
-use crate::voxel_gi::{GI_MAIN_STAGE_NAMES, VoxelGiStats};
+use voxel_gi::{GI_MAIN_STAGE_NAMES, VoxelGiStats};
 use bevy::prelude::*;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;

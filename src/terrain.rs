@@ -11,10 +11,8 @@ use crate::scene_presets::ScenePreset;
 use crate::structures::{Bounds, StructureLayer, VoxelOp, showcase};
 use crate::terrain_meshing::build_chunk_mesh;
 use crate::terrain_noise::{BEDROCK_FLOOR_Y, MAX_SURFACE_Y, TerrainColumn, TerrainNoise};
-use crate::voxel_gi::{
-    MaterialTransport, VoxelGiInput, VoxelMaterialTransportTable,
-    VoxelGiMaterialData, material_template,
-};
+use voxel_gi::{MaterialTransport, VoxelGiInput, VoxelMaterialTransportTable, VoxelGiMaterialData};
+use voxel_gi_bvw::material_template;
 
 pub type MaterialIndex = u8;
 
@@ -207,7 +205,7 @@ impl PrototypeWorld {
 }
 
 /// GI samples unmaterialized voxels from the same generator BVW uses.
-impl crate::voxel_gi::GiFallbackVoxel for PrototypeWorld {
+impl voxel_gi_bvw::GiFallbackVoxel for PrototypeWorld {
     fn fallback_voxel(&self, position: IVec3) -> WorldVoxel<MaterialIndex> {
         self.generated_voxel(position)
     }

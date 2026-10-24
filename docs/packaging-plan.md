@@ -32,8 +32,8 @@ One Cargo workspace in this repository:
 | Crate | Contents | Depends on |
 | --- | --- | --- |
 | `voxel_gi` | Transport scene (16³ pages), GPU path tracer and world cache, view tier (prepass discovery, shared receiver pool, two-way cache, presentation), shared-corner sun, settings, WGSL shading functions | `bevy` |
-| `voxel_gi_bvw` | `bevy_voxel_world` adapter: chunk spawn/despawn/edit events to pages and dirty voxels, material ID to optics table, material attached to BVW meshes | `voxel_gi`, `bevy_voxel_world` |
-| `voxel_gi_debug` | HUD overlay, tuning panel (egui), terminal stats logging, debug shading modes (face validity, coverage, sun/indirect components). Reads `voxel_gi`'s public stats resources; core never depends on it | `voxel_gi`, `bevy_egui` |
+| `voxel_gi_bvw` | `bevy_voxel_world` adapter: chunk spawn/despawn/edit events to pages and dirty voxels, voxel source, the lit BVW mesh material (copies core's `VoxelGiMaterialData`) | `voxel_gi`, `bevy_voxel_world` |
+| `voxel_gi_debug` | HUD overlay, tuning panel (Bevy UI, feathers), keyboard toggles, terminal stats logging; later debug shading modes behind a shader def. Reads `voxel_gi`'s public resources; core never depends on it | `voxel_gi`, `bevy` (`bevy_feathers`) |
 | `gi_lab` (this app) | Terrain scenes, player, crosshair, validation profiles, `tools/`, `config/` | all three |
 
 The debug split keeps production lean: core exposes counters and GPU timing
@@ -256,8 +256,10 @@ research, 1.2k diagnostics) and 3.3k of WGSL.
    removal, each with its gate evidence and the performance comparison. The app
    keeps working throughout.
 2. **Band removal and CPU field removal**, measured like any other change.
-3. **Workspace split.** Move files into `crates/voxel_gi`, `crates/voxel_gi_bvw`
-   and the lab without behavior changes; one commit, gates rerun.
+3. **Workspace split** (done 2026-10-24). `crates/voxel_gi`, `crates/voxel_gi_bvw`,
+   `crates/voxel_gi_debug`; the lab stays the root package. Core publishes
+   `VoxelGiMaterialData` and touches no material; the connector owns the BVW
+   material. Connector tests reach core only through `#[doc(hidden)] testing`.
 4. **Public API.** Narrow `pub` items, the material split (decision 1, after
    the 0.20 spike), plugin configuration and tuning presets, docs and a minimal
    example (a few voxels, a sun, one camera).

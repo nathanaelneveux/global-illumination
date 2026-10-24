@@ -1,5 +1,5 @@
 //! Host-only experiment selection. Transport code never branches on a scene.
-use crate::voxel_gi::VoxelMaterialTransportTable;
+use voxel_gi::VoxelMaterialTransportTable;
 use bevy::prelude::*;
 use bevy_voxel_world::prelude::WorldVoxel;
 

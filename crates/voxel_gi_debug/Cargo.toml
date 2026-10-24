@@ -1,0 +1,13 @@
+[package]
+name = "voxel_gi_debug"
+description = "Optional HUD and tuning panel for voxel_gi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bevy = { workspace = true, features = ["bevy_feathers", "system_clipboard"] }
+voxel_gi.workspace = true
+
+[lints]
+workspace = true

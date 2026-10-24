@@ -10,7 +10,8 @@ use bevy_enhanced_input::prelude::*;
 use bevy_voxel_world::prelude::{VoxelWorld, VoxelWorldCamera, WorldVoxel};
 
 use crate::terrain::{PrototypeWorld, TERRAIN_VIEW_DISTANCE, TerrainMaterial};
-use crate::voxel_gi::{BvwVoxelEdits, VoxelGiInput};
+use voxel_gi_bvw::BvwVoxelEdits;
+use voxel_gi::VoxelGiInput;
 use crate::world_environment::sky_color;
 
 const FOG_START: f32 = 96.0;

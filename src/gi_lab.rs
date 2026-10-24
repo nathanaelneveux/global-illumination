@@ -1,9 +1,10 @@
 //! The lab's voxel GI wiring: launch settings, the debug overlay's
 //! configuration, scripted validation and the gameplay action buttons.
 use crate::player::{BombAtAim, PlaceEmissiveBlock};
-use crate::voxel_gi::{VoxelGiDebugPlugin, VoxelGiSettings};
+use voxel_gi_debug::VoxelGiDebugPlugin;
+use voxel_gi::VoxelGiSettings;
 #[cfg(debug_assertions)]
-use crate::voxel_gi::VoxelGiSystems;
+use voxel_gi::VoxelGiSystems;
 use bevy::feathers::controls::FeathersButton;
 use bevy::prelude::*;
 use bevy::ui_widgets::Activate;
@@ -51,7 +52,7 @@ fn load_launch_settings(app: &mut App) {
     };
     let settings = std::fs::read_to_string(&path)
         .map_err(|error| error.to_string())
-        .and_then(|text| crate::voxel_gi::parse_settings(&text))
+        .and_then(|text| voxel_gi::VoxelGiSettings::from_ron(&text))
         .unwrap_or_else(|error| panic!("Cannot load VOXEL_GI_SETTINGS={path:?}: {error}"));
     // Fail visibly on invalid files rather than benchmarking a silent fallback.
     app.insert_resource(settings);
@@ -100,4 +101,30 @@ fn spawn_actions(mut commands: Commands) {
             action_button(LabAction::Bomb, "Bomb: radius 5 (B)"),
         ]
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use voxel_gi::VoxelGiSettings;
+
+    fn config(text: &str) -> VoxelGiSettings {
+        VoxelGiSettings::from_ron(text).unwrap()
+    }
+
+    #[test]
+    fn lab_configs_parse_and_keep_their_meaning() {
+        let settings = VoxelGiSettings::default();
+        assert_eq!(config(include_str!("../config/gi-display-evidence-1024.ron")), settings);
+        let control = config(include_str!("../config/gi-display-unfiltered.ron"));
+        assert_eq!(control.spatial_reconstruction, 0.0);
+        assert_eq!(control.spatial_evidence_target, 0);
+        assert_eq!(control.transport, settings.transport);
+        let cacheless = config(include_str!("../config/gi-cacheless.ron"));
+        assert_eq!(cacheless.cache_radius, 0.0);
+        assert_eq!(cacheless.transport, settings.transport);
+        assert_eq!(config(include_str!("../config/gi-cache-32.ron")).cache_radius, 32.0);
+        for text in [include_str!("../config/gi-low.ron"), include_str!("../config/gi-high.ron")] {
+            assert!(config(text).matching_quality().is_some());
+        }
+    }
 }

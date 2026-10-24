@@ -3,6 +3,31 @@ name = "prototype_voxel_template"
 version = "0.1.0"
 edition = "2024"
 license = "CC0-1.0 OR MIT OR Apache-2.0"
+description = "Voxel GI lab: the BVW prototype world, scenes and validation harness"
+
+[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+bevy = "0.19"
+bevy_voxel_world = "0.17"
+voxel_gi = { path = "crates/voxel_gi" }
+voxel_gi_bvw = { path = "crates/voxel_gi_bvw" }
+voxel_gi_debug = { path = "crates/voxel_gi_debug" }
+wgpu = { version = "29", default-features = false, features = ["wgsl"] }
+naga = { version = "29", features = ["wgsl-in"] }
+serde = { version = "1", features = ["derive"] }
+ron = "0.11"
+
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+nonstandard_macro_braces = "warn"
 
 [features]
 default = ["dev_native"]
@@ -20,7 +45,10 @@ tracy = ["bevy/trace_tracy", "bevy/debug"]
 
 [dependencies]
 avian3d = { version = "0.7", default-features = false, features = ["3d", "f32", "parry-f32", "debug-plugin"] }
-bevy = { version = "0.19", features = ["bevy_feathers", "system_clipboard"] }
+bevy = { workspace = true, features = ["bevy_feathers", "system_clipboard"] }
+voxel_gi.workspace = true
+voxel_gi_bvw.workspace = true
+voxel_gi_debug.workspace = true
 bevy_ahoy = "0.2"
 bevy_asset_loader = "0.27"
 bevy_common_assets = { version = "0.17", features = ["ron"] }
@@ -34,10 +62,6 @@ noiz = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ron = "0.11"
-rayon = "1"
-wgpu = { version = "29", default-features = false, features = ["wgsl"] }
-# Material-scoped PBR hooks; keep Bevy's lighting implementation intact.
-naga_oil = { version = "0.22", default-features = false, features = ["override_any"] }
 
 [dev-dependencies]
 naga = { version = "29", features = ["wgsl-in"] }
@@ -52,10 +76,8 @@ tracing = { version = "0.1", features = [
     "release_max_level_warn",
 ] }
 
-[lints.clippy]
-too_many_arguments = "allow"
-type_complexity = "allow"
-nonstandard_macro_braces = "warn"
+[lints]
+workspace = true
 
 [profile.dev]
 opt-level = 1

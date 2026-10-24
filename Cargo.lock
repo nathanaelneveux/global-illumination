@@ -5376,15 +5376,15 @@ dependencies = [
  "block-mesh-bgm",
  "log",
  "naga",
- "naga_oil",
  "ndshape",
  "noiz",
- "rayon",
  "ron 0.11.0",
  "serde",
  "serde_json",
  "tracing",
- "wgpu",
+ "voxel_gi",
+ "voxel_gi_bvw",
+ "voxel_gi_debug",
 ]
 
 [[package]]
@@ -6628,6 +6628,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "446e7ffcb6c27a71d05af7e51ef2ee5b71c48424b122a832f2439651e1914899"
 dependencies = [
  "rayon",
+]
+
+[[package]]
+name = "voxel_gi"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "naga",
+ "ron 0.11.0",
+ "serde",
+ "wgpu",
+]
+
+[[package]]
+name = "voxel_gi_bvw"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_voxel_world",
+ "naga",
+ "naga_oil",
+ "voxel_gi",
+ "wgpu",
+]
+
+[[package]]
+name = "voxel_gi_debug"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "voxel_gi",
 ]
 
 [[package]]

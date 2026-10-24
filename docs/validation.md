@@ -585,7 +585,7 @@ transition; it must not be mistaken for improved sampler accuracy.
   option to the display rate, hiding headroom; on macOS `AutoNoVsync` alone
   still blocks most frames on the two-drawable default. Reports record the
   actual `present_mode`. Compare uncapped intervals only with other uncapped
-  runs. Add `RUST_LOG=warn,prototype_voxel_template::voxel_gi=info` for the
+  runs. Add `RUST_LOG=warn,voxel_gi=info` for the
   view tier's GPU receipts (`GI view transport`: trace, presentation,
   discovery, pool), logged every 120 frames.
 - Coverage is at least one path sample per exposed face. Bootstrap targets eight.

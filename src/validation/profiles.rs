@@ -1,6 +1,6 @@
 //! Workload identity and presentation are explicit; toggle stress is never a
 //! proxy for the cost or appearance of the normal gameplay mode.
-use crate::voxel_gi::{GiDebugView, VoxelGiDisplay};
+use voxel_gi::{GiDebugView, VoxelGiDisplay};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Profile {

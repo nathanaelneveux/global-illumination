@@ -11,6 +11,14 @@ at exposed voxel-face centers. Transport and virtual voxel corners do not
 depend on greedy-mesh vertices. Near histories live in world space; far face
 identities and paths live in a bounded view cache, discovered from depth/normals.
 
+The workspace has three crates and this lab app (the root package):
+
+| Crate | What it is |
+| --- | --- |
+| `crates/voxel_gi` | GI itself: page input (`VoxelGiInput`, `VoxelSource`), transport, view tier, world cache, settings, and `VoxelGiMaterialData` for lit materials |
+| `crates/voxel_gi_bvw` | `bevy_voxel_world` connector: chunk events, voxel source, the lit mesh material |
+| `crates/voxel_gi_debug` | Optional HUD and tuning panel (`VoxelGiDebugPlugin`) |
+
 ## Start here
 
 - [Architecture](docs/architecture.md): data model, estimator, ownership,
@@ -243,8 +251,8 @@ have explicit owners rather than being encoded into the tracer.
 
 ## Scope
 
-This is a tested prototype engine with library-style internal boundaries, not a
-published storage-independent crate or an unlimited-world renderer. It supports
+This is a tested prototype engine split into workspace crates, not yet a
+published crate or an unlimited-world renderer. It supports
 opaque, axis-aligned voxels, diffuse bounces, directional/point sources and
 emissive voxel materials. The [architecture limits](docs/architecture.md#integration-contract-and-limits)
 are part of the design, not promises of implemented planet warps or physical

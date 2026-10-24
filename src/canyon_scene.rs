@@ -1,6 +1,6 @@
 //! Deterministic, opt-in long-range daylight fixture. The host renderer and
 //! offline transport studies share this exact geometry and optical palette.
-use crate::voxel_gi::{MaterialTransport, VoxelMaterialTransportTable};
+use voxel_gi::{MaterialTransport, VoxelMaterialTransportTable};
 use bevy::prelude::*;
 use bevy_voxel_world::prelude::WorldVoxel;
 

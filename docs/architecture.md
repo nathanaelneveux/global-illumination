@@ -37,8 +37,9 @@ a test oracle. Rendering does not wait for CPU delivery of lighting statistics.
 
 | Responsibility | Owner / source |
 | --- | --- |
-| Plugin wiring and runtime state | `src/voxel_gi/mod.rs` |
-| BVW events, tracked edits and immutable page input | `bvw.rs` |
+| Plugin wiring and runtime state | `lib.rs` |
+| Host input: pages, edits, voxel source | `input.rs`, `pages.rs` |
+| BVW events, edits and source (connector crate) | `voxel_gi_bvw/src/lib.rs` |
 | Scene/receiver representation | `world.rs`, `field.rs` |
 | Acceleration, packing and shared GPU transactions | `naadf.rs`, `gpu_scene.rs`, `gpu/geometry.rs` |
 | Change metadata and retention | `world/delta.rs`, `geometry.rs`, `retention.rs`, `sources.rs`, `revision.rs` |
@@ -55,11 +56,14 @@ a test oracle. Rendering does not wait for CPU delivery of lighting statistics.
 | Shared uncertainty heuristic | `statistics.rs` |
 | Direct-sun visibility cache | `sky.rs`, `sky_cache.rs` |
 | Temporal display and initialization | `history.rs` |
-| Terrain material and shared buffers | `render.rs`, `voxel_transport.wgsl` |
-| Accounting, optional UI, fixtures | `telemetry.rs`, `diagnostics.rs`, `diagnostics/`, `validation/` |
+| Material data and shared buffers | `render.rs` |
+| BVW mesh material (connector crate) | `voxel_gi_bvw/src/material.rs`, `voxel_gi_bvw/shaders/voxel_transport.wgsl` |
+| Accounting, test fixtures | `telemetry.rs`, `research.rs` |
+| HUD and tuning panel (debug crate) | `voxel_gi_debug/src/lib.rs` |
+| Validation harness (lab) | `src/validation.rs`, `src/validation/` |
 
-Shader paths are under `assets/shaders/`; Rust paths above are under
-`src/voxel_gi/`. `reconstruction.rs` is an independent CPU test oracle for shader
+Unqualified paths are in the core crate: Rust under `crates/voxel_gi/src/`,
+shaders under `crates/voxel_gi/shaders/` (embedded with `include_str!`). `reconstruction.rs` is an independent CPU test oracle for shader
 interpolation, not a second production reconstruction path.
 
 ### View-owned lighting
@@ -982,7 +986,7 @@ positions. There is no floating origin, world-ID key, deformation metric or
 cross-world ray routing yet. Core publishes what a lit material binds as
 `VoxelGiMaterialData` (shared geometry, traversal parameters, the visible-face
 output and the presentation uniform) and touches no material asset. The BVW
-connector (`bvw.rs`, `bvw_material.rs`) owns page forwarding and the mesh
+connector crate (`voxel_gi_bvw`) owns page forwarding and the mesh
 material: BVW's vertex layout, the host's texture array (`material_template`,
 `prepare_texture_array`) and a copy of `VoxelGiMaterialData` on change.
 `VoxelGiDebugPlugin` is optional HUD/panel, not core input.

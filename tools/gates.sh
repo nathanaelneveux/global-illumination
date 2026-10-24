@@ -12,7 +12,7 @@ cd "$root" || exit 1
 mkdir -p target/gates
 list=target/gates/$label.txt
 : > $list
-info=RUST_LOG=warn,prototype_voxel_template::voxel_gi=info
+info=RUST_LOG=warn,voxel_gi=info
 run() {
   local name=$1 profile=$2; shift 2
   local before=$(ls -1d target/gi-validation/$profile-* 2>/dev/null | wc -l)

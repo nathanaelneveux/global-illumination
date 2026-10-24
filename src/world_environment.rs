@@ -2,7 +2,7 @@ use bevy::light::{CascadeShadowConfigBuilder, SimulationLightSystems};
 use bevy::prelude::*;
 
 use crate::terrain::TERRAIN_VIEW_DISTANCE;
-use crate::voxel_gi::VoxelTransportMaterial;
+use voxel_gi_bvw::VoxelTransportMaterial;
 
 #[derive(Component)]
 struct DemoSun;
@@ -37,12 +37,12 @@ fn setup_lighting(mut commands: Commands) {
     let cave = preset == crate::scene_presets::ScenePreset::Cave;
     let canyon = preset == crate::scene_presets::ScenePreset::Canyon;
     if cave {
-        commands.insert_resource(crate::voxel_gi::VoxelGiEnvironment(
+        commands.insert_resource(voxel_gi::VoxelGiEnvironment(
             crate::cave_scene::ENVIRONMENT,
         ));
     }
     if canyon {
-        commands.insert_resource(crate::voxel_gi::VoxelGiEnvironment(
+        commands.insert_resource(voxel_gi::VoxelGiEnvironment(
             crate::canyon_scene::ENVIRONMENT,
         ));
     }
@@ -75,7 +75,7 @@ fn setup_lighting(mut commands: Commands) {
         cascade_shadow_config,
     ));
     if cave || canyon {
-        sun.insert(crate::voxel_gi::EnergyEmitter {
+        sun.insert(voxel_gi::EnergyEmitter {
             spectrum: Vec3::ZERO,
             range: 0.0,
         });
@@ -108,7 +108,7 @@ fn rotate_sun(angle: Option<Res<SunAngle>>, mut suns: Query<&mut Transform, With
 /// conservatively restores raster shadows. F7 takes effect before light culling
 /// and render extraction in the same frame. Point-light shadows are untouched.
 fn synchronize_sun_shadows(
-    display: Res<crate::voxel_gi::VoxelGiDisplay>,
+    display: Res<voxel_gi::VoxelGiDisplay>,
     other_meshes: Query<
         (),
         (
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn shadows_follow_consumers_without_changing_other_lights() {
         let mut app = App::new();
-        app.init_resource::<crate::voxel_gi::VoxelGiDisplay>();
+        app.init_resource::<voxel_gi::VoxelGiDisplay>();
         let sun = app
             .world_mut()
             .spawn((
@@ -169,9 +169,9 @@ mod tests {
                 .unwrap()
                 .shadow_maps_enabled
         );
-        app.world_mut().resource_mut::<crate::voxel_gi::VoxelGiDisplay>().voxel_sun = false;
+        app.world_mut().resource_mut::<voxel_gi::VoxelGiDisplay>().voxel_sun = false;
         assert!(update(&mut app), "F7 must restore raster shadows");
-        app.world_mut().resource_mut::<crate::voxel_gi::VoxelGiDisplay>().voxel_sun = true;
+        app.world_mut().resource_mut::<voxel_gi::VoxelGiDisplay>().voxel_sun = true;
         let mesh = app.world_mut().spawn(Mesh3d::default()).id();
         assert!(update(&mut app), "other receivers still need shadow maps");
         app.world_mut().despawn(mesh);

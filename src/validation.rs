@@ -13,13 +13,11 @@ mod response;
 mod structures;
 mod tunnel;
 
-use crate::voxel_gi::VoxelTransportMaterial;
+use voxel_gi_bvw::VoxelTransportMaterial;
 /// Face normals in the lab's face order (+X, -X, +Y, -Y, +Z, -Z).
 const FACE_OFFSETS: [IVec3; 6] = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
-use crate::voxel_gi::{
-    BvwVoxelEdits, EnergyEmitter, MaterialTransport, VoxelGiInput,
-    VoxelGiSettings, VoxelGiStats, VoxelMaterialTransportTable,
-};
+use voxel_gi_bvw::BvwVoxelEdits;
+use voxel_gi::{EnergyEmitter, MaterialTransport, VoxelGiInput, VoxelGiSettings, VoxelGiStats, VoxelMaterialTransportTable};
 use crate::assets::{PrototypeConfig, TemplateAssets};
 use crate::{player::Player, terrain::PrototypeWorld};
 use bevy::camera::{RenderTarget, ShadowLodOrigin};
@@ -144,7 +142,7 @@ pub(super) fn run_validation(
     cameras: Query<Entity, With<Camera3d>>,
     mut commands: Commands,
     handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
-    mut display: ResMut<crate::voxel_gi::VoxelGiDisplay>,
+    mut display: ResMut<voxel_gi::VoxelGiDisplay>,
     mut transport_materials: ResMut<VoxelMaterialTransportTable>,
     asset_context: (
         Res<TemplateAssets>,
@@ -395,7 +393,7 @@ pub(super) fn run_validation(
     let mut next = *display;
     profile.configure(elapsed, &mut next);
     if matches!(profile, Profile::Motion | Profile::Tunnel | Profile::Streaming) {
-        next.debug_view = crate::voxel_gi::GiDebugView::from_index(run.motion_diagnostic);
+        next.debug_view = voxel_gi::GiDebugView::from_index(run.motion_diagnostic);
     }
     if next != *display {
         *display = next;

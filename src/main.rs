@@ -13,7 +13,6 @@ mod terrain_noise;
 mod gi_lab;
 #[cfg(debug_assertions)]
 mod validation;
-pub mod voxel_gi;
 mod world_environment;
 
 use app_controls::AppControlsPlugin;
@@ -117,7 +116,7 @@ fn main() -> AppExit {
     app.add_plugins(gi_lab::GiLabPlugin);
     app.add_plugins((
         VoxelGiPlugin,
-        voxel_gi::VoxelGiBvwPlugin::<terrain::PrototypeWorld>::default(),
+        voxel_gi_bvw::VoxelGiBvwPlugin::<terrain::PrototypeWorld>::default(),
         TerrainPlugin,
         ChunkColliderPlugin,
         PlayerPlugin,
