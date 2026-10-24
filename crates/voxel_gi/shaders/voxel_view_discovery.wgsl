@@ -62,7 +62,50 @@ fn prepass_receiver(pixel: vec2<i32>) -> ViewReceiver {
             best_gap = needed;
         }
     }
-    return best;
+    if receiver_exists(best) { return best; }
+    // Nearer than host LOD meshes start, a failed lookup is a grazing or
+    // boundary pixel, not a LOD mismatch. Geometry not yet published keeps
+    // its raster receiver (pending); the traced fallback needs GI's own.
+    if footprint < TRACED_DISCOVERY_FOOTPRINT || !region_loaded(receiver.voxel) { return best; }
+    return traced_receiver(position, footprint, best);
+}
+
+/// A host mesh that is not GI's geometry (BVW LOD chunks, impostor or
+/// foreign meshes) puts its depth beside the true voxel surface, by up to a
+/// LOD stride. Trace this pixel's view ray through GI's own geometry around
+/// that depth, as NAADF's primary rays do, and take the first exposed face:
+/// identity then comes from the structure GI lights, not from the raster.
+/// The window grows with the pixel's world footprint (LOD strides grow with
+/// distance); the step budget is bounded like NAADF's primary rays.
+const TRACED_DISCOVERY_STEPS: u32 = 64u;
+/// World units per pixel where tracing starts. In the lab's far test (1440p)
+/// its first LOD band (8 chunks) is at about 0.1-0.25; 0.25 missed it. The
+/// default lab shows no measurable discovery cost at 0.1.
+const TRACED_DISCOVERY_FOOTPRINT: f32 = 0.1;
+
+fn region_loaded(voxel: vec3<i32>) -> bool {
+    let region = vec3<i32>(floor(vec3<f32>(voxel) / 16.0));
+    return in_bounds(region) && lookup_region(region) != 0xffffffffu;
+}
+fn traced_receiver(position: vec3<f32>, footprint: f32, fallback: ViewReceiver) -> ViewReceiver {
+    let direction = normalize(position - view.camera.xyz);
+    let margin = clamp(32.0 * footprint, 2.0, 64.0);
+    let hit = trace_domain_limited(position - direction * margin, direction, 2.0 * margin, true,
+        TRACED_DISCOVERY_STEPS);
+    // Loaded geometry with no exposed face along this pixel's ray: not
+    // pending geometry, just no GI surface here. Returning the raster face
+    // would mark the tile pending and retrace it every frame.
+    var none: ViewReceiver;
+    none.face = 0xffffffffu;
+    if hit.status != 1u { return none; }
+    var receiver: ViewReceiver;
+    receiver.face = face_index_of(hit.normal);
+    if receiver.face >= 6u { return none; }
+    receiver.voxel = hit.voxel;
+    receiver.surface = vec3<f32>(hit.voxel) + 0.5 + face_normal(receiver.face) * 0.5;
+    receiver.sequence = fallback.sequence;
+    if !receiver_exists(receiver) { return none; }
+    return receiver;
 }
 
 fn same_plane(a: ViewReceiver, b: ViewReceiver) -> bool {
