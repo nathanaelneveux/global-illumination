@@ -17,8 +17,6 @@ use super::tracer::HISTORY_LIMIT;
 /// Selected by native-material comparisons, not anchored to a near/far floor.
 /// Requalify against the fixed appearance goal when changing the estimator.
 const DISTANCE_SCALE: i64 = 12;
-#[cfg(debug_assertions)]
-pub(super) const POLICY_NAME: &str = "whole-range-power4-scale12-v1";
 
 /// Conservative binning reach: beyond this radius H(d) cannot reduce any
 /// supported history. This is derived from the statistical ceiling, not a

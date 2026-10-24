@@ -89,6 +89,22 @@ impl Default for VoxelGiSettings {
 }
 
 impl VoxelGiSettings {
+    /// Clamp every field to its supported range (what the solver would use).
+    pub fn normalized(mut self) -> Self {
+        self.transport = self.transport.normalized();
+        self.samples_per_dispatch = self.batch_samples();
+        self.trace_budget_ms = self.budget_ms();
+        self.max_probes_per_dispatch = self.batch_limit();
+        self.stable_min_samples = self.stable_samples();
+        self.stable_relative_error = self.stable_error();
+        self.stable_audit_interval = self.audit_interval();
+        self.display_response = self
+            .display_response
+            .clamp(Duration::from_millis(10), Duration::from_millis(500));
+        self.scene_publish_budget = self.scene_publish_budget.min(Duration::from_millis(8));
+        self
+    }
+
     pub(super) fn measured_retention(&self) -> f32 {
         if self.measured_retention.is_finite() {
             self.measured_retention.clamp(0.0, 64.0)
@@ -177,7 +193,7 @@ impl Default for TransportSettings {
 }
 
 impl TransportSettings {
-    pub(super) fn normalized(self) -> Self {
+    pub fn normalized(self) -> Self {
         Self {
             reach: if self.reach.is_finite() {
                 self.reach.clamp(1.0, 768.0)

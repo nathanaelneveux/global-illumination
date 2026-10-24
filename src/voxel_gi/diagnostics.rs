@@ -1,79 +1,62 @@
-//! Optional demo instrumentation, separate from transport scheduling. The HUD
-//! reuses O(1) counters; expensive field summaries and scripted edits are opt-in.
+//! Opt-in debug tooling on GI's public API: a HUD overlay, the lighting
+//! controls panel, keyboard presentation toggles and periodic terminal stats.
+//! Nothing here runs unless `VoxelGiDebugPlugin` is added.
 mod tuning;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::window::{CursorOptions, PrimaryWindow};
 use bevy_inspector_egui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use super::{VoxelEnergyField, VoxelGiRuntime, VoxelGiStats, VoxelGiSystems};
-use crate::player::{BombAtAim, PlaceEmissiveBlock};
+use super::{VoxelGiStats, VoxelGiSystems};
 
-/// Demo-only UI, keyboard comparisons and opt-in validation. Install after GI
-/// and the player plugins; the reusable transport does not own player input.
-pub(crate) struct VoxelGiDiagnosticsPlugin;
-
-/// Demo boundary only. Invalid input is reported by main rather than panicking
-/// inside construction of the reusable GI plugin. No process-global mutation.
-pub(crate) fn configure_demo_launch(app: &mut App) -> Result<(), String> {
-    app.init_resource::<super::VoxelGiSettings>();
-    Ok(())
+/// Debug overlay and controls for voxel GI.
+pub struct VoxelGiDebugPlugin {
+    /// The HUD overlay and the "Lighting controls" panel (egui).
+    pub ui: bool,
+    /// F4 GI on/off, F5 corner reconstruction, F6 irradiance view, F7 sun mode.
+    pub keyboard_toggles: bool,
+    /// An `info!` status line every five seconds.
+    pub terminal_stats: bool,
 }
 
-impl Plugin for VoxelGiDiagnosticsPlugin {
+impl Default for VoxelGiDebugPlugin {
+    fn default() -> Self {
+        Self {
+            ui: true,
+            keyboard_toggles: true,
+            terminal_stats: false,
+        }
+    }
+}
+
+impl Plugin for VoxelGiDebugPlugin {
     fn build(&self, app: &mut App) {
-        tuning::load_launch_settings(app);
-        if terminal_stats_enabled() {
+        if self.terminal_stats {
             app.add_plugins(LogDiagnosticsPlugin::default())
                 .add_systems(Update, log_voxel_gi_stats.after(VoxelGiSystems));
         }
-        let scripted = cfg!(debug_assertions) && std::env::var_os("VOXEL_GI_VALIDATE").is_some();
-        if !scripted {
+        if self.keyboard_toggles {
             app.add_systems(Update, toggle_voxel_gi.after(VoxelGiSystems));
         }
-        if !crate::headless_validation() {
+        if self.ui {
             app.init_resource::<tuning::TuningPanel>().add_systems(
                 EguiPrimaryContextPass,
                 (draw_hud, tuning::draw_panel).chain(),
             );
         }
-        #[cfg(debug_assertions)]
-        if scripted {
-            super::validation::install_frame_timing(app);
-            app.init_resource::<super::validation::CaptureEvidence>()
-                .add_systems(PostStartup, super::validation::setup_capture_target)
-                .add_systems(
-                    Update,
-                    super::validation::run_validation.after(VoxelGiSystems),
-                );
-        }
     }
 }
 
-pub(super) fn terminal_stats_enabled() -> bool {
-    // Launch configuration, not a hot-path environment lookup on every page.
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("VOXEL_GI_LOG_STATS").is_ok_and(|value| value == "1"))
+/// Parse a RON `VoxelGiSettings` (missing fields default; values are clamped).
+pub fn parse_settings(text: &str) -> Result<super::VoxelGiSettings, String> {
+    tuning::parse_settings(text)
 }
 
+#[derive(Default)]
 struct HudState {
-    visible: bool,
     next_update: f64,
     text: String,
-}
-
-impl Default for HudState {
-    fn default() -> Self {
-        Self {
-            // Keep reference captures unobstructed, and don't let overlay text
-            // make an otherwise blank validation screenshot appear valid.
-            visible: std::env::var_os("VOXEL_GI_VALIDATE").is_none(),
-            next_update: 0.0,
-            text: String::new(),
-        }
-    }
 }
 
 fn draw_hud(
@@ -83,13 +66,8 @@ fn draw_hud(
     time: Res<Time<Real>>,
     mut state: Local<HudState>,
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
-    mut place_emissive: MessageWriter<PlaceEmissiveBlock>,
-    mut bomb: MessageWriter<BombAtAim>,
     mut tuning: ResMut<tuning::TuningPanel>,
 ) {
-    if !state.visible {
-        return;
-    }
     let Ok(context) = contexts.ctx_mut() else {
         return;
     };
@@ -116,19 +94,9 @@ fn draw_hud(
                             .color(egui::Color32::WHITE),
                     ).on_hover_text(
                         "Coverage = faces with samples; bootstrap = progress toward 8 samples.\n\
-                         Settled = faces passing the current scene's adaptive stability checks (all energy bands), not convergence or idle. Edits can reset this without clearing history; settled faces still receive audits.\n\
+                         Settled = faces passing the current scene's adaptive stability checks, not convergence or idle. Edits can reset this without clearing history; settled faces still receive audits.\n\
                          GI main/GPU = average milliseconds per app frame over 250 ms; they overlap, so do not add them. Main covers GI main-world systems, not background workers or render-world uploads/drawing. GPU covers completed transport/sky compute passes, not transfers or queue waits. — means no measurement or unavailable timestamps."
                     );
-                    if ui.button("Add emitting block (E)")
-                        .on_hover_text("Place a warm emitting voxel against the aimed-at face. E works while playing; Esc releases the cursor for this button.")
-                        .clicked() {
-                        place_emissive.write(PlaceEmissiveBlock);
-                    }
-                    if ui.button("Bomb: radius 5 (B)")
-                        .on_hover_text("Remove a radius-5 sphere centered on the aimed-at voxel. B detonates immediately while playing; left-click always digs a single block.")
-                        .clicked() {
-                        bomb.write(BombAtAim);
-                    }
                     if ui.button("Lighting controls…")
                         .on_hover_text("Esc releases the cursor. Compare lighting reach, quality, work budget and presentation.")
                         .clicked() {
@@ -175,11 +143,6 @@ pub(super) fn toggle_voxel_gi(
     mut gi: ResMut<super::VoxelGiDisplay>,
     mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>,
 ) {
-    // Scripted validation owns presentation as well as the player path.
-    #[cfg(debug_assertions)]
-    if std::env::var_os("VOXEL_GI_VALIDATE").is_some() {
-        return;
-    }
     if keyboard.just_pressed(KeyCode::F7) {
         gi.voxel_sun = !gi.voxel_sun;
         info!(voxel_sky = gi.voxel_sun, "direct sky lighting changed (F5 controls cached face/corner blending)");
@@ -214,22 +177,12 @@ pub(super) fn toggle_voxel_gi(
     }
 }
 
-pub(super) fn log_voxel_gi_stats(
-    mut stats: ResMut<VoxelGiStats>,
-    field: Res<VoxelEnergyField>,
-    runtime: Res<VoxelGiRuntime>,
-    mut last_log: Local<Option<Instant>>,
-) {
+pub(super) fn log_voxel_gi_stats(stats: Res<VoxelGiStats>, mut last_log: Local<Option<Instant>>) {
     let now = Instant::now();
     if last_log.is_some_and(|last| now.duration_since(last) < Duration::from_secs(5)) {
         return;
     }
     *last_log = Some(now);
-    // Diagnostic summaries must not stall the workload they measure. Sample a
-    // bounded, evenly spaced subset of the live key array; transport/freshness
-    // counters above remain exact and independent of this optional estimate.
-    let oldest = sampled_field_age(&field, now);
-    stats.oldest_sample_age_ms = oldest.as_secs_f32() * 1000.0;
     info!(
         loaded_pages = stats.loaded_pages,
         surface_probes = stats.surface_probes,
@@ -249,8 +202,8 @@ pub(super) fn log_voxel_gi_stats(
         sky_batches = stats.sky_only_batches,
         transport_batches = stats.transport_batches,
         idle_scheduler_frames = stats.idle_scheduler_frames,
-        dispatch_budget = runtime.batch_size,
-        sky_budget = runtime.sky_batch_size,
+        dispatch_budget = stats.dispatch_budget,
+        sky_budget = stats.sky_dispatch_budget,
         worker_ms = stats.last_worker_ms,
         selection_ms = stats.last_selection_ms,
         merge_ms = stats.last_merge_ms,
@@ -259,21 +212,9 @@ pub(super) fn log_voxel_gi_stats(
         decode_ms = stats.last_decode_ms,
         packed_geometry_bytes = stats.packed_geometry_bytes,
         fully_bootstrapped = stats.fully_bootstrapped,
-        sampled_oldest_ms = stats.oldest_sample_age_ms,
         backend = stats.backend,
         "voxel GI status"
     );
-}
-
-fn sampled_field_age(field: &VoxelEnergyField, now: Instant) -> Duration {
-    field
-        .order
-        .iter()
-        .step_by(field.order.len().div_ceil(1024).max(1))
-        .filter_map(|voxel| field.probes.get(voxel)?.updated_at)
-        .map(|updated| now.saturating_duration_since(updated))
-        .max()
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -296,22 +237,6 @@ mod tests {
             world.run_system_once(toggle_voxel_gi).unwrap();
             assert_eq!(world.resource::<super::super::VoxelGiDisplay>().enabled, expected);
         }
-    }
-
-    #[test]
-    fn optional_age_summary_is_bounded_and_explicitly_sampled() {
-        let now = Instant::now();
-        let mut field = VoxelEnergyField::default();
-        assert_eq!(sampled_field_age(&field, now), Duration::ZERO);
-        for x in 0..2048 {
-            let voxel = IVec3::new(x, 0, 0);
-            let mut probe = super::super::world::SurfaceProbe::new_slim(voxel, 4);
-            probe.updated_at = Some(now - Duration::from_secs(if x % 2 == 0 { 1 } else { 10 }));
-            field.probes.insert(voxel, probe);
-            field.order.push(voxel);
-        }
-        // Every other receiver: the sample never sees the 10 s ones.
-        assert_eq!(sampled_field_age(&field, now), Duration::from_secs(1));
     }
 
     #[test]

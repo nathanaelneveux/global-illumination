@@ -13,10 +13,10 @@ mod response;
 mod structures;
 mod tunnel;
 
-use super::render::VoxelTransportMaterial;
+use crate::voxel_gi::render::VoxelTransportMaterial;
 /// Face normals in the lab's face order (+X, -X, +Y, -Y, +Z, -Z).
 const FACE_OFFSETS: [IVec3; 6] = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
-use super::{
+use crate::voxel_gi::{
     BvwVoxelEdits, EnergyEmitter, MaterialTransport, VoxelGiInput,
     VoxelGiSettings, VoxelGiStats, VoxelMaterialTransportTable,
 };
@@ -140,7 +140,7 @@ pub(super) fn run_validation(
     cameras: Query<Entity, With<Camera3d>>,
     mut commands: Commands,
     handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
-    mut display: ResMut<super::VoxelGiDisplay>,
+    mut display: ResMut<crate::voxel_gi::VoxelGiDisplay>,
     mut transport_materials: ResMut<VoxelMaterialTransportTable>,
     asset_context: (
         Res<TemplateAssets>,
@@ -391,7 +391,7 @@ pub(super) fn run_validation(
     let mut next = *display;
     profile.configure(elapsed, &mut next);
     if matches!(profile, Profile::Motion | Profile::Tunnel | Profile::Streaming) {
-        next.debug_view = super::GiDebugView::from_index(run.motion_diagnostic);
+        next.debug_view = crate::voxel_gi::GiDebugView::from_index(run.motion_diagnostic);
     }
     if next != *display {
         *display = next;
@@ -643,10 +643,9 @@ pub(super) fn run_validation(
         "view_diagnostic": run.motion_diagnostic,
         "motion_turn_degrees": if run.motion_static || run.motion_walk.is_some() { 0.0 } else { 0.15 },
         "motion_walk_voxels_per_second": run.motion_walk,
-        "spatial_retention": super::retention::POLICY_NAME,
         "settings": {"transport": settings.transport, "cache_radius": settings.cache_radius,
             "cache_share": settings.cache_share,
-            "samples_per_dispatch": settings.batch_samples(),
+            "samples_per_dispatch": settings.clone().normalized().samples_per_dispatch,
             "spatial_reconstruction": settings.spatial_reconstruction,
             "spatial_evidence_target": settings.spatial_evidence_target,
             "trace_budget_ms": settings.trace_budget_ms, "gpu_time_share": settings.gpu_time_share,

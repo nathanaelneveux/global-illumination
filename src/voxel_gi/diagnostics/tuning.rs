@@ -52,32 +52,9 @@ impl DisplaySettings {
     }
 }
 
-pub(super) fn load_launch_settings(app: &mut App) {
-    let Some(path) = std::env::var_os("VOXEL_GI_SETTINGS") else {
-        return;
-    };
-    let settings = std::fs::read_to_string(&path)
-        .map_err(|error| error.to_string())
-        .and_then(|text| parse_settings(&text))
-        .unwrap_or_else(|error| panic!("Cannot load VOXEL_GI_SETTINGS={path:?}: {error}"));
-    // Fail visibly on invalid files rather than benchmarking a silent fallback.
-    app.insert_resource(settings);
-}
-
-fn parse_settings(text: &str) -> Result<VoxelGiSettings, String> {
-    let mut settings: VoxelGiSettings = ron::from_str(text).map_err(|e| e.to_string())?;
-    settings.transport = settings.transport.normalized();
-    settings.samples_per_dispatch = settings.batch_samples();
-    settings.trace_budget_ms = settings.budget_ms();
-    settings.max_probes_per_dispatch = settings.batch_limit();
-    settings.stable_min_samples = settings.stable_samples();
-    settings.stable_relative_error = settings.stable_error();
-    settings.stable_audit_interval = settings.audit_interval();
-    settings.display_response = settings
-        .display_response
-        .clamp(Duration::from_millis(10), Duration::from_millis(500));
-    settings.scene_publish_budget = settings.scene_publish_budget.min(Duration::from_millis(8));
-    Ok(settings)
+pub(super) fn parse_settings(text: &str) -> Result<VoxelGiSettings, String> {
+    let settings: VoxelGiSettings = ron::from_str(text).map_err(|e| e.to_string())?;
+    Ok(settings.normalized())
 }
 
 pub(super) fn draw_panel(
@@ -205,7 +182,7 @@ fn contents(
             });
         });
     ui.collapsing("Export / import transport & work settings", |ui| {
-        ui.small("RON excludes presentation toggles/gain. Save copied text to a file and launch with VOXEL_GI_SETTINGS=path.ron. A/B slots above include presentation but last only this session.");
+        ui.small("RON excludes presentation toggles/gain. Save copied text to a .ron file to load at startup. A/B slots above include presentation but last only this session.");
         ui.horizontal(|ui| {
             if ui.button("Copy applied RON").clicked() {
                 panel.text = ron::ser::to_string_pretty(settings, ron::ser::PrettyConfig::default()).expect("finite GI settings");

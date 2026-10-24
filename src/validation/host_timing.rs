@@ -16,7 +16,7 @@ pub(super) const STAGES: [&str; 7] = [
 ];
 
 #[derive(Resource, Default)]
-pub(in crate::voxel_gi) struct HostTiming {
+pub(crate) struct HostTiming {
     /// Last fully completed Main iteration; current Update must not overwrite it.
     pub completed_ms: [f32; 7],
     current_ms: [f32; 7],

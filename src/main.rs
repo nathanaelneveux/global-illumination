@@ -10,6 +10,9 @@ mod structures;
 mod terrain;
 mod terrain_meshing;
 mod terrain_noise;
+mod gi_lab;
+#[cfg(debug_assertions)]
+mod validation;
 pub mod voxel_gi;
 mod world_environment;
 
@@ -29,7 +32,7 @@ use bevy_enhanced_input::prelude::EnhancedInputPlugin;
 use chunk_colliders::ChunkColliderPlugin;
 use player::PlayerPlugin;
 use terrain::TerrainPlugin;
-use voxel_gi::{VoxelGiDiagnosticsPlugin, VoxelGiPlugin};
+use voxel_gi::VoxelGiPlugin;
 use world_environment::WorldEnvironmentPlugin;
 
 // Keep launch provenance available in release builds too; validation-only
@@ -116,17 +119,13 @@ fn main() -> AppExit {
     // All prototype writes use BvwVoxelEdits::set_voxel; coarse external changes
     // explicitly request resampling. BVW remains the terrain/mesh host.
     app.insert_resource(voxel_gi::VoxelGiInput::tracked());
-    if let Err(error) = voxel_gi::configure_demo_launch(&mut app) {
-        eprintln!("Invalid GI launch configuration: {error}");
-        return AppExit::error();
-    }
+    app.add_plugins(gi_lab::GiLabPlugin);
     app.add_plugins((
         VoxelGiPlugin { voxel_texture },
         voxel_gi::VoxelGiBvwPlugin::<terrain::PrototypeWorld>::default(),
         TerrainPlugin,
         ChunkColliderPlugin,
         PlayerPlugin,
-        VoxelGiDiagnosticsPlugin,
     ));
     app.run()
 }

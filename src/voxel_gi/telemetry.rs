@@ -7,7 +7,7 @@ use super::VoxelGiStats;
 
 const REPORT_INTERVAL: Duration = Duration::from_millis(250);
 
-#[cfg(debug_assertions)]
+/// Names of `VoxelGiStats::last_main_stage_ms`, in order.
 pub const MAIN_STAGE_NAMES: [&str; 6] = [
     "ingestion",
     "sources",

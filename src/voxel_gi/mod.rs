@@ -34,8 +34,6 @@ mod spectrum;
 mod statistics;
 mod telemetry;
 mod tracer;
-#[cfg(debug_assertions)]
-mod validation;
 mod work;
 mod world;
 
@@ -59,7 +57,7 @@ pub use bvw::{BvwVoxelEdits, GiFallbackVoxel, VoxelGiBvwPlugin};
 pub use input::{VoxelGiInput, VoxelGiSource, VoxelSource, dense_page};
 pub use render::{GiDebugView, VoxelGiDisplay};
 pub use telemetry::MAIN_STAGE_NAMES as GI_MAIN_STAGE_NAMES;
-pub(crate) use diagnostics::{VoxelGiDiagnosticsPlugin, configure_demo_launch};
+pub use diagnostics::{VoxelGiDebugPlugin, parse_settings};
 use dispatch::{apply_trace_task, start_trace_task};
 use publication::apply_scene_task;
 use render::install_render_assets;
@@ -175,10 +173,10 @@ pub struct VoxelGiStats {
     pub last_decode_ms: f32,
     pub packed_geometry_bytes: usize,
     pub fully_bootstrapped: bool,
-    /// Oldest update among at most 1,024 evenly spaced receivers, populated by
-    /// opt-in terminal/validation diagnostics every five seconds. Not a
-    /// certified world-wide maximum.
-    pub oldest_sample_age_ms: f32,
+    /// World-cache faces the next batch may select, and sun corners per
+    /// sky-only batch (adaptive to measured GPU time).
+    pub dispatch_budget: usize,
+    pub sky_dispatch_budget: usize,
     pub backend: &'static str,
 }
 
@@ -401,6 +399,8 @@ fn update_stats_from_counters(
 ) {
     let faces = runtime.active_faces;
     stats.surface_probes = field.probes.len();
+    stats.dispatch_budget = runtime.batch_size;
+    stats.sky_dispatch_budget = runtime.sky_batch_size;
     stats.pending_probes = runtime.urgent_pending.len();
     stats.bootstrap_coverage = if faces == 0 {
         1.0

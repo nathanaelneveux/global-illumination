@@ -2,7 +2,7 @@
 //! publish atomically with retained measurements and display-only initialization.
 use super::{
     SceneBuildResult, VoxelEnergyField, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats,
-    advance_transport_revision, diagnostics, enqueue_sky, enqueue_urgent, history, page_of,
+    advance_transport_revision, enqueue_sky, enqueue_urgent, history, page_of,
     probe_metrics,
     telemetry::GiWorkTimings,
     update_stats_from_counters,
@@ -380,8 +380,7 @@ fn finish_scene_page(
     stats.loaded_pages = runtime.loaded_pages.len();
     stats.naadf_regions = runtime.scene.regions.len();
     stats.last_scene_build_ms = result.build_time.as_secs_f32() * 1_000.0;
-    if diagnostics::terminal_stats_enabled() {
-        info!(
+    debug!(
             loaded_pages = stats.loaded_pages,
             naadf_regions = stats.naadf_regions,
             surface_probes = stats.surface_probes,
@@ -393,7 +392,6 @@ fn finish_scene_page(
             publish_ms = format_args!("{:.1}", publish_started.elapsed().as_secs_f64() * 1000.0),
             "incremental world-space voxel transport scene rebuilt"
         );
-    }
 }
 
 #[cfg(test)]
