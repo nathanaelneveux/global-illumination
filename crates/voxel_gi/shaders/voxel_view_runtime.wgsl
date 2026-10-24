@@ -110,6 +110,10 @@ fn index_receivers(@builtin(global_invocation_id) id: vec3<u32>) {
     atomicAdd(&queue[1], 1u); // explicit overflow diagnostic, never alias keys
 }
 
+/// Frames between a retained face's corner sun refreshes (shadow edges may
+/// trail a moving sun or an edit by up to this many frames minus one).
+const SUN_REFRESH_FRAMES: u32 = 4u;
+
 @compute @workgroup_size(64)
 fn reproject_paths(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= view.grid.z { return; }
@@ -137,9 +141,16 @@ fn reproject_paths(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     // A new face awaiting GI geometry has unknown corners (0), not known-unlit
     // ones: the material traces unknown corners itself instead of going black.
+    let old_corners = estimate.identity.z;
     if !pending { estimate.identity.z = 0x80808080u; }
     else if previous == 0xffffffffu { estimate.identity.z = 0u; }
-    if lit_face && !pending {
+    // Corner sun visibility is refreshed every SUN_REFRESH_FRAMES frames per
+    // face (staggered by slot); a new, re-identified or pending face traces
+    // at once. Four corner rays per face per frame was most of reprojection.
+    let carried = previous != 0xffffffffu && !pending && old_corners != 0u
+        && (view.history.z + id.x) % SUN_REFRESH_FRAMES != 0u;
+    if carried { estimate.identity.z = old_corners; }
+    if lit_face && !pending && !carried {
         var u = vec3(0.0, 1.0, 0.0);
         var v = vec3(0.0, 0.0, 1.0);
         if receiver.face / 2u == 1u { u = vec3(1.0, 0.0, 0.0); }

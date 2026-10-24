@@ -526,6 +526,7 @@ fn render_view(
                 far_uncovered = renderer.budget.uncovered,
                 far_displayed = renderer.budget.displayed,
                 far_pending = renderer.budget.paused,
+                far_stages_ms = ?renderer.budget.stage_ms.map(|ms| (ms * 100.0).round() / 100.0),
                 "GI view transport"
             );
             renderer.budget.discovery_sum_ms = 0.0;

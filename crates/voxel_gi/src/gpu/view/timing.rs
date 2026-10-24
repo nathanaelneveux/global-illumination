@@ -54,6 +54,10 @@ pub(super) struct Budget {
     wave_size: u32,
     wave_cost: f32,
     pub presentation_ms: f32,
+    /// Last receipt's per-stage GPU ms, in dispatch-stage order: discovery,
+    /// index, reproject, retained changes, cache load, trace, reconstruct,
+    /// cache store, publish, pool prepare.
+    pub stage_ms: [f32; 10],
     pub discovery_ms: f32,
     pub discovery_sum_ms: f64,
     pub discovery_count: u32,
@@ -117,6 +121,7 @@ impl Budget {
             wave_size: 1024,
             wave_cost: 1.0,
             presentation_ms: 0.0,
+            stage_ms: [0.0; 10],
             discovery_ms: 0.0,
             discovery_sum_ms: 0.0,
             discovery_count: 0,
@@ -191,6 +196,7 @@ impl Budget {
             self.paused = counter(8);
             self.trace_ms = trace;
             self.presentation_ms = total - trace;
+            self.stage_ms = costs;
             self.discovery_ms = costs[0] + costs[9];
             self.pool_prepare_ms = costs[9];
             self.pool_scan_ms = costs[0];
