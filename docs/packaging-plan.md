@@ -207,7 +207,23 @@ All gated with `tools/gates.sh` against an adjacent baseline (see each commit):
 | `b47f6f8` | CPU path-tracing oracle, offline reference profile, CPU/GPU parity tests | -4034 |
 | `f42e5de` | Infrared/ionizing bands and emitter importance (CPU) | -707 |
 | `fe27835` | Band lanes in the path and accumulation shaders | |
-| (next) | `cpu_statistics` mode, CPU stability/display twins in production, `adaptive_updates`, the temporal recorder, F8/F9 face watch, cave receiver recorder | -1895 |
+| `99fac1d` | `cpu_statistics` mode, CPU stability/display twins in production, `adaptive_updates`, the temporal recorder, F8/F9 face watch, cave receiver recorder | -1895 |
+| `caf04ba` | Nineteen one-off benchmarks and cost studies (test-only) | -1159 |
+| `26041f3`, `90a14a7` | Empty world-display leftovers, write-only probe fields, archived-shader loader | |
+
+Considered and kept, with reasons:
+- **Non-resident GPU mode.** Production always runs resident; the few
+  non-resident branches in `gpu.rs` serve the native test harness
+  (`native_tracer`, `gpu.trace`), which 14 test files use. Not worth the rewrite.
+- **Whole-range retention curve.** Also the fallback for edits of unknown flux
+  with measured retention on; only the `measured_retention: 0` switch is optional.
+- **Serial trace kernel.** The path-matched native view tests use it.
+- **Statistics mirror, CPU sky cache.** Live; replacing them is GPU-side design
+  work (seeding and corner tracing), listed under pass 2.
+
+Still to examine: `gpu.rs`/`resident.rs` beyond tests (~3k production lines),
+`publication.rs`/`bvw.rs` split between core and connector, the resident record
+layout (zeroed band words, reserved record 8), and the debug shading modes.
 
 ### Preliminary inventory (to verify in pass 2)
 
