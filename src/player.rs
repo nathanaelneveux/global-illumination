@@ -9,13 +9,12 @@ use bevy_ahoy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 use bevy_voxel_world::prelude::{VoxelWorld, VoxelWorldCamera, WorldVoxel};
 
-use crate::terrain::{PrototypeWorld, TERRAIN_VIEW_DISTANCE, TerrainMaterial};
+use crate::terrain::{PrototypeWorld, TerrainMaterial, terrain_view_distance};
 use voxel_gi_bvw::BvwVoxelEdits;
 use voxel_gi::VoxelGiInput;
 use crate::world_environment::sky_color;
 
 const FOG_START: f32 = 96.0;
-const FOG_END: f32 = TERRAIN_VIEW_DISTANCE;
 const PLAYER_RADIUS: f32 = 0.3;
 const PLAYER_HEIGHT: f32 = 1.8;
 const PLAYER_CROUCH_HEIGHT: f32 = 1.5;
@@ -269,7 +268,7 @@ fn spawn_player(mut commands: Commands, world: Res<PrototypeWorld>) {
             color: sky_color(),
             falloff: FogFalloff::Linear {
                 start: FOG_START,
-                end: FOG_END,
+                end: terrain_view_distance(),
             },
             ..default()
         },

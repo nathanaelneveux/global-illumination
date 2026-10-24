@@ -79,7 +79,34 @@ impl TerrainMaterial {
 
 const WATERLINE_Y: i32 = 2;
 pub const SPAWNING_DISTANCE: u32 = 10;
-pub const TERRAIN_VIEW_DISTANCE: f32 = (SPAWNING_DISTANCE - 1) as f32 * CHUNK_SIZE_F;
+
+/// Far-streaming lab test: `VOXEL_GI_LAB_FAR=<chunks>` streams that far with
+/// distance LOD, the shape of a large open world (asteroids-redux streams 70).
+/// Off by default: the normal lab streams `SPAWNING_DISTANCE` at full detail.
+pub fn far_streaming() -> Option<u32> {
+    std::env::var("VOXEL_GI_LAB_FAR")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .map(|chunks| chunks.clamp(SPAWNING_DISTANCE, 96))
+}
+
+/// Fog and shadow distance: the edge of what streams.
+pub fn terrain_view_distance() -> f32 {
+    (far_streaming().unwrap_or(SPAWNING_DISTANCE) - 1) as f32 * CHUNK_SIZE_F
+}
+
+/// Far-test LOD bands (chunks from the camera) and their samples per axis.
+/// Band numbers name bands, not divisors.
+const LOD_BANDS: [(f32, LodLevel, u32); 3] = [(8.0, 0, 32), (16.0, 2, 16), (32.0, 4, 8)];
+const LOD_FARTHEST: (LodLevel, u32) = (8, 4);
+const LOD_HYSTERESIS_CHUNKS: f32 = 1.0;
+
+fn lod_samples(lod: LodLevel) -> u32 {
+    LOD_BANDS
+        .iter()
+        .find(|(_, band, _)| *band == lod)
+        .map_or(LOD_FARTHEST.1, |(_, _, samples)| *samples)
+}
 const MIN_DESPAWN_DISTANCE: u32 = 2;
 
 pub struct TerrainPlugin;
@@ -219,8 +246,36 @@ impl VoxelWorldConfig for PrototypeWorld {
         if self.scene == ScenePreset::Cave {
             4
         } else {
-            SPAWNING_DISTANCE
+            far_streaming().unwrap_or(SPAWNING_DISTANCE)
         }
+    }
+
+    fn chunk_lod(
+        &self,
+        chunk_position: IVec3,
+        previous_lod: Option<LodLevel>,
+        camera_position: Vec3,
+    ) -> LodLevel {
+        if far_streaming().is_none() || self.scene != ScenePreset::Terrain {
+            return 0;
+        }
+        let distance = (chunk_position.as_vec3() + 0.5).distance(camera_position / CHUNK_SIZE_F);
+        for (limit, lod, _) in LOD_BANDS {
+            // Keep finer detail slightly longer when retreating.
+            let keep = previous_lod.is_some_and(|previous| previous <= lod);
+            if distance < limit + if keep { LOD_HYSTERESIS_CHUNKS } else { 0.0 } {
+                return lod;
+            }
+        }
+        LOD_FARTHEST.0
+    }
+
+    fn chunk_data_shape(&self, lod_level: LodLevel) -> UVec3 {
+        UVec3::splat(lod_samples(lod_level) + 2)
+    }
+
+    fn chunk_meshing_shape(&self, lod_level: LodLevel) -> UVec3 {
+        self.chunk_data_shape(lod_level)
     }
 
     fn min_despawn_distance(&self) -> u32 {

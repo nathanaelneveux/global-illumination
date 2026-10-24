@@ -1,7 +1,7 @@
 use bevy::light::{CascadeShadowConfigBuilder, SimulationLightSystems};
 use bevy::prelude::*;
 
-use crate::terrain::TERRAIN_VIEW_DISTANCE;
+use crate::terrain::terrain_view_distance;
 use voxel_gi_bvw::VoxelTransportMaterial;
 
 #[derive(Component)]
@@ -47,7 +47,7 @@ fn setup_lighting(mut commands: Commands) {
         ));
     }
     let cascade_shadow_config = CascadeShadowConfigBuilder {
-        maximum_distance: TERRAIN_VIEW_DISTANCE,
+        maximum_distance: terrain_view_distance(),
         ..default()
     }
     .build();
