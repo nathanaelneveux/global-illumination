@@ -77,8 +77,9 @@ removed on this branch: neither was qualified with the cache. Their history
 lives in [path reuse](docs/history/resident-path-reuse.md) and
 [hallway outliers](docs/history/hallway-path-outliers.md).
 The game always uses resident GPU accumulation; the synchronous and CPU
-runtime backends were removed on this branch (last present at `c68a924`). The
-CPU tracer remains as a test oracle.
+runtime backends were removed on this branch (last present at `c68a924`), and
+the CPU path-tracing oracle with them (`b47f6f8`): native GPU tests and the
+analytic furnace qualify transport.
 
 The view tier's spatial RGB filter pools coplanar neighbours with MSE-optimal
 weights, 1 / (variance of the mean + squared bias), from each face's measured
@@ -86,7 +87,9 @@ moments: the spatial counterpart of the temporal `c sigma^2 / D^2` history
 rule. A face is shown alone once its relative standard error is under
 `spatial_noise_threshold` (default 0.031, the former 1024-sample target for a
 relative sigma of one), so a lower-variance sampler needs less smoothing
-without retuning. It filters presentation only, never physical samples. Use
+without retuning. Variance is per channel (saturated colour is not noise), and
+a face that has seen no light yet is floored at the brightest nearby estimate
+over its sample count, so one black sample is not certain darkness. It filters presentation only, never physical samples. Use
 `VOXEL_GI_SETTINGS=config/gi-display-unfiltered.ron` for the unfiltered
 control; sampler accuracy must be qualified separately from this reconstruction.
 
@@ -100,8 +103,8 @@ For the original isolated many-emitter benchmark scene:
 VOXEL_GI_SCENE=cave cargo run --locked
 ```
 
-This finite test chamber contains a lava floor with IR, a blue-lit central spire,
-green ceiling crystals with ionizing emission, wall torches, and a roof skylight.
+This finite test chamber contains a lava floor, a blue-lit central spire, green
+ceiling crystals, wall torches, and a roof skylight.
 It shares geometry/materials with the compute studies; it is not a calibrated
 thermal/radiation simulation or a finished art scene. E places a torch and right
 click places rock in this isolated palette. Omit the variable to explore the
@@ -228,17 +231,18 @@ values are clamped to supported ranges.
 
 ## Current behavior
 
-By default, sixteen new paths per selected face update RGB, infrared, and ionizing channels.
-Every loaded exposed surface remains eligible, including offscreen receivers.
+Every visible face is traced by the view tier each frame within its GPU share;
+the world cache (radius 64) adds sixteen RGB paths per selected face to
+offscreen and nearby receivers and exchanges history with visible faces.
 Bounded asynchronous work prioritizes nearby changes while reserving a world
 sweep for distant surfaces. Finite work budgets mean lighting changes are
 progressive, not instantaneous.
 
-Display smoothing is temporal: each face blends new indirect RGB into its own
-previous displayed value when a worker result is accepted. The fragment shader
-then reconstructs connected coplanar corner values and interpolates across each
-unit face. Those are separate temporal and spatial operations. Direct-sun
-visibility is measured at shared corners and is not temporally filtered.
+Display smoothing is temporal and spatial: each visible face blends its pooled
+estimate into its previous shown value (`display_response`), and the fragment
+shader reconstructs connected coplanar corner values across each unit face.
+Direct-sun visibility is measured at shared corners (each visible face every
+fourth frame) and is not filtered.
 
 The latest display filter deliberately favors stable transitions over minimum
 latency. A 75 ms response setting is not a promise to reach final brightness in
@@ -260,10 +264,9 @@ emissive voxel materials. The [architecture limits](docs/architecture.md#integra
 are part of the design, not promises of implemented planet warps or physical
 radiation simulation.
 
-Infrared/ionizing fields are unfiltered transport estimates in normalized units,
-not temperature or dose. Gameplay must check freshness and provide absorption,
-heat capacity, conduction, cooling and material-state rules. Radiological
-penetration and scattering are not modeled by this diffuse opaque solver.
+GI produces visible RGB lighting in normalized units only. Heat and radiation
+belong to a separate deterministic field ([direction](docs/direction.md)); the
+infrared and ionizing bands were removed.
 
 ## License
 

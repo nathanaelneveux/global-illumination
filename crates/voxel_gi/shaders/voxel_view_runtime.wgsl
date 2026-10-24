@@ -315,17 +315,38 @@ fn retain_view_history(@builtin(global_invocation_id) id: vec3<u32>) {
 // toward relative sigma one, the Monte Carlo prior, with this many pseudo
 // samples (4 let cave faces stop borrowing too early; a hard floor at one
 // would stop a quieter sampler from ever needing less).
+//
+// Moments are per channel, so the luminance deviation is the weighted sum of
+// the channel deviations: exact when the channels move together (one
+// light's colour), an upper bound otherwise. Subtracting squared luminance
+// from weighted squared channels instead read identical saturated samples
+// as noise (blue: 11% relative error at 1,024 samples).
+//
+// A prefix that has seen no light is black so far, not certainly black: the
+// prior scale is zero there. Its mean's standard error is floored at the
+// brightest nearby estimate over n (`reference`, a rule-of-three bound on
+// light it has not hit yet), which matters for a few samples and vanishes
+// by a few hundred; a dark neighbourhood stays confidently dark.
 const VARIANCE_PRIOR_SAMPLES: f32 = 64.0;
 const LUMINANCE = vec3(0.2126, 0.7152, 0.0722);
 
-fn mean_variance(estimate: ViewEstimate) -> f32 {
+fn mean_variance(estimate: ViewEstimate, reference: f32) -> f32 {
     let n = max(estimate.mean.w, 1.0);
     let mean = dot(estimate.mean.rgb, LUMINANCE);
-    let observed = max(dot(estimate.moment.rgb, LUMINANCE) - mean * mean, 0.0);
+    let channel = max(estimate.moment.rgb - estimate.mean.rgb * estimate.mean.rgb, vec3(0.0));
+    let deviation = dot(sqrt(channel), LUMINANCE);
     let prior = mean * mean;
-    let shrunk = (observed * max(n - 1.0, 0.0) + prior * VARIANCE_PRIOR_SAMPLES)
+    let shrunk = (deviation * deviation * max(n - 1.0, 0.0) + prior * VARIANCE_PRIOR_SAMPLES)
         / (max(n - 1.0, 0.0) + VARIANCE_PRIOR_SAMPLES);
-    return shrunk / n;
+    let unseen = reference / n;
+    return shrunk / n + unseen * unseen;
+}
+
+fn coplanar_donor(receiver: ViewReceiver, normal: vec3<f32>, candidate: u32) -> bool {
+    let donor = receivers[candidate];
+    if donor.face != receiver.face { return false; }
+    let delta = donor.surface - receiver.surface;
+    return abs(dot(delta, normal)) <= 0.05 && dot(delta, delta) <= 256.0 && owner_of(donor) == candidate;
 }
 
 @compute @workgroup_size(64)
@@ -339,7 +360,23 @@ fn reconstruct_view(@builtin(global_invocation_id) id: vec3<u32>) {
     let tile = pool.slots[id.x].tile;
     let xy = vec2<i32>(i32(tile % tiles.x), i32(tile / tiles.x));
     let center_luminance = dot(center.mean.rgb, LUMINANCE);
-    let center_variance = mean_variance(center);
+    // The brightest sampled coplanar estimate nearby (3x3 tiles).
+    var reference = center_luminance;
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let q = xy + vec2(x, y);
+            if any(q < vec2(0)) || any(q >= vec2<i32>(tiles)) { continue; }
+            var entry = atomicLoad(&pool.tiles[u32(q.y) * tiles.x + u32(q.x)].head);
+            for (var visited = 0u; entry != 0u && visited < view.grid.z; visited++) {
+                let candidate = entry - 1u;
+                entry = pool.slots[candidate].next;
+                if candidate == id.x || !coplanar_donor(receiver, normal, candidate) { continue; }
+                let value = estimates[candidate];
+                if value.mean.w > 0.0 { reference = max(reference, dot(value.mean.rgb, LUMINANCE)); }
+            }
+        }
+    }
+    let center_variance = mean_variance(center, reference);
     let tolerance = view.display.x * center_luminance;
     // How many times more evidence this face needs, as a gather radius.
     let deficit = center_variance / max(tolerance * tolerance, 1e-12);
@@ -361,15 +398,10 @@ fn reconstruct_view(@builtin(global_invocation_id) id: vec3<u32>) {
                 for (var visited = 0u; entry != 0u && visited < view.grid.z; visited++) {
                     let candidate = entry - 1u;
                     entry = pool.slots[candidate].next;
-                    if candidate == id.x { continue; }
-                    let donor = receivers[candidate];
-                    if donor.face != receiver.face { continue; }
-                    let delta = donor.surface - receiver.surface;
-                    let d2 = dot(delta, delta);
-                    if abs(dot(delta, normal)) > 0.05 || d2 > 256.0 || owner_of(donor) != candidate { continue; }
+                    if candidate == id.x || !coplanar_donor(receiver, normal, candidate) { continue; }
                     let value = estimates[candidate];
                     if value.mean.w <= 0.0 { continue; }
-                    let variance = mean_variance(value);
+                    let variance = mean_variance(value, reference);
                     var bias2 = 0.0;
                     if !unsampled {
                         let difference = dot(value.mean.rgb, LUMINANCE) - center_luminance;
