@@ -23,6 +23,7 @@ pub(super) enum Profile {
     LiveHallway,
     Compare,
     Stress,
+    Lod,
 }
 
 /// `motion` walk mode (VOXEL_GI_VALIDATE_MOTION_WALK=<voxels per second>).
@@ -100,8 +101,9 @@ impl Profile {
             "live-hallway" => Ok(Self::LiveHallway),
             "compare" => Ok(Self::Compare),
             "stress" => Ok(Self::Stress),
+            "lod" => Ok(Self::Lod),
             _ => Err(format!(
-                "unknown validation profile {value:?}; choose gameplay, streaming, motion, house, house-edits, response, edits, tunnel, sources, cave, canyon, day-cycle, structures, hallway, live-cave, live-hallway, compare, or stress"
+                "unknown validation profile {value:?}; choose gameplay, streaming, motion, house, house-edits, response, edits, tunnel, sources, cave, canyon, day-cycle, structures, hallway, live-cave, live-hallway, compare, stress, or lod"
             )),
         }
     }
@@ -126,6 +128,7 @@ impl Profile {
             Self::LiveHallway => "live-hallway",
             Self::Compare => "compare",
             Self::Stress => "stress",
+            Self::Lod => "lod",
         }
     }
 
@@ -135,6 +138,7 @@ impl Profile {
         }
         match self {
             Self::Compare => 29.0,
+            Self::Lod => 40.0,
             Self::Streaming => 35.0,
             Self::Motion => 32.0,
             Self::House => 90.0,
@@ -191,6 +195,9 @@ impl Profile {
             return &[(30., "day-030s"), (31., "day-031s"), (60., "day-060s"), (61., "day-061s"),
                 (90., "day-090s"), (91., "day-091s"), (120., "day-120s"), (121., "day-121s"),
                 (150., "day-150s"), (151., "day-151s"), (180., "day-180s"), (181., "day-181s")];
+        }
+        if self == Self::Lod {
+            return &[(10.0, "lod-10s"), (20.0, "lod-20s"), (30.0, "lod-30s"), (39.0, "lod-39s")];
         }
         if self == Self::Canyon {
             return &[
@@ -304,6 +311,7 @@ impl Profile {
 
     pub fn phase(self, elapsed: f32) -> &'static str {
         if self == Self::Motion { return if elapsed < 15.0 { "settling" } else { "small-turns" }; }
+        if self == Self::Lod { return if elapsed < 10.0 { "startup" } else { "flight" }; }
         if self == Self::Structures {
             if elapsed < 12.0 {
                 "approach"

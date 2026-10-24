@@ -92,6 +92,9 @@ pub fn far_streaming() -> Option<u32> {
 
 /// Fog and shadow distance: the edge of what streams.
 pub fn terrain_view_distance() -> f32 {
+    if ScenePreset::current() == ScenePreset::Lod {
+        return (crate::lod_scene::SPAWNING_DISTANCE - 1) as f32 * CHUNK_SIZE_F;
+    }
     (far_streaming().unwrap_or(SPAWNING_DISTANCE) - 1) as f32 * CHUNK_SIZE_F
 }
 
@@ -248,10 +251,10 @@ impl VoxelWorldConfig for PrototypeWorld {
     type ChunkUserBundle = ();
 
     fn spawning_distance(&self) -> u32 {
-        if self.scene == ScenePreset::Cave {
-            4
-        } else {
-            far_streaming().unwrap_or(SPAWNING_DISTANCE)
+        match self.scene {
+            ScenePreset::Cave => 4,
+            ScenePreset::Lod => crate::lod_scene::SPAWNING_DISTANCE,
+            _ => far_streaming().unwrap_or(SPAWNING_DISTANCE),
         }
     }
 
@@ -261,6 +264,9 @@ impl VoxelWorldConfig for PrototypeWorld {
         previous_lod: Option<LodLevel>,
         camera_position: Vec3,
     ) -> LodLevel {
+        if self.scene == ScenePreset::Lod {
+            return crate::lod_scene::chunk_lod(chunk_position, camera_position);
+        }
         if far_streaming().is_none() || self.scene != ScenePreset::Terrain {
             return 0;
         }
@@ -276,6 +282,9 @@ impl VoxelWorldConfig for PrototypeWorld {
     }
 
     fn chunk_data_shape(&self, lod_level: LodLevel) -> UVec3 {
+        if self.scene == ScenePreset::Lod {
+            return UVec3::splat(crate::lod_scene::samples(lod_level) + 2);
+        }
         UVec3::splat(lod_samples(lod_level) + 2)
     }
 

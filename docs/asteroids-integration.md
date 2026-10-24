@@ -57,6 +57,15 @@ It compiled first time with no GI source changes.
    GI's timestamp queries lost the Metal device ("Cannot allocate sample
    buffer").
 
+9. **The BVW performance fork changes GI's edit timing.** With the lab
+   patched onto `perf/optimization-series-preview` (2026-10-24), the default
+   gate showed tunnel black-then-lit 3,404 px (0 on crates.io 0.17), more
+   black pixels after a turn (about 7,700 vs 4,400) and a failed walk run;
+   static differences were host content (the fork loads more horizon
+   terrain). Freshly edited meshes appear before GI's geometry catches up.
+   The lab stays on crates.io 0.17 until this is fixed; asteroids-redux
+   uses the fork.
+
 ## Measurements
 
 M4, `ASTEROIDS_BENCHMARK` (headless, uncapped, 2560x1440, 15-20 s warmup),

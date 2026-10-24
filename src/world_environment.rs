@@ -90,6 +90,8 @@ fn scene_sun_direction() -> Vec3 {
         crate::scene_presets::ScenePreset::Cave => crate::cave_scene::sun_direction(),
         crate::scene_presets::ScenePreset::Canyon => crate::canyon_scene::sun_direction(),
         crate::scene_presets::ScenePreset::Terrain => -Vec3::new(0.35, -0.8, 0.25),
+        // The example's low sun, looking toward (-0.15, -0.1, 0.15).
+        crate::scene_presets::ScenePreset::Lod => -Vec3::new(-0.15, -0.1, 0.15).normalize(),
     }
 }
 

@@ -8,6 +8,7 @@ pub enum ScenePreset {
     Terrain,
     Cave,
     Canyon,
+    Lod,
 }
 
 impl ScenePreset {
@@ -19,6 +20,12 @@ impl ScenePreset {
                     .is_ok_and(|v| v == "canyon" || v == "day-cycle"))
         {
             Self::Canyon
+        } else if std::env::var("VOXEL_GI_SCENE").is_ok_and(|v| v == "lod")
+            || (cfg!(debug_assertions)
+                && std::env::var_os("VOXEL_GI_VALIDATE").is_some()
+                && std::env::var("VOXEL_GI_VALIDATE_PROFILE").is_ok_and(|v| v == "lod"))
+        {
+            Self::Lod
         } else if crate::cave_scene::enabled() {
             Self::Cave
         } else {
@@ -30,6 +37,7 @@ impl ScenePreset {
             Self::Terrain => None,
             Self::Cave => Some(crate::cave_scene::voxel(p)),
             Self::Canyon => Some(crate::canyon_scene::voxel(p)),
+            Self::Lod => Some(crate::lod_scene::voxel(p)),
         }
     }
     pub fn materials(self) -> Option<VoxelMaterialTransportTable> {
@@ -37,6 +45,7 @@ impl ScenePreset {
             Self::Terrain => None,
             Self::Cave => Some(crate::cave_scene::materials()),
             Self::Canyon => Some(crate::canyon_scene::materials()),
+            Self::Lod => None,
         }
     }
     pub fn spawn(self) -> Option<Vec3> {
@@ -44,6 +53,7 @@ impl ScenePreset {
             Self::Terrain => None,
             Self::Cave => Some(crate::cave_scene::SPAWN),
             Self::Canyon => Some(crate::canyon_scene::SPAWN),
+            Self::Lod => Some(crate::lod_scene::EYE),
         }
     }
 }

@@ -3,6 +3,7 @@ mod app_controls;
 mod assets;
 mod cave_scene;
 mod canyon_scene;
+mod lod_scene;
 mod scene_presets;
 mod chunk_colliders;
 mod player;

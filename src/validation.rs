@@ -390,6 +390,15 @@ pub(super) fn run_validation(
     if profile == Profile::Tunnel {
         run.tunnel.tick(elapsed, &mut world, &mut dirty, &mut commands, &cameras, &mut lights);
     }
+    if profile == Profile::Lod {
+        // bevy_voxel_world's noise_terrain_lod flight, replayed from time zero.
+        let transform = crate::lod_scene::camera(elapsed);
+        for camera in &cameras {
+            commands.entity(camera)
+                .remove::<bevy_ahoy::prelude::CharacterControllerCameraOf>()
+                .insert(transform);
+        }
+    }
     if profile == Profile::Streaming {
         // Replay an absolute path, independent of asynchronous startup physics
         // and controller synchronization. Mutating the body Transform alone can
@@ -672,6 +681,7 @@ pub(super) fn run_validation(
             crate::scene_presets::ScenePreset::Cave => "many-emitter cave",
             crate::scene_presets::ScenePreset::Canyon => "daylight canyon",
             crate::scene_presets::ScenePreset::Terrain => "terrain",
+            crate::scene_presets::ScenePreset::Lod => "bvw noise_terrain_lod",
         },
         "house_only_control": crate::structures::showcase::validation_house_only(),
         "cache_handoff": handoff::enabled(run.profile),
