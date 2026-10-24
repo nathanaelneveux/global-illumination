@@ -59,3 +59,26 @@ affordable, and our 31 MB of packed geometry for 48k pages agrees. The
 exception is a BVW LOD host (asteroids-redux): it never generated
 full-resolution far voxels, so GI must either run the host generator at full
 resolution or accept coarse far pages.
+
+## Experiments (2026-10-24)
+
+Each measured on the far lab (`VOXEL_GI_LAB_FAR=48`, LOD bands 0/2/4/8,
+paced, M4 headless 1440p) against main run next to it, then gated on the
+default lab when promising. Per-stage view times come from `far_stages_ms`.
+
+| Idea (source) | Result | Verdict |
+| --- | --- | --- |
+| Top-level empty-space field kept on for large worlds (NAADF chunk bounds) | p50 24.5 -> 23.2 ms, GI main p95 1.5 -> 0.3 ms | adopted `32697f5` |
+| Traced discovery past 0.1 world units per pixel (NAADF primary rays) | uncovered 3.5k -> 0.48k, distant LOD patches gone, about +0.9 ms far, none in default lab | adopted `2c19b71` |
+| ...with a per-tile workgroup identity cache | discovery +1.3 ms even in the cave (occupancy) | rejected |
+| ...with per-invocation register identity cache | far discovery 5.3 -> 3.7 ms but no frame change; default streaming discovery +0.3 ms | rejected |
+| Corner sun refreshed every 4th frame for retained faces (NAADF sun accumulates) | reprojection far 1.20 -> 0.82 ms, +33% completed paths far | adopted `f8ed4c7` |
+| Per-pixel sun past 0.5 or 0.25 world units per pixel (user idea) | p50 +0.6 / +1.7 ms: faces a few pixels wide already borrow corners from owned neighbours cheaply | rejected |
+| Faces with >= 256 samples traced every 4th frame (NAADF 0.25 spp with history) | no settling gain; slower edit response (remove-300ms FLIP 0.096 -> 0.121) | rejected |
+| Path and shadow rays capped at 128 steps (NAADF budgets) | known/completed unchanged (99.4%); rays rarely need more here | not needed now |
+
+Not yet tried: a camera-relative dense top level (the bounding-box field
+still switches off past 255 regions per axis), GPU construction, capping
+discovery rounds per tile per frame (discovery is now the largest far
+stage, 4-5 ms), and the reconstruction cost at receiver saturation (0.5 ms
+at 48 chunks, 8-12 ms in the 200-chunk lod test).
