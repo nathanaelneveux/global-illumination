@@ -229,6 +229,13 @@ impl NaadfRegion {
     }
 }
 
+/// The top-level empty-space field is dense over the loaded regions' bounding
+/// box (6 bytes a region cell, built on the scene worker; the GPU keeps only
+/// per-region extents). 262,144 cells (64^3) switched it off for a 48-chunk
+/// world (192 x 192 x ~20 regions), leaving rays to cross empty space one
+/// region per step. NAADF keeps chunk-level bounds over its whole world.
+const TOP_LEVEL_MAX_CELLS: u64 = 4 << 20;
+
 #[derive(Clone, Default)]
 pub struct TopLevelAadf {
     pub minimum: IVec3,
@@ -256,7 +263,7 @@ impl TopLevelAadf {
         // Sparse, disconnected loaded islands must not allocate their entire
         // bounding volume (or overflow the u8 AADF extents). Traversal can safely
         // fall back to region DDA without a top-level distance field.
-        if size.max_element() > 255 || size.as_u64vec3().element_product() > 262_144 {
+        if size.max_element() > 255 || size.as_u64vec3().element_product() > TOP_LEVEL_MAX_CELLS {
             return Self {
                 minimum,
                 maximum,
