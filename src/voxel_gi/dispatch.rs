@@ -564,15 +564,10 @@ pub(super) fn apply_trace_task(
             continue;
         }
         if sky_current && job.sky_requested {
-            let changed = (0..6).any(|face| {
-                old.face_mask & (1 << face) != 0 && old.display[face].sky != job.sky[face]
-            });
             for face in 0..6 {
                 if old.face_mask & (1 << face) != 0 {
                     old.display[face].sky = job.sky[face];
                 }
-            }
-            if changed {
             }
         }
         if job.trace_mask == 0 {
@@ -582,21 +577,15 @@ pub(super) fn apply_trace_task(
         // A material-table revision can change emission without rebuilding
         // geometry. Older source results were rejected above.
         old.emission = runtime.materials.get(old.material).emission;
-        let publish_display = batch.work.faces[job.faces()]
-            .iter()
-            .any(|face| face.resident.y == 0 || old.resident[face.face] != face.resident);
         job.publish(
             &batch.work.faces[job.faces()],
             old,
-            merge_started,
         );
         let (_, new_samples, new_covered, new_settled) = probe_metrics(old, transport_revision);
         runtime.completed_samples =
             runtime.completed_samples.saturating_sub(old_samples) + new_samples;
         runtime.covered_faces = runtime.covered_faces.saturating_sub(old_covered) + new_covered;
         runtime.settled_faces = runtime.settled_faces.saturating_sub(old_settled) + new_settled;
-        if publish_display {
-        }
     }
     // The statistics mirror of GPU-picked faces, at most mirror_budget per
     // batch (the GPU emits faces whose mirror is stale; the GPU state is the
@@ -633,21 +622,18 @@ pub(super) fn apply_trace_task(
             continue;
         }
         let (_, old_samples, old_covered, old_settled) = probe_metrics(old, transport_revision);
-        let publish_display = old.resident[face.face] != face.resident;
         let job = super::work::ProbeWork::picked(
             old,
             face.face,
             batch.work.transport_revision,
             batch.work.source_revision,
         );
-        job.publish(std::slice::from_ref(face), old, merge_started);
+        job.publish(std::slice::from_ref(face), old);
         let (_, new_samples, new_covered, new_settled) = probe_metrics(old, transport_revision);
         runtime.completed_samples =
             runtime.completed_samples.saturating_sub(old_samples) + new_samples;
         runtime.covered_faces = runtime.covered_faces.saturating_sub(old_covered) + new_covered;
         runtime.settled_faces = runtime.settled_faces.saturating_sub(old_settled) + new_settled;
-        if publish_display {
-        }
     }
     drop(_merge_picks);
     // Faces traced: the CPU's and the GPU's picks (the mirror records are a

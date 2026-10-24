@@ -491,7 +491,6 @@ pub struct SurfaceProbe {
     /// Optional resident slot and allocation incarnation. Zero incarnation is
     /// the CPU/display-prior fallback; recycled slots cannot alias old readers.
     pub(crate) resident: [UVec2; 6],
-    pub(crate) display_updated_at: Option<Instant>,
     /// Selection in the full-probe test oracle. Production selection belongs
     /// only to the compact `ProbeWork`, never the persistent receiver.
     #[cfg(test)]
@@ -509,7 +508,6 @@ pub struct SurfaceProbe {
     pub(crate) transport_revision: u64,
     /// Independent spatial evidence consumed by statistical retention.
     /// Sunlight changes can arrive after transport refreshed in the same scene.
-    pub(crate) retention_revision: u64,
     /// Changes only when this probe's geometry/history is invalidated.
     pub revision: u64,
     pub source_revision: u64,
@@ -600,14 +598,12 @@ impl SurfaceProbe {
             progress: default(),
             display: [super::history::FaceDisplay::default(); 6],
             resident: [UVec2::ZERO; 6],
-            display_updated_at: None,
             #[cfg(test)]
             trace_mask: 63,
             fresh_mask: 63,
             stale_merge: 0,
             relit_mask: 0,
             transport_revision: 0,
-            retention_revision: 0,
             revision: 0,
             source_revision: 0,
             updated_at: None,

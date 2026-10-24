@@ -108,13 +108,9 @@ impl ProbeWork {
         &self,
         faces: &[FaceWork],
         probe: &mut SurfaceProbe,
-        now: Instant,
     ) {
         let same_revision =
             probe.transport_revision == self.transport_revision && self.retention.is_none();
-        if let Some(revision) = self.retention {
-            probe.retention_revision = revision;
-        }
         // These faces' merges were accepted: nothing left for the GPU to undo.
         probe.stale_merge &= !self.trace_mask;
         probe.relit_mask &= !self.trace_mask;
@@ -159,7 +155,6 @@ impl ProbeWork {
             }
             probe.fresh_mask |= 1 << face;
         }
-        probe.display_updated_at = Some(now);
     }
 }
 
@@ -427,7 +422,7 @@ mod tests {
         work.faces[0].resident = UVec2::new(0, 1);
         work.faces[0].gpu_settled = Some(true);
         let mut slim = SurfaceProbe::new_slim(IVec3::ZERO, 4);
-        work.probes[0].publish(&work.faces, &mut slim, Instant::now());
+        work.probes[0].publish(&work.faces, &mut slim);
         assert!(slim.stats.is_none());
         assert_eq!(super::super::probe_metrics(&slim, 0), (1, 8, 1, 1));
         assert!(!work.faces[0].predates(&slim));
@@ -443,7 +438,7 @@ mod tests {
             "unchanged face retains progress"
         );
         work.probes[0].restart = true;
-        work.probes[0].publish(&[], &mut slim, Instant::now());
+        work.probes[0].publish(&[], &mut slim);
         assert_eq!(super::super::probe_metrics(&slim, 0), (2, 0, 0, 0));
         assert!(slim.stats.is_none());
     }
@@ -460,14 +455,10 @@ mod tests {
         work.probes[0].retention = Some(7);
         work.faces[0].samples += 16;
         work.faces[0].sequence += 16;
-        work.probes[0].publish(&work.faces, &mut probe, Instant::now());
+        work.probes[0].publish(&work.faces, &mut probe);
         // Counts come from the GPU, which already applied the change.
         assert_eq!(probe.stats().samples, [272, 4096, 4096, 4096, 4096, 4096]);
         assert_eq!(probe.stats().sequence, [9016, 9000, 9000, 9000, 9000, 9000]);
-        assert_eq!(
-            probe.retention_revision, 7,
-            "publication must retain selection's stamp, not a later worker-result stamp"
-        );
         assert_eq!(probe.fresh_mask, 1);
         assert_eq!(probe.stats().radiance, [Vec3::ONE; 6]);
         assert_eq!(probe.stats().second_moment, [Vec3::ONE * 2.0; 6]);
@@ -528,7 +519,7 @@ mod tests {
                 .iter()
                 .all(|f| f.revision_cap == super::super::geometry::NEAR_HISTORY)
         );
-        work.probes[0].publish(&work.faces, &mut probe, Instant::now());
+        work.probes[0].publish(&work.faces, &mut probe);
         assert_eq!(probe.relit_mask, 0, "an accepted job consumes the relight");
         // A refresh (nearby edit) changes the revision but caps nothing.
         probe.request_refresh();
@@ -551,7 +542,7 @@ mod tests {
         work.push(&probe, 4, 1, 1, false, u32::MAX, u32::MAX);
         assert_eq!(work.faces[0].samples, 4096);
         assert_eq!(work.faces[0].sequence, 8000);
-        work.probes[0].publish(&work.faces, &mut probe, Instant::now());
+        work.probes[0].publish(&work.faces, &mut probe);
         assert_eq!(probe.transport_revision, 1);
         assert_eq!(probe.source_revision, 1);
         assert_eq!(probe.fresh_mask, 4);

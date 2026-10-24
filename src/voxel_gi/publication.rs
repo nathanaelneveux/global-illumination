@@ -278,7 +278,6 @@ fn reconcile_scene_page(
             probe.revision = runtime.generation << 32;
             // Timestamp the new display prior independently of material ID.
             // This is not measurement evidence or a transport freshness stamp.
-            probe.display_updated_at = Some(now);
             Box::new(probe)
         });
         let old_mask = probe.face_mask;

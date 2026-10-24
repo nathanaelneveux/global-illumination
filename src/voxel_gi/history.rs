@@ -147,12 +147,11 @@ impl SurfaceProbe {
             }
             self.resolve_face(
                 face,
-                previous.stats().face_updated_at[face].or(previous.display_updated_at),
+                previous.stats().face_updated_at[face],
                 now,
                 response_seconds,
             );
         }
-        self.display_updated_at = Some(now);
     }
 
     /// Test reference for the GPU presentation filter (voxel_accumulate.wgsl):
@@ -248,7 +247,6 @@ mod tests {
         probe.stats_mut().radiance[2] = Vec3::ONE * energy;
         probe.stats_mut().second_moment[2] = probe.stats().radiance[2] * probe.stats().radiance[2];
         probe.updated_at = Some(now);
-        probe.display_updated_at = Some(now);
         probe.display[2] = FaceDisplay {
             indirect: Vec3::splat(energy),
             sky: [super::super::sky::KNOWN | u32::from(energy > 0.0); 4],
@@ -454,9 +452,10 @@ mod tests {
         for (initial, target) in [(0.0, 1.0), (1.0, 0.0)] {
             let mut previous = measured(IVec3::ZERO, initial, start);
             previous.restart_measurements();
-            previous.display_updated_at = Some(start);
+            previous.stats_mut().face_updated_at[2] = Some(start);
             for batch in 1..=16 {
                 let mut next = previous.clone();
+                next.stats_mut().face_updated_at[2] = Some(start + Duration::from_millis(batch as u64 * 50));
                 next.stats_mut().samples[2] = batch * 4;
                 next.stats_mut().radiance[2] = Vec3::ONE * target;
                 next.stats_mut().second_moment[2] = next.stats().radiance[2] * next.stats().radiance[2];

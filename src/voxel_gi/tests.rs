@@ -345,7 +345,6 @@ fn new_receiver_display_clock_does_not_depend_on_material_id() {
             }],
         );
         let probe = &field.probes[&IVec3::ZERO];
-        assert!(probe.display_updated_at.is_some());
         assert!(probe.updated_at.is_none());
         assert_eq!(probe.stats().samples, [0; 6]);
     }
@@ -370,7 +369,6 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             probe.display[2].confidence = 0.75;
             probe.updated_at = Some(now);
             probe.stats_mut().face_updated_at = [Some(now); 6];
-            probe.display_updated_at = Some(now);
             probe.revision = 7;
             probe.stats_mut().stable_batches = [4; 6];
             let mut late = probe.clone();
@@ -437,7 +435,6 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             assert_eq!(p.stats().radiance[2], Vec3::ONE);
             assert_eq!(p.stats().second_moment[2], Vec3::ONE * 2.0);
             assert_eq!(p.stats().face_updated_at[2], Some(now));
-            assert_eq!(p.display_updated_at, Some(now));
             assert_eq!(p.display[2].indirect, Vec3::splat(0.5));
             assert_eq!(p.display[2].confidence, 0.75);
             assert_eq!(p.emission, runtime.materials.get(material).emission);
@@ -678,7 +675,6 @@ fn in_flight_lighting_cannot_restore_indices_moved_by_streaming() {
     pending_result.probes[0].publish(
         &pending_result.faces,
         field.probes.get_mut(&IVec3::Z).unwrap(),
-        Instant::now(),
     );
     removed.clear();
     removed.insert(IVec3::Z, field.probes.remove(&IVec3::Z).unwrap());
