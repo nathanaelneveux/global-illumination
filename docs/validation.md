@@ -609,9 +609,16 @@ transition; it must not be mistaken for improved sampler accuracy.
 
 ## Profiling with Tracy
 
-Offscreen frame interval is pinned near 20 ms by the 60 Hz runner (it did not
-move with resolution, GI display or transport load on 2026-10-19), so it does
-not measure CPU or GPU cost. Use Tracy spans for CPU work:
+Offscreen frame interval is pinned near 20 ms by the 60 Hz runner while the
+GPU keeps up (it did not move with resolution, GI display or transport load on
+2026-10-19). Headless runs have no swapchain, so before 2026-10-24 nothing
+throttled the CPU when GPU work exceeded the cadence: at `VOXEL_GI_LAB_FAR=48`
+the GPU sat at 99%, about 950 command buffers were in flight, GPU results
+arrived up to 2 s late and peak memory reached 5.8 GB, while frame times only
+showed the CPU. Headless validation now allows one frame in flight (each render
+frame waits for the previous frame's GPU work, like a window with vsync), so
+frame time includes GPU time once the GPU is the bottleneck;
+`VOXEL_GI_VALIDATE_GPU_PACING=0` disables it. Use Tracy spans for CPU work:
 
 - Bevy 0.19 links Tracy 0.13.1 (protocol 76). Build `capture` and `csvexport`
   from the Tracy 0.13.x source (`cmake -B build -S capture`, then

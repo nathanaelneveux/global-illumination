@@ -37,6 +37,7 @@ impl Plugin for GiLabPlugin {
         #[cfg(debug_assertions)]
         if scripted() {
             crate::validation::install_frame_timing(app);
+            crate::validation::install_gpu_pacing(app);
             app.init_resource::<crate::validation::CaptureEvidence>()
                 .add_systems(PostStartup, crate::validation::setup_capture_target)
                 .add_systems(Update, crate::validation::run_validation.after(VoxelGiSystems));

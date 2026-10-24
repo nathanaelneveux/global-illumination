@@ -51,6 +51,42 @@ pub(super) fn install_frame_timing(app: &mut App) {
     }
 }
 
+/// Headless runs have no swapchain, so nothing throttles the CPU to the GPU:
+/// a GPU frame longer than the cadence queues work without bound (seconds of
+/// latency, gigabytes of in-flight command buffers) while frame times still
+/// look like the CPU's. Like a window with vsync, allow one frame in flight:
+/// each render frame waits for the previous frame's submitted GPU work.
+/// `VOXEL_GI_VALIDATE_GPU_PACING=0` restores the unthrottled behaviour.
+pub(super) fn install_gpu_pacing(app: &mut App) {
+    if !crate::headless_validation()
+        || std::env::var("VOXEL_GI_VALIDATE_GPU_PACING").as_deref() == Ok("0")
+    {
+        return;
+    }
+    use bevy::render::{Render, RenderApp, RenderSystems};
+    if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+        render_app.add_systems(Render, pace_gpu_frames.in_set(RenderSystems::Cleanup));
+    }
+}
+
+fn pace_gpu_frames(
+    device: Res<bevy::render::renderer::RenderDevice>,
+    queue: Res<bevy::render::renderer::RenderQueue>,
+    mut previous: Local<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    if let Some(done) = previous.take() {
+        while !done.load(Ordering::Acquire) {
+            let _ = device.wgpu_device().poll(bevy::render::render_resource::PollType::Poll);
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
+    }
+    let done = std::sync::Arc::new(AtomicBool::new(false));
+    let signal = done.clone();
+    queue.on_submitted_work_done(move || signal.store(true, Ordering::Release));
+    *previous = Some(done);
+}
+
 pub(super) fn setup_capture_target(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
