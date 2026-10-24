@@ -73,11 +73,11 @@ fn trace_view_paths(@builtin(global_invocation_id) id: vec3<u32>) {
 
 // Scratch only for in-flight tails, not another history allocation per sample.
 // The view owner may compact active entries and retain completed ViewPaths.
-// Five-band arithmetic remains identical to the shared kernel, while completed
-// view records retain RGB only. No partial result is a completed measurement.
+// Arithmetic is identical to the shared kernel; completed view records retain
+// RGB. No partial result is a completed measurement.
 struct ViewContinuation {
     radiance: vec4<f32>,
-    extra: vec4<f32>, // radiance ionizing, throughput ionizing, previous PDF, reserved
+    extra: vec4<f32>, // reserved, reserved, previous PDF, reserved
     throughput: vec4<f32>,
     origin: vec3<f32>,
     bounce: u32,
@@ -142,11 +142,10 @@ fn advance_view_path(index: u32) {
     } else {
         if stored.status != 1u { return; }
         state.result.energy.value = stored.radiance;
-        state.result.energy.radiation = stored.extra.x;
         state.result.first_hit = RayResult(record.hit_voxel, record.hit_material,
             record.hit_position, record.hit_status, vec3(0.0));
         if record.hit_face < 6u { state.result.first_hit.normal = face_normal(record.hit_face); }
-        state.throughput = Energy(stored.throughput, stored.extra.y, vec3(0.0));
+        state.throughput = Energy(stored.throughput, vec3(0.0));
         state.origin = stored.origin;
         state.direction = stored.direction;
         state.previous_position = stored.previous_position;
@@ -170,7 +169,7 @@ fn advance_view_path(index: u32) {
     record.known = select(0u, 1u, state.done && !state.result.unknown);
     record.continuation = select(vec3(0.0), state.result.energy.value.rgb, state.done);
     stored.radiance = state.result.energy.value;
-    stored.extra = vec4(state.result.energy.radiation, state.throughput.radiation, state.previous_pdf, 0.0);
+    stored.extra = vec4(0.0, 0.0, state.previous_pdf, 0.0);
     stored.throughput = state.throughput.value;
     stored.origin = state.origin;
     stored.bounce = state.bounce;

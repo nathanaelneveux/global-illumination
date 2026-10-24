@@ -8,7 +8,7 @@ struct Params {
     minimum: vec4<i32>, // xyz: scene bounds, w: shared corner task count
     maximum: vec4<i32>, // xyz: scene bounds, w: directional light count
     environment: vec4<f32>,
-    extra: vec4<f32>, // environment ionizing, directional horizon, emitter power/count
+    extra: vec4<f32>, // reserved, directional horizon, emitter power/count
     transport: vec4<f32>, // shortened diffuse/voxel-emitter reach, reserved
 }
 struct Material {
@@ -29,7 +29,6 @@ struct EmissiveFace {
 }
 struct Energy {
     value: vec4<f32>,
-    radiation: f32,
     custom_visible: vec3<f32>,
 }
 // #include voxel_traversal.wgsl
@@ -47,7 +46,7 @@ struct Energy {
 @group(0) @binding(10) var<storage, read> cache_index: array<vec4<u32>>;
 const CACHE_MIN_SAMPLES: u32 = 16u;
 
-struct CachedEnergy { found: bool, value: vec4<f32>, radiation: f32 }
+struct CachedEnergy { found: bool, value: vec4<f32> }
 fn cached_energy(voxel: vec3<i32>, face: u32) -> CachedEnergy {
     var cached: CachedEnergy;
     if face > 5u { return cached; }
@@ -64,7 +63,6 @@ fn cached_energy(voxel: vec3<i32>, face: u32) -> CachedEnergy {
             if words.y < CACHE_MIN_SAMPLES || (words.y & 0x80000000u) != 0u { return cached; }
             cached.found = true;
             cached.value = bitcast<vec4<f32>>(cache_state[base]);
-            cached.radiation = bitcast<f32>(words.x);
             return cached;
         }
         slot = (slot + 1u) & mask;
@@ -283,7 +281,6 @@ fn direct_at(position: vec3<f32>, normal: vec3<f32>) -> Energy {
         let cosine = max(dot(normal, direction), 0.0);
         if cosine > 0.0 && trace(origin, direction, distance).status == 0u {
             energy.value += light.energy * (cosine * attenuation);
-            energy.radiation += light.extra.x * (cosine * attenuation);
             energy.custom_visible += light.extra.yzw * (cosine * attenuation);
         }
     }
@@ -344,7 +341,6 @@ fn sample_emitter(position: vec3<f32>, normal: vec3<f32>, source_stream: u32, se
     let material = materials[u32(emitter.sampling.z)];
     let factor = directional_pdf / (light_pdf + directional_pdf);
     result.value = material.emission * factor;
-    result.radiation = material.emission_extra.x * factor;
     return result;
 }
 // One terminal emission connection from a 50/50 light/cosine mixture for the
@@ -356,7 +352,6 @@ fn sample_terminal_emission(position: vec3<f32>, normal: vec3<f32>, stream: u32,
     if continuation_sample(stream, sequence, bounce, 2u) < 0.5 {
         result = sample_emitter(position, normal, stream, sequence, bounce + 1u);
         result.value *= 2.0;
-        result.radiation *= 2.0;
         return result;
     }
     let direction = hemisphere(normal, continuation_sample(stream, sequence, bounce, 0u), continuation_sample(stream, sequence, bounce, 1u));
@@ -376,7 +371,6 @@ fn sample_terminal_emission(position: vec3<f32>, normal: vec3<f32>, stream: u32,
     let directional_pdf = cosine_pdf(normal, direction);
     let factor = 2.0 * directional_pdf / (directional_pdf + light_pdf);
     result.value = material.emission * factor;
-    result.radiation = material.emission_extra.x * factor;
     return result;
 }
 
@@ -404,7 +398,7 @@ struct PathState {
 }
 fn begin_path(start: vec3<f32>, direction: vec3<f32>, normal: vec3<f32>) -> PathState {
     var state: PathState;
-    state.throughput = Energy(vec4(1.0), 1.0, vec3(0.0));
+    state.throughput = Energy(vec4(1.0), vec3(0.0));
     state.origin = start;
     state.direction = direction;
     state.previous_normal = normal;
@@ -426,7 +420,6 @@ fn advance_path(initial: PathState, stream: u32, sequence: u32, steps: u32, term
         if hit.status == 0u {
             let horizon = clamp(state.direction.y * 0.35 + 0.65, 0.15, 1.0);
             state.result.energy.value += state.throughput.value * params.environment * horizon;
-            state.result.energy.radiation += state.throughput.radiation * params.extra.x * horizon;
             break;
         }
         if hit.status == 2u { state.result.unknown = true; break; }
@@ -447,7 +440,6 @@ fn advance_path(initial: PathState, stream: u32, sequence: u32, steps: u32, term
         let cached = cached_energy(hit.voxel, face_index_of(hit.normal));
         if cached.found {
             state.result.energy.value += state.throughput.value * (material.emission * mis + material.diffuse * (direct.value + cached.value));
-            state.result.energy.radiation += state.throughput.radiation * (material.emission_extra.x * mis + material.diffuse_extra.x * (direct.radiation + cached.radiation));
             break;
         }
         var nee: Energy;
@@ -457,12 +449,8 @@ fn advance_path(initial: PathState, stream: u32, sequence: u32, steps: u32, term
             nee = sample_emitter(hit.position, hit.normal, stream, sequence, bounce + 1u);
         }
         state.result.energy.value += state.throughput.value * (material.emission * mis + material.diffuse * (direct.value + nee.value));
-        state.result.energy.radiation += state.throughput.radiation * (material.emission_extra.x * mis + material.diffuse_extra.x * (direct.radiation + nee.radiation));
         if terminal && step + 1u == steps { break; }
         state.throughput.value *= material.diffuse;
-        state.throughput.radiation *= material.diffuse_extra.x;
-        // Roulette follows the visible bands: GI serves the display, and paths
-        // must not outlive their visible contribution to carry IR/ionizing.
         let maximum = max(state.throughput.value.x, max(state.throughput.value.y, state.throughput.value.z));
         // A small weight can still reach a bright source. Only exact zero is
         // safely discarded; roulette compensates surviving nonzero paths.
@@ -471,7 +459,6 @@ fn advance_path(initial: PathState, stream: u32, sequence: u32, steps: u32, term
             let survival = clamp(maximum, 0.1, 0.95);
             if continuation_sample(stream, sequence, bounce, 2u) > survival { break; }
             state.throughput.value /= survival;
-            state.throughput.radiation /= survival;
         }
         state.origin = hit.position + hit.normal * 0.002;
         state.previous_position = hit.position;
@@ -510,6 +497,5 @@ fn trace_receiver(surface: vec3<f32>, normal: vec3<f32>, stream: u32, sequence: 
     let path = sample_receiver_path(surface, normal, stream, sequence);
     var result = ReceiverSample(path.emitter, !path.continuation.unknown);
     result.energy.value += path.continuation.energy.value;
-    result.energy.radiation += path.continuation.energy.radiation;
     return result;
 }

@@ -14,7 +14,7 @@ struct FaceResult {
     mean: vec4<f32>,
     mean_extra: vec4<f32>,
     second: vec4<f32>,
-    second_extra: vec4<f32>, // ionizing second moment, padding
+    second_extra: vec4<f32>, // reserved
     direct: vec4<f32>,
     direct_extra: vec4<f32>,
 }
@@ -35,24 +35,23 @@ fn trace_sky_corners(@builtin(global_invocation_id) id: vec3<u32>) {
     results[offset + 1u] = vec4(0u);
 }
 
-fn write_result(face_index: u32, mean: vec4<f32>, second: vec4<f32>, radiation: vec2<f32>, known: u32) {
+fn write_result(face_index: u32, mean: vec4<f32>, second: vec4<f32>, known: u32) {
     let task = tasks[face_index];
     let normal = face_normal(task.face);
     let direct = direct_at(vec3<f32>(task.voxel) + vec3(0.5) + normal * 0.5, normal);
     let inverse = 1.0 / f32(max(known, 1u));
     let offset = face_index * 6u;
     results[offset] = bitcast<vec4<u32>>(mean * inverse);
-    results[offset + 1u] = bitcast<vec4<u32>>(vec4(radiation.x * inverse, f32(known), 0.0, 0.0));
+    results[offset + 1u] = bitcast<vec4<u32>>(vec4(0.0, f32(known), 0.0, 0.0));
     results[offset + 2u] = bitcast<vec4<u32>>(second * inverse);
-    results[offset + 3u] = bitcast<vec4<u32>>(vec4(radiation.y * inverse, 0.0, 0.0, 0.0));
+    results[offset + 3u] = vec4(0u);
     results[offset + 4u] = bitcast<vec4<u32>>(direct.value);
-    results[offset + 5u] = bitcast<vec4<u32>>(vec4(direct.radiation, direct.custom_visible));
+    results[offset + 5u] = bitcast<vec4<u32>>(vec4(0.0, direct.custom_visible));
 }
 
 struct PathMoments {
     mean: vec4<f32>,
     second: vec4<f32>,
-    radiation: vec2<f32>,
     known: u32,
 }
 fn trace_moments(face_index: u32, first: u32, step: u32) -> PathMoments {
@@ -65,10 +64,8 @@ fn trace_moments(face_index: u32, first: u32, step: u32) -> PathMoments {
         let sample = trace_receiver(surface, normal, stream, task.sequence + i);
         if !sample.known { continue; }
         let value = sample.energy.value;
-        let radiation = sample.energy.radiation;
         moment.mean += value;
         moment.second += value * value;
-        moment.radiation += vec2(radiation, radiation * radiation);
         moment.known += 1u;
     }
     return moment;
@@ -80,7 +77,7 @@ fn trace_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     // Unused GPU pick capacity keeps a face of 0xffffffff.
     if id.x >= params.counts.x || tasks[id.x].face == 0xffffffffu { return; }
     let moment = trace_moments(id.x, 0u, 1u);
-    write_result(id.x, moment.mean, moment.second, moment.radiation, moment.known);
+    write_result(id.x, moment.mean, moment.second, moment.known);
 }
 
 // Cooperative layout: PATH_LANES lanes share a receiver, each tracing an
@@ -102,8 +99,7 @@ fn trace_faces_parallel(@builtin(global_invocation_id) id: vec3<u32>,
     for (var i = 0u; i < PATH_LANES; i += 1u) {
         total.mean += path_moments[local + i].mean;
         total.second += path_moments[local + i].second;
-        total.radiation += path_moments[local + i].radiation;
         total.known += path_moments[local + i].known;
     }
-    write_result(face_index, total.mean, total.second, total.radiation, total.known);
+    write_result(face_index, total.mean, total.second, total.known);
 }

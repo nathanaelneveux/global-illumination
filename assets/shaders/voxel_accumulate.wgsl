@@ -182,14 +182,8 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
     let second = bitcast<vec4<f32>>(output[result + 2u]);
     let previous_mean = bitcast<vec4<f32>>(state[base]);
     let previous_second = bitcast<vec4<f32>>(state[base + 2u]);
-    let previous_ionizing = state[base + 1u].x;
     state[base] = bitcast<vec4<u32>>(previous_mean + (mean - previous_mean) * alpha);
     state[base + 2u] = bitcast<vec4<u32>>(previous_second + (second - previous_second) * alpha);
-    for (var word = 1u; word <= 3u; word += 2u) {
-        let old = bitcast<f32>(state[base + word].x);
-        let fresh = bitcast<f32>(output[result + word].x);
-        state[base + word].x = bitcast<u32>(old + (fresh - old) * alpha);
-    }
     state[base + 1u].y = count;
     state[base + 1u].z += control.y;
     state[base + 4u] = output[result + 4u];
@@ -216,7 +210,7 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
     // Nonzero: the temporal clock (7.y) is valid.
     state[base + 7u].z = 0xffffffffu;
     // Spare result words carry the resolved presentation and its measurement
-    // time without enlarging the five-band simulation snapshot.
+    // time without enlarging the snapshot.
     state[base + 1u].w = state[base + 6u].x;
     state[base + 3u] = vec4(state[base + 3u].x, state[base + 6u].yzw);
     for (var word = 0u; word < 6u; word += 1u) {
@@ -225,7 +219,7 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
     // A GPU pick's result is not read back: its CPU mirror is now stale.
     // Its record reports the merged count instead (after any retention cap).
     if i >= settings.batch.x { inputs[i].z = count; }
-    record_stability(inputs[i].x, previous_mean, bitcast<f32>(previous_ionizing), i >= settings.batch.x);
+    record_stability(inputs[i].x, previous_mean, i >= settings.batch.x);
     // Readback-only flag: the resident count stays untouched. Slim CPU
     // receivers need the GPU verdict, not a duplicate of all its moments.
     output[result + 1u].y |= settled_flag(inputs[i].x);
@@ -239,22 +233,15 @@ fn settled_flag(slot: u32) -> u32 {
 // batches advance while the face stays in the same transport revision, its
 // display has settled on its mean, it has its required samples, and both its
 // relative error and its drift in this batch are small. Then fresh.
-fn record_stability(slot: u32, before: vec4<f32>, before_ionizing: f32, picked: bool) {
+fn record_stability(slot: u32, before: vec4<f32>, picked: bool) {
     let base = slot * 9u;
     let index = slot * 3u + 1u;
     let schedule = slot_meta[index];
     let same_revision = (schedule.y & 8u) != 0u && schedule.w == settings.schedule.x;
     let count = state[base + 1u].y & 0x7fffffffu;
     let after = bitcast<vec4<f32>>(state[base]);
-    let after_ionizing = bitcast<f32>(state[base + 1u].x);
     let tolerance = bitcast<f32>(settings.schedule.y);
-    let drift = max(
-        max3(abs(before.xyz - after.xyz) / (vec3(0.002) + max(abs(before.xyz), abs(after.xyz)))),
-        max(
-            abs(before.w - after.w) / (0.002 + max(abs(before.w), abs(after.w))),
-            abs(before_ionizing - after_ionizing) / (0.002 + max(abs(before_ionizing), abs(after_ionizing))),
-        ),
-    );
+    let drift = max3(abs(before.xyz - after.xyz) / (vec3(0.002) + max(abs(before.xyz), abs(after.xyz))));
     let display = bitcast<vec4<f32>>(state[base + 6u]).rgb;
     let settled = max3(abs(display - after.xyz)) <= 0.001 + max3(after.xyz) * tolerance * 0.5;
     let stable = select(
@@ -273,16 +260,12 @@ fn record_stability(slot: u32, before: vec4<f32>, before_ionizing: f32, picked: 
     );
 }
 
-// Worst per-band relative standard deviation of one sample (all five bands,
-// 0.002 floor): refinement_error is this over sqrt(count), at most 8.
+// Worst per-channel relative standard deviation of one sample (RGB, 0.002
+// floor): refinement_error is this over sqrt(count), at most 8.
 fn sample_noise(base: u32) -> f32 {
-    let mean = bitcast<vec4<f32>>(state[base]);
-    let second = bitcast<vec4<f32>>(state[base + 2u]);
-    let mean_i = bitcast<f32>(state[base + 1u].x);
-    let second_i = bitcast<f32>(state[base + 3u].x);
-    let bands = sqrt(max(second - mean * mean, vec4(0.0))) / (vec4(0.002) + abs(mean));
-    let ionizing = sqrt(max(second_i - mean_i * mean_i, 0.0)) / (0.002 + abs(mean_i));
-    return max(max(max(bands.x, bands.y), max(bands.z, bands.w)), ionizing);
+    let mean = bitcast<vec4<f32>>(state[base]).rgb;
+    let second = bitcast<vec4<f32>>(state[base + 2u]).rgb;
+    return max3(sqrt(max(second - mean * mean, vec3(0.0))) / (vec3(0.002) + abs(mean)));
 }
 
 fn required_samples(mean: vec3<f32>) -> u32 {
@@ -290,18 +273,13 @@ fn required_samples(mean: vec3<f32>) -> u32 {
     return select(settings.schedule.z, max(settings.schedule.z, 256u), max3(mean) < 0.02);
 }
 
-// scheduling.rs refinement_error: worst per-band relative standard error over
-// all five bands, with a 0.002 energy floor, at most 8.
+// scheduling.rs refinement_error: worst per-channel relative standard error
+// (RGB), with a 0.002 energy floor, at most 8.
 fn refinement_error(base: u32, count: u32) -> f32 {
     if count < 2u { return 1.0; }
-    let n = f32(count);
-    let mean = bitcast<vec4<f32>>(state[base]);
-    let second = bitcast<vec4<f32>>(state[base + 2u]);
-    let mean_i = bitcast<f32>(state[base + 1u].x);
-    let second_i = bitcast<f32>(state[base + 3u].x);
-    let bands = sqrt(max(second - mean * mean, vec4(0.0)) / n) / (vec4(0.002) + abs(mean));
-    let ionizing = sqrt(max(second_i - mean_i * mean_i, 0.0) / n) / (0.002 + abs(mean_i));
-    return min(max(max(max(bands.x, bands.y), max(bands.z, bands.w)), ionizing), 8.0);
+    let mean = bitcast<vec4<f32>>(state[base]).rgb;
+    let second = bitcast<vec4<f32>>(state[base + 2u]).rgb;
+    return min(max3(sqrt(max(second - mean * mean, vec3(0.0)) / f32(count)) / (vec3(0.002) + abs(mean))), 8.0);
 }
 
 fn max3(value: vec3<f32>) -> f32 { return max(value.x, max(value.y, value.z)); }
