@@ -98,9 +98,12 @@ pub fn terrain_view_distance() -> f32 {
     (far_streaming().unwrap_or(SPAWNING_DISTANCE) - 1) as f32 * CHUNK_SIZE_F
 }
 
-/// Far-test LOD bands (chunks from the camera) and their samples per axis.
-/// Band numbers name bands, not divisors.
-const LOD_BANDS: [(f32, LodLevel, u32); 3] = [(8.0, 0, 32), (16.0, 2, 16), (32.0, 4, 8)];
+/// Far-test LOD bands (chunks from the camera) and their samples per axis;
+/// each LOD number is its stride, except LoD 0. As in the user's other BVW
+/// projects, LoD 0 is a small full-resolution band near the camera and the
+/// only one that spawns colliders (`chunk_colliders`); LoD 1 is still full
+/// resolution, so full detail reaches farther than physics.
+const LOD_BANDS: [(f32, LodLevel, u32); 4] = [(2.0, 0, 32), (8.0, 1, 32), (16.0, 2, 16), (32.0, 4, 8)];
 const LOD_FARTHEST: (LodLevel, u32) = (8, 4);
 const LOD_HYSTERESIS_CHUNKS: f32 = 1.0;
 
