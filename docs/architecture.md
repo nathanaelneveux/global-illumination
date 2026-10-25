@@ -521,7 +521,13 @@ visible face's last corner word (resident record 8), so a face re-entering
 view compares it with its fresh corners and reports a shadow that moved
 while it was away (`native_returning_face_reports_the_sun_change_it_missed`).
 Off-screen faces are not re-checked until they are seen again; beyond the
-cache radius there is no kept history to go stale.
+cache radius there is no kept history to go stale. Reporting world-cache
+faces' own centre-sunlight flips (free: their traces already cast the
+shadow rays) was tried and not adopted (branch `experiment/cache-sun-flips`):
+on the moving-sun cave with the patch off screen it raised FLIP against
+fixed-sun references from .012 to .016, because retention's flux/(pi d^2)
+prediction, with no visibility or cosine term, cuts more history than the
+moving border really changes.
 
 Until 2026-10-24 a CPU sky cache traced world-cache corners in sky-only GPU
 batches, kept them in spatial buckets, and published corner flips as Light

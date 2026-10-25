@@ -221,6 +221,9 @@ impl Profile {
             ]
         } else if self == Self::Cave {
             if super::skylight::mode().is_some() {
+                if super::skylight::sun().is_some() {
+                    return super::skylight::SUN_CAPTURES;
+                }
                 return super::skylight::CAPTURES;
             }
             if std::env::var_os("VOXEL_GI_VALIDATE_CAVE_LONG").is_some() {

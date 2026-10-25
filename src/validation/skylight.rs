@@ -16,6 +16,32 @@ const FLOOR_MIN: IVec3 = IVec3::new(46, 4, 26);
 const FLOOR_MAX: IVec3 = IVec3::new(58, 4, 38);
 pub(super) const OPEN_AT: f32 = 15.0;
 
+/// Moving-sun variant (with `=pre`): the sun turns about world Z at
+/// `VOXEL_GI_VALIDATE_SKYLIGHT_SUN_RATE` degrees per second from 15 s (offset
+/// `VOXEL_GI_VALIDATE_SUN_OFFSET`; a fixed reference is rate 0 at the offset
+/// a capture reaches), sliding the floor patch, while
+/// `VOXEL_GI_VALIDATE_SKYLIGHT_AWAY=1` keeps the camera on the far corner:
+/// the patch's light reaches the screen only as bounce, through world-cache
+/// faces off screen.
+pub(super) fn sun() -> Option<(f32, f32)> {
+    let env = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<f32>().ok());
+    let rate = env("VOXEL_GI_VALIDATE_SKYLIGHT_SUN_RATE")?;
+    Some((rate, env("VOXEL_GI_VALIDATE_SUN_OFFSET").unwrap_or(0.0)))
+}
+
+pub(super) fn away() -> bool {
+    std::env::var_os("VOXEL_GI_VALIDATE_SKYLIGHT_AWAY").is_some()
+}
+
+/// Eye and target facing the cave's -x/+z corner, the patch behind and right.
+pub(super) const AWAY_VIEW: (Vec3, Vec3) = (Vec3::new(30.0, 22.0, 50.0), Vec3::new(5.0, 14.0, 58.0));
+
+pub(super) const SUN_CAPTURES: &[(f32, &str)] = &[(14.5, "before"), (25.0, "sun-25s"), (40.0, "sun-40s")];
+
+pub(super) fn sun_angle(elapsed: f32) -> Option<f32> {
+    sun().map(|(rate, offset)| offset + rate * (elapsed - OPEN_AT).max(0.0))
+}
+
 pub(super) fn mode() -> Option<&'static str> {
     static MODE: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
     *MODE.get_or_init(|| match std::env::var("VOXEL_GI_VALIDATE_CAVE_SKYLIGHT").as_deref() {
@@ -55,7 +81,9 @@ impl SkylightRun {
             }
         };
         if !self.floor {
-            fill(world, dirty, FLOOR_MIN, FLOOR_MAX, WorldVoxel::Solid(2));
+            // A moving sun slides the patch toward -x (to x ~33 at -25 deg).
+            let min = if sun().is_some() { IVec3::new(28, FLOOR_MIN.y, FLOOR_MIN.z) } else { FLOOR_MIN };
+            fill(world, dirty, min, FLOOR_MAX, WorldVoxel::Solid(2));
             self.floor = true;
         }
         if !self.opened && (mode == "pre" || elapsed >= OPEN_AT) {

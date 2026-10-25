@@ -490,6 +490,13 @@ same-time reference. Captures run 0.1 s to 30 s after the opening;
 luminance tile against the reference. `VOXEL_GI_VALIDATE_LIGHT_COMPONENT`
 applies (`indirect` isolates bounce). The distance rule alone leaves the floor's
 history; the edit's shadow footprint is what relights it.
+With `=pre`, `VOXEL_GI_VALIDATE_SKYLIGHT_SUN_RATE=-1` turns the sun from 15 s
+so the patch slides across a light-stone floor, and
+`VOXEL_GI_VALIDATE_SKYLIGHT_AWAY=1` faces the far corner: the patch reaches the
+screen only as bounce through off-screen cache faces. Fixed references are rate
+0 at `VOXEL_GI_VALIDATE_SUN_OFFSET=-10` and `-25` (their `sun-40s` captures
+against the moving run's `sun-25s` and `sun-40s`). Receipts at 9b1d92e:
+.0087/.0121, reference noise .0042.
 
 The `structures` profile stays in the normal world, moving its detached view at
 12/24 seconds and capturing at 10/22/45/60 seconds. It checks integration of the

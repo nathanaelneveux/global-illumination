@@ -400,6 +400,15 @@ pub(super) fn run_validation(
     }
     if profile == Profile::Cave {
         run.skylight.tick(elapsed, &mut world, &mut dirty);
+        if let Some(angle) = skylight::sun_angle(elapsed) {
+            commands.insert_resource(crate::world_environment::SunAngle(angle));
+        }
+        if skylight::away() {
+            let (eye, target) = skylight::AWAY_VIEW;
+            for camera in &cameras {
+                commands.entity(camera).insert(Transform::from_translation(eye).looking_at(target, Vec3::Y));
+            }
+        }
     }
     if profile == Profile::Tunnel {
         run.tunnel.tick(elapsed, &mut world, &mut dirty, &mut commands, &cameras, &mut lights);
