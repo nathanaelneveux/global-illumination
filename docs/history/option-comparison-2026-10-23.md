@@ -102,3 +102,11 @@ main-thread cost and memory, slower edit response, much less history per
 visible face. There is nothing to port back. +cache 32-64 cost the same frame
 time on the M4; radius is a quality/memory knob (64 for large caves).
 Windowed Neo runs remain necessary before choosing the shipped default radius.
+
+## Re-check, 2026-10-24
+
+After traced discovery, amortized corners, MSE pooling and GPU sunlight
+detection (`5e6afb4`, headless, one run each; see
+[the review](../review-2026-10-24.md)): 64 still matches 32 on house reveal
+(.0087 vs .0089 turned) and 96 on cave settling (.0076 vs .0073 at 15 s);
+cacheless loses revealed history (.058 turned, .069 return). Kept at 64.
