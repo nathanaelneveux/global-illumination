@@ -299,7 +299,13 @@ Normal scene construction reads one immutable host snapshot per dirty page
 overlay. Workers hold copy-on-write overlay snapshots: later writes cannot alter
 an in-flight input. This removes per-cell live host lookups from tracked edits;
 it does not claim one atomic snapshot of the entire host world. Unknown updates
-discard the affected overlay and use the general live resampling fallback.
+discard the affected overlay and request authoritative resampling. The BVW
+connector keeps the loaded page's coarse-cell coverage as the base and overlays
+known live voxel values (including pending writes and persisted edits). `Unset`
+between stored LOD samples does not erase a cell or invoke the generator. This
+resampled page is expanded so individual edits remain one voxel wide; ordinary
+ingestion stays strided. With no loaded page, the live lookup and generator
+remain the source.
 A later unknown notification supersedes earlier exact values, including within
 one frame; subsequent tracked writes can supply newer values again.
 
