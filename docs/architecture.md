@@ -527,7 +527,12 @@ shadow rays) was tried and not adopted (branch `experiment/cache-sun-flips`):
 on the moving-sun cave with the patch off screen it raised FLIP against
 fixed-sun references from .012 to .016, because retention's flux/(pi d^2)
 prediction, with no visibility or cosine term, cuts more history than the
-moving border really changes.
+moving border really changes. In a cave lit only by off-screen sunlight
+(the skylight test's dark variant) the stale bounce is large (FLIP .046 at
+10 degrees of rotation, ten times reference noise); there the flips help
+borders (.019) but not the gradual cosine dimming of a tilting sun, which
+leaves both ~9% too bright at 25 degrees. Reporting gradual direct-light
+changes from the same comparison is the open piece.
 
 Until 2026-10-24 a CPU sky cache traced world-cache corners in sky-only GPU
 batches, kept them in spatial buckets, and published corner flips as Light

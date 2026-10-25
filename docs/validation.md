@@ -496,7 +496,11 @@ so the patch slides across a light-stone floor, and
 screen only as bounce through off-screen cache faces. Fixed references are rate
 0 at `VOXEL_GI_VALIDATE_SUN_OFFSET=-10` and `-25` (their `sun-40s` captures
 against the moving run's `sun-25s` and `sun-40s`). Receipts at 9b1d92e:
-.0087/.0121, reference noise .0042.
+.0087/.0121, reference noise .0042. `VOXEL_GI_VALIDATE_SKYLIGHT_DARK=1` turns
+every emitter off, so sunlight through the openings is the only light: there
+main reads .046/.069 (reference noise .0047; 25 deg is ~9% too bright, a
+gradual dimming no visibility flip reports), and world-cache flips
+(`experiment/cache-sun-flips`) read .019/.078.
 
 The `structures` profile stays in the normal world, moving its detached view at
 12/24 seconds and capturing at 10/22/45/60 seconds. It checks integration of the

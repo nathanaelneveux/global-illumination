@@ -29,6 +29,13 @@ pub(super) fn sun() -> Option<(f32, f32)> {
     Some((rate, env("VOXEL_GI_VALIDATE_SUN_OFFSET").unwrap_or(0.0)))
 }
 
+/// `VOXEL_GI_VALIDATE_SKYLIGHT_DARK=1`: no emitters (lava, crystals,
+/// torches, spire bands emit nothing), so sunlight through the openings is
+/// the cave's only light.
+pub(super) fn dark() -> bool {
+    std::env::var_os("VOXEL_GI_VALIDATE_SKYLIGHT_DARK").is_some()
+}
+
 pub(super) fn away() -> bool {
     std::env::var_os("VOXEL_GI_VALIDATE_SKYLIGHT_AWAY").is_some()
 }
@@ -66,11 +73,28 @@ pub(super) const CAPTURES: &[(f32, &str)] = &[
 pub(super) struct SkylightRun {
     floor: bool,
     opened: bool,
+    darkened: bool,
 }
 
 impl SkylightRun {
-    pub fn tick(&mut self, elapsed: f32, world: &mut VoxelWorld<PrototypeWorld>, dirty: &mut VoxelGiInput) {
+    pub fn tick(
+        &mut self,
+        elapsed: f32,
+        world: &mut VoxelWorld<PrototypeWorld>,
+        dirty: &mut VoxelGiInput,
+        materials: &mut ResMut<VoxelMaterialTransportTable>,
+    ) {
         let Some(mode) = mode() else { return };
+        if dark() && !self.darkened {
+            self.darkened = true;
+            for id in 0..=255u8 {
+                let mut material = materials.get(id);
+                if material.emission != Vec3::ZERO {
+                    material.emission = Vec3::ZERO;
+                    materials.set(id, material);
+                }
+            }
+        }
         let fill = |world: &mut VoxelWorld<PrototypeWorld>, dirty: &mut VoxelGiInput, min: IVec3, max: IVec3, voxel| {
             for z in min.z..=max.z {
                 for x in min.x..=max.x {

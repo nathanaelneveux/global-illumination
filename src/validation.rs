@@ -399,7 +399,7 @@ pub(super) fn run_validation(
         );
     }
     if profile == Profile::Cave {
-        run.skylight.tick(elapsed, &mut world, &mut dirty);
+        run.skylight.tick(elapsed, &mut world, &mut dirty, &mut transport_materials);
         if let Some(angle) = skylight::sun_angle(elapsed) {
             commands.insert_resource(crate::world_environment::SunAngle(angle));
         }
