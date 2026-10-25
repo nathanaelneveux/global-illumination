@@ -52,7 +52,9 @@ pub use sources::{VoxelGiEmitter, VoxelGiEnvironment};
 pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 
 use pages::{ingest_input, start_scene_task};
-pub use input::{VOXEL_GI_PAGE_EDGE, VoxelGiInput, VoxelGiSource, VoxelSource, dense_page};
+pub use input::{
+    PageSample, VOXEL_GI_PAGE_EDGE, VoxelGiInput, VoxelGiSource, VoxelSource, coarse_page, dense_page,
+};
 pub use gpu::view::ViewReceipts;
 pub use gpu::include_traversal;
 pub use render::{
@@ -294,7 +296,10 @@ impl Default for VoxelGiRuntime {
 struct SceneBuildResult {
     scene: Arc<TransportScene>,
     changed: bool,
-    geometry_change: Option<geometry::GeometryChange>,
+    /// The build changed transport (geometry, emission): a new revision.
+    transport_changed: bool,
+    /// Its retention event, built on the worker (`SpatialHistory::event`).
+    retention: Option<retention::RetentionEvent>,
     pages: VecDeque<(IVec3, Vec<SurfaceProbeDescriptor>)>,
     /// Pages rescanned or retired for the receiver radius alone.
     receivers_changed: bool,

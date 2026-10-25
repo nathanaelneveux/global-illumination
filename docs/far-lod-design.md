@@ -97,3 +97,38 @@ feature shares one scope stack across threads; the workspace enables it
 Raising the top-level field's size cap (it was off above 262,144 region
 cells) took the baseline from 24.5 to 23.2 ms p50 on its own (GI off:
 20.5 ms).
+
+## Update: strided pages
+
+Implemented step 1 of the proposal in a simpler form: pages carry a stride
+(`PageSample`), and GI expands them on the worker to its dense page rather
+than making regions self-describing in scale. Coarse cells line up with GI's
+4³ bricks from stride 4, so their regions store one material per brick (128
+bytes) and the GPU packs them without payload; traversal is unchanged.
+Receivers stay unit faces (step 3 not done), and discovery still recomputes
+identities (step 4 not done). The connector reads BVW's stored LOD samples
+directly. Retention binning for each scene build moved to the scene worker:
+cheap coarse pages made full 768-page builds arrive several times a second,
+and binning their ~5k change bounds took 12-15 ms of main thread each.
+
+Receipts (M4, paced headless 1440p; baseline 29bd138, full-resolution
+synthesis through the generator; two runs each):
+
+| Far 48 (bands 1/2/4/8) | Baseline | Strided |
+| --- | --- | --- |
+| Frame p50 | 23.6, 24.3 ms | 22.6, 22.0 ms |
+| Frame p95 | 25.7, 26.6 ms | 26.1, 26.0 ms |
+| Frame p99 | 26.8, 27.5 ms | 28.1, 28.1 ms |
+| GI main p95 | 0.23 ms | 0.22, 0.21 ms |
+| View discovery / presentation | 2.9 / 5.1 ms | 1.2 / 3.5 ms |
+| Uncovered faces | 651, 673 | 680, 732 |
+| Peak memory | 1491, 1518 MB | 1450, 1388 MB |
+
+Discovery is cheaper because coarse LOD meshes now match GI's blocks. The
+punishing `lod` flight (strides 1-32, one run each, noisy): uncovered 35.0k
+-> 27.2k, discovery 20.3 -> 9.1 ms, presentation 31.4 -> 18.7 ms, p95/p99
+231/861 -> 186/746 ms, peak 1891 -> 1657 MB; p50 84.8 -> 98.3 ms is
+unattributed in one run of a host-bound scene. Default gates and house are
+within their spreads. A first measurement round was void: an empty-chunk
+shortcut wrote material 0 (a solid) for air (`PageSample::air` now exists
+so hosts need not know GI's air value).

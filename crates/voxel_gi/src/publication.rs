@@ -86,15 +86,16 @@ pub(super) fn apply_scene_task(
             runtime.scene = result.scene.clone();
             runtime.generation = runtime.generation.wrapping_add(1);
         }
-        if let Some(mut change) = result.geometry_change.take() {
+        if result.transport_changed {
             advance_transport_revision(&mut runtime, &mut field);
-            finalize_change_flux(&mut change, &runtime.sources);
-            // The scene's occupied pages include view-owned receivers too.
-            // Filtering by world-cache residency drops edits outside that
-            // cache (all edits in cacheless mode). GPU consumers apply reach.
-            // The GPU measures edits' flux and wakes the faces near player
-            // edits whose history the change binds (no CPU statistics read).
-            runtime.spatial_history.record(change, &result.exact_edits);
+        }
+        // The scene's occupied pages include view-owned receivers too.
+        // Filtering by world-cache residency drops edits outside that cache
+        // (all edits in cacheless mode). GPU consumers apply reach. The GPU
+        // measures edits' flux and wakes the faces near player edits whose
+        // history the change binds (no CPU statistics read).
+        if let Some(event) = result.retention.take() {
+            runtime.spatial_history.push(event);
         }
         field
             .publishing_pages
@@ -456,7 +457,8 @@ mod donor_tests {
         SceneBuildResult {
             scene: std::sync::Arc::new(super::super::world::TransportScene::default()),
             changed: true,
-            geometry_change: None,
+            transport_changed: false,
+            retention: None,
             pages: default(),
             receivers_changed: false,
             exact_edits: Vec::new(),
@@ -659,7 +661,7 @@ const FLUX_SCAN_BUDGET: usize = 16_384;
 /// distance curve). Loads get the brighter of sky radiance and reflected
 /// sunlight per unit of height above a receiver, times the region's width.
 /// Approximate bounds, not a certified dependency analysis.
-fn finalize_change_flux(
+pub(super) fn finalize_change_flux(
     change: &mut super::geometry::GeometryChange,
     sources: &super::sources::TransportSources,
 ) {

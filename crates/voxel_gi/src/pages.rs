@@ -238,6 +238,7 @@ pub(super) fn start_scene_task(
     let previous_scene = Arc::clone(&runtime.scene);
     let retention_radius = super::retention::INFLUENCE_RADIUS;
     let materials = Arc::clone(&runtime.materials);
+    let sources = runtime.sources.clone();
     let focus_page = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
         page_of(camera.translation().floor().as_ivec3())
     });
@@ -248,7 +249,7 @@ pub(super) fn start_scene_task(
             .into_iter()
             .map(|page| {
                 let origin = page * PAGE_EDGE as i32;
-                let mut materials = source.sample_page(page, full_resample.contains(&page));
+                let mut materials = source.sample_page(page, full_resample.contains(&page)).into_dense();
                 if let Some(edits) = edits.get(&page) {
                     apply_page_edits(&mut materials, origin, edits);
                 }
@@ -298,7 +299,11 @@ pub(super) fn start_scene_task(
         SceneBuildResult {
             scene,
             changed: changes.changed,
-            geometry_change: changes.transport,
+            transport_changed: changes.transport.is_some(),
+            retention: changes.transport.and_then(|mut change| {
+                super::publication::finalize_change_flux(&mut change, &sources);
+                super::retention::SpatialHistory::event(change, &exact_edits)
+            }),
             pages: pages.into(),
             receivers_changed,
             exact_edits,
@@ -362,7 +367,7 @@ mod tests {
         app.update();
         let runtime = app.world().resource::<VoxelGiRuntime>();
         assert!(runtime.dirty_pages.contains(&page));
-        let mut data = dense_page(page, |_| Some(1));
+        let mut data = dense_page(page, |_| Some(1)).into_dense();
         apply_page_edits(&mut data, page * 32, &runtime.page_edits.0[&page]);
         assert_eq!(data[naadf::linear_index((position - page * 32).as_uvec3(), PAGE_SIZE)], AIR);
         assert_eq!(data.iter().filter(|&&m| m == AIR).count(), 1);

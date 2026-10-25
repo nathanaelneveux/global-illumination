@@ -209,9 +209,11 @@ fn scene_edits_reach_view_history_without_world_cache_pages() {
             tracer.without_footprints();
         }
         runtime.emission_cache = first.emission_cache;
+        gi::publication::finalize_change_flux(&mut change, &runtime.sources);
+        let retention = gi::retention::SpatialHistory::event(change, &[bounds.min]);
         runtime.scene_task = Some(AsyncComputeTaskPool::get().spawn(async move {
             gi::SceneBuildResult {
-                scene, changed: true, geometry_change: Some(change), pages: default(),
+                scene, changed: true, transport_changed: true, retention, pages: default(),
                 receivers_changed: false, exact_edits: vec![bounds.min],
                 build_time: std::time::Duration::ZERO,
             }

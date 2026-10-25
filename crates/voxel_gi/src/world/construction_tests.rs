@@ -313,3 +313,27 @@ fn occupied_region_edits_share_only_top_level_acceleration() {
     );
 }
 
+
+#[test]
+fn brick_uniform_regions_store_one_material_per_brick_and_answer_like_dense() {
+    let coordinate = IVec3::new(3, -1, 2);
+    // A stride-4 terrain: each 4^3 brick one material, a few bricks air.
+    let materials: Vec<u16> = (0..volume_len(REGION_SIZE) as u32)
+        .map(|i| {
+            let brick = UVec3::new(i % 16, (i / 16) % 16, i / 256) / 4;
+            match (brick.x + 3 * brick.y + 5 * brick.z) % 4 {
+                0 => AIR,
+                value => value as u16,
+            }
+        })
+        .collect();
+    let region = NaadfRegion::build(coordinate, materials.clone());
+    assert!(matches!(region.storage, RegionStorage::Bricks(_)));
+    assert!(region.matches_materials(&materials));
+    let mut edited = materials.clone();
+    edited[5] = 7;
+    assert!(!region.matches_materials(&edited), "one voxel differs from its brick");
+    let edited = NaadfRegion::build(coordinate, edited);
+    assert!(matches!(edited.storage, RegionStorage::Dense { .. }), "a mixed brick needs voxels");
+    assert_same_region(region, full_region_reference(coordinate, materials));
+}

@@ -101,6 +101,19 @@ enum RegionStorage {
         materials: Box<[u16]>,
         brick_occupied: Box<[bool]>,
     },
+    /// Every 4³ brick is one material (coarse LOD pages at stride 4 and up,
+    /// or blocky full-resolution content): 128 bytes instead of 8 KB. The
+    /// GPU already packs uniform bricks without a payload.
+    Bricks(Box<[u16; BRICKS_PER_REGION]>),
+}
+
+const BRICKS_PER_REGION: usize = (BRICKS_PER_AXIS * BRICKS_PER_AXIS * BRICKS_PER_AXIS) as usize;
+
+/// The brick (x fastest) holding the voxel at a region's linear `index`.
+fn brick_of_index(index: usize) -> usize {
+    let index = index as u32;
+    let local = UVec3::new(index % REGION_EDGE, (index / REGION_EDGE) % REGION_EDGE, index / (REGION_EDGE * REGION_EDGE));
+    linear_index(local / BRICK_EDGE, BRICK_GRID_SIZE)
 }
 
 impl NaadfRegion {
@@ -109,13 +122,16 @@ impl NaadfRegion {
             RegionStorage::Empty => incoming.iter().all(|value| *value == AIR),
             RegionStorage::Uniform(material) => incoming.iter().all(|value| value == material),
             RegionStorage::Dense { materials, .. } => materials.as_ref() == incoming,
+            RegionStorage::Bricks(bricks) => incoming.iter().enumerate().all(|(index, value)| {
+                *value == bricks[brick_of_index(index)]
+            }),
         }
     }
     pub(crate) fn uniform_material(&self) -> Option<u16> {
         match self.storage {
             RegionStorage::Empty => Some(AIR),
             RegionStorage::Uniform(material) => Some(material),
-            RegionStorage::Dense { .. } => None,
+            RegionStorage::Dense { .. } | RegionStorage::Bricks(_) => None,
         }
     }
 
@@ -141,6 +157,32 @@ impl NaadfRegion {
                 coordinate,
                 storage: RegionStorage::Uniform(materials[0]),
                 any_solid: true,
+                material_mask,
+            };
+        }
+
+        // All bricks uniform: keep one material per brick.
+        let mut bricks = [AIR; BRICKS_PER_REGION];
+        let mut brick_uniform = [true; BRICKS_PER_REGION];
+        let mut seen = [false; BRICKS_PER_REGION];
+        for (index, &material) in materials.iter().enumerate() {
+            let brick = brick_of_index(index);
+            if !seen[brick] {
+                seen[brick] = true;
+                bricks[brick] = material;
+            } else if bricks[brick] != material {
+                brick_uniform[brick] = false;
+            }
+        }
+        if brick_uniform.iter().all(|uniform| *uniform) {
+            let mut material_mask = [0; 4];
+            for &material in bricks.iter().filter(|material| **material != AIR) {
+                material_mask[material as usize / 64] |= 1 << (material % 64);
+            }
+            return Self {
+                coordinate,
+                any_solid: bricks.iter().any(|material| *material != AIR),
+                storage: RegionStorage::Bricks(Box::new(bricks)),
                 material_mask,
             };
         }
@@ -179,6 +221,10 @@ impl NaadfRegion {
     /// voxel order x fastest); zero for solid voxels and non-dense regions.
     pub(crate) fn brick_voxel_bounds(&self, brick: UVec3) -> Vec<Aadf> {
         let brick_size = UVec3::splat(BRICK_EDGE);
+        if let RegionStorage::Bricks(bricks) = &self.storage {
+            let solid = bricks[linear_index(brick, BRICK_GRID_SIZE)] != AIR;
+            return build_aadf(brick_size, &[solid; (BRICK_EDGE * BRICK_EDGE * BRICK_EDGE) as usize]);
+        }
         let RegionStorage::Dense { materials, .. } = &self.storage else {
             return vec![Aadf::default(); volume_len(brick_size)];
         };
@@ -194,6 +240,10 @@ impl NaadfRegion {
     pub(crate) fn brick_bounds(&self) -> Vec<Aadf> {
         match &self.storage {
             RegionStorage::Dense { brick_occupied, .. } => build_aadf(BRICK_GRID_SIZE, brick_occupied),
+            RegionStorage::Bricks(bricks) => {
+                let occupied: Vec<bool> = bricks.iter().map(|material| *material != AIR).collect();
+                build_aadf(BRICK_GRID_SIZE, &occupied)
+            }
             _ => vec![Aadf::default(); volume_len(BRICK_GRID_SIZE)],
         }
     }
@@ -203,6 +253,7 @@ impl NaadfRegion {
             RegionStorage::Empty => AIR,
             RegionStorage::Uniform(material) => *material,
             RegionStorage::Dense { materials, .. } => materials[linear_index(local, REGION_SIZE)],
+            RegionStorage::Bricks(bricks) => bricks[linear_index(local / BRICK_EDGE, BRICK_GRID_SIZE)],
         }
     }
 
@@ -220,6 +271,7 @@ impl NaadfRegion {
             RegionStorage::Dense { brick_occupied, .. } => {
                 brick_occupied[linear_index(brick, BRICK_GRID_SIZE)]
             }
+            RegionStorage::Bricks(bricks) => bricks[linear_index(brick, BRICK_GRID_SIZE)] != AIR,
         }
     }
 

@@ -1,7 +1,8 @@
 //! `bevy_voxel_world` connector: forwards chunk spawn/update/despawn as GI page
 //! events and samples pages from BVW chunk data. Any `VoxelWorldConfig` with
-//! `u8` materials works; a BVW chunk is exactly one GI page (32³). The mesh
-//! material lit by GI is in `material`.
+//! `u8` materials works; a BVW chunk is exactly one GI page (32³). LOD chunks
+//! reach GI at their own stride (`PageSample`), read straight from the
+//! chunk's stored samples. The mesh material lit by GI is in `material`.
 mod material;
 
 pub use material::{
@@ -10,13 +11,15 @@ pub use material::{
 };
 
 use bevy::prelude::*;
-use voxel_gi::{VoxelGiInput, VoxelGiSource, VoxelGiSystems, VoxelSource, dense_page};
+use voxel_gi::{PageSample, VoxelGiInput, VoxelGiSource, VoxelGiSystems, VoxelSource, coarse_page, dense_page};
 use bevy_voxel_world::prelude::*;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-/// Voxels a loaded chunk does not store (and unloaded positions) come from
-/// the world's own generator when it has one. The default treats them as air.
+/// Voxels a loaded full-resolution chunk does not store (and unloaded
+/// positions) come from the world's own generator when it has one. The
+/// default treats them as air. Coarse LOD chunks never need it: GI takes
+/// their stored samples at their stride.
 pub trait GiFallbackVoxel {
     fn fallback_voxel(&self, _position: IVec3) -> WorldVoxel<u8> {
         WorldVoxel::Unset
@@ -95,7 +98,7 @@ fn forward_chunk_events<C: VoxelWorldConfig>(
     }
 }
 
-type ChunkPage = dyn Fn(IVec3, &dyn Fn(IVec3) -> WorldVoxel<u8>) -> Option<Vec<u16>> + Send + Sync;
+type ChunkPage = dyn Fn(IVec3, &dyn Fn(IVec3) -> WorldVoxel<u8>) -> Option<PageSample> + Send + Sync;
 
 struct BvwSource<C: VoxelWorldConfig<MaterialIndex = u8>> {
     /// A loaded chunk's page, with unstored voxels from the fallback.
@@ -115,7 +118,7 @@ impl<C> VoxelSource for BvwSource<C>
 where
     C: VoxelWorldConfig<MaterialIndex = u8> + GiFallbackVoxel + Send + Sync + 'static,
 {
-    fn sample_page(&self, page: IVec3, resample: bool) -> Vec<u16> {
+    fn sample_page(&self, page: IVec3, resample: bool) -> PageSample {
         let lookup = |position| match (self.voxels)(position) {
             WorldVoxel::Unset => self.config.fallback_voxel(position),
             voxel => voxel,
@@ -128,6 +131,17 @@ where
         }
         dense_page(page, |position| solid(lookup(position)))
     }
+}
+
+const CHUNK: u32 = voxel_gi::VOXEL_GI_PAGE_EDGE;
+
+/// The stride a chunk's padded data shape stores (`samples + 2` per axis):
+/// cubic, with a power-of-two sample count dividing the chunk. Other shapes
+/// sample at full resolution through the world's lookup.
+fn chunk_stride(shape: UVec3) -> Option<u32> {
+    let samples = shape.x.checked_sub(2)?;
+    (shape == UVec3::splat(samples + 2) && samples > 0 && samples.is_power_of_two() && CHUNK % samples == 0)
+        .then_some(CHUNK / samples)
 }
 
 /// A new source snapshot whenever GI input changed (chunk events, edits).
@@ -146,7 +160,14 @@ fn refresh_source<C>(
     let chunk_page: Arc<ChunkPage> = Arc::new(move |page, fallback| {
         let chunk = chunks(page)?;
         if chunk.is_empty() {
-            return Some(dense_page(page, |_| None));
+            return Some(PageSample::air());
+        }
+        if let Some(stride) = chunk_stride(chunk.data_shape()) {
+            // One stored sample per cell, past the one-sample padding.
+            return Some(coarse_page(page, stride, |position| {
+                let cell = (position - page * CHUNK as i32).as_uvec3() / stride;
+                solid(chunk.get_voxel(cell + UVec3::ONE))
+            }));
         }
         Some(dense_page(page, |position| {
             solid(chunk.get_voxel_at_world_position(position).unwrap_or_else(|| fallback(position)))
@@ -209,7 +230,21 @@ mod tests {
         let source = app.world().resource::<VoxelGiSource>().0.clone().expect("source snapshot");
         let materials = source.sample_page(page, true);
         let local = (position - page * 32).as_uvec3();
-        assert_eq!(materials[(local.x + 32 * (local.y + 32 * local.z)) as usize], 2);
-        assert_eq!(materials.iter().filter(|&&m| m == 2).count(), 1);
+        assert_eq!(materials.stride(), 1);
+        assert_eq!(materials.material(local), 2);
+        let solid = (0..32u32 * 32 * 32)
+            .filter(|i| materials.material(UVec3::new(i % 32, i / 32 % 32, i / 1024)) == 2)
+            .count();
+        assert_eq!(solid, 1);
+    }
+
+    #[test]
+    fn lod_chunk_shapes_map_to_page_strides() {
+        assert_eq!(chunk_stride(UVec3::splat(34)), Some(1));
+        assert_eq!(chunk_stride(UVec3::splat(18)), Some(2));
+        assert_eq!(chunk_stride(UVec3::splat(6)), Some(8));
+        assert_eq!(chunk_stride(UVec3::splat(3)), Some(32));
+        assert_eq!(chunk_stride(UVec3::splat(14)), None, "12 samples do not divide 32");
+        assert_eq!(chunk_stride(UVec3::new(34, 18, 34)), None, "non-cubic");
     }
 }

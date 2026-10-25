@@ -96,6 +96,19 @@ pub(super) struct SpatialHistory {
 
 impl SpatialHistory {
     pub fn record(&mut self, change: GeometryChange, edits: &[IVec3]) {
+        if let Some(event) = Self::event(change, edits) {
+            self.push(event);
+        }
+    }
+
+    pub fn push(&mut self, event: RetentionEvent) {
+        self.pending.push(event);
+    }
+
+    /// The retention event for a change: deduplicated, deterministic bounds
+    /// and their weights. Pure, so the scene worker builds it (a streaming
+    /// build of 768 pages binned ~5k bounds in 12-15 ms of main thread).
+    pub fn event(change: GeometryChange, edits: &[IVec3]) -> Option<RetentionEvent> {
         let mut bounds: Vec<Bounds> = Vec::new();
         let mut seen = bevy::platform::collections::HashSet::new();
         for (_, changes) in change.nearby {
@@ -108,7 +121,7 @@ impl SpatialHistory {
             }
         }
         if bounds.is_empty() {
-            return;
+            return None;
         }
         // Deterministic GPU input regardless of hash iteration order.
         bounds.sort_unstable_by_key(|b| (b.min.to_array(), b.max.to_array()));
@@ -136,14 +149,14 @@ impl SpatialHistory {
             .iter()
             .map(|b| edits.iter().any(|&voxel| b.distance_squared(Bounds::point(voxel)) == 0))
             .collect();
-        self.pending.push(RetentionEvent {
+        Some(RetentionEvent {
             bounds,
             weights,
             union,
             urgent,
             source_cap: None,
             spheres: Vec::new(),
-        });
+        })
     }
 
     /// An analytic source change (sources.rs): every face keeps at most

@@ -15,7 +15,7 @@ The workspace has three crates and this lab app (the root package):
 
 | Crate | What it is |
 | --- | --- |
-| `crates/voxel_gi` | GI itself: page input (`VoxelGiInput`, `VoxelSource`), transport, view tier, world cache, settings, and `VoxelGiMaterialData` for lit materials |
+| `crates/voxel_gi` | GI itself: page input (`VoxelGiInput`, `VoxelSource`, coarse LOD pages as `PageSample`), transport, view tier, world cache, settings, and `VoxelGiMaterialData` for lit materials |
 | `crates/voxel_gi_bvw` | `bevy_voxel_world` connector: chunk events, voxel source, the lit mesh material |
 | `crates/voxel_gi_debug` | Optional HUD and tuning panel (`VoxelGiDebugPlugin`) |
 

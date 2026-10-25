@@ -273,15 +273,28 @@ fields are zero. Only mixed fields require iterative neighbor merging.
 
 ### Host input contract
 
-The prototype opts into `VoxelGiDirty::tracked()`. Its player and validation
-systems write through `VoxelGiDirty::set_voxel`, forwarding the same value to BVW
+The prototype opts into `VoxelGiInput::tracked()`. Its player and validation
+systems write through `BvwVoxelEdits::set_voxel`, forwarding the same value to BVW
 and a sparse, last-write-wins GI overlay. All writers must use this gateway or
 explicitly report unknown changes through `mark_voxel` / `mark_all_loaded`.
 Coarse BVW chunk messages cannot detect an unreported writer in tracked mode.
-`VoxelGiDirty::default()` retains conservative observer mode for integrations
+`VoxelGiInput::default()` retains conservative observer mode for integrations
 that cannot make this complete-tracking guarantee.
 
-Normal scene construction reads one immutable BVW chunk snapshot per dirty page
+**Coarse (LOD) pages.** `VoxelSource::sample_page` returns a `PageSample`:
+`(32 / stride)³` cells at a power-of-two stride from 1 (full resolution) to
+32, each cell covering a `stride³` block. An LOD host passes its coarse chunks
+as it stores them; GI traces them as solid stride-sized blocks, the shape a
+blocky LOD mesh rasterizes, so discovery finds a mesh pixel's face in GI's
+geometry without tracing for it. The worker expands a sample to the dense
+page (edits and region construction are unchanged). A region whose 64 bricks
+are each one material, as every stride-4-and-up page is, is stored as 64
+materials (128 bytes, not 8 KB), and the GPU packs uniform bricks with no
+payload. The BVW connector reads each chunk's stored samples at its stride
+(`chunk_stride`: padded data shape `samples + 2`), with no per-voxel
+generator calls; other shapes keep the full-resolution lookup.
+
+Normal scene construction reads one immutable host snapshot per dirty page
 (or the deterministic generator if unavailable), then applies that page's edit
 overlay. Workers hold copy-on-write overlay snapshots: later writes cannot alter
 an in-flight input. This removes per-cell live host lookups from tracked edits;

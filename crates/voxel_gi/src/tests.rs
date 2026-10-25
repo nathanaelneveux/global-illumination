@@ -178,7 +178,8 @@ fn settled_counter_tracks_global_revisions_and_page_removal() {
     let mut result = SceneBuildResult {
         scene: runtime.scene.clone(),
         changed: true,
-        geometry_change: Some(default()),
+        transport_changed: true,
+        retention: None,
         pages: VecDeque::new(),
         receivers_changed: false,
         exact_edits: vec![],
@@ -238,7 +239,8 @@ fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
     let result = SceneBuildResult {
         scene: Arc::new(TransportScene::default()),
         changed: true,
-        geometry_change: Some(default()),
+        transport_changed: true,
+        retention: None,
         pages: VecDeque::from([
             (
                 IVec3::ZERO,
@@ -314,7 +316,8 @@ fn new_receiver_display_clock_does_not_depend_on_material_id() {
         let mut result = SceneBuildResult {
             scene: runtime.scene.clone(),
             changed: true,
-            geometry_change: None,
+            transport_changed: false,
+            retention: None,
             pages: default(),
             receivers_changed: false,
             exact_edits: vec![],
@@ -394,7 +397,8 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             let mut result = SceneBuildResult {
                 scene,
                 changed: true,
-                geometry_change: None,
+                transport_changed: false,
+                retention: None,
                 pages: default(),
                 receivers_changed: false,
                 exact_edits: vec![],
@@ -502,7 +506,8 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
         let result = SceneBuildResult {
             scene,
             changed: changes.changed,
-            geometry_change: changes.transport,
+            transport_changed: changes.transport.is_some(),
+            retention: changes.transport.and_then(|change| retention::SpatialHistory::event(change, &[])),
             // No receiver topology changed. This exercises scene acceptance,
             // not the separate page-merge/seeding tests above.
             pages: default(),
@@ -606,7 +611,8 @@ fn publication_batches_cheap_pages_without_unbounded_display_work() {
         scene_publication: Some(SceneBuildResult {
             scene: Arc::new(TransportScene::default()),
             changed: true,
-            geometry_change: Some(default()),
+            transport_changed: true,
+            retention: None,
             pages,
             receivers_changed: false,
             exact_edits: vec![],
