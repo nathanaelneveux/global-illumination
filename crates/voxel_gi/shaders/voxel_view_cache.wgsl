@@ -64,6 +64,14 @@ fn load_shared_face(index: u32, receiver: ViewReceiver) {
         let shown = bitcast<vec4<f32>>(shared_state[base + 6u]);
         estimate.shown = select(vec4(estimate.mean.rgb, 1.0), shown, shown.w > 0.0);
     }
+    // A face entering view (again) compares the corners it just traced with
+    // the ones the cache kept from when it was last visible: a shadow that
+    // moved while it was away is a flip like any other. Continuously visible
+    // faces are already admitted; their refresh reports their own flips.
+    if estimate.identity.w != incarnation {
+        report_sun_flips(receiver, face_normal(receiver.face), estimate.identity.y,
+            shared_state[base + 8u].x, estimate.identity.z);
+    }
     estimate.identity.w = incarnation;
     let pending = continuations[index].status == 1u;
     let owner_count = atomicLoad(&queue[0]);
@@ -217,6 +225,9 @@ fn store_shared_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     // The presentation prior can contain borrowed support, but never enters
     // raw mean/moments or the physical count read by cached_energy.
     shared_state[base + 6u] = bitcast<vec4<u32>>(estimate.shown);
+    // The corners last seen, for the next time this face enters view (record
+    // 8 is otherwise unused; zero is unknown, so never-seen faces never flip).
+    if estimate.identity.z != 0u { shared_state[base + 8u].x = estimate.identity.z; }
     shared_state[base + 1u].w = bitcast<u32>(estimate.shown.x);
     shared_state[base + 3u].y = bitcast<u32>(estimate.shown.y);
     shared_state[base + 3u].z = bitcast<u32>(estimate.shown.z);

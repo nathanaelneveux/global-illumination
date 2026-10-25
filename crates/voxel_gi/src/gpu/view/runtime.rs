@@ -381,7 +381,7 @@ impl FromWorld for ViewRenderer {
                 [&[6, 10], &[0], &[0, 5, 7, 12, 13, 15, 16]],
             ),
             load_cache: make("load_shared_faces", 0, false,
-                [&[0, 1, 2, 3, 6, 7, 10], &[0, 1], &[0, 1, 4, 5, 6, 7, 10, 14, 15, 16]]),
+                [&[0, 1, 2, 3, 4, 5, 6, 7, 10], &[0, 1], &[0, 1, 4, 5, 6, 7, 10, 14, 15, 16]]),
             store_cache: make("store_shared_faces", 0, false,
                 [&[6, 10], &[], &[0, 5, 7, 10, 14, 15, 16]]),
             reconstruct: make("reconstruct_view", 0, false, [&[6], &[], &[0, 5, 7, 17]]),

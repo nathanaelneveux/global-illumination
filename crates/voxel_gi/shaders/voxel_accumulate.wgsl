@@ -1,5 +1,6 @@
 // Persistent measurement storage, independent of the ray estimator. Each face
-// owns nine uint4s: six result records, temporal RGB, metadata, one reserved.
+// owns nine uint4s: six result records, temporal RGB, metadata, and the view
+// tier's last corner sunlight word (record 8, `store_shared_faces`).
 // Readback is a snapshot of this state, never the authority for advancing rays.
 // schedule: (transport revision tag, stable error (f32), stable samples,
 // audit interval ms); focus: (voxel.xyz, GPU pick budget); batch: (CPU

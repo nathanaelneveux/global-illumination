@@ -1410,7 +1410,7 @@ fn encode_seed(
     words[13] = words[25];
     words[14] = words[26];
     words[15] = words[27];
-    words.copy_within(24..27, 32);
+    // Record 8: the corner sunlight word the view tier last saw (none yet).
     if let Some(time) = face.updated_at {
         words[29] = if time >= origin {
             time.duration_since(origin).as_millis() as u32

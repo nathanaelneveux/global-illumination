@@ -728,3 +728,50 @@ fn control_offsets_used_by_native_tests_match_the_encoded_layout() {
     assert_eq!(word(super::CONTROL_VIEW_FIRST_OFFSET), 0xdead);
     assert_eq!(word(super::CONTROL_EPOCH_OFFSET), 0xbeef);
 }
+
+#[test]
+#[ignore = "native corner sunlight: a face returning to view under a moved shadow reports a flip"]
+fn native_returning_face_reports_the_sun_change_it_missed() {
+    // Corner words: known bit 128 per corner byte, bit 0 lit by the sun.
+    const LIT: u32 = 0x8181_8181;
+    const SHADOWED: u32 = 0x8080_8080;
+    let mut f = Fixture::new();
+    let material = f.work.faces[0].material as u32;
+    let flips = |f: &Fixture| {
+        // The flip region follows the owner queue: 12 + 2 * receivers words.
+        let words = crate::gpu::maintenance_tests::read_words(&f.gpu.context, &f.camera.queue.buffer, 24 * 4);
+        (words[14], f32::from_bits(words[18 + 3]))
+    };
+    let visible = |f: &Fixture, corners: u32| {
+        let mut e = vec![0u32; 16];
+        e[13] = material;
+        e[14] = corners;
+        f.set_estimate(&e);
+        f.pass("load", None);
+        let mut e = f.estimate();
+        e[14] = corners;
+        f.set_estimate(&e);
+        f.pass("store", None);
+    };
+    // Seen lit: the world cache remembers the face's corners.
+    visible(&f, LIT);
+    assert_eq!(f.resident()[32], LIT, "the cache keeps the last visible corner word");
+    assert_eq!(flips(&f).0, 0, "first sight is not a change");
+    // Out of view the sun moved; back in view it is a new receiver whose
+    // corners were just traced in shadow. Importing its history is the flip.
+    let mut e = vec![0u32; 16];
+    e[13] = material;
+    e[14] = SHADOWED;
+    f.set_estimate(&e);
+    f.pass("load", None);
+    let (count, flux) = flips(&f);
+    assert_eq!(count, 1, "the returning face reports the change it missed");
+    assert!(flux > 0.0, "with the reflected sunlight it lost");
+    // An admitted, continuously visible face's own refresh reports its flips
+    // (reproject); importing again does not count them twice.
+    let mut e = f.estimate();
+    e[14] = LIT;
+    f.set_estimate(&e);
+    f.pass("load", None);
+    assert_eq!(flips(&f).0, 1);
+}
