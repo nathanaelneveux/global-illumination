@@ -367,6 +367,13 @@ pub(super) fn run_validation(
     }
     if profile == Profile::DayCycle {
         run.day.tick(elapsed, &mut commands, &stats);
+        if day::turn() {
+            let (eye, target) = (crate::canyon_scene::EYE, crate::canyon_scene::TARGET);
+            let target = if day::looking_away(elapsed) { 2.0 * eye - target } else { target };
+            for camera in &cameras {
+                commands.entity(camera).insert(Transform::from_translation(eye).looking_at(target, Vec3::Y));
+            }
+        }
     }
     if matches!(profile, Profile::House | Profile::HouseEdits) {
         run.house.tick(

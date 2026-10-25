@@ -37,6 +37,25 @@ impl Default for DayRun {
     }
 }
 
+/// `VOXEL_GI_VALIDATE_DAY_TURN=1`: look away from the canyon from 60 s to
+/// 120 s while the sun moves, then back. Faces returning to view under moved
+/// shadows must cut the bounce history they kept (compare the return
+/// captures with a fixed-sun reference at the return angle).
+pub(super) fn turn() -> bool {
+    static TURN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TURN.get_or_init(|| std::env::var_os("VOXEL_GI_VALIDATE_DAY_TURN").is_some())
+}
+
+pub(super) const TURN_CAPTURES: &[(f32, &str)] = &[
+    (59.0, "day-before-turn"), (120.4, "return-0400ms"), (121.0, "return-1000ms"),
+    (123.0, "return-3000ms"), (130.0, "return-10s"), (180.0, "day-180s"),
+];
+
+/// Looking away (yaw 180 degrees about the eye) during the turn.
+pub(super) fn looking_away(elapsed: f32) -> bool {
+    turn() && (60.0..120.0).contains(&elapsed)
+}
+
 impl DayRun {
     pub fn settings(&self) -> serde_json::Value {
         json!({"rate_deg_per_s": self.rate, "offset_deg": self.offset, "step_deg": self.step,

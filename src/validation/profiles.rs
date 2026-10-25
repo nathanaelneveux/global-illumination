@@ -192,6 +192,9 @@ impl Profile {
         if self == Self::Hallway {
             return &[(15., "hallway-15s"), (30., "hallway-30s"), (60., "hallway-60s")];
         }
+        if self == Self::DayCycle && super::day::turn() {
+            return super::day::TURN_CAPTURES;
+        }
         if self == Self::DayCycle {
             // Pairs one second apart: the sun moves a fraction of a degree,
             // so their difference is mostly flicker, not lighting change.
