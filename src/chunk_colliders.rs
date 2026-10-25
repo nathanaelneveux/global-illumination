@@ -4,8 +4,8 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::tasks::{Task, TaskPool, TaskPoolBuilder, block_on, poll_once};
 use bevy_voxel_world::prelude::{
-    Chunk, ChunkWillChangeLod, ChunkWillDespawn, ChunkWillSpawn, ChunkWillUpdate, NeedsDespawn,
-    VoxelWorld, WorldVoxel,
+    Chunk, ChunkWillChangeLod, ChunkWillDespawn, ChunkWillRemesh, ChunkWillSpawn, ChunkWillUpdate,
+    NeedsDespawn, VoxelWorld, WorldVoxel,
 };
 
 use crate::terrain::PrototypeWorld;
@@ -129,16 +129,18 @@ fn ensure_chunk_colliders(
             continue;
         };
         let job = workers.jobs.swap_remove(index);
-        let current = chunks
-            .get(job.entity)
-            .ok()
-            .is_some_and(|(_, chunk, _)| chunk.position == job.position && chunk.lod_level == 0)
-            && !workers.awaiting_data.contains(&job.entity)
-            && voxel_world
-                .get_chunk_data(job.position)
-                .is_some_and(|data| {
-                    data.has_generated() && data.lod_level() == 0 && data.voxels_hash() == job.key
-                });
+        let current = chunks.get(job.entity).ok().is_some_and(|(_, chunk, _)| {
+            chunk.position == job.position
+                && chunk.lod_level == 0
+                && !workers.awaiting_data.contains(&job.entity)
+                && voxel_world
+                    .get_chunk_data(job.position)
+                    .is_some_and(|data| {
+                        data.has_generated()
+                            && collider_data_matches(chunk, data.data_shape(), data.mesh_shape())
+                            && data.voxels_hash() == job.key
+                    })
+        });
         if !current {
             continue;
         }
@@ -155,11 +157,13 @@ fn ensure_chunk_colliders(
     let eye = player.iter().next().map_or(Vec3::ZERO, |p| p.translation);
     let mut pending: Vec<_> = chunks
         .iter()
-        .filter(|(entity, _, ready)| {
+        .filter(|(entity, chunk, ready)| {
             !ready
                 && !published.contains(entity)
-                && !workers.awaiting_data.contains(entity)
-                && !workers.jobs.iter().any(|job| job.entity == *entity)
+                // Leaving the physics band needs no voxel data or worker.
+                && (chunk.lod_level != 0
+                    || (!workers.awaiting_data.contains(entity)
+                        && !workers.jobs.iter().any(|job| job.entity == *entity)))
         })
         .collect();
     pending.sort_unstable_by_key(|(_, chunk, _)| {
@@ -179,7 +183,9 @@ fn ensure_chunk_colliders(
             continue;
         };
 
-        if !chunk_data.has_generated() || chunk_data.lod_level() != 0 {
+        if !chunk_data.has_generated()
+            || !collider_data_matches(chunk, chunk_data.data_shape(), chunk_data.mesh_shape())
+        {
             continue;
         }
         if chunk_data.is_empty() {
@@ -235,6 +241,14 @@ fn ensure_chunk_colliders(
             "chunk collider publication"
         );
     }
+}
+
+/// BVW can change a chunk's LOD without rebuilding identical shapes. Its
+/// published data then keeps the old LOD number: eligibility belongs to the
+/// live Chunk, while the payload must match its requested shapes. This also
+/// rejects coarse data while a promotion is waiting to start remeshing.
+fn collider_data_matches(chunk: &Chunk<PrototypeWorld>, data: UVec3, mesh: UVec3) -> bool {
+    data == chunk.data_shape && mesh == chunk.mesh_shape
 }
 
 fn mark_chunk_collider_ready(commands: &mut Commands, entity: Entity) {
@@ -302,6 +316,7 @@ fn invalidate_chunk_colliders(
     mut commands: Commands,
     mut workers: ResMut<ColliderWorkers>,
     mut updates: MessageReader<ChunkWillUpdate<PrototypeWorld>>,
+    mut remeshes: MessageReader<ChunkWillRemesh<PrototypeWorld>>,
     mut lod_changes: MessageReader<ChunkWillChangeLod<PrototypeWorld>>,
     mut chunk_spawns: MessageReader<ChunkWillSpawn<PrototypeWorld>>,
     mut dirty_entities: Local<HashSet<Entity>>,
@@ -313,8 +328,14 @@ fn invalidate_chunk_colliders(
         dirty_entities.insert(event.entity);
     }
 
-    for event in lod_changes.read() {
+    for event in remeshes.read() {
         workers.awaiting_data.insert(event.entity);
+        dirty_entities.insert(event.entity);
+    }
+
+    // A LOD change alone may never publish replacement data (same shapes).
+    // Actual edits/remeshes above own that wait; do not clear an existing one.
+    for event in lod_changes.read() {
         dirty_entities.insert(event.entity);
     }
 
@@ -337,10 +358,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn same_shape_lod_changes_do_not_wait_for_replacement_data() {
+        let mut app = App::new();
+        app.init_resource::<ColliderWorkers>()
+            .add_message::<ChunkWillUpdate<PrototypeWorld>>()
+            .add_message::<ChunkWillRemesh<PrototypeWorld>>()
+            .add_message::<ChunkWillChangeLod<PrototypeWorld>>()
+            .add_message::<ChunkWillSpawn<PrototypeWorld>>()
+            .add_systems(Update, invalidate_chunk_colliders);
+        let entity = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(Chunk::<PrototypeWorld>::new(
+                IVec3::ZERO,
+                1,
+                entity,
+                UVec3::splat(34),
+                UVec3::splat(34),
+            ));
+        // BVW changes only the live Chunk's LOD for identical shapes: no
+        // replacement data and no ChunkWillSpawn, in either direction.
+        for lod in [0, 1, 0] {
+            app.world_mut()
+                .get_mut::<Chunk<PrototypeWorld>>(entity)
+                .unwrap()
+                .lod_level = lod;
+            app.world_mut()
+                .entity_mut(entity)
+                .insert(ChunkColliderReady);
+            app.world_mut()
+                .write_message(ChunkWillChangeLod::<PrototypeWorld>::new(
+                    IVec3::ZERO,
+                    entity,
+                ));
+            app.update();
+            assert!(app.world().get::<ChunkColliderReady>(entity).is_none());
+            assert!(
+                !app.world()
+                    .resource::<ColliderWorkers>()
+                    .awaiting_data
+                    .contains(&entity),
+                "LOD {lod} must be eligible for immediate collider reevaluation"
+            );
+        }
+    }
+
+    #[test]
     fn invalidation_keeps_collision_until_new_data_is_published() {
         let mut app = App::new();
         app.init_resource::<ColliderWorkers>()
             .add_message::<ChunkWillUpdate<PrototypeWorld>>()
+            .add_message::<ChunkWillRemesh<PrototypeWorld>>()
             .add_message::<ChunkWillChangeLod<PrototypeWorld>>()
             .add_message::<ChunkWillSpawn<PrototypeWorld>>()
             .add_systems(Update, invalidate_chunk_colliders);
@@ -363,12 +431,109 @@ mod tests {
                 .awaiting_data
                 .contains(&entity)
         );
+        // Neither a same-shape LOD transition nor a real remesh starting
+        // authorizes use of the old geometry after an edit.
+        app.world_mut()
+            .write_message(ChunkWillChangeLod::<PrototypeWorld>::new(
+                IVec3::ZERO,
+                entity,
+            ));
+        app.world_mut()
+            .write_message(ChunkWillRemesh::<PrototypeWorld>::new(IVec3::ZERO, entity));
+        app.update();
+        assert!(app.world().get::<Collider>(entity).is_some());
+        assert!(
+            app.world()
+                .resource::<ColliderWorkers>()
+                .awaiting_data
+                .contains(&entity)
+        );
         app.world_mut()
             .write_message(ChunkWillSpawn::<PrototypeWorld>::new(IVec3::ZERO, entity));
         app.update();
         assert!(app.world().get::<Collider>(entity).is_some());
         assert!(
             !app.world()
+                .resource::<ColliderWorkers>()
+                .awaiting_data
+                .contains(&entity)
+        );
+    }
+
+    #[test]
+    fn published_shapes_not_historical_lod_determine_data_readiness() {
+        let mut chunk = Chunk::<PrototypeWorld>::new(
+            IVec3::ZERO,
+            1,
+            Entity::PLACEHOLDER,
+            UVec3::splat(34),
+            UVec3::splat(34),
+        );
+        // The same published payload is usable after 1 -> 0, regardless of
+        // the LOD number at which BVW originally generated it.
+        assert!(collider_data_matches(
+            &chunk,
+            UVec3::splat(34),
+            UVec3::splat(34)
+        ));
+        chunk.lod_level = 0;
+        assert!(collider_data_matches(
+            &chunk,
+            UVec3::splat(34),
+            UVec3::splat(34)
+        ));
+        assert!(!collider_data_matches(
+            &chunk,
+            UVec3::splat(18),
+            UVec3::splat(18)
+        ));
+        assert!(!collider_data_matches(
+            &chunk,
+            UVec3::splat(34),
+            UVec3::splat(18)
+        ));
+    }
+
+    #[test]
+    fn leaving_physics_band_removes_collision_even_during_remesh() {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy_voxel_world::prelude::VoxelWorldPlugin::<PrototypeWorld>::minimal(),
+        ))
+        .init_resource::<ColliderWorkers>()
+        .init_resource::<ChunkColliderCache>()
+        .add_systems(
+            Update,
+            (invalidate_chunk_colliders, ensure_chunk_colliders).chain(),
+        );
+        app.update();
+        let entity = app.world_mut().spawn_empty().id();
+        app.world_mut().entity_mut(entity).insert((
+            Chunk::<PrototypeWorld>::new(
+                IVec3::ZERO,
+                1,
+                entity,
+                UVec3::splat(34),
+                UVec3::splat(34),
+            ),
+            Collider::cuboid(1.0, 1.0, 1.0),
+            RigidBody::Static,
+            ChunkColliderReady,
+        ));
+        app.world_mut()
+            .write_message(ChunkWillRemesh::<PrototypeWorld>::new(IVec3::ZERO, entity));
+        app.world_mut()
+            .write_message(ChunkWillChangeLod::<PrototypeWorld>::new(
+                IVec3::ZERO,
+                entity,
+            ));
+        app.update();
+        assert!(app.world().get::<Collider>(entity).is_none());
+        assert!(app.world().get::<RigidBody>(entity).is_none());
+        assert!(app.world().get::<ChunkColliderReady>(entity).is_some());
+        assert!(
+            app.world()
                 .resource::<ColliderWorkers>()
                 .awaiting_data
                 .contains(&entity)
