@@ -27,7 +27,7 @@ with 1,536 and 1,024 as visible-failure controls. Use the fixed, versioned profi
 for sampler comparisons; do not turn 2,048 into a history cap, use a raw RGB
 outlier as a universal perceptual threshold, or waive temporal/FPS qualification.
 Keep the original stricter engineering metrics alongside this human-calibrated
-target, and keep IR/ionizing tolerances independent.
+target.
 
 The [whole-range integration](history/whole-range-history.md#runtime-integration) records
 the current policy. The [earlier runtime qualification](history/runtime-retention.md)
@@ -79,31 +79,15 @@ receivers. Separate IID statistical uncertainty from QMC prefix variation; do no
 interpret disjoint QMC windows as independent random trials. Only then compare
 time to FLIP acceptance. No display filter participates in an estimator audit.
 
-Focused checks: `low_throughput_paths_can_still_reach_bright_radiance`,
-`light_selection_frequencies_match_reported_probabilities`,
-`path_and_conditional_emitter_dimensions_have_joint_support`,
-`independent_oracle_matches_furnace_geometric_series`, and ignored native
-`native_furnace_matches_geometric_series` and
-`native_low_throughput_path_keeps_bright_suffix`. The ignored
-`hallway_estimator_correctness_audit` collects evidence, **not** an automatic
-accuracy pass: inspect independent reference precision and replica agreement.
-Set `VOXEL_GI_AUDIT_PATHS=1048576 VOXEL_GI_AUDIT_ORACLE_PATHS=33554432` to reproduce
-the measured audit; setting oracle paths to zero explicitly omits it for GPU
-ablations and requires a separately retained unchanged-scene reference.
-
-`transport_field_correctness_gate` extends this to the cave's wall/ceiling grid
-and material/normal-stratified floor/source sites (165 receivers, not every cave
-face), shorter ranges, spectral furnace extremes, and a point source. It uses
-two 262,144-path independent CPU replicas and GPU windows per site. IID variants
-have a six-estimated-standard-error diagnostic gate; QMC variation is recorded,
-not labeled IID uncertainty. Analytic QMC cases require <=1.5% error. Outputs
-are timestamped `target/transport-field-*.json`; inspect precision, not only the
-pass flag, especially for near-zero channels. `cave_witness_estimator_isolation`
-compares the two formerly failing receivers at each depth with roulette off and
-with a separate cosine-only GPU estimator. `grazing_emitter_plane_matches_view_factor`
-checks the closed-form integral and reproduces the faulty visibility as a
-test-only legacy ablation; the ordinary CPU `grazing_emitter_connection...` test
-also checks real blockers. All three native checks are opt-in/ignored.
+Focused checks today: `light_selection_frequencies_match_reported_probabilities`
+(emitter tree), the cached furnace (`cached_furnace_converges_to_infinite_bounce_series`,
+`cached_furnace_lag_by_history_policy`) and the native two-way-cache tests,
+including `native_two_way_cache_reserved_paths_match_furnace_energy`. The CPU
+path-tracing oracle and its independent audits (`hallway_estimator_correctness_audit`,
+`transport_field_correctness_gate`, the CPU/GPU parity and grazing-emitter
+tests) were removed with the CPU tracer in `b47f6f8`; their results are in
+[history](history/hallway-path-outliers.md). A sampler change needs a new
+known-answer reference first, not the removed oracle.
 
 The view display pools spatially with MSE-optimal weights from measured
 variance and bias (`spatial_noise_threshold`, 2026-10-24); it replaced the
@@ -114,9 +98,10 @@ Do not let that hide estimator regressions or inflate apparent sample efficiency
 
 - **Sampler qualification:** compare raw frozen-scene prefixes at matched path
   counts and native compute budgets against the same qualified reference, over
-  the same disjoint sequence windows. `sample_sweep` reads physical means directly
-  and renders `samples-*` without temporal/adaptive spatial filtering, regardless
-  of gameplay defaults. Ordinary corner interpolation and materials stay fixed.
+  the same disjoint sequence windows, without temporal or adaptive spatial
+  filtering. The former `sample_sweep` prefix renderer no longer exists; a
+  sampler change must first rebuild that harness. Ordinary corner interpolation
+  and materials stay fixed.
   Reuse variants need their own raw-prefix comparison, including correlation.
 - **Presentation qualification:** apply reconstruction to those identical saved
   prefixes, then compare noise, FLIP, bias/detail and edit response separately.
@@ -191,11 +176,9 @@ produces paired images. Its early-to-own-later FLIP measures remaining visible
 change, not reference accuracy; final cross-run differences are separate. It
 does not establish interactive FPS. See [two-way results](history/two-way-cache.md).
 
-For shared-kernel refactors, `shader_candidate_benchmark` accepts a fully
-composed baseline WGSL via `VOXEL_GI_BASELINE_SHADER`. It checks five-band moment
-parity and alternating compute timings against that exact shader. Use the
-targeted `shader` filter for layout/composition checks; avoid the broad `view_`
-filter, which also selects unrelated view-factor and upload studies.
+The shader candidate and sampler benchmarks (`VOXEL_GI_BASELINE_SHADER`) were
+removed with the other one-off studies (`caf04ba`); a shared-kernel refactor
+needs a fresh paired comparison.
 
 Production probes keep no CPU measurements (only test fixtures do).
 `slim_progress_receives_gpu_stability_without_changing_sample_counts` and
@@ -263,22 +246,14 @@ benchmarks. Select by name; do not routinely run all ignored tests. The optional
 `stress` profile remains for relevant buffer/material/cache-generation changes or
 a returning toggle symptom, not ordinary sampling or performance work.
 
-For execution-only shader experiments, `shader_candidate_benchmark` reads an
-archived WGSL file from `VOXEL_GI_BASELINE_SHADER`, alternates warmed baseline and
-candidate runs, and checks five-band result equality at identical paths. Sampler
-changes deliberately alter those paths: use `sampler_candidate_benchmark` instead.
-It compares eight disjoint sequence blocks to the same analytic/high-sample
-reference at equal path counts. Neither benchmark establishes gameplay FPS.
-`explicit_sky_demand_benchmark` isolates warm sky-cache CPU work and verifies
-unchanged transport and displayed sunlight. These remain opt-in, not a new
-mandatory suite for ordinary edits.
+Execution-only shader experiments use paired gate runs (`tools/gates.sh`) and
+the native GPU tests; sampler changes need a known-answer reference.
 
-For scene/source history changes, the focused native
-`scene_history_source_extinction_response` test uses an exact dark reference in
-RGB, infrared and ionizing bands after removing, replacing or covering emitters.
-It checks retained-weight decay and monotonic display at fixed fresh path counts;
-its virtual display cadence is not a gameplay latency measurement. Pair it with
-`response` and `VOXEL_GI_VALIDATE_BACKGROUND=1` when changing live removal policy.
+For scene/source history changes, use `response` with
+`VOXEL_GI_VALIDATE_BACKGROUND=1` (emitter removal and cover), the native
+retention tests (`retention_events_match_the_cpu_rule_on_every_face`,
+`gpu_measures_edit_flux_and_marks_faces_whose_history_it_binds`) and, for
+sunlight changes, the cave skylight variant and `day-cycle`.
 The response recorder observes every Update, including means/moments, display,
 sequence and revisions. Use the [temporal recorder](history/temporal-regressions.md) for
 the house-turn stability gate; keep background-loader and ordinary camera-only
@@ -503,8 +478,8 @@ The `cave` profile uses the preferred corner look and a fixed 65° vertical FOV,
 capturing at 15/30/60 seconds. Fixed warm-up is not certified convergence. Use
 `VOXEL_GI_SCENE=cave cargo run --locked` for interactive exploration. The finite
 chamber uses a four-chunk spawning distance; do not compare its cadence against
-the normal ten-chunk terrain workload. RGB, IR and ionizing transport use the
-same fixture palette as the native compute studies, with no cavity-specific GI.
+the normal ten-chunk terrain workload. It shares the native fixtures' palette,
+with no cavity-specific GI.
 
 `VOXEL_GI_VALIDATE_CAVE_SKYLIGHT=open` turns `cave` into a high-skylight
 response test (`src/validation/skylight.rs`): a 7×7 ceiling hole opens at 15 s
@@ -622,7 +597,7 @@ transition; it must not be mistaken for improved sampler accuracy.
   of smooth adjustment can be preferable to two seconds of objectionable noise;
   report latency and noise separately rather than naming one “convergence.”
 - Never count display priors, filtered colors or interpolated neighbors as new
-  simulation samples. Include infrared and ionizing channels in estimator tests.
+  simulation samples.
 
 ## Profiling with Tracy
 

@@ -181,7 +181,7 @@ helpers. About 1,000 lines.
 
 ### Pass 2 findings so far
 
-Traced from the `Update` chain in `mod.rs` and `dispatch::start_trace_task`:
+Traced from the `Update` chain in `lib.rs` and `dispatch::start_trace_task`:
 
 - **World-cache batches.** The CPU selects only event work (edited or relit
   faces, `select_transport`); the GPU picks the rest of each batch. Every batch
@@ -232,6 +232,10 @@ Still to examine: `gpu.rs`/`resident.rs` beyond tests (~3k production lines),
 layout (zeroed band words, reserved record 8), and the debug shading modes.
 
 ### Preliminary inventory (to verify in pass 2)
+
+Historical: written before passes 2 and 3. The CPU oracle, `bvw.rs` and
+`diagnostics*.rs` rows are done (removed, or split into the connector and debug
+crates); the module table in [architecture](architecture.md) is current.
 
 GI code today: 31.5k lines of Rust (5.6k in test files, 4.0k validation and
 research, 1.2k diagnostics) and 3.3k of WGSL.

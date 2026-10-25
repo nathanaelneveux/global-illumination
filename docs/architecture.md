@@ -32,8 +32,9 @@ host chunks / edits / sources / material table
                                           connected virtual-corner reconstruction
 ```
 
-The runtime uses resident GPU accumulation; the independent CPU tracer remains
-a test oracle. Rendering does not wait for CPU delivery of lighting statistics.
+The runtime uses resident GPU accumulation; the CPU path-tracing oracle was
+removed (`b47f6f8`). Rendering does not wait for CPU delivery of lighting
+statistics.
 
 | Responsibility | Owner / source |
 | --- | --- |
@@ -42,23 +43,23 @@ a test oracle. Rendering does not wait for CPU delivery of lighting statistics.
 | BVW events, edits and source (connector crate) | `voxel_gi_bvw/src/lib.rs` |
 | Scene/receiver representation | `world.rs`, `field.rs` |
 | Acceleration, packing and shared GPU transactions | `naadf.rs`, `gpu_scene.rs`, `gpu/geometry.rs` |
-| Change metadata and retention | `world/delta.rs`, `geometry.rs`, `retention.rs`, `sources.rs`, `revision.rs` |
+| Change metadata and retention | `world/delta.rs`, `geometry.rs`, `retention.rs`, `sources.rs`, `sun_changes.rs` |
 | Receiver page publication | `publication.rs` |
 | Eligibility, priority and dispatch | `scheduling.rs`, `dispatch.rs` |
-| Construction policy; model/work configuration and revision synchronization | `startup.rs`, `settings.rs` |
+| Model/work configuration and revision synchronization | `settings.rs` |
 | Thread-transfer payload and result merge | `work.rs` |
 | Source model and Bevy light adaptation | `sources.rs` |
-| Sampling, emitters and transport | `sampling.rs`, `emission.rs`, `tracer.rs`, `gpu.rs`, shared `voxel_path.wgsl`, face consumer `voxel_trace.wgsl` |
+| Sample streams, emitters, transport limits and the GPU tracer | `sampling.rs` (hashes), `emission.rs`, `tracer.rs` (limits), `gpu.rs`, shared `voxel_path.wgsl`, face consumer `voxel_trace.wgsl` |
 | Surface-cache face lookup | `gpu/face_index.rs` |
 | View-owned far receivers, scheduling and asynchronous timing | `gpu/view/runtime.rs`, `gpu/view/timing.rs`, `voxel_view_runtime.wgsl` |
 | Bidirectional RGB face ownership (two-way cache) | `voxel_view_cache.wgsl`, `gpu/view/cache_tests.rs` |
 | Stable GPU ownership, accumulation and bounded snapshots | `gpu/resident.rs`, `gpu/readback.rs`, `voxel_accumulate.wgsl` |
-| Shared uncertainty heuristic | `statistics.rs` |
+| Uncertainty heuristic statement (tests) | `statistics.rs` |
 | Direct-sun corner words and change footprints | `sky.rs`, `voxel_path.wgsl`, `voxel_trace.wgsl` (`trace_footprints`) |
 | Temporal display and initialization | `history.rs` |
 | Material data and shared buffers | `render.rs` |
 | BVW mesh material (connector crate) | `voxel_gi_bvw/src/material.rs`, `voxel_gi_bvw/shaders/voxel_transport.wgsl` |
-| Accounting, test fixtures | `telemetry.rs`, `research.rs` |
+| Accounting; test fixtures | `telemetry.rs`; `research.rs` (tests only) |
 | HUD and tuning panel (debug crate) | `voxel_gi_debug/src/lib.rs` |
 | Validation harness (lab) | `src/validation.rs`, `src/validation/` |
 
@@ -452,8 +453,7 @@ grazing light samples; this is regression-covered by an analytic emitting plane.
 This follows the endpoint construction in
 [PBRT's ray spawning](https://pbr-book.org/4ed/Shapes/Managing_Rounding_Error#SpawnRayTo),
 while retaining our voxel-scale epsilon, not PBRT's full interval error bounds.
-Source weighting is RGB-only by default. The legacy importance setting can
-include infrared/ionizing for research controls, not gameplay simulation.
+Source weighting is RGB-only.
 The tree shares the emitter storage binding,
 adds 64 bytes per node and rebuilds with the worker's emitter snapshot; there is
 no per-receiver allocation or incremental tree refit. See the
@@ -592,23 +592,22 @@ Larger jumps (a time skip) remain a global source change.
 Canonical source ordering prevents ECS order changes from causing relights;
 point-source deltas include both old and new influence volumes but exclude
 unchanged lights. Distance affects responsiveness, never visibility or eligibility.
-The adapter omits analytic lights with zero contribution in every transport band
-and custom visible output before either backend or the sunlight cache sees them.
-Infrared-only and ionizing-only sources remain active. Source inputs use ECS
+The adapter omits analytic lights with zero RGB contribution and custom visible
+output before the tracer sees them. Source inputs use ECS
 change detection before normalization/canonicalization. Environment, source or
 transform changes, component removal and despawn refresh the snapshot; unchanged
 inputs skip rebuilding it. The gate still scans source change ticks and may
 conservatively rebuild after an unrelated transform removal. Raster visibility
-is not a transport-enable switch; explicit multi-band enable semantics remain
-an integration decision. Voxel emission uses scene changes, not this light list.
+is not a transport-enable switch. Voxel emission uses scene changes, not this
+light list.
 
 Removing, replacing or covering an emitting voxel uses ordinary spatial history:
 old energy decays as new paths arrive, rather than restarting every receiver.
 This trades a bounded history tail for stability; the measured local removal
 response is documented in the [scene-history audit](history/scene-history-audit.md).
 It is not an instantaneous extinction guarantee, especially at distant receivers
-retaining large weights or during frequent streaming. All five bands retain the
-same statistical weight. Distance is a response heuristic, not proof of weak
+retaining large weights or during frequent streaming. Distance is a response
+heuristic, not proof of weak
 lighting influence: a very bright distant source can still matter greatly.
 
 The [distance/history qualification](history/distance-history.md) derives a history cap
@@ -827,8 +826,8 @@ never writes filtered RGB back into these measurements.
 
 ### Resident measurements and asynchronous scheduling feedback
 
-The runtime implements GPU ownership. Stable `(voxel, face)` slots retain legacy five-band means, second
-moments, direct energy, effective count, advancing sequence, and filtered display
+The runtime implements GPU ownership. Stable `(voxel, face)` slots retain RGB
+means, second moments, direct energy, effective count, advancing sequence, and filtered display
 RGB. Slot incarnations separate allocation identity from scene freshness.
 Growth copies measurements; retirement is local to changed regions; recycling
 initializes the new surface before its address can be used for rendering.
@@ -846,9 +845,8 @@ At most three owned readbacks can be in flight. The worker polls readiness;
 resident runtime has no blocking GPU wait. A pending receiver is not selected
 again until its scheduling feedback is delivered. Each snapshot carries its
 job identities and submission timestamp, and publication validates geometry and
-source revisions. Sky jobs have generation/batch tickets, so overlapping work
-cannot publish superseded corners. The synchronous and CPU runtime backends
-were removed on the surface-cache branch; the CPU tracer remains a test oracle.
+source revisions. The synchronous and CPU runtime backends were removed on the
+surface-cache branch, and the CPU tracer oracle after them.
 
 Snapshots accompany transport batches for CPU scheduling/progress and optional
 diagnostics. Their legacy layout still contains nonvisual values; these are not
@@ -963,7 +961,7 @@ time constant subject to the existing evidence/uncertainty filter, not a promise
 to settle in that many milliseconds. Display gain/toggles do not change energy
 returned to simulation readers.
 
-`diagnostics.rs` is the opt-in `VoxelGiDebugPlugin` (Bevy UI, feathers widgets):
+The `voxel_gi_debug` crate is the opt-in `VoxelGiDebugPlugin` (Bevy UI, feathers widgets):
 a HUD, quality presets (`VoxelGiQuality`, performance knobs only), performance
 and look sliders, a staged light model, display switches and RON clipboard
 import/export. Widgets bind to `VoxelGiSettings` and `VoxelGiDisplay` through
