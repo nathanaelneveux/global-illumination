@@ -187,8 +187,13 @@ fn reproject_paths(@builtin(global_invocation_id) id: vec3<u32>) {
 // reflected change, a quarter face per corner, for Light retention events:
 // a moving sun's shadow borders cut the bounce history around them. The CPU
 // bins these (`sun_changes.rs`); edits' shadows are traced as footprints.
-// Flips follow the owner queue: a count, then (voxel, flux) records.
+// Flips follow the owner queue: a count, (voxel, flux) records, then one
+// overflow record that bounds the rest. They persist until a timing receipt
+// copies them (only that copy clears them), so a frame without a free
+// receipt or past the record limit loses no change. Every slot reads zero
+// when empty: the overflow box keeps (2^30 - min) and (max + 2^30).
 const MAX_SUN_FLIPS: u32 = 2048u;
+const SUN_FLIP_BIAS: i32 = 1073741824;
 fn report_sun_flips(receiver: ViewReceiver, normal: vec3<f32>, material: u32, before: u32, after: u32) {
     let w = vec3(0.2126, 0.7152, 0.0722);
     var flux = 0.0;
@@ -211,7 +216,18 @@ fn report_sun_flips(receiver: ViewReceiver, normal: vec3<f32>, material: u32, be
     flux *= dot(materials[material & 255u].diffuse.rgb, w);
     let base = 12u + 2u * view.grid.z;
     let slot = atomicAdd(&queue[base], 1u);
-    if slot >= MAX_SUN_FLIPS { return; }
+    if slot >= MAX_SUN_FLIPS {
+        let overflow = base + 4u + MAX_SUN_FLIPS * 4u;
+        let v = vec3(receiver.voxel.x, receiver.voxel.y, receiver.voxel.z);
+        atomicMax(&queue[overflow], u32(SUN_FLIP_BIAS - v.x));
+        atomicMax(&queue[overflow + 1u], u32(SUN_FLIP_BIAS - v.y));
+        atomicMax(&queue[overflow + 2u], u32(SUN_FLIP_BIAS - v.z));
+        atomicMax(&queue[overflow + 3u], u32(v.x + SUN_FLIP_BIAS));
+        atomicMax(&queue[overflow + 4u], u32(v.y + SUN_FLIP_BIAS));
+        atomicMax(&queue[overflow + 5u], u32(v.z + SUN_FLIP_BIAS));
+        atomicAdd(&queue[overflow + 6u], u32(flux * 64.0 + 0.5));
+        return;
+    }
     let record = base + 4u + slot * 4u;
     atomicStore(&queue[record], bitcast<u32>(receiver.voxel.x));
     atomicStore(&queue[record + 1u], bitcast<u32>(receiver.voxel.y));

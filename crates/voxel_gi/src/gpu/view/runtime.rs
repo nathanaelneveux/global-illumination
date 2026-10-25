@@ -35,8 +35,8 @@ struct ViewSettings {
     receivers: u32,
     /// Last frame's view-tier GPU milliseconds, written by the render world.
     receipts: std::sync::Arc<std::sync::Mutex<ViewReceipts>>,
-    /// Corner-sunlight flips read back by the render world (voxel, flux).
-    sun_flips: std::sync::Arc<std::sync::Mutex<Vec<(IVec3, f32)>>>,
+    /// Corner-sunlight flips read back by the render world (min, max, flux).
+    sun_flips: std::sync::Arc<std::sync::Mutex<Vec<(IVec3, IVec3, f32)>>>,
 }
 
 /// View-tier GPU time per frame (timestamp queries; zero when unavailable).
@@ -397,9 +397,12 @@ impl FromWorld for ViewRenderer {
 }
 
 /// Corner-sunlight flips (`report_sun_flips`) follow the owner queue: a count,
-/// then up to this many (voxel, flux) records.
+/// up to this many (voxel, flux) records, then an overflow box and flux.
+/// They persist until a timing receipt copies them (`Budget::finish` clears
+/// them after the copy).
 pub(super) const MAX_SUN_FLIPS: u64 = 2048;
-pub(super) const SUN_FLIP_BYTES: u64 = 16 + MAX_SUN_FLIPS * 16;
+pub(super) const SUN_FLIP_BYTES: u64 = 16 + MAX_SUN_FLIPS * 16 + 32;
+pub(super) const SUN_FLIP_BIAS: i64 = 1 << 30;
 
 fn sun_flip_offset(count: u32) -> u64 {
     (12 + 2 * u64::from(count)) * 4
@@ -663,7 +666,6 @@ fn render_view(
     encoder.clear_buffer(&current.hash.buffer, 0, None);
     encoder.clear_buffer(&current.pool.buffer, 0, Some(POOL_PREFIX_BYTES as u64));
     encoder.clear_buffer(&camera.queue.buffer, 0, Some(48));
-    encoder.clear_buffer(&camera.queue.buffer, sun_flip_offset(count), Some(16));
     let multisampled = msaa.samples() > 1;
     let limited = scene.params.transport.x < crate::tracer::MAX_PATH_DISTANCE;
     let kernels = [

@@ -22,17 +22,19 @@ pub(crate) struct SunChanges {
 }
 
 impl SunChanges {
-    pub fn add(&mut self, flips: impl IntoIterator<Item = (IVec3, f32)>) {
-        for (voxel, flux) in flips {
-            let bucket = voxel.div_euclid(IVec3::splat(REGION_EDGE as i32));
+    /// Flipped boxes (min, max, flux): single voxels, or the bound of a
+    /// receipt's overflow, binned by their minimum corner.
+    pub fn add(&mut self, flips: impl IntoIterator<Item = (IVec3, IVec3, f32)>) {
+        for (min, max, flux) in flips {
+            let bucket = min.div_euclid(IVec3::splat(REGION_EDGE as i32));
             self.buckets
                 .entry(bucket)
                 .and_modify(|(bounds, total)| {
-                    bounds.min = bounds.min.min(voxel);
-                    bounds.max = bounds.max.max(voxel);
+                    bounds.min = bounds.min.min(min);
+                    bounds.max = bounds.max.max(max);
                     *total += flux;
                 })
-                .or_insert((Bounds::point(voxel), flux));
+                .or_insert((Bounds { min, max }, flux));
         }
     }
 
@@ -66,12 +68,13 @@ mod tests {
         let mut changes = SunChanges::default();
         let now = Instant::now();
         assert!(changes.take(&scene, now).is_none(), "nothing flipped");
-        changes.add([(IVec3::new(1, 2, 3), 0.5), (IVec3::new(4, 2, 3), 0.25), (IVec3::new(40, 2, 3), 1.0)]);
+        let point = |v: IVec3, flux| (v, v, flux);
+        changes.add([point(IVec3::new(1, 2, 3), 0.5), point(IVec3::new(4, 2, 3), 0.25), point(IVec3::new(40, 2, 3), 1.0)]);
         let change = changes.take(&scene, now).unwrap();
         assert_eq!(change.weights.len(), 2, "one bound per region");
         let near = change.weights[&Bounds { min: IVec3::new(1, 2, 3), max: IVec3::new(4, 2, 3) }];
         assert_eq!(near, ChangeWeight { kind: ChangeKind::Light, flux: 0.75 });
-        changes.add([(IVec3::ZERO, 1.0)]);
+        changes.add([(IVec3::ZERO, IVec3::splat(80), 1.0)]);
         assert!(changes.take(&scene, now + Duration::from_millis(100)).is_none(), "merging");
         assert!(changes.take(&scene, now + PUBLISH_INTERVAL).is_some());
     }

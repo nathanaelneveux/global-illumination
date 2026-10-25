@@ -30,11 +30,55 @@ mod tests {
     }
 
     #[test]
+    fn flips_past_the_record_limit_arrive_as_one_bounding_box() {
+        use super::super::runtime::{MAX_SUN_FLIPS, SUN_FLIP_BIAS, SUN_FLIP_BYTES};
+        use bevy::prelude::IVec3;
+        let mut region = vec![0u8; SUN_FLIP_BYTES as usize];
+        let mut put = |at: usize, word: u32| region[at..at + 4].copy_from_slice(&word.to_le_bytes());
+        put(0, MAX_SUN_FLIPS as u32 + 5);
+        put(16, -3i32 as u32);
+        put(20, 4);
+        put(24, 5);
+        put(28, 0.5f32.to_bits());
+        let overflow = 16 + MAX_SUN_FLIPS as usize * 16;
+        let bias = SUN_FLIP_BIAS as i32;
+        for (i, word) in [bias + 10, bias - 2, bias, bias + 7, bias + 9, bias + 1, 128].into_iter().enumerate() {
+            put(overflow + i * 4, word as u32);
+        }
+        let mut flips = Vec::new();
+        super::decode_sun_flips(&region, &mut flips);
+        assert_eq!(flips.len(), MAX_SUN_FLIPS as usize + 1);
+        assert_eq!(flips[0], (IVec3::new(-3, 4, 5), IVec3::new(-3, 4, 5), 0.5));
+        assert_eq!(*flips.last().unwrap(), (IVec3::new(-10, 2, 0), IVec3::new(7, 9, 1), 2.0));
+    }
+
+    #[test]
     fn view_first_can_spend_its_share_beyond_one_visit_per_owner() {
         let mut size = 8192;
         for _ in 0..16 { size = next_wave(size, size, 1.0, 3.0, 65536); }
         assert_eq!(size, 65536);
         assert!(next_wave(size, size, 9.0, 3.0, 65536) < size);
+    }
+}
+
+/// A receipt's flip region (`report_sun_flips`): a count, records, then the
+/// overflow box, as (min, max, flux) boxes.
+fn decode_sun_flips(region: &[u8], flips: &mut Vec<(IVec3, IVec3, f32)>) {
+    let word = |at: usize| u32::from_le_bytes(region[at..at + 4].try_into().unwrap());
+    let limit = super::runtime::MAX_SUN_FLIPS;
+    let reported = u64::from(word(0));
+    for slot in 0..reported.min(limit) as usize {
+        let at = 16 + slot * 16;
+        let voxel = IVec3::new(word(at) as i32, word(at + 4) as i32, word(at + 8) as i32);
+        flips.push((voxel, voxel, f32::from_bits(word(at + 12))));
+    }
+    if reported > limit {
+        let overflow = 16 + limit as usize * 16;
+        let at = |i: usize| i64::from(word(overflow + i * 4));
+        let bias = super::runtime::SUN_FLIP_BIAS;
+        let min = IVec3::new((bias - at(0)) as i32, (bias - at(1)) as i32, (bias - at(2)) as i32);
+        let max = IVec3::new((at(3) - bias) as i32, (at(4) - bias) as i32, (at(5) - bias) as i32);
+        flips.push((min, max, at(6) as f32 / 64.0));
     }
 }
 
@@ -79,8 +123,9 @@ pub(super) struct Budget {
     pub uncovered: u32,
     pub displayed: u32,
     pub paused: u32,
-    /// Received corner-sunlight flips (voxel, flux), taken by the main world.
-    pub sun_flips: Vec<(IVec3, f32)>,
+    /// Received corner-sunlight flips as (min, max, flux) boxes, taken by the
+    /// main world: one voxel each, plus one box bounding any overflow.
+    pub sun_flips: Vec<(IVec3, IVec3, f32)>,
     period: f64,
 }
 
@@ -227,13 +272,7 @@ impl Budget {
                 self.wave_cost = trace.max(0.01);
             }
             self.allowance += ticket.reserved - trace;
-            let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-            let flips = (word(RECEIPT_BYTES as usize) as u64).min(super::runtime::MAX_SUN_FLIPS) as usize;
-            for record in bytes[RECEIPT_BYTES as usize + 16..].chunks_exact(16).take(flips) {
-                let word = |i: usize| u32::from_le_bytes(record[i * 4..i * 4 + 4].try_into().unwrap());
-                let voxel = IVec3::new(word(0) as i32, word(1) as i32, word(2) as i32);
-                self.sun_flips.push((voxel, f32::from_bits(word(3))));
-            }
+            decode_sun_flips(&bytes[RECEIPT_BYTES as usize..], &mut self.sun_flips);
             drop(bytes);
             ticket.buffer.unmap();
             self.free.push(ticket.buffer);
@@ -278,6 +317,8 @@ impl Budget {
         encoder.copy_buffer_to_buffer(
             counters, sun_flips, &ticket.buffer, RECEIPT_BYTES, super::runtime::SUN_FLIP_BYTES,
         );
+        // Copied: the flips are delivered, so the region starts over.
+        encoder.clear_buffer(counters, sun_flips, Some(super::runtime::SUN_FLIP_BYTES));
         let ready = ticket.ready.clone();
         encoder.map_buffer_on_submit(&ticket.buffer, wgpu::MapMode::Read, ..TICKET_BYTES, move |result| {
             ready.store(if result.is_ok() { 1 } else { 2 }, Ordering::Release)

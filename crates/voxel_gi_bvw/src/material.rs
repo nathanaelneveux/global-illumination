@@ -80,13 +80,14 @@ impl MaterialExtension for VoxelTransportExtension {
     }
 }
 
-/// Register the material and keep every instance's GI bindings current.
+/// Register the material and keep every instance's GI bindings current. A
+/// host may add (and configure) `MaterialPlugin<VoxelTransportMaterial>`
+/// itself; the shader and binding synchronization are installed either way.
 pub(crate) fn install(app: &mut App) {
-    if app.is_plugin_added::<MaterialPlugin<VoxelTransportMaterial>>() {
-        return;
+    if !app.is_plugin_added::<MaterialPlugin<VoxelTransportMaterial>>() {
+        app.add_plugins(MaterialPlugin::<VoxelTransportMaterial>::default());
     }
-    app.add_plugins(MaterialPlugin::<VoxelTransportMaterial>::default())
-        .add_systems(PostUpdate, sync_material_data);
+    app.add_systems(PostUpdate, sync_material_data);
     let _ = app.world_mut().resource_mut::<Assets<Shader>>().insert(
         VOXEL_TRANSPORT_SHADER_HANDLE.id(),
         Shader::from_wgsl(
@@ -333,6 +334,9 @@ mod tests {
                 }),
         );
         voxel_gi::testing::install_render(&mut app);
+        // A host that registers (and may configure) the material plugin
+        // itself still gets the connector's shader and binding sync.
+        app.add_plugins(MaterialPlugin::<VoxelTransportMaterial>::default());
         install(&mut app);
         let data = app.world().resource::<VoxelGiMaterialData>().clone();
         let mut texture = Image::new_fill(
