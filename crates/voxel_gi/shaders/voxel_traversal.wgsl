@@ -211,6 +211,9 @@ fn trace_domain_limited(origin: vec3<f32>, direction: vec3<f32>, max_distance: f
         position += direction * advance.w;
         normal = advance.xyz;
     }
+    // Out of steps: status 2 like unloaded space, tagged so a step-budgeted
+    // caller (`trace` with EXHAUSTED_IS_SKY) can count it as a miss.
     result.status = 2u;
+    result.material = 0xffffffffu;
     return result;
 }

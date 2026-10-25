@@ -48,9 +48,55 @@ pub struct VoxelGiSettings {
     /// Fraction of the transport allowance spent refreshing the cache; the
     /// visible faces get the remainder. Not extra budget.
     pub cache_share: f32,
+    /// EXPERIMENT (far per pixel): faces smaller than this many pixels are
+    /// lit per pixel, NAADF style, and get no view receiver.
+    pub pixel_tier: PixelTierSettings,
     /// Scheduler work bounds: measured, not host policy.
     #[serde(skip)]
     pub(crate) scheduler: SchedulerSettings,
+}
+
+/// EXPERIMENT: per-pixel lighting for faces under `face_pixels` pixels.
+/// Each `cell`x`cell` block of pixels traces one path per frame (one of
+/// `rate` frames once its history is long) from a jittered pixel, keeps a
+/// reprojected screen-space history of up to `history` samples, and the
+/// material reads it with a depth/plane-aware 3x3 filter. Sunlight there is
+/// one ray per fragment. Cost follows the screen, not the face count.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PixelTierSettings {
+    /// Projected face area in pixels (side squared times its cosine to the
+    /// view ray) below which a face is per-pixel lit; 4 is a 2x2-pixel
+    /// face. 0 disables the tier.
+    pub face_pixels: f32,
+    /// Pixels per side of one traced cell (1-4).
+    pub cell: u32,
+    /// Maximum temporal history in samples.
+    pub history: f32,
+    /// Trace one in this many frames per cell once history reaches 4 (1-8).
+    pub rate: u32,
+    /// Traversal steps per ray (NAADF: 100 for GI); a ray out of steps is a
+    /// miss. 2048 is the other tiers' rule (exhausted is unknown).
+    pub steps: u32,
+}
+
+impl Default for PixelTierSettings {
+    fn default() -> Self {
+        // Best measured on the lod flight (docs/history/far-per-pixel.md).
+        Self { face_pixels: 16.0, cell: 3, history: 32.0, rate: 4, steps: 128 }
+    }
+}
+
+impl PixelTierSettings {
+    pub(crate) fn normalized(self) -> Self {
+        Self {
+            face_pixels: if self.face_pixels.is_finite() { self.face_pixels.clamp(0.0, 64.0) } else { 0.0 },
+            cell: self.cell.clamp(1, 4),
+            history: if self.history.is_finite() { self.history.clamp(1.0, 1024.0) } else { 32.0 },
+            rate: self.rate.clamp(1, 8),
+            steps: self.steps.clamp(16, 2048),
+        }
+    }
 }
 
 /// The world-cache scheduler's batch and audit bounds.
@@ -142,6 +188,7 @@ impl Default for VoxelGiSettings {
             cache_radius: 64.0,
             view_receivers: 65_536,
             cache_share: 0.25,
+            pixel_tier: PixelTierSettings::default(),
             scheduler: SchedulerSettings::default(),
         }
     }
@@ -178,6 +225,7 @@ impl VoxelGiSettings {
         self.scheduler.scene_publish_budget = self.scheduler.scene_publish_budget.min(Duration::from_millis(8));
         self.view_receivers = self.view_receiver_limit();
         self.spatial_noise_threshold = self.noise_threshold();
+        self.pixel_tier = self.pixel_tier.normalized();
         self
     }
 

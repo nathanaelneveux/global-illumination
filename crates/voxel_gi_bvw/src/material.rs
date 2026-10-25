@@ -44,6 +44,9 @@ pub struct VoxelTransportExtension {
     /// disabled). Camera passes write it in encoder order before opaque draws.
     #[storage(110, read_only, visibility(fragment))]
     pub far: Handle<ShaderBuffer>,
+    /// EXPERIMENT: per-pixel tier cells for faces under its pixel size.
+    #[storage(111, read_only, visibility(fragment))]
+    pub far_pixels: Handle<ShaderBuffer>,
 }
 
 /// `voxel_traversal.wgsl`'s `params`: the sun visibility distance
@@ -108,6 +111,7 @@ fn sync_material_data(data: Res<VoxelGiMaterialData>, mut materials: ResMut<Asse
         extension.cells = data.cells.clone();
         extension.traversal = data.traversal;
         extension.far = data.far.clone();
+        extension.far_pixels = data.far_pixels.clone();
         extension.settings = data.settings;
     }
 }
@@ -129,6 +133,7 @@ pub fn material_template(texture: Handle<Image>, data: &VoxelGiMaterialData) -> 
             settings: data.settings,
             traversal: data.traversal,
             far: data.far.clone(),
+            far_pixels: data.far_pixels.clone(),
         },
     }
 }

@@ -18,6 +18,12 @@ pub(crate) const MAX_VIEW_RECEIVERS: u32 = 131_072;
 /// Published face hash (2x receivers), tile heads (receivers / 4) and links.
 pub(crate) const OUTPUT_PREFIX_BYTES: u64 = 32 + 16384 + (262144 + 65536 + 131072) * 4;
 pub(crate) const EMPTY_OUTPUT_BYTES: u64 = OUTPUT_PREFIX_BYTES + 48;
+/// EXPERIMENT per-pixel tier output: camera, axis, grid, origin header.
+pub(crate) const PIXEL_HEADER_BYTES: u64 = 64;
+/// Cells for a 3840x2160 view at `cell` pixels per side, 16 bytes each.
+pub(crate) fn pixel_output_bytes(cell: u32) -> u64 {
+    PIXEL_HEADER_BYTES + u64::from(3840u32.div_ceil(cell) * 2160u32.div_ceil(cell)) * 16
+}
 
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub(crate) struct ViewTransport(pub Option<SceneBindings>, pub Arc<Mutex<Vec<ViewChange>>>);

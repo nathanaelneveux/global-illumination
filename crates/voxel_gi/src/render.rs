@@ -125,6 +125,10 @@ pub struct VoxelGiMaterialData {
     pub cells: Handle<ShaderBuffer>,
     pub traversal: GpuTraversalParams,
     pub far: Handle<ShaderBuffer>,
+    /// EXPERIMENT: the per-pixel tier's cells (`PixelTierSettings`): a
+    /// 64-byte header (zero grid when off), then one packed cell per
+    /// `cell`x`cell` pixels.
+    pub far_pixels: Handle<ShaderBuffer>,
     pub settings: GpuTransportSettings,
 }
 
@@ -253,12 +257,17 @@ pub fn install_render_assets(app: &mut App) {
         .world_mut()
         .resource_mut::<Assets<ShaderBuffer>>()
         .add(ShaderBuffer::from(vec![UVec4::ZERO; super::gpu::view::EMPTY_OUTPUT_BYTES as usize / 16]));
+    let far_pixels = app
+        .world_mut()
+        .resource_mut::<Assets<ShaderBuffer>>()
+        .add(ShaderBuffer::from(vec![UVec4::ZERO; super::gpu::view::PIXEL_HEADER_BYTES as usize / 16 + 1]));
     app.insert_resource(VoxelGiMaterialData {
         directory: geometry.clone(),
         regions: geometry.clone(),
         cells: geometry,
         traversal: GpuTraversalParams::default(),
         far: far.clone(),
+        far_pixels: far_pixels.clone(),
         settings: GpuTransportSettings::default(),
     });
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
@@ -269,7 +278,7 @@ pub fn install_render_assets(app: &mut App) {
                 .before(prepare_assets::<GpuShaderBuffer>),
         );
     }
-    super::gpu::view::install(app, far);
+    super::gpu::view::install(app, far, far_pixels);
 }
 
 #[cfg(test)]

@@ -100,8 +100,8 @@ pub(super) struct Budget {
     pub presentation_ms: f32,
     /// Last receipt's per-stage GPU ms, in dispatch-stage order: discovery,
     /// index, reproject, retained changes, cache load, trace, reconstruct,
-    /// cache store, publish, pool prepare.
-    pub stage_ms: [f32; 10],
+    /// cache store, publish, pool prepare, per-pixel tier.
+    pub stage_ms: [f32; STAGES],
     pub discovery_ms: f32,
     pub discovery_sum_ms: f64,
     pub discovery_count: u32,
@@ -123,14 +123,25 @@ pub(super) struct Budget {
     pub uncovered: u32,
     pub displayed: u32,
     pub paused: u32,
+    /// EXPERIMENT per-pixel tier: GPU ms, owned and traced cells, cells with
+    /// reprojected history, mean history of owned cells.
+    pub pixel_ms: f32,
+    pub pixel_owned: u32,
+    pub pixel_traced: u32,
+    pub pixel_reprojected: u32,
+    pub pixel_history: f32,
     /// Received corner-sunlight flips as (min, max, flux) boxes, taken by the
     /// main world: one voxel each, plus one box bounding any overflow.
     pub sun_flips: Vec<(IVec3, IVec3, f32)>,
     period: f64,
 }
 
-/// Timestamps, counters and pool words, then the flip region.
-const RECEIPT_BYTES: u64 = 224;
+/// Dispatch stages with a timestamp pair each.
+const STAGES: usize = 11;
+const STAMP_BYTES: usize = STAGES * 16;
+/// Timestamps, queue counters, pool words and per-pixel counters, then the
+/// flip region.
+const RECEIPT_BYTES: u64 = STAMP_BYTES as u64 + 48 + 16 + 16;
 const TICKET_BYTES: u64 = RECEIPT_BYTES + super::runtime::SUN_FLIP_BYTES;
 
 impl Budget {
@@ -144,7 +155,7 @@ impl Budget {
                     .create_query_set(&wgpu::QuerySetDescriptor {
                         label: Some("Far GI GPU cost"),
                         ty: wgpu::QueryType::Timestamp,
-                        count: 20,
+                        count: STAGES as u32 * 2,
                     })
             });
         let resolve = device.create_buffer(&BufferDescriptor {
@@ -172,7 +183,7 @@ impl Budget {
             wave_size: 1024,
             wave_cost: 1.0,
             presentation_ms: 0.0,
-            stage_ms: [0.0; 10],
+            stage_ms: [0.0; STAGES],
             discovery_ms: 0.0,
             discovery_sum_ms: 0.0,
             discovery_count: 0,
@@ -194,6 +205,11 @@ impl Budget {
             uncovered: 0,
             displayed: 0,
             paused: 0,
+            pixel_ms: 0.0,
+            pixel_owned: 0,
+            pixel_traced: 0,
+            pixel_reprojected: 0,
+            pixel_history: 0.0,
             sun_flips: Vec::new(),
             period: f64::from(queue.get_timestamp_period()),
         }
@@ -221,7 +237,7 @@ impl Budget {
             let ticket = self.pending.swap_remove(index);
             let bytes = ticket.buffer.slice(..TICKET_BYTES).get_mapped_range();
             let stamp = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
-            let costs: [f32; 10] = std::array::from_fn(|stage| {
+            let costs: [f32; STAGES] = std::array::from_fn(|stage| {
                 if ticket.stages & (1 << stage) == 0 {
                     return 0.0;
                 }
@@ -230,8 +246,9 @@ impl Budget {
             });
             let total: f32 = costs.iter().sum();
             let trace = costs[5];
-            let counter =
-                |i: usize| u32::from_le_bytes(bytes[160 + i * 4..164 + i * 4].try_into().unwrap());
+            let counter = |i: usize| {
+                u32::from_le_bytes(bytes[STAMP_BYTES + i * 4..STAMP_BYTES + 4 + i * 4].try_into().unwrap())
+            };
             let active = counter(0);
             assert_eq!(
                 counter(1),
@@ -247,7 +264,12 @@ impl Budget {
             self.displayed = counter(7);
             self.paused = counter(8);
             self.trace_ms = trace;
-            self.presentation_ms = total - trace;
+            self.pixel_ms = costs[10];
+            self.presentation_ms = total - trace - costs[10];
+            self.pixel_owned = counter(16);
+            self.pixel_traced = counter(17);
+            self.pixel_history = counter(18) as f32 / counter(16).max(1) as f32;
+            self.pixel_reprojected = counter(19);
             self.stage_ms = costs;
             self.discovery_ms = costs[0] + costs[9];
             self.pool_prepare_ms = costs[9];
@@ -306,14 +328,17 @@ impl Budget {
         counters: &Buffer,
         sun_flips: u64,
         pool: &Buffer,
+        pixel_stats: &Buffer,
         mut ticket: Ticket,
         stages: u32,
     ) {
         ticket.stages = stages;
-        encoder.resolve_query_set(self.queries.as_ref().unwrap(), 0..20, &self.resolve, 0);
-        encoder.copy_buffer_to_buffer(&self.resolve, 0, &ticket.buffer, 0, 160);
-        encoder.copy_buffer_to_buffer(counters, 0, &ticket.buffer, 160, 48);
-        encoder.copy_buffer_to_buffer(pool, 0, &ticket.buffer, 208, 16);
+        let stamps = STAMP_BYTES as u64;
+        encoder.resolve_query_set(self.queries.as_ref().unwrap(), 0..STAGES as u32 * 2, &self.resolve, 0);
+        encoder.copy_buffer_to_buffer(&self.resolve, 0, &ticket.buffer, 0, stamps);
+        encoder.copy_buffer_to_buffer(counters, 0, &ticket.buffer, stamps, 48);
+        encoder.copy_buffer_to_buffer(pool, 0, &ticket.buffer, stamps + 48, 16);
+        encoder.copy_buffer_to_buffer(pixel_stats, 0, &ticket.buffer, stamps + 64, 16);
         encoder.copy_buffer_to_buffer(
             counters, sun_flips, &ticket.buffer, RECEIPT_BYTES, super::runtime::SUN_FLIP_BYTES,
         );

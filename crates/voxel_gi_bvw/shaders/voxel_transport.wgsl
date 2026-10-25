@@ -109,6 +109,70 @@ struct FarOutput {
 @group(#{MATERIAL_BIND_GROUP}) @binding(110)
 var<storage, read> far_view: FarOutput;
 
+// EXPERIMENT: the per-pixel tier (voxel_view_pixels.wgsl). Faces whose block
+// projects under `origin.z` pixels have no receiver; their cells hold
+// per-pixel indirect light.
+struct FarCells {
+    camera: vec4<f32>,
+    axis: vec4<f32>, // view forward, pixels per unit at depth 1
+    grid: vec4<u32>, // cells x, y, pixels per cell side, enabled
+    origin: vec4<u32>, // viewport origin, threshold px (bits)
+    cells: array<vec4<u32>>,
+}
+@group(#{MATERIAL_BIND_GROUP}) @binding(111)
+var<storage, read> far_cells: FarCells;
+
+// Projected block-face area in pixels against the threshold, exactly as
+// the per-pixel tier and discovery compute it.
+fn pixel_owned(voxel: vec3<i32>, face: u32) -> bool {
+    if far_cells.grid.w == 0u || face >= 6u { return false; }
+    let s = voxel_stride(voxel);
+    let centre = vec3<f32>(voxel & vec3(-s)) + 0.5 * f32(s);
+    let ray = centre - far_cells.camera.xyz;
+    let depth = dot(ray, far_cells.axis.xyz);
+    if depth <= 0.0 { return false; }
+    let side = f32(s) * far_cells.axis.w / depth;
+    return side * side * abs(dot(vec3<f32>(FACE_NORMALS[face]), normalize(ray))) < bitcast<f32>(far_cells.origin.z);
+}
+
+// The cells around this pixel on this face: coplanar ones, else parallel
+// planes up to four blocks away (a distant ledge's thin side), weighted by
+// sample count and distance in cells.
+fn pixel_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>, s: i32) -> vec4<f32> {
+    let grid = far_cells.grid;
+    let c = (pixel - vec2<f32>(far_cells.origin.xy)) / f32(grid.z) - 0.5;
+    let centre = vec2<i32>(round(c));
+    let face = face_index_of(normal);
+    let plane = round(position[face / 2u]);
+    var sum = vec3(0.0);
+    var weight = 0.0;
+    var parallel_sum = vec3(0.0);
+    var parallel_weight = 0.0;
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let q = centre + vec2(x, y);
+            if any(q < vec2(0)) || any(q >= vec2<i32>(grid.xy)) { continue; }
+            let cell = far_cells.cells[u32(q.y) * grid.x + u32(q.x)];
+            if cell.z != face { continue; }
+            let blue_count = unpack2x16float(cell.y);
+            if blue_count.y <= 0.0 { continue; }
+            let rgb = vec3(unpack2x16float(cell.x), blue_count.x);
+            let offset = abs(bitcast<f32>(cell.w) - plane);
+            let d = vec2<f32>(q) - c;
+            let w = blue_count.y * exp(-dot(d, d));
+            if offset <= 0.01 {
+                sum += rgb * w;
+                weight += w;
+            } else if offset <= 4.0 * f32(s) + 0.01 {
+                parallel_sum += rgb * w;
+                parallel_weight += w;
+            }
+        }
+    }
+    if weight == 0.0 && parallel_weight > 0.0 { return vec4(parallel_sum / parallel_weight, 1.0); }
+    return vec4(sum / max(weight, 1e-8), select(0.0, 1.0, weight > 0.0));
+}
+
 // Geometry-aware upsampling only. No value is reused across an unrelated
 // face orientation or depth plane, even at foreground/background edges.
 // `voxel` is the receiver key (a coarse block's minimum voxel) and `surface`
@@ -251,6 +315,20 @@ fn far_sun(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     var v = vec3<i32>(0, 0, s);
     if abs(axis.y) > 0.5 { u = vec3<i32>(s, 0, 0); }
     else if abs(axis.z) > 0.5 { u = vec3<i32>(s, 0, 0); v = vec3<i32>(0, s, 0); }
+    // EXPERIMENT per-pixel tier: one ray per light from this fragment.
+    if pixel_owned(voxel, face) {
+        var sum = vec3(0.0);
+        for (var light = 0u; light < min(transport_settings.sun_count, 4u); light += 1u) {
+            let direction = transport_settings.sun_direction[light].xyz;
+            let cosine = dot(axis, direction);
+            if cosine <= 0.0 { continue; }
+            let origin = position + axis * 0.002 + direction * 0.002;
+            if trace_domain_limited(origin, direction, reach, true, FALLBACK_SUN_STEPS).status != 1u {
+                sum += transport_settings.sun_color[light].rgb * cosine;
+            }
+        }
+        return vec4(sum, 1.0);
+    }
     var words = vec4<u32>(0u);
     if far_view.shape.z != 0u {
         // The face itself first, then its eight coplanar neighbours.
@@ -479,7 +557,16 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
     var indirect = vec3(0.0);
     var view_coverage = vec3(1.0, 0.0, 0.0);
     let voxel = vec3<i32>(floor(in.world_position.xyz - in.world_normal * 0.01));
-    if far_view.shape.z != 0u && transport_settings.enabled != 0u {
+    if transport_settings.enabled != 0u && pixel_owned(voxel, face_index_of(normalize(in.world_normal))) {
+        // EXPERIMENT: per-pixel tier; receivers only fill its holes.
+        var far = pixel_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal), voxel_stride(voxel));
+        if far.w > 0.0 { view_coverage = vec3(0.0, 1.0, 1.0); }
+        else if far_view.shape.z != 0u {
+            far = far_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal));
+            if far.w > 0.0 { view_coverage = vec3(1.0, 1.0, 0.0); }
+        }
+        if far.w > 0.0 { indirect = far.rgb * transport_settings.intensity; }
+    } else if far_view.shape.z != 0u && transport_settings.enabled != 0u {
         var far = corner_irradiance(in.world_position.xyz, normalize(in.world_normal));
         if far.w > 0.0 { view_coverage = vec3(0.0, 1.0, 0.0); }
         // Thin/distant faces may miss the reduced prepass grid entirely.

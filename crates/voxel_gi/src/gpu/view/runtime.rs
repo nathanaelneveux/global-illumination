@@ -2,7 +2,7 @@
 //! gameplay/render system waits for a GPU submission. Per-view ping-pong state
 //! retains face identities, path records, unfinished tails and raw statistics.
 use super::*;
-use crate::{VoxelGiSettings, render::VoxelGiMaterialData};
+use crate::{PixelTierSettings, VoxelGiSettings, render::VoxelGiMaterialData};
 use bevy::{
     core_pipeline::{
         prepass::{DepthPrepass, NormalPrepass, ViewPrepassTextures},
@@ -24,6 +24,10 @@ const DISPLAY_BYTES: u64 = OUTPUT_PREFIX_BYTES + MAX_VIEW_RECEIVERS as u64 * 48;
 #[derive(Resource, Clone, ExtractResource)]
 struct ViewSettings {
     output: Handle<ShaderBuffer>,
+    /// EXPERIMENT: per-pixel tier cells read by the material.
+    pixel_output: Handle<ShaderBuffer>,
+    pixel: PixelTierSettings,
+    pixel_cell_allocated: u32,
     enabled: bool,
     inner_radius: f32,
     view_first: bool,
@@ -53,11 +57,14 @@ struct AddedPrepasses {
     normal: bool,
 }
 
-pub(crate) fn install(app: &mut App, output: Handle<ShaderBuffer>) {
+pub(crate) fn install(app: &mut App, output: Handle<ShaderBuffer>, pixel_output: Handle<ShaderBuffer>) {
     app.init_resource::<VoxelGiSettings>();
     app.init_resource::<crate::VoxelGiStats>();
     app.insert_resource(ViewSettings {
         output,
+        pixel_output,
+        pixel: PixelTierSettings::default(),
+        pixel_cell_allocated: 0,
         enabled: false,
         inner_radius: 0.0,
         view_first: false,
@@ -133,6 +140,19 @@ fn configure_views(
         view.output = buffers.add(asset);
         material_data.far = view.output.clone();
     }
+    let pixel = settings.pixel_tier.normalized();
+    if enabled && view.pixel_cell_allocated != pixel.cell {
+        let mut asset = ShaderBuffer::default();
+        asset.buffer_description.size = pixel_output_bytes(pixel.cell);
+        asset.buffer_description.usage =
+            BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
+        view.pixel_output = buffers.add(asset);
+        material_data.far_pixels = view.pixel_output.clone();
+        view.pixel_cell_allocated = pixel.cell;
+    }
+    if view.pixel != pixel {
+        view.pixel = pixel;
+    }
     for (entity, depth, normal, added) in &cameras {
         if enabled && added.is_none() {
             let mut entity = commands.entity(entity);
@@ -181,6 +201,14 @@ struct Control {
     display: Vec4,
     cache: UVec4,
     discovery: UVec4,
+    /// EXPERIMENT per-pixel tier: view forward (xyz) and pixels per world
+    /// unit at unit view depth (w).
+    pixel_axis: Vec4,
+    /// Cells x, y, pixels per cell side, enabled.
+    pixel_grid: UVec4,
+    /// Face-size threshold (px), maximum history, trace rate, previous valid.
+    pixel_tune: Vec4,
+    previous_clip_from_world: Mat4,
 }
 /// Byte offsets of `Control` words that native tests rewrite in place
 /// (`history.w`: view-first; `cache.x`: writable epoch).
@@ -229,8 +257,37 @@ impl History {
         }
     }
 }
+/// EXPERIMENT per-pixel tier state: ping-pong cell histories (mean RGB and
+/// count, surface point and face; 32 bytes) and four counters.
+struct PixelState {
+    cells: UVec2,
+    history: [UploadBuffer; 2],
+    stats: UploadBuffer,
+    /// Cells to trace (count, indices) and the trace's indirect dispatch.
+    queue: UploadBuffer,
+    args: Buffer,
+}
+impl PixelState {
+    fn new(device: &RenderDevice, cells: UVec2) -> Self {
+        let bytes = cells.element_product().max(1) as usize * 32;
+        Self {
+            cells,
+            history: [0, 1].map(|_| storage(device, "Far per-pixel cell history", bytes)),
+            stats: storage(device, "Far per-pixel counters", 16),
+            queue: storage(device, "Far per-pixel trace queue", 4 + cells.element_product().max(1) as usize * 4),
+            args: device.create_buffer(&BufferDescriptor {
+                label: Some("Far per-pixel trace dispatch"),
+                size: 16,
+                usage: BufferUsages::STORAGE | BufferUsages::INDIRECT,
+                mapped_at_creation: false,
+            }),
+        }
+    }
+}
 struct CameraState {
     history: [History; 2],
+    pixel: Option<PixelState>,
+    previous_clip: Option<Mat4>,
     current: usize,
     grid: UVec2,
     discovery_view: Option<(Mat4, UVec4, f32, u32)>,
@@ -251,6 +308,7 @@ struct BindingKey {
     depth: bevy::render::render_resource::TextureViewId,
     normals: bevy::render::render_resource::TextureViewId,
     output: BufferId,
+    pixel: [BufferId; 3],
     multisampled: bool,
     limited: bool,
 }
@@ -261,6 +319,8 @@ impl CameraState {
             |name| UploadBuffer::new(device, name, BufferUsages::UNIFORM | BufferUsages::COPY_DST);
         Self {
             history: [History::new(device, count), History::new(device, count)],
+            pixel: None,
+            previous_clip: None,
             current: 0,
             grid,
             discovery_view: None,
@@ -293,6 +353,8 @@ fn shader(multisampled: bool) -> String {
         include_str!("../../../shaders/voxel_view_cache.wgsl"));
     let source = source.replace("// #include voxel_view_discovery.wgsl\n",
         include_str!("../../../shaders/voxel_view_discovery.wgsl"));
+    let source = source.replace("// #include voxel_view_pixels.wgsl\n",
+        include_str!("../../../shaders/voxel_view_pixels.wgsl"));
     if multisampled {
         source
             .replace("texture_depth_2d", "texture_depth_multisampled_2d")
@@ -317,6 +379,13 @@ struct ViewRenderer {
     store_cache: Kernel,
     reconstruct: Kernel,
     publish: Kernel,
+    /// Per-pixel tier: classify (by MSAA), size the queue, trace it.
+    pixels: [Kernel; 2],
+    pixel_args: Kernel,
+    pixel_trace: Kernel,
+    /// The step budget `pixels` was built with (PATH_STEPS).
+    pixel_steps: u32,
+    modules: [bevy::render::render_resource::ShaderModule; 2],
     cameras: HashMap<RetainedViewEntity, CameraState>,
     frame: u32,
     at: Instant,
@@ -386,6 +455,11 @@ impl FromWorld for ViewRenderer {
                 [&[6, 10], &[], &[0, 5, 7, 10, 14, 15, 16]]),
             reconstruct: make("reconstruct_view", 0, false, [&[6], &[], &[0, 5, 7, 17]]),
             publish: make("publish_view", 0, false, [&[0, 1, 2, 3, 5, 6], &[0], &[0, 5, 7, 10, 11, 17]]),
+            pixels: [0, 1].map(|m| make("classify_pixels", m, false, PIXEL_CLASSIFY_BINDINGS)),
+            pixel_args: make("size_pixel_queue", 0, false, [&[], &[], &[23, 24]]),
+            pixel_trace: pixel_kernel(device, &modules, PixelTierSettings::default().steps),
+            pixel_steps: PixelTierSettings::default().steps,
+            modules,
             cameras: default(),
             frame: 0,
             at: Instant::now(),
@@ -403,6 +477,29 @@ impl FromWorld for ViewRenderer {
 pub(super) const MAX_SUN_FLIPS: u64 = 2048;
 pub(super) const SUN_FLIP_BYTES: u64 = 16 + MAX_SUN_FLIPS * 16 + 32;
 pub(super) const SUN_FLIP_BIAS: i64 = 1 << 30;
+
+/// The per-pixel tier's trace under its ray budget: `steps` traversal
+/// steps per ray, exhaustion a miss (NAADF's rule).
+fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource::ShaderModule; 2], steps: u32) -> Kernel {
+    Kernel {
+        pipeline: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("trace_pixel_queue"),
+            layout: None,
+            module: &modules[0],
+            entry_point: Some("trace_pixel_queue"),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &[("PATH_STEPS", f64::from(steps)), ("EXHAUSTED_IS_SKY", 1.0)],
+                ..default()
+            },
+            cache: None,
+        }),
+        bindings: PIXEL_TRACE_BINDINGS.map(|indices| indices.to_vec()),
+    }
+}
+
+/// Per-pixel tier resources (automatic layouts must match exactly).
+const PIXEL_CLASSIFY_BINDINGS: [&[u32]; 3] = [&[0, 1, 2], &[], &[0, 8, 9, 19, 20, 21, 22, 23]];
+const PIXEL_TRACE_BINDINGS: [&[u32]; 3] = [&[0, 1, 2, 3, 4, 5, 8, 9, 10], &[], &[0, 20, 21, 22, 23]];
 
 fn sun_flip_offset(count: u32) -> u64 {
     (12 + 2 * u64::from(count)) * 4
@@ -432,6 +529,10 @@ mod cache_tests;
 #[cfg(test)]
 #[path = "coverage_tests.rs"]
 mod coverage_tests;
+
+#[cfg(test)]
+#[path = "pixel_tests.rs"]
+mod pixel_tests;
 
 #[cfg(test)]
 mod tests {
@@ -490,10 +591,15 @@ fn render_view(
     let Some(output) = assets.get(&settings.output) else {
         return;
     };
+    let Some(pixel_output) = assets.get(&settings.pixel_output) else {
+        return;
+    };
     // The scratch output belongs to this camera's encoder interval. Even a
     // camera without prepasses clears validity before its opaque draws.
     ctx.command_encoder()
         .clear_buffer(&output.buffer, 0, Some(32));
+    ctx.command_encoder()
+        .clear_buffer(&pixel_output.buffer, 0, Some(PIXEL_HEADER_BYTES));
     if !settings.enabled {
         renderer.cameras.clear();
         scene.1.lock().unwrap().clear();
@@ -553,6 +659,11 @@ fn render_view(
                 far_uncovered = renderer.budget.uncovered,
                 far_displayed = renderer.budget.displayed,
                 far_pending = renderer.budget.paused,
+                far_pixel_ms = renderer.budget.pixel_ms,
+                far_pixel_owned = renderer.budget.pixel_owned,
+                far_pixel_traced = renderer.budget.pixel_traced,
+                far_pixel_reprojected = renderer.budget.pixel_reprojected,
+                far_pixel_history = renderer.budget.pixel_history,
                 far_stages_ms = ?renderer.budget.stage_ms.map(|ms| (ms * 100.0).round() / 100.0),
                 "GI view transport"
             );
@@ -564,6 +675,13 @@ fn render_view(
             .retain(|_, camera| frame.0.wrapping_sub(camera.last_frame) <= 1);
         renderer.changes = std::mem::take(&mut *changes.lock().unwrap());
     }
+    if renderer.pixel_steps != settings.pixel.steps {
+        renderer.pixel_trace = pixel_kernel(&device, &renderer.modules, settings.pixel.steps);
+        renderer.pixel_steps = settings.pixel.steps;
+        for camera in renderer.cameras.values_mut() {
+            camera.binding_keys = [None, None];
+        }
+    }
     let (work, ticket) = renderer.budget.reserve();
     let grid = grid_size(view.viewport.zw(), settings.receivers);
     let count = grid.x * grid.y;
@@ -573,6 +691,15 @@ fn render_view(
         .remove(&key)
         .filter(|camera| camera.grid == grid)
         .unwrap_or_else(|| CameraState::new(&device, grid));
+    let pixel_size = settings.pixel.cell;
+    let pixel_cells = view.viewport.zw().map(|v| v.div_ceil(pixel_size));
+    let pixel_enabled = settings.pixel.face_pixels > 0.0
+        && u64::from(pixel_cells.element_product()) * 16 + PIXEL_HEADER_BYTES <= pixel_output.buffer.size();
+    if camera.pixel.as_ref().is_none_or(|state| state.cells != pixel_cells) {
+        camera.pixel = Some(PixelState::new(&device, pixel_cells));
+        camera.previous_clip = None;
+    }
+    let pixel_state = camera.pixel.as_ref().unwrap();
     let current = &camera.history[camera.current];
     let previous = &camera.history[1 - camera.current];
     let hash_mask = current.hash.capacity as u32 / 4 - 1;
@@ -604,6 +731,20 @@ fn render_view(
             UVec4::new(cache.epoch, cache.origin.elapsed().as_millis() as u32,
                 u32::from(cache.enabled && settings.view_first), 0)),
         discovery: UVec4::new(u32::from(discovery_stable), u32::from(discovery_compatible), 0, 0),
+        pixel_axis: {
+            let forward = view.world_from_view.forward();
+            // clip_from_view[1][1]: NDC y per unit of y / view depth.
+            let scale = view.clip_from_view.y_axis.y * view.viewport.w as f32 * 0.5;
+            forward.extend(scale)
+        },
+        pixel_grid: UVec4::new(pixel_cells.x, pixel_cells.y, pixel_size, u32::from(pixel_enabled)),
+        pixel_tune: Vec4::new(
+            settings.pixel.face_pixels,
+            settings.pixel.history,
+            settings.pixel.rate as f32,
+            f32::from(u8::from(camera.previous_clip.is_some())),
+        ),
+        previous_clip_from_world: camera.previous_clip.unwrap_or(clip),
     };
     camera
         .control
@@ -666,6 +807,8 @@ fn render_view(
     encoder.clear_buffer(&current.hash.buffer, 0, None);
     encoder.clear_buffer(&current.pool.buffer, 0, Some(POOL_PREFIX_BYTES as u64));
     encoder.clear_buffer(&camera.queue.buffer, 0, Some(48));
+    encoder.clear_buffer(&pixel_state.stats.buffer, 0, None);
+    encoder.clear_buffer(&pixel_state.queue.buffer, 0, Some(4));
     let multisampled = msaa.samples() > 1;
     let limited = scene.params.transport.x < crate::tracer::MAX_PATH_DISTANCE;
     let kernels = [
@@ -678,6 +821,9 @@ fn render_view(
         &renderer.store_cache,
         &renderer.publish,
         &renderer.prepare_pool[usize::from(multisampled)],
+        &renderer.pixels[usize::from(multisampled)],
+        &renderer.pixel_args,
+        &renderer.pixel_trace,
     ];
     let make_groups = |kernel: &Kernel, change: Option<&ViewChange>| -> Vec<BindGroup> {
         kernel
@@ -703,6 +849,12 @@ fn render_view(
                                 16 => scene.cache.as_ref().map_or(&scene.buffers[6], |cache| &cache.guard).as_entire_binding(),
                                 17 => current.pool.buffer.as_entire_binding(),
                                 18 => previous.pool.buffer.as_entire_binding(),
+                                19 => pixel_state.history[1 - camera.current].buffer.as_entire_binding(),
+                                20 => pixel_state.history[camera.current].buffer.as_entire_binding(),
+                                21 => pixel_state.stats.buffer.as_entire_binding(),
+                                22 => pixel_output.buffer.as_entire_binding(),
+                                23 => pixel_state.queue.buffer.as_entire_binding(),
+                                24 => pixel_state.args.as_entire_binding(),
                                 _ => group2[binding as usize].as_entire_binding(),
                             },
                         };
@@ -723,6 +875,11 @@ fn render_view(
         depth: depth.id(),
         normals: normals.id(),
         output: output.buffer.id(),
+        pixel: [
+            pixel_state.history[1 - camera.current].buffer.id(),
+            pixel_state.history[camera.current].buffer.id(),
+            pixel_output.buffer.id(),
+        ],
         multisampled,
         limited,
     };
@@ -741,9 +898,11 @@ fn render_view(
     let mut executed = 0u32;
     // Each phase has a timestamp pair in the SAME pass. Cross-pass timestamp
     // pairs can collapse on Metal and falsely report zero or negative costs.
-    for stage in [9, 0, 1, 2, 3, 4, 5, 6, 7, 8] {
+    for stage in [9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10] {
         let retained = stage == 3;
-        let dispatch_count = if stage == 5 {
+        let dispatch_count = if stage == 10 {
+            if pixel_enabled { pixel_cells.element_product() } else { 0 }
+        } else if stage == 5 {
             work
         } else if stage == 0 {
             // One cooperative workgroup per 2x2-cell discovery tile.
@@ -757,7 +916,7 @@ fn render_view(
             continue;
         }
         executed |= 1 << stage;
-        let index = if stage == 9 { 8 } else if stage > 3 { stage - 1 } else { stage };
+        let index = if stage == 10 { 9 } else if stage == 9 { 8 } else if stage > 3 { stage - 1 } else { stage };
         let kernel = if retained {
             &renderer.retain
         } else {
@@ -783,6 +942,22 @@ fn render_view(
                 }
                 pass.dispatch_workgroups(dispatch_count.div_ceil(64), 1, 1);
             }
+        } else if stage == 10 {
+            // Classify every cell, size the queue, trace it densely.
+            for (group, binding) in camera.groups[camera.current][9].iter().enumerate() {
+                pass.set_bind_group(group as u32, &**binding, &[]);
+            }
+            pass.dispatch_workgroups(dispatch_count.div_ceil(64), 1, 1);
+            pass.set_pipeline(&renderer.pixel_args.pipeline);
+            for (group, binding) in camera.groups[camera.current][10].iter().enumerate() {
+                pass.set_bind_group(group as u32, &**binding, &[]);
+            }
+            pass.dispatch_workgroups(1, 1, 1);
+            pass.set_pipeline(&renderer.pixel_trace.pipeline);
+            for (group, binding) in camera.groups[camera.current][11].iter().enumerate() {
+                pass.set_bind_group(group as u32, &**binding, &[]);
+            }
+            pass.dispatch_workgroups_indirect(&pixel_state.args, 0);
         } else {
             for (group, binding) in camera.groups[camera.current][index].iter().enumerate() {
                 pass.set_bind_group(group as u32, &**binding, &[]);
@@ -798,8 +973,10 @@ fn render_view(
     if let Some(ticket) = ticket {
         renderer
             .budget
-            .finish(encoder, &camera.queue.buffer, sun_flip_offset(count), &current.pool.buffer, ticket, executed);
+            .finish(encoder, &camera.queue.buffer, sun_flip_offset(count), &current.pool.buffer,
+                &pixel_state.stats.buffer, ticket, executed);
     }
+    camera.previous_clip = Some(clip);
     camera.current = 1 - camera.current;
     camera.valid = true;
     camera.last_frame = frame.0;

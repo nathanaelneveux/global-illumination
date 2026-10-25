@@ -233,23 +233,24 @@ fn native_coarse_page_faces_are_one_receiver_per_block() {
 /// and RGBA32Float normals. Synthetic depth uploads use R32Float; the
 /// ordinary/MSAA depth pipeline layouts are separately covered by
 /// native_view_runtime_pipelines.
-struct Rig {
+pub(super) struct Rig {
+    pub source: String,
     kernels: [Kernel; 4],
     depth: bevy::render::render_resource::Texture,
     normals: bevy::render::render_resource::Texture,
-    depth_view: bevy::render::render_resource::TextureView,
-    normal_view: bevy::render::render_resource::TextureView,
+    pub depth_view: bevy::render::render_resource::TextureView,
+    pub normal_view: bevy::render::render_resource::TextureView,
 }
 
 const RIG_SIZE: wgpu::Extent3d = wgpu::Extent3d { width: 16, height: 16, depth_or_array_layers: 1 };
 
 impl Rig {
-    fn new(device: &RenderDevice) -> Self {
+    pub(super) fn new(device: &RenderDevice) -> Self {
         let source = shader(false).replace("texture_depth_2d", "texture_2d<f32>")
             .replace("let z = textureLoad(depth, pixel, 0);",
                      "let z = textureLoad(depth, pixel, 0).x;");
         let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-            label: Some("Shared pool coverage"), source: ShaderSource::Wgsl(source.into()),
+            label: Some("Shared pool coverage"), source: ShaderSource::Wgsl(source.clone().into()),
         });
         let specs: [(&str, [&[u32]; 3]); 4] = [
             ("prepare_receiver_pool", [&[0, 1, 2, 3, 6], &[], &[0, 1, 5, 6, 7, 8, 9, 10, 17, 18]]),
@@ -274,10 +275,10 @@ impl Rig {
         let normals = texture(wgpu::TextureFormat::Rgba32Float);
         let depth_view = depth.create_view(&default());
         let normal_view = normals.create_view(&default());
-        Self { kernels, depth, normals, depth_view, normal_view }
+        Self { source, kernels, depth, normals, depth_view, normal_view }
     }
 
-    fn upload(&self, queue: &RenderQueue, depths: &[u8], normals: &[u8]) {
+    pub(super) fn upload(&self, queue: &RenderQueue, depths: &[u8], normals: &[u8]) {
         for (texture, bytes, row) in [(&self.depth, depths, 64), (&self.normals, normals, 256)] {
             queue.write_texture(wgpu::TexelCopyTextureInfo { texture, mip_level: 0,
                 origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, bytes,
@@ -285,7 +286,7 @@ impl Rig {
         }
     }
 
-    fn run(&self, device: &RenderDevice, queue: &RenderQueue, scene: &SceneBindings,
+    pub(super) fn run(&self, device: &RenderDevice, queue: &RenderQueue, scene: &SceneBindings,
         camera: &CameraState, grid: u32, frame: usize) {
         let count = grid * grid;
         let current = &camera.history[frame % 2];
