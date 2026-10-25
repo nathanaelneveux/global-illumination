@@ -132,3 +132,39 @@ unattributed in one run of a host-bound scene. Default gates and house are
 within their spreads. A first measurement round was void: an empty-chunk
 shortcut wrote material 0 (a solid) for air (`PageSample::air` now exists
 so hosts need not know GI's air value).
+
+## Update: coarse receivers
+
+Step 3: a coarse block's face is one view receiver. Regions carry their
+page's stride (header w bits 28-30); discovery keys a face by the block's
+minimum voxel with its surface at the block face centre, receiver identity
+compares surfaces (unit and block faces at one voxel differ), witnesses and
+corner sun span the block, and the material's far lookups and corner
+reconstruction step by blocks. Spatial reach (view pooling, pool coverage,
+the material's hole fill) is sixteen blocks rather than sixteen voxels: at
+a fixed 16 voxels new stride-8+ faces found no donors and showed black for
+a frame (walk flashes at the horizon in a first version). Block faces stay
+view-only; the world cache and edit priors keep unit faces.
+
+Receipts (M4, paced headless 1440p; baseline 277dcc1):
+
+| Far 48 (bands 1/2/4/8) | Baseline (2 runs) | Coarse receivers |
+| --- | --- | --- |
+| Active far receivers | 13.2k, 13.1k | 10.7k, 10.2k, 10.0k |
+| Mean receiver history | 207, 222 frames | 245, 237, 233 |
+| Frame p50 | 22.3, 22.1 ms | 21.5, 21.9, 21.6 ms |
+| Frame p95 / p99 | 25.6 / 27.7, 25.5 / 27.6 | 25.8 / 27.8, 26.5 / 28.4, 26.3 / 28.7 |
+| Presentation | 3.55, 3.49 ms | 3.32, 3.32, 3.16 ms |
+| Discovery | 1.14, 1.19 ms | 1.39, 1.42, 1.27 ms |
+
+The third coarse run is the final code (the first two predate the block
+reach). The `lod` flight (two runs each) is still pool-bound by near unit
+faces: active receivers and exhaustion are unchanged, mean history 10.5 ->
+13.7 frames, p50 97.8 -> 86.2 ms, p95 209 -> 232 ms, p99 745 -> 763 ms,
+noisy; its captures look the same. Default gates: static, tunnel and
+response within spread; walk flashes over five walks each, baseline 1132-5471
+(median 1459) and candidate 1024-4743 (median 2909), are indistinguishable
+(rank-sum 12 of 12.5), and the baseline shows the same late turn tail in one
+of two runs. Streaming discovery costs about 0.15 ms more (block lookups;
+paired runs 1.54 vs 1.39 ms) at equal presentation and frame times. House
+settling matches.

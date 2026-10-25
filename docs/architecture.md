@@ -294,6 +294,15 @@ payload. The BVW connector reads each chunk's stored samples at its stride
 (`chunk_stride`: padded data shape `samples + 2`), with no per-voxel
 generator calls; other shapes keep the full-resolution lookup.
 
+A coarse block's face is one view receiver. Regions record their page's
+stride (`NaadfRegion::stride_log2`, GPU header w bits 28-30, read by
+`voxel_stride`); discovery keys the face by the block's minimum voxel with
+its surface at the block face centre, witnesses and corner sun span the
+block, and the material looks far faces up the same way. Receiver identity
+compares the surface too, so a unit face and a block face at the same voxel
+are different receivers (an LoD change re-identifies). Block faces are
+view-only: the world cache and its edit priors hold unit faces.
+
 Normal scene construction reads one immutable host snapshot per dirty page
 (or the deterministic generator if unavailable), then applies that page's edit
 overlay. Workers hold copy-on-write overlay snapshots: later writes cannot alter

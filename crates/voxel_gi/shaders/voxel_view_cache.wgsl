@@ -5,6 +5,8 @@
 // the explicitly one-weight raw topology prior below, never filtered colors.
 fn shared_slot(receiver: ViewReceiver, material: u32) -> u32 {
     if view.cache.z == 0u || view.cache.x != cache_guard[0] { return 0xffffffffu; }
+    // The world cache holds unit faces; coarse blocks are view-only.
+    if receiver_stride(receiver) != 1.0 { return 0xffffffffu; }
     let header = cache_index[0];
     var bucket = receiver_hash(receiver) & header.x;
     for (var attempt = 0u; attempt < header.y; attempt++) {
@@ -107,6 +109,7 @@ fn prior_donor(voxel: vec3<i32>, face: u32) -> FacePrior {
     var key: ViewReceiver;
     key.voxel = voxel;
     key.face = face;
+    key.surface = vec3<f32>(voxel) + 0.5 + face_normal(face) * 0.5;
     var donor: FacePrior;
     let old = previous_owner(key);
     if old != 0xffffffffu {
@@ -144,6 +147,8 @@ fn bootstrap_face(receiver: ViewReceiver, pending: bool) -> FacePrior {
     let normal = vec3<i32>(face_normal(receiver.face));
     let air = origin + normal;
     var prior: FacePrior;
+    // Edit priors are unit faces; a coarse block starts from its own rays.
+    if receiver_stride(receiver) != 1.0 { return prior; }
     // A validated raster face proves its own exterior is air even while the
     // transport scene still contains the removed voxel. Other connections
     // still need known air. Never trace through this provisional topology.

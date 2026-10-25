@@ -18,6 +18,26 @@ fn prepass_position(pixel: vec2<i32>, z: f32) -> vec3<f32> {
 }
 
 fn prepass_receiver(pixel: vec2<i32>) -> ViewReceiver {
+    return block_receiver(prepass_voxel_receiver(pixel));
+}
+
+// A face of a coarse block is one receiver: the block's minimum voxel and its
+// face centre. Unit-stride faces are unchanged.
+fn block_receiver(r: ViewReceiver) -> ViewReceiver {
+    if r.face >= 6u { return r; }
+    let s = voxel_stride(r.voxel);
+    if s == 1 { return r; }
+    var block = r;
+    block.voxel = r.voxel & vec3(-s);
+    block.surface = vec3<f32>(block.voxel) + f32(s) * (0.5 + 0.5 * face_normal(r.face));
+    return block;
+}
+fn receiver_stride(r: ViewReceiver) -> f32 {
+    let u = (r.face / 2u + 1u) % 3u;
+    return 2.0 * (r.surface[u] - f32(r.voxel[u]));
+}
+
+fn prepass_voxel_receiver(pixel: vec2<i32>) -> ViewReceiver {
     var receiver: ViewReceiver;
     receiver.face = 0xffffffffu;
     let z = textureLoad(depth, pixel, 0);
@@ -107,7 +127,7 @@ fn traced_receiver(position: vec3<f32>, footprint: f32, fallback: ViewReceiver) 
 
 fn same_plane(a: ViewReceiver, b: ViewReceiver) -> bool {
     if a.face >= 6u || a.face != b.face { return false; }
-    return a.voxel[a.face / 2u] == b.voxel[b.face / 2u];
+    return a.surface[a.face / 2u] == b.surface[b.face / 2u];
 }
 
 // Receiver slots are global; screen tiles only own linked spatial indices.
@@ -141,10 +161,11 @@ fn tile_of_pixel(pixel: vec2<i32>) -> u32 {
 fn reproject_witness(receiver: ViewReceiver, packed: u32) -> vec2<i32> {
     let axis = receiver.face / 2u;
     let uv = unpack2x16unorm(packed);
+    let s = receiver_stride(receiver);
     var point = vec3<f32>(receiver.voxel);
     point[axis] = receiver.surface[axis];
-    point[(axis + 1u) % 3u] += uv.x;
-    point[(axis + 2u) % 3u] += uv.y;
+    point[(axis + 1u) % 3u] += uv.x * s;
+    point[(axis + 2u) % 3u] += uv.y * s;
     let clip = view.clip_from_world * vec4(point, 1.0);
     if clip.w <= 0.0 { return vec2(-1); }
     let projected = clip.xy / clip.w * vec2(0.5, -0.5) + 0.5;
@@ -153,7 +174,7 @@ fn reproject_witness(receiver: ViewReceiver, packed: u32) -> vec2<i32> {
 
 fn pack_witness(receiver: ViewReceiver, pixel: vec2<i32>) -> u32 {
     let z = textureLoad(depth, pixel, 0);
-    let local = prepass_position(pixel, z) - vec3<f32>(receiver.voxel);
+    let local = (prepass_position(pixel, z) - vec3<f32>(receiver.voxel)) / receiver_stride(receiver);
     let axis = receiver.face / 2u;
     let uv = vec2(local[(axis + 1u) % 3u], local[(axis + 2u) % 3u]);
     return pack2x16unorm(clamp(uv, vec2(1.0 / 65535.0), vec2(1.0 - 1.0 / 65535.0)));
@@ -161,9 +182,16 @@ fn pack_witness(receiver: ViewReceiver, pixel: vec2<i32>) -> u32 {
 
 fn receiver_exists(receiver: ViewReceiver) -> bool {
     if receiver.face >= 6u { return false; }
-    let voxel = vec3<i32>(receiver.voxel.x, receiver.voxel.y, receiver.voxel.z);
-    return voxel_material(receiver.voxel) != 256u
-        && voxel_material(voxel + vec3<i32>(face_normal(receiver.face))) == 256u;
+    // The voxel just outside the face; for a coarse block that is past the
+    // block (any voxel of it, the block's minimum once canonical).
+    let cell = voxel_cell(receiver.voxel);
+    if cell.x == 256u { return false; }
+    let s = 1 << cell.y;
+    let axis = receiver.face / 2u;
+    let block = receiver.voxel[axis] & -s;
+    var outside = vec3<i32>(receiver.voxel.x, receiver.voxel.y, receiver.voxel.z);
+    outside[axis] = select(block - 1, block + s, (receiver.face & 1u) == 0u);
+    return voxel_material(outside) == 256u;
 }
 
 
@@ -249,11 +277,13 @@ fn prepare_receiver_pool(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 
 fn pool_covers(tile: u32, receiver: ViewReceiver) -> bool {
+    // Presentation's reach: sixteen voxels, or sixteen blocks.
+    let reach = 16.0 * receiver_stride(receiver);
     var entry = atomicLoad(&pool.tiles[tile].head);
     for (var visited = 0u; entry != 0u && visited < view.grid.z; visited++) {
         let other = receivers[entry - 1u];
         let delta = other.surface - receiver.surface;
-        if same_plane(other, receiver) && dot(delta, delta) <= 256.0 { return true; }
+        if same_plane(other, receiver) && dot(delta, delta) <= reach * reach { return true; }
         entry = pool.slots[entry - 1u].next;
     }
     // Only a missing local plane needs a global lookup. This immutable index

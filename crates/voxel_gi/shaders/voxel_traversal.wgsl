@@ -46,22 +46,37 @@ fn in_bounds(region: vec3<i32>) -> bool {
 // Point lookup for raster receiver identity and emission. 256 denotes air or
 // absent geometry; transport rays retain their separate unknown-space policy.
 fn voxel_material(voxel: vec3<i32>) -> u32 {
+    return voxel_cell(voxel).x;
+}
+// Material and the region's stride log2 (see `voxel_stride`) in one lookup.
+fn voxel_cell(voxel: vec3<i32>) -> vec2<u32> {
     let region = vec3<i32>(floor(vec3<f32>(voxel) / 16.0));
-    if !in_bounds(region) { return 256u; }
+    if !in_bounds(region) { return vec2(256u, 0u); }
     let index = lookup_region(region);
-    if index == 0xffffffffu { return 256u; }
+    if index == 0xffffffffu { return vec2(256u, 0u); }
     let metadata = regions[index];
-    if metadata.x == 1u { return 256u; }
-    if metadata.x != 3u { return metadata.y; }
+    let stride = (metadata.w >> 28u) & 7u;
+    if metadata.x == 1u { return vec2(256u, stride); }
+    if metadata.x != 3u { return vec2(metadata.y, stride); }
     let local = vec3<u32>(voxel & vec3<i32>(15));
     let brick = local / 4u;
     let word = cells[metadata.y + (brick.z * 4u + brick.y) * 4u + brick.x];
-    if (word & 3u) == 0u { return 256u; }
-    if (word & 3u) == 1u { return word >> 2u; }
+    if (word & 3u) == 0u { return vec2(256u, stride); }
+    if (word & 3u) == 1u { return vec2(word >> 2u, stride); }
     let inner = local & vec3<u32>(3u);
     let cell_index = (inner.z * 4u + inner.y) * 4u + inner.x;
     let cell = (cells[(word >> 2u) + cell_index / 2u] >> ((cell_index & 1u) * 16u)) & 65535u;
-    return select(256u, cell >> 1u, (cell & 1u) != 0u);
+    return vec2(select(256u, cell >> 1u, (cell & 1u) != 0u), stride);
+}
+// A coarse page (`PageSample` stride > 1) is solid or air in aligned blocks
+// of its stride; header w bits 28-30 hold its log2. The view tier gives each
+// block face one receiver, keyed by the block's minimum voxel.
+fn voxel_stride(voxel: vec3<i32>) -> i32 {
+    let region = vec3<i32>(floor(vec3<f32>(voxel) / 16.0));
+    if !in_bounds(region) { return 1; }
+    let index = lookup_region(region);
+    if index == 0xffffffffu { return 1; }
+    return 1 << ((regions[index].w >> 28u) & 7u);
 }
 fn unpack_bytes(value: u32) -> vec3<i32> {
     return vec3<i32>(i32(value & 255u), i32((value >> 8u) & 255u), i32((value >> 16u) & 255u));

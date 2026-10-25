@@ -83,6 +83,9 @@ impl VoxelMaterialTransportTable {
 #[derive(Clone)]
 pub struct NaadfRegion {
     pub coordinate: IVec3,
+    /// log2 of the host page's stride (`PageSample`): coarse cells are
+    /// solid blocks, and the view tier keys their faces by block.
+    pub stride_log2: u8,
     storage: RegionStorage,
     pub any_solid: bool,
     /// Geometry-owned material presence, independent of the live optical table.
@@ -145,6 +148,7 @@ impl NaadfRegion {
         if materials.iter().all(|material| *material == AIR) {
             return Self {
                 coordinate,
+                stride_log2: 0,
                 storage: RegionStorage::Empty,
                 any_solid: false,
                 material_mask: [0; 4],
@@ -155,6 +159,7 @@ impl NaadfRegion {
             material_mask[materials[0] as usize / 64] |= 1 << (materials[0] % 64);
             return Self {
                 coordinate,
+                stride_log2: 0,
                 storage: RegionStorage::Uniform(materials[0]),
                 any_solid: true,
                 material_mask,
@@ -181,6 +186,7 @@ impl NaadfRegion {
             }
             return Self {
                 coordinate,
+                stride_log2: 0,
                 any_solid: bricks.iter().any(|material| *material != AIR),
                 storage: RegionStorage::Bricks(Box::new(bricks)),
                 material_mask,
@@ -204,6 +210,7 @@ impl NaadfRegion {
         let any_solid = brick_occupied.iter().any(|occupied| *occupied);
         Self {
             coordinate,
+            stride_log2: 0,
             storage: RegionStorage::Dense {
                 materials: materials.into_boxed_slice(),
                 brick_occupied: brick_occupied.into_boxed_slice(),
@@ -215,6 +222,11 @@ impl NaadfRegion {
 
     fn rebuild(&self, materials: Vec<u16>) -> Self {
         Self::build(self.coordinate, materials)
+    }
+
+    fn with_stride(mut self, stride_log2: u8) -> Self {
+        self.stride_log2 = stride_log2;
+        self
     }
 
     /// Empty-space bounds of the 64 voxels in `brick` (within the brick,
@@ -391,9 +403,20 @@ impl TransportScene {
         keys
     }
 
+    #[cfg(test)]
     pub fn with_page_delta(
         previous: &Self,
         changed_pages: Vec<(IVec3, Vec<u16>)>,
+        removed_pages: &[IVec3],
+    ) -> Self {
+        let pages = changed_pages.into_iter().map(|(page, materials)| (page, materials, 0)).collect();
+        Self::with_strided_page_delta(previous, pages, removed_pages)
+    }
+
+    /// `with_page_delta` with each page's stride (log2, `PageSample`).
+    pub fn with_strided_page_delta(
+        previous: &Self,
+        changed_pages: Vec<(IVec3, Vec<u16>, u8)>,
         removed_pages: &[IVec3],
     ) -> Self {
         let mut regions = previous.regions.clone();
@@ -412,7 +435,7 @@ impl TransportScene {
         // and starving rendering/physics on lower-core-count machines.
         let built: Vec<_> = changed_pages
             .into_iter()
-            .flat_map(|(page, materials)| build_page_regions(page, &materials, previous))
+            .flat_map(|(page, materials, stride)| build_page_regions(page, &materials, stride, previous))
             .collect();
         for region in built {
             if previous
@@ -841,6 +864,7 @@ pub fn rebuild_surface_probes(
 fn build_page_regions(
     page: IVec3,
     page_materials: &[u16],
+    stride_log2: u8,
     previous: &TransportScene,
 ) -> Vec<Arc<NaadfRegion>> {
     assert_eq!(page_materials.len(), volume_len(PAGE_SIZE));
@@ -859,6 +883,7 @@ fn build_page_regions(
         }
         let coordinate = page * 2 + offset;
         if let Some(region) = previous.regions.get(&coordinate)
+            && region.stride_log2 == stride_log2
             && region.matches_materials(&materials)
         {
             regions.push(Arc::clone(region));
@@ -867,7 +892,7 @@ fn build_page_regions(
                 Some(old) => old.rebuild(materials),
                 None => NaadfRegion::build(coordinate, materials),
             };
-            regions.push(Arc::new(region));
+            regions.push(Arc::new(region.with_stride(stride_log2)));
         }
     }
     regions

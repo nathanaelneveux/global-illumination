@@ -11,6 +11,7 @@ fn full_region_reference(coordinate: IVec3, materials: Vec<u16>) -> NaadfRegion 
     if materials.iter().all(|material| *material == AIR) {
         return NaadfRegion {
             coordinate,
+            stride_log2: 0,
             storage: RegionStorage::Empty,
             any_solid: false,
             material_mask: [0; 4],
@@ -21,6 +22,7 @@ fn full_region_reference(coordinate: IVec3, materials: Vec<u16>) -> NaadfRegion 
         material_mask[materials[0] as usize / 64] |= 1 << (materials[0] % 64);
         return NaadfRegion {
             coordinate,
+            stride_log2: 0,
             storage: RegionStorage::Uniform(materials[0]),
             any_solid: true,
             material_mask,
@@ -73,6 +75,7 @@ fn full_region_reference(coordinate: IVec3, materials: Vec<u16>) -> NaadfRegion 
     let any_solid = brick_occupied.iter().any(|occupied| *occupied);
     let region = NaadfRegion {
         coordinate,
+        stride_log2: 0,
         storage: RegionStorage::Dense {
             materials: materials.into_boxed_slice(),
             brick_occupied: brick_occupied.into_boxed_slice(),
@@ -169,7 +172,7 @@ fn rebuild_on_any_change(
     }
     let built: Vec<_> = changed_pages
         .into_iter()
-        .flat_map(|(page, materials)| build_page_regions(page, &materials, previous))
+        .flat_map(|(page, materials)| build_page_regions(page, &materials, 0, previous))
         .collect();
     for region in built {
         regions.insert(region.coordinate, region);

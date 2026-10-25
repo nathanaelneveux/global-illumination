@@ -358,7 +358,8 @@ fn native_new_face_bootstrap_is_weak_and_does_not_restart_sampling() {
         queue.submit([encoder.finish()]);
         f.camera.history[1].receivers.upload(&f.gpu.context.device, queue,
             &ShaderBuffer::from(vec![Receiver { voxel: position, face: orientation as u32,
-                surface: position.as_vec3(), sequence: 64 }]).data.unwrap()).unwrap();
+                surface: position.as_vec3() + Vec3::splat(0.5) + FACE_OFFSETS[orientation].as_vec3() * 0.5,
+                sequence: 64 }]).data.unwrap()).unwrap();
         let hash = pcg(pcg(pcg(position.x as u32) ^ position.y as u32) ^ position.z as u32)
             ^ pcg(orientation as u32 + 1);
         queue.write_buffer(&f.camera.history[1].hash.buffer, u64::from(hash & mask) * 4, &1u32.to_le_bytes());

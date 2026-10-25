@@ -111,14 +111,15 @@ var<storage, read> far_view: FarOutput;
 
 // Geometry-aware upsampling only. No value is reused across an unrelated
 // face orientation or depth plane, even at foreground/background edges.
-fn far_face_index(voxel: vec3<i32>, face: u32) -> u32 {
+// `voxel` is the receiver key (a coarse block's minimum voxel) and `surface`
+// its face centre, which also tells unit and block faces apart.
+fn far_face_index(voxel: vec3<i32>, face: u32, surface: vec3<f32>) -> u32 {
     var slot = (hash_voxel(voxel) ^ pcg(face + 1u)) & far_view.shape.w;
     for (var step = 0u; step < 64u; step++) {
         let entry = far_view.keys[slot];
         if entry == 0u { break; }
         let value = far_view.pixels[entry - 1u];
-        let donor = vec3<i32>(floor(value.surface - vec3<f32>(FACE_NORMALS[face]) * 0.01));
-        if value.face == face && all(donor == voxel) { return entry - 1u; }
+        if value.face == face && all(value.surface == surface) { return entry - 1u; }
         slot = (slot + 1u) & far_view.shape.w;
     }
     return 0xffffffffu;
@@ -128,9 +129,12 @@ fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>) -> v
     if far_view.shape.z == 0u { return vec4(0.0); }
     let uv = (pixel - vec2<f32>(far_view.viewport.xy)) / vec2<f32>(far_view.viewport.zw);
     if any(uv < vec2(0.0)) || any(uv >= vec2(1.0)) { return vec4(0.0); }
-    let voxel = vec3<i32>(floor(position - normal * 0.01));
-    let surface = vec3<f32>(voxel) + 0.5 + normal * 0.5;
-    let exact = far_face_index(voxel, face_index_of(normal));
+    // Exact keys need the face's axis, not the interpolated mesh normal.
+    let face = face_index_of(normal);
+    let s = voxel_stride(vec3<i32>(floor(position - normal * 0.01)));
+    let voxel = vec3<i32>(floor(position - normal * 0.01)) & vec3(-s);
+    let surface = vec3<f32>(voxel) + f32(s) * (0.5 + 0.5 * vec3<f32>(FACE_NORMALS[face]));
+    let exact = far_face_index(voxel, face, surface);
     if exact != 0xffffffffu {
         let value = far_view.pixels[exact];
         if value.evidence > 0.0 { return vec4(value.irradiance, 1.0); }
@@ -158,12 +162,13 @@ fn far_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>) -> v
                 if donor.face >= 6u { continue; }
                 if donor.evidence == 0.0 { continue; }
                 if dot(vec3<f32>(FACE_NORMALS[donor.face]), normal) < 0.99 { continue; }
-                let delta = donor.surface - surface;
+                // Radii in blocks: a coarse page's faces are `s` apart.
+                let delta = (donor.surface - surface) / f32(s);
                 let d2 = dot(delta, delta);
                 if d2 > 256.0 { continue; }
                 let offset = abs(dot(delta, normal));
                 let w = 1.0 / (0.25 + d2);
-                if offset <= 0.05 {
+                if offset <= 0.05 / f32(s) {
                     sum += donor.irradiance * w;
                     weight += w;
                 } else if offset <= 4.05 {
@@ -238,11 +243,14 @@ fn far_sun(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     let dominant = max(abs(normal.x), max(abs(normal.y), abs(normal.z)));
     let axis = select(vec3(0.0), sign(normal), abs(normal) == vec3(dominant));
     let face = face_index_of(axis);
-    let voxel = vec3<i32>(floor(position - axis * 0.01));
-    var u = vec3<i32>(0, 1, 0);
-    var v = vec3<i32>(0, 0, 1);
-    if abs(axis.y) > 0.5 { u = vec3<i32>(1, 0, 0); }
-    else if abs(axis.z) > 0.5 { u = vec3<i32>(1, 0, 0); v = vec3<i32>(0, 1, 0); }
+    // A coarse block's corners are its block corners, `s` voxels apart.
+    let s = voxel_stride(vec3<i32>(floor(position - axis * 0.01)));
+    let voxel = vec3<i32>(floor(position - axis * 0.01)) & vec3(-s);
+    let surface = vec3<f32>(voxel) + f32(s) * (0.5 + axis * 0.5);
+    var u = vec3<i32>(0, s, 0);
+    var v = vec3<i32>(0, 0, s);
+    if abs(axis.y) > 0.5 { u = vec3<i32>(s, 0, 0); }
+    else if abs(axis.z) > 0.5 { u = vec3<i32>(s, 0, 0); v = vec3<i32>(0, s, 0); }
     var words = vec4<u32>(0u);
     if far_view.shape.z != 0u {
         // The face itself first, then its eight coplanar neighbours.
@@ -250,7 +258,8 @@ fn far_sun(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
         for (var n = 0u; n < 9u && any(words == vec4(0u)); n++) {
             let du = i32(order[n] % 3u) - 1;
             let dv = i32(order[n] / 3u) - 1;
-            let index = far_face_index(voxel + u * du + v * dv, face);
+            let offset = u * du + v * dv;
+            let index = far_face_index(voxel + offset, face, surface + vec3<f32>(offset));
             if index == 0xffffffffu { continue; }
             let donor = far_view.pixels[index].sky;
             for (var c = 0u; c < 4u; c++) {
@@ -263,8 +272,8 @@ fn far_sun(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
         }
     }
     if any(words == vec4(0u)) {
-        let base = vec3<f32>(voxel) + max(axis, vec3(0.0));
-        let tiny = fragment_footprint >= 0.5;
+        let base = vec3<f32>(voxel) + max(axis, vec3(0.0)) * f32(s);
+        let tiny = fragment_footprint >= 0.5 * f32(s);
         var center_word = 0u;
         for (var c = 0u; c < 4u; c++) {
             if words[c] != 0u { continue; }
@@ -287,7 +296,7 @@ fn far_sun(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
             if tiny { center_word = word; }
         }
     }
-    let local = position - vec3<f32>(voxel);
+    let local = (position - vec3<f32>(voxel)) / f32(s * s);
     return resolve_sky_corners(words, axis, vec2(dot(local, vec3<f32>(u)), dot(local, vec3<f32>(v))));
 }
 
@@ -332,8 +341,9 @@ fn corner_value(center: vec4<f32>, edge_u: vec4<f32>, edge_v: vec4<f32>, diagona
     return sum.rgb / max(sum.w, 0.000001);
 }
 
-fn display_face(voxel: vec3<i32>, face: u32) -> vec4<f32> {
-    let index = far_face_index(voxel, face);
+fn display_face(voxel: vec3<i32>, face: u32, s: i32) -> vec4<f32> {
+    let surface = vec3<f32>(voxel) + f32(s) * (0.5 + 0.5 * vec3<f32>(FACE_NORMALS[face]));
+    let index = far_face_index(voxel, face, surface);
     if index != 0xffffffffu {
         let value = far_view.pixels[index];
         return vec4(value.irradiance, min(value.evidence, 1.0));
@@ -343,38 +353,40 @@ fn display_face(voxel: vec3<i32>, face: u32) -> vec4<f32> {
 
 // Virtual-corner interpolation over visible faces. The view index only
 // contains visible faces; missing neighbours never become invented paths or
-// borrowed physical history. All of this remains presentation-only.
+// borrowed physical history. All of this remains presentation-only. A coarse
+// block's neighbours are the blocks beside it.
 fn corner_irradiance(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     if transport_settings.enabled == 0u {
         return vec4(0.0);
     }
-    let voxel = vec3<i32>(floor(position - normal * 0.01));
+    let s = voxel_stride(vec3<i32>(floor(position - normal * 0.01)));
+    let voxel = vec3<i32>(floor(position - normal * 0.01)) & vec3(-s);
     var face = 0u;
-    var u = vec3<i32>(0, 1, 0);
-    var v = vec3<i32>(0, 0, 1);
+    var u = vec3<i32>(0, s, 0);
+    var v = vec3<i32>(0, 0, s);
     if abs(normal.y) > 0.5 {
         face = 2u;
-        u = vec3<i32>(1, 0, 0);
+        u = vec3<i32>(s, 0, 0);
     } else if abs(normal.z) > 0.5 {
         face = 4u;
-        u = vec3<i32>(1, 0, 0);
-        v = vec3<i32>(0, 1, 0);
+        u = vec3<i32>(s, 0, 0);
+        v = vec3<i32>(0, s, 0);
     }
     let axis = face / 2u;
     face += select(0u, 1u, normal[axis] < 0.0);
-    let center = display_face(voxel, face);
+    let center = display_face(voxel, face, s);
     if transport_settings.reconstruction == 0u {
         return center;
     }
-    let left = display_face(voxel - u, face);
-    let right = display_face(voxel + u, face);
-    let bottom = display_face(voxel - v, face);
-    let top = display_face(voxel + v, face);
-    let c00 = corner_value(center, left, bottom, display_face(voxel - u - v, face));
-    let c10 = corner_value(center, right, bottom, display_face(voxel + u - v, face));
-    let c01 = corner_value(center, left, top, display_face(voxel - u + v, face));
-    let c11 = corner_value(center, right, top, display_face(voxel + u + v, face));
-    let local = position - vec3<f32>(voxel);
+    let left = display_face(voxel - u, face, s);
+    let right = display_face(voxel + u, face, s);
+    let bottom = display_face(voxel - v, face, s);
+    let top = display_face(voxel + v, face, s);
+    let c00 = corner_value(center, left, bottom, display_face(voxel - u - v, face, s));
+    let c10 = corner_value(center, right, bottom, display_face(voxel + u - v, face, s));
+    let c01 = corner_value(center, left, top, display_face(voxel - u + v, face, s));
+    let c11 = corner_value(center, right, top, display_face(voxel + u + v, face, s));
+    let local = (position - vec3<f32>(voxel)) / f32(s * s);
     let uv = clamp(vec2(dot(local, vec3<f32>(u)), dot(local, vec3<f32>(v))), vec2(0.0), vec2(1.0));
     return vec4(mix(mix(c00, c10, uv.x), mix(c01, c11, uv.x), uv.y), center.w);
 }

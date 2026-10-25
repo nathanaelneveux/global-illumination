@@ -65,7 +65,7 @@ fn receiver_hash(r: ViewReceiver) -> u32 {
     return hash_voxel(r.voxel) ^ pcg(r.face + 1u);
 }
 fn same_receiver(a: ViewReceiver, b: ViewReceiver) -> bool {
-    return a.face == b.face && all(a.voxel == b.voxel);
+    return a.face == b.face && all(a.voxel == b.voxel) && all(a.surface == b.surface);
 }
 fn owner_of(r: ViewReceiver) -> u32 {
     var slot = receiver_hash(r) & view.grid.w;
@@ -155,7 +155,10 @@ fn reproject_paths(@builtin(global_invocation_id) id: vec3<u32>) {
         var v = vec3(0.0, 0.0, 1.0);
         if receiver.face / 2u == 1u { u = vec3(1.0, 0.0, 0.0); }
         else if receiver.face / 2u == 2u { u = vec3(1.0, 0.0, 0.0); v = vec3(0.0, 1.0, 0.0); }
-        let base = vec3<f32>(receiver.voxel) + max(normal, vec3(0.0));
+        let s = receiver_stride(receiver);
+        u *= s;
+        v *= s;
+        let base = vec3<f32>(receiver.voxel) + max(normal, vec3(0.0)) * s;
         var packed = 0u;
         for (var corner = 0u; corner < 4u; corner++) {
             let position = base + u * f32(corner & 1u) + v * f32(corner >> 1u);
@@ -361,8 +364,11 @@ fn mean_variance(estimate: ViewEstimate, reference: f32) -> f32 {
 fn coplanar_donor(receiver: ViewReceiver, normal: vec3<f32>, candidate: u32) -> bool {
     let donor = receivers[candidate];
     if donor.face != receiver.face { return false; }
+    // Sixteen voxels, or sixteen blocks of a coarse page: block faces are
+    // `s` apart, and a fixed radius would leave far blocks no neighbours.
     let delta = donor.surface - receiver.surface;
-    return abs(dot(delta, normal)) <= 0.05 && dot(delta, delta) <= 256.0 && owner_of(donor) == candidate;
+    let reach = 16.0 * receiver_stride(receiver);
+    return abs(dot(delta, normal)) <= 0.05 && dot(delta, delta) <= reach * reach && owner_of(donor) == candidate;
 }
 
 @compute @workgroup_size(64)

@@ -249,14 +249,16 @@ pub(super) fn start_scene_task(
             .into_iter()
             .map(|page| {
                 let origin = page * PAGE_EDGE as i32;
-                let mut materials = source.sample_page(page, full_resample.contains(&page)).into_dense();
+                let sample = source.sample_page(page, full_resample.contains(&page));
+                let stride = sample.stride().trailing_zeros() as u8;
+                let mut materials = sample.into_dense();
                 if let Some(edits) = edits.get(&page) {
                     apply_page_edits(&mut materials, origin, edits);
                 }
-                (page, materials)
+                (page, materials, stride)
             })
             .collect();
-        let scene = Arc::new(TransportScene::with_page_delta(
+        let scene = Arc::new(TransportScene::with_strided_page_delta(
             &previous_scene,
             changed_pages,
             &removed_pages,

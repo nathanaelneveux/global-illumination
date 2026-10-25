@@ -132,7 +132,7 @@ impl PackedScene {
             };
             let top = scene.top_level.field(key);
             let negative = pack_bytes(top.negative());
-            let positive = pack_bytes(top.positive());
+            let positive = pack_bytes(top.positive()) | stride_bits(source);
             let reusable = if reuse_enabled {
                 self.regions
                     .get(&key)
@@ -254,7 +254,8 @@ impl PackedScene {
             for (&key, allocation) in &self.regions {
                 let top = scene.top_level.field(key);
                 let header = &mut self.headers[allocation.header];
-                let (negative, positive) = (pack_bytes(top.negative()), pack_bytes(top.positive()));
+                let positive = pack_bytes(top.positive()) | stride_bits(&allocation.source);
+                let negative = pack_bytes(top.negative());
                 if header.z != negative || header.w != positive {
                     header.z = negative;
                     header.w = positive;
@@ -422,6 +423,12 @@ fn merge_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
     merged
 }
 
+/// Header word w: positive skip bounds in bytes 0-2; bits 28-30 hold the
+/// region's stride log2 (`voxel_stride` in voxel_traversal.wgsl).
+fn stride_bits(region: &NaadfRegion) -> u32 {
+    u32::from(region.stride_log2) << 28
+}
+
 fn pack_bytes(value: UVec3) -> u32 {
     value.x | (value.y << 8) | (value.z << 16)
 }
@@ -583,6 +590,39 @@ mod tests {
                 }
             }
             _ => panic!("invalid brick state"),
+        }
+    }
+
+    #[test]
+    fn coarse_page_headers_carry_their_stride() {
+        let mut page = vec![AIR; volume_len(PAGE_SIZE)];
+        for z in 0..32 {
+            for x in 0..32 {
+                for y in 0..8 {
+                    page[linear_index(UVec3::new(x, y, z), PAGE_SIZE)] = 3;
+                }
+            }
+        }
+        let coarse = TransportScene::with_strided_page_delta(
+            &TransportScene::default(),
+            vec![(IVec3::ZERO, page.clone(), 3)],
+            &[],
+        );
+        let mut packed = PackedScene::default();
+        packed.update(&coarse);
+        assert!(!packed.regions.is_empty());
+        for allocation in packed.regions.values() {
+            let header = packed.headers[allocation.header];
+            assert_eq!(header.w >> 28, 3, "stride log2 in header w bits 28-30");
+            assert_eq!(header.w & 0x00ff_ffff, header.w & 0x0fff_ffff, "skip bounds unchanged");
+        }
+        // The same materials at full resolution are a different region: the
+        // view keys its faces per voxel again, so it must not be reused.
+        let full = TransportScene::with_strided_page_delta(&coarse, vec![(IVec3::ZERO, page, 0)], &[]);
+        assert_eq!(full.changed_regions(&coarse).len(), coarse.regions.len());
+        packed.update(&full);
+        for allocation in packed.regions.values() {
+            assert_eq!(packed.headers[allocation.header].w >> 28, 0);
         }
     }
 
