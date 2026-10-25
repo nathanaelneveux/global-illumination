@@ -516,7 +516,12 @@ sun; `report_sun_flips`). The flips ride back with the view tier's timing
 receipt, merge into region-sized buckets (`sun_changes.rs`) and publish as
 Light changes at most every 250 ms, which cut the bounce history the border
 changes. Edits flip corners too; a second cut a few frames after the footprint
-only caps again, losing those frames' samples.
+only caps again, losing those frames' samples. The world cache keeps each
+visible face's last corner word (resident record 8), so a face re-entering
+view compares it with its fresh corners and reports a shadow that moved
+while it was away (`native_returning_face_reports_the_sun_change_it_missed`).
+Off-screen faces are not re-checked until they are seen again; beyond the
+cache radius there is no kept history to go stale.
 
 Until 2026-10-24 a CPU sky cache traced world-cache corners in sky-only GPU
 batches, kept them in spatial buckets, and published corner flips as Light
