@@ -156,3 +156,47 @@ measured. Branch default is now `voxel_pixels: 8`.
 The tier-off lod control crashed once on the receiver hash overflow
 assertion (`timing.rs`, 64 failed linear probes); a rerun was clean. That
 path is main's, not this branch's.
+
+## Update: area measures
+
+`pixel_tier.measure` selects the ownership test: `VoxelSide` (above),
+`VoxelArea` (a full-resolution voxel's rough covered area, side squared
+times the cosine to the view ray, under `voxel_pixels` pixels) or
+`BlockArea` (the same for the face's LoD block). All three are computed
+identically by discovery, the pass and the material.
+
+| Run | Frame p50 / p95 / p99 ms | Fixed ms | Receivers | Owned cells | Cell history |
+| --- | --- | --- | --- | --- | --- |
+| default off | 23.4 / 25.6 / 27.1 | 3.52 | 11.0k | 0 | - |
+| default side 12 | 23.5 / 25.5 / 27.0 | 4.09 | 8.0k | 12.2k | 17 |
+| default voxel area 64 | 23.5 / 25.4 / 26.1 | 4.21 | 4.8k | 28.0k | 6 |
+| default voxel area 100 | 23.4 / 25.4 / 26.4 | 4.61 | 3.8k | 36.9k | 6 |
+| default block area 64 | 23.5 / 25.4 / 26.7 | 4.34 | 4.8k | 27.9k | 7 |
+| far-48 off | 22.4 / 27.3 / 28.8 | 4.25 | 11.6k | 0 | - |
+| far-48 side 8 | 22.0 / 25.5 / 27.2 | 4.98 | 8.7k | 20.1k | 22 |
+| far-48 voxel area 36 | 21.8 / 25.3 / 27.1 | 5.81 | 6.7k | 25.8k | 11 |
+| far-48 voxel area 64 | 22.2 / 24.3 / 26.9 | 6.22 | 4.8k | 40.1k | 12 |
+| far-48 block area 36 | 21.8 / 24.9 / 26.6 | 5.59 | 7.8k | 16.3k | 3 |
+| far-48 block area 64 | 22.6 / 25.1 / 26.6 | 5.90 | 6.0k | 26.7k | 5 |
+| lod off | 91 / 205-216 / 790-887 | 28.3 | 40k | 0 | - |
+| lod side 8 / 12 | 85.5 / 227 / 789, 85.6 / 237 / 775 | 10.7, 6.7 | 0 | 287k, 296k | 6 |
+| lod voxel area 16 / 36 / 64 | 84.8 / 225 / 767, 86.8 / 246 / 930, 86.1 / 252 / 911 | 10.7, 8.5, 7.8 | 18k, 2k, 0 | 200-290k | 6 |
+| lod block area 16 / 36 / 64 | 83.2 / 216 / 791, 87.9 / 256 / 907, 87.7 / 253 / 889 | 16.4, 9.8, 9.8 | 22k, 2.3k, 74 | 191-293k | 6 |
+
+The area tests hand grazing ground to the far tier much nearer the camera
+(28k cells and 4.8k receivers in the default lab at 64, against 12k and 8k
+at side 12). That costs more GPU than it saves where faces are cheap
+(default lab, far-48) and shortens cell history to about 6 samples, since
+nearer ground reprojects less reliably. In the lod flight all three tests
+land at 7-11 ms against 28 off. Voxel and block area differ little; block
+area keeps a few more receivers where strides are large. Far-48 tails are
+better with the tier on in every form (p95 24.3-25.5 against 27.3 off; one
+run each).
+
+Seam: the coverage map at voxel area 64 shows the expected checkerboard on
+mid-distance terraces (tops per-pixel, risers per-face at the same
+distance), but the settled image matches tier-off there by eye. Settled
+FLIP against off: default lab 0.003-0.004 (off-vs-off 0.0012), far-48
+0.007-0.011 (far-48 at side 1, which owns nothing, reads 0.0026). A few
+pixels in the map have neither tier's value (no cell sample nearby and no
+receiver to fill from). Motion and flicker at the seam are not measured.

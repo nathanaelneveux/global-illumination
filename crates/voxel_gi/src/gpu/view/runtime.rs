@@ -739,7 +739,9 @@ fn render_view(
             let scale = view.clip_from_view.y_axis.y * view.viewport.w as f32 * 0.5;
             forward.extend(scale)
         },
-        pixel_grid: UVec4::new(pixel_cells.x, pixel_cells.y, pixel_size, u32::from(pixel_enabled)),
+        // w: enabled (bit 0), measure (bits 1-2; `pixel_owned`).
+        pixel_grid: UVec4::new(pixel_cells.x, pixel_cells.y, pixel_size,
+            u32::from(pixel_enabled) | (settings.pixel.measure as u32) << 1),
         pixel_tune: Vec4::new(
             settings.pixel.voxel_pixels,
             settings.pixel.history,

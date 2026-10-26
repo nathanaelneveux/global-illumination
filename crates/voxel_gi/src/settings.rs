@@ -56,9 +56,12 @@ pub struct VoxelGiSettings {
     pub(crate) scheduler: SchedulerSettings,
 }
 
-/// EXPERIMENT: per-pixel lighting where a full-resolution voxel projects
-/// under `voxel_pixels` pixels across (a distance band: about 1,740 /
-/// `voxel_pixels` voxels at 1440p and a 45 degree field of view).
+/// EXPERIMENT: per-pixel lighting where a face is small on screen, by
+/// `measure` against `voxel_pixels`. `VoxelSide`: a full-resolution voxel
+/// under that many pixels across (a distance band: about 1,740 / value
+/// voxels at 1440p and a 45 degree field of view). `VoxelArea`: its rough
+/// covered area (side squared times the cosine to the view ray) under that
+/// many pixels. `BlockArea`: the same for the face's LoD block.
 /// Each `cell`x`cell` block of pixels traces one path per frame (one of
 /// `rate` frames once its history is long) from a jittered pixel, keeps a
 /// reprojected screen-space history of up to `history` samples, and the
@@ -67,10 +70,10 @@ pub struct VoxelGiSettings {
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PixelTierSettings {
-    /// Projected size in pixels of a full-resolution voxel below which its
-    /// pixels are per-pixel lit, whatever the LoD stride or viewing angle.
-    /// 0 disables the tier.
+    /// Threshold in pixels (side) or pixels covered (areas); 0 disables the
+    /// tier.
     pub voxel_pixels: f32,
+    pub measure: PixelMeasure,
     /// Pixels per side of one traced cell (1-4).
     pub cell: u32,
     /// Maximum temporal history in samples.
@@ -84,18 +87,28 @@ pub struct PixelTierSettings {
     pub bounces: u32,
 }
 
+/// How `PixelTierSettings` decides a face is small (see there).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PixelMeasure {
+    #[default]
+    VoxelSide,
+    VoxelArea,
+    BlockArea,
+}
+
 impl Default for PixelTierSettings {
     fn default() -> Self {
         // The measured per-face/per-pixel crossover (about 220 voxels at
         // 1440p; docs/history/far-per-pixel.md).
-        Self { voxel_pixels: 8.0, cell: 3, history: 32.0, rate: 4, steps: 128, bounces: 3 }
+        Self { voxel_pixels: 8.0, measure: PixelMeasure::VoxelSide, cell: 3, history: 32.0, rate: 4, steps: 128, bounces: 3 }
     }
 }
 
 impl PixelTierSettings {
     pub(crate) fn normalized(self) -> Self {
         Self {
-            voxel_pixels: if self.voxel_pixels.is_finite() { self.voxel_pixels.clamp(0.0, 64.0) } else { 0.0 },
+            voxel_pixels: if self.voxel_pixels.is_finite() { self.voxel_pixels.clamp(0.0, 4096.0) } else { 0.0 },
+            measure: self.measure,
             cell: self.cell.clamp(1, 4),
             history: if self.history.is_finite() { self.history.clamp(1.0, 1024.0) } else { 32.0 },
             rate: self.rate.clamp(1, 8),
