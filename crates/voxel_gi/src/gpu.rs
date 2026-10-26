@@ -70,6 +70,7 @@ const TASK_BYTES: usize = 32;
 mod face_index;
 mod geometry;
 mod readback;
+pub(crate) mod reflect;
 mod resident;
 pub(crate) mod view;
 pub(crate) use readback::Readback;

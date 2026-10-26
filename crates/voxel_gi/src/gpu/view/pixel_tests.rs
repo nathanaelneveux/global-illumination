@@ -31,7 +31,7 @@ struct Far {
     gpu: GpuTracer,
     scene: SceneBindings,
     rig: Rig,
-    kernels: Vec<(ComputePipeline, [&'static [u32]; 3])>,
+    kernels: Vec<(ComputePipeline, [Vec<u32>; 3])>,
     camera: CameraState,
     pixels: PixelState,
     output: UploadBuffer,
@@ -92,8 +92,8 @@ impl Far {
         let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
             label: Some("Far tier"), source: ShaderSource::Wgsl(rig.source.clone().into()),
         });
-        let kernels = [("classify_pixels", PIXEL_CLASSIFY_BINDINGS), ("size_pixel_queue", PIXEL_ARGS_BINDINGS),
-            ("trace_pixel_queue", PIXEL_TRACE_BINDINGS)].into_iter().map(|(name, bindings)| {
+        let reflection = crate::gpu::reflect::Reflection::new(&rig.source);
+        let kernels = ["classify_pixels", "size_pixel_queue", "trace_pixel_queue"].into_iter().map(|name| {
             let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(name), layout: None, module: &module, entry_point: Some(name),
                 compilation_options: wgpu::PipelineCompilationOptions {
@@ -101,7 +101,7 @@ impl Far {
                     ..default()
                 }, cache: None,
             });
-            (pipeline, bindings)
+            (pipeline, reflection.bindings(name))
         }).collect();
         let mut camera = CameraState::new(device, UVec2::splat(GRID));
         let mask = camera.history[0].hash.capacity as u32 / 4 - 1;
@@ -156,7 +156,7 @@ impl Far {
         let group0: Vec<&Buffer> = vec![&camera.params.buffer, &scene.buffers[0], &scene.buffers[1], &scene.buffers[2],
             &scene.buffers[3], &scene.buffers[4], &camera.history[0].receivers.buffer, &camera.history[0].paths.buffer,
             &scene.buffers[5], &scene.buffers[6], &scene.buffers[7]];
-        let make = |pipeline: &ComputePipeline, sets: [&[u32]; 3]| -> Vec<BindGroup> { sets.iter().enumerate().map(|(group, bindings)| {
+        let make = |pipeline: &ComputePipeline, sets: &[Vec<u32>; 3]| -> Vec<BindGroup> { sets.iter().enumerate().map(|(group, bindings)| {
             let entries: Vec<_> = bindings.iter().map(|&binding| {
                 let resource = match (group, binding) {
                     (0, b) => group0[b as usize].as_entire_binding(),
@@ -185,7 +185,7 @@ impl Far {
             let mut pass = encoder.begin_compute_pass(&default());
             for (stage, (pipeline, sets)) in self.kernels.iter().enumerate() {
                 pass.set_pipeline(pipeline);
-                for (i, group) in make(pipeline, *sets).iter().enumerate() { pass.set_bind_group(i as u32, &**group, &[]); }
+                for (i, group) in make(pipeline, sets).iter().enumerate() { pass.set_bind_group(i as u32, &**group, &[]); }
                 if stage == 2 { pass.dispatch_workgroups_indirect(&self.pixels.args, 0); } else { pass.dispatch_workgroups(1, 1, 1); }
             }
         }

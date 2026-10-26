@@ -252,18 +252,14 @@ impl Rig {
         let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
             label: Some("Shared pool coverage"), source: ShaderSource::Wgsl(source.clone().into()),
         });
-        let specs: [(&str, [&[u32]; 3]); 4] = [
-            ("prepare_receiver_pool", [&[0, 1, 2, 3, 6], &[], &[0, 1, 5, 6, 7, 8, 9, 10, 17, 18]]),
-            ("discover_receivers", [&[0, 1, 2, 3, 6], &[], &[0, 5, 7, 8, 9, 17]]),
-            ("index_receivers", [&[6], &[], &[0, 7, 10]]),
-            ("reproject_paths", [&[0, 1, 2, 3, 4, 5, 6, 7], &[0], &[0, 1, 2, 3, 4, 5, 6, 7, 10]]),
-        ];
-        let kernels = specs.map(|(name, bindings)| Kernel {
+        let reflection = crate::gpu::reflect::Reflection::new(&source);
+        let names = ["prepare_receiver_pool", "discover_receivers", "index_receivers", "reproject_paths"];
+        let kernels = names.map(|name| Kernel {
             pipeline: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(name), layout: None, module: &module, entry_point: Some(name),
                 compilation_options: default(), cache: None,
             }),
-            bindings: bindings.map(|b| b.to_vec()),
+            bindings: reflection.bindings(name),
         });
         let texture = |format| device.create_texture(&wgpu::TextureDescriptor {
             label: Some("pool coverage prepass"), size: RIG_SIZE, mip_level_count: 1, sample_count: 1,

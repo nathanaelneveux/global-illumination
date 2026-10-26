@@ -10,8 +10,6 @@ bevy.workspace = true
 wgpu.workspace = true
 serde.workspace = true
 ron.workspace = true
-
-[dev-dependencies]
 naga.workspace = true
 
 [lints]

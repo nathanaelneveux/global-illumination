@@ -385,8 +385,10 @@ struct ViewRenderer {
     pixels: [Kernel; 2],
     pixel_args: Kernel,
     pixel_trace: Kernel,
-    /// The step budget and reach policy `pixel_trace` was built with.
+    /// The step budget and reach policy `pixel_trace` was built with, and
+    /// its bindings for rebuilds.
     pixel_steps: (u32, bool),
+    pixel_trace_bindings: [Vec<u32>; 3],
     modules: [bevy::render::render_resource::ShaderModule; 2],
     cameras: HashMap<RetainedViewEntity, CameraState>,
     frame: u32,
@@ -405,61 +407,52 @@ impl FromWorld for ViewRenderer {
                 source: ShaderSource::Wgsl(shader(msaa).into()),
             })
         });
-        let make = |name, msaa: usize, limited: bool, bindings: [&[u32]; 3]| Kernel {
+        // Every kernel binds exactly what its entry point uses (automatic
+        // layouts); the MSAA variant differs only in texture types.
+        let reflection = crate::gpu::reflect::Reflection::new(&shader(false));
+        let make = |name, msaa: usize| Kernel {
             pipeline: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(name),
                 layout: None,
                 module: &modules[msaa],
                 entry_point: Some(name),
                 compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[("LIMITED_REACH", f64::from(limited))],
+                    constants: &[("LIMITED_REACH", 0.0)],
                     ..default()
                 },
                 cache: None,
             }),
-            bindings: bindings.map(|indices| indices.to_vec()),
+            bindings: reflection.bindings(name),
         };
+        let pixel_trace_bindings = reflection.bindings("trace_pixel_queue");
         Self {
-            prepare_pool: [0, 1].map(|m| make("prepare_receiver_pool", m, false,
-                [&[0, 1, 2, 3, 6], &[], &[0, 1, 5, 6, 7, 8, 9, 10, 17, 18]])),
-            discover: [0, 1].map(|m| {
-                make(
-                    "discover_receivers",
-                    m,
-                    false,
-                    [&[0, 1, 2, 3, 6], &[], &[0, 5, 7, 8, 9, 17]],
-                )
+            prepare_pool: [0, 1].map(|m| make("prepare_receiver_pool", m)),
+            discover: [0, 1].map(|m| make("discover_receivers", m)),
+            index: make("index_receivers", 0),
+            reproject: make("reproject_paths", 0),
+            trace: [false, true].map(|limited| Kernel {
+                pipeline: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("trace_visible_paths"),
+                    layout: None,
+                    module: &modules[0],
+                    entry_point: Some("trace_visible_paths"),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &[("LIMITED_REACH", f64::from(limited))],
+                        ..default()
+                    },
+                    cache: None,
+                }),
+                bindings: reflection.bindings("trace_visible_paths"),
             }),
-            index: make("index_receivers", 0, false, [&[6], &[], &[0, 7, 10]]),
-            reproject: make(
-                "reproject_paths",
-                0,
-                false,
-                [&[0, 1, 2, 3, 4, 5, 6, 7], &[0], &[0, 1, 2, 3, 4, 5, 6, 7, 10]],
-            ),
-            trace: [false, true].map(|limited| {
-                make(
-                    "trace_visible_paths",
-                    0,
-                    limited,
-                    [&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], &[0, 1], &[0, 5, 10, 16]],
-                )
-            }),
-            retain: make(
-                "retain_view_history",
-                0,
-                false,
-                [&[6, 10], &[0], &[0, 5, 7, 12, 13, 15, 16]],
-            ),
-            load_cache: make("load_shared_faces", 0, false,
-                [&[0, 1, 2, 3, 4, 5, 6, 7, 10], &[0, 1], &[0, 1, 4, 5, 6, 7, 10, 14, 15, 16, 19, 21]]),
-            store_cache: make("store_shared_faces", 0, false,
-                [&[6, 10], &[], &[0, 5, 7, 10, 14, 15, 16]]),
-            reconstruct: make("reconstruct_view", 0, false, [&[6], &[], &[0, 5, 7, 17]]),
-            publish: make("publish_view", 0, false, [&[0, 1, 2, 3, 5, 6], &[0], &[0, 5, 7, 10, 11, 17]]),
-            pixels: [0, 1].map(|m| make("classify_pixels", m, false, PIXEL_CLASSIFY_BINDINGS)),
-            pixel_args: make("size_pixel_queue", 0, false, PIXEL_ARGS_BINDINGS),
-            pixel_trace: pixel_kernel(device, &modules, FarTierSettings::default().steps, false),
+            retain: make("retain_view_history", 0),
+            load_cache: make("load_shared_faces", 0),
+            store_cache: make("store_shared_faces", 0),
+            reconstruct: make("reconstruct_view", 0),
+            publish: make("publish_view", 0),
+            pixels: [0, 1].map(|m| make("classify_pixels", m)),
+            pixel_args: make("size_pixel_queue", 0),
+            pixel_trace: pixel_kernel(device, &modules, &pixel_trace_bindings, FarTierSettings::default().steps, false),
+            pixel_trace_bindings,
             pixel_steps: (FarTierSettings::default().steps, false),
             modules,
             cameras: default(),
@@ -487,7 +480,8 @@ pub(super) fn pixel_trace_constants(steps: u32, limited: bool) -> [(&'static str
     [("PATH_STEPS", f64::from(steps)), ("BUDGETED_RAYS", 1.0), ("LIMITED_REACH", f64::from(limited))]
 }
 
-fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource::ShaderModule; 2], steps: u32, limited: bool) -> Kernel {
+fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource::ShaderModule; 2],
+    bindings: &[Vec<u32>; 3], steps: u32, limited: bool) -> Kernel {
     Kernel {
         pipeline: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("trace_pixel_queue"),
@@ -500,14 +494,9 @@ fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource:
             },
             cache: None,
         }),
-        bindings: PIXEL_TRACE_BINDINGS.map(|indices| indices.to_vec()),
+        bindings: bindings.clone(),
     }
 }
-
-/// Far tier resources (automatic layouts must match exactly).
-const PIXEL_CLASSIFY_BINDINGS: [&[u32]; 3] = [&[0, 1, 2, 3, 5], &[], &[0, 1, 4, 6, 8, 9, 19, 20, 21, 22, 23]];
-const PIXEL_ARGS_BINDINGS: [&[u32]; 3] = [&[], &[], &[23, 24]];
-const PIXEL_TRACE_BINDINGS: [&[u32]; 3] = [&[0, 1, 2, 3, 4, 5, 8, 9, 10], &[], &[0, 20, 21, 22, 23]];
 
 fn sun_flip_offset(count: u32) -> u64 {
     (12 + 2 * u64::from(count)) * 4
@@ -545,6 +534,24 @@ mod pixel_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_view_kernel_binds_only_resources_render_view_provides() {
+        // render_view resolves group 0 from `group0` (0-10), group 1 from
+        // tails and wave (0-1), group 2 from `group2` (0-7) and its explicit
+        // arms (8-24). A kernel using anything else would panic at runtime.
+        let started = std::time::Instant::now();
+        let reflection = crate::gpu::reflect::Reflection::new(&shader(false));
+        eprintln!("view shader reflection: {:?}", started.elapsed());
+        for name in ["prepare_receiver_pool", "discover_receivers", "index_receivers", "reproject_paths",
+            "trace_visible_paths", "retain_view_history", "load_shared_faces", "store_shared_faces",
+            "reconstruct_view", "publish_view", "classify_pixels", "size_pixel_queue", "trace_pixel_queue"] {
+            let [group0, group1, group2] = reflection.bindings(name);
+            assert!(group0.iter().all(|&b| b <= 10), "{name} group 0 {group0:?}");
+            assert!(group1.iter().all(|&b| b <= 1), "{name} group 1 {group1:?}");
+            assert!(group2.iter().all(|&b| b <= 24), "{name} group 2 {group2:?}");
+        }
+    }
 
     #[test]
     fn view_runtime_shader_is_valid() {
@@ -688,7 +695,7 @@ fn render_view(
     let limited = scene.params.transport.x < crate::tracer::MAX_PATH_DISTANCE;
     let pixel_policy = (settings.pixel.steps, limited);
     if renderer.pixel_steps != pixel_policy {
-        renderer.pixel_trace = pixel_kernel(&device, &renderer.modules, pixel_policy.0, limited);
+        renderer.pixel_trace = pixel_kernel(&device, &renderer.modules, &renderer.pixel_trace_bindings, pixel_policy.0, limited);
         renderer.pixel_steps = pixel_policy;
         for camera in renderer.cameras.values_mut() {
             camera.binding_keys = [None, None];
