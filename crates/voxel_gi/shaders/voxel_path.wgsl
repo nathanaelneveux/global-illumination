@@ -3,7 +3,7 @@
 // else, including source sampling, cache termination and reach, is shared.
 override DIFFUSE_HITS: u32 = 3u;
 override LIMITED_REACH: bool = false;
-// EXPERIMENT per-pixel tier: NAADF's ray budget. Path, sun and emitter
+// The far tier's ray budget (NAADF's): path, sun and emitter
 // visibility rays stop after PATH_STEPS traversal steps. With BUDGETED_RAYS
 // a ray out of steps is a miss, as in NAADF, and a region missing from the
 // directory is crossed as empty space (the `visible_geometry` rule) instead

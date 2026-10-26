@@ -30,5 +30,6 @@
 
 - Default to shared-corner direct sunlight and corner-reconstructed indirect GI, textures on, baked AO off. Keep the per-pixel sunlight comparison available.
 - Every visible face is view-owned, with a persistent two-way world cache of radius 64 (`cache_radius`, the performance knob; chosen 2026-10-23, `docs/history/option-comparison-2026-10-23.md`; re-checked against 0/32/96 on 2026-10-24, `docs/review-2026-10-24.md`). The hybrid and all-near strategies are removed.
+- Faces small on screen use the per-pixel far tier: `far_tier.voxel_pixels` 8 (a full-resolution voxel under 8 px across, about 220 voxels at 1440p; the measured crossover, 2026-10-26, `docs/history/far-per-pixel.md`). Keep `config/gi-far-tier-off.ron` as the receivers-only control. Its extra flicker in motion is known and deferred until the user has played with it.
 - View presentation pools spatially with MSE-optimal weights from measured variance and bias, `spatial_noise_threshold` 0.031 (2026-10-24; replaced the fixed 1024 evidence target, qualified on house/cave settling). Keep `config/gi-display-unfiltered.ron` as the explicit no-adaptive-spatial control.
 - Do not add debounce or promote corner-based indirect transport or other architectural experiments without relevant evidence and the user's intended scope.

@@ -125,9 +125,8 @@ pub struct VoxelGiMaterialData {
     pub cells: Handle<ShaderBuffer>,
     pub traversal: GpuTraversalParams,
     pub far: Handle<ShaderBuffer>,
-    /// EXPERIMENT: the per-pixel tier's cells (`PixelTierSettings`): a
-    /// 64-byte header (zero grid when off), then one packed cell per
-    /// `cell`x`cell` pixels.
+    /// The far tier's cells (`FarTierSettings`): a 64-byte header (zero grid
+    /// when off), then one packed cell per `cell`x`cell` pixels.
     pub far_pixels: Handle<ShaderBuffer>,
     pub settings: GpuTransportSettings,
 }

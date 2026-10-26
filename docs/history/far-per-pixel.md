@@ -257,3 +257,30 @@ image texture and raster motion dominate: the tier adds 1.4% to the mean
 change and 13% to the p99 in its pixels. The fix NAADF uses is a temporal
 filter on the resolved per-pixel signal (reprojected, with neighbourhood
 clamping), not longer cell histories. Not built.
+
+## Promotion (2026-10-26)
+
+Promoted to the main branch as the default far tier (`far_tier`,
+`FarTierSettings` / `FarTierMeasure`; formerly `pixel_tier`). The ablation
+knobs `bounces` and `jitter` were removed (both measured no better); the
+control is `config/gi-far-tier-off.ron`.
+
+Regression check against 4c9e065 (M4, headless 1440p, one run each):
+
+- **Default gates:** streaming frame p50/p95/p99 23.4/25.4/26.5 ->
+  23.5/25.3/26.8 ms; GPU stages within noise; static captures within 3-12
+  pixels (static-sun 7 darker / 5 brighter, the far tier's per-fragment sun
+  rays); walk flashes 3532/3325 -> 1285/3809; turn tail and tunnel
+  unchanged.
+- **Edit response:** late captures read slightly higher across trees
+  (add-1000 ms 0.010 -> 0.020). On one build, tier off vs on gave
+  0.015/0.010 -> 0.013/0.005, so that is run-to-run noise.
+- **Peak memory:** +52 MB (cell histories, queue and output at 1440p).
+- **House:** settling turned/return 400 ms 0.0097/0.0052 -> 0.0102/0.0027,
+  cross-run final 0.013-0.014, cadence equal.
+- **Stress:** completed, clean log.
+- **Tests and clippy:** voxel_gi lib with --include-ignored, 164 passed;
+  connector 6; lab 34 (the config test covers the control); clippy
+  all-targets clean.
+
+Deferred: far-tier flicker in motion, until the user has played with it.

@@ -1,5 +1,5 @@
-//! EXPERIMENT per-pixel tier: faces under the pixel threshold own no
-//! receiver, and their cells trace, accumulate and reproject per pixel.
+//! Far tier: faces under the pixel threshold own no receiver, and their
+//! cells trace, accumulate and reproject per pixel.
 use super::coverage_tests::Rig;
 use super::*;
 use crate::{

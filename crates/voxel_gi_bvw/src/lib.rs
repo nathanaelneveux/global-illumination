@@ -160,7 +160,7 @@ fn chunk_stride(shape: UVec3) -> Option<u32> {
     (shape == UVec3::splat(samples + 2)
         && samples > 0
         && samples.is_power_of_two()
-        && CHUNK % samples == 0)
+        && CHUNK.is_multiple_of(samples))
         .then_some(CHUNK / samples)
 }
 

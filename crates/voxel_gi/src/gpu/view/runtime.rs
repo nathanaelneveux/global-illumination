@@ -2,7 +2,7 @@
 //! gameplay/render system waits for a GPU submission. Per-view ping-pong state
 //! retains face identities, path records, unfinished tails and raw statistics.
 use super::*;
-use crate::{PixelTierSettings, VoxelGiSettings, render::VoxelGiMaterialData};
+use crate::{FarTierSettings, VoxelGiSettings, render::VoxelGiMaterialData};
 use bevy::{
     core_pipeline::{
         prepass::{DepthPrepass, NormalPrepass, ViewPrepassTextures},
@@ -24,9 +24,9 @@ const DISPLAY_BYTES: u64 = OUTPUT_PREFIX_BYTES + MAX_VIEW_RECEIVERS as u64 * 48;
 #[derive(Resource, Clone, ExtractResource)]
 struct ViewSettings {
     output: Handle<ShaderBuffer>,
-    /// EXPERIMENT: per-pixel tier cells read by the material.
+    /// The far tier's cells, read by the material.
     pixel_output: Handle<ShaderBuffer>,
-    pixel: PixelTierSettings,
+    pixel: FarTierSettings,
     pixel_cell_allocated: u32,
     enabled: bool,
     inner_radius: f32,
@@ -63,7 +63,7 @@ pub(crate) fn install(app: &mut App, output: Handle<ShaderBuffer>, pixel_output:
     app.insert_resource(ViewSettings {
         output,
         pixel_output,
-        pixel: PixelTierSettings::default(),
+        pixel: FarTierSettings::default(),
         pixel_cell_allocated: 0,
         enabled: false,
         inner_radius: 0.0,
@@ -140,7 +140,7 @@ fn configure_views(
         view.output = buffers.add(asset);
         material_data.far = view.output.clone();
     }
-    let pixel = settings.pixel_tier.normalized();
+    let pixel = settings.far_tier.normalized();
     if enabled && view.pixel_cell_allocated != pixel.cell {
         let mut asset = ShaderBuffer::default();
         asset.buffer_description.size = pixel_output_bytes(pixel.cell);
@@ -201,10 +201,11 @@ struct Control {
     display: Vec4,
     cache: UVec4,
     discovery: UVec4,
-    /// EXPERIMENT per-pixel tier: view forward (xyz) and pixels per world
-    /// unit at unit view depth (w).
+    /// Far tier (voxel_view_pixels.wgsl): view forward (xyz) and pixels per
+    /// world unit at unit view depth (w).
     pixel_axis: Vec4,
-    /// Cells x, y, pixels per cell side, enabled.
+    /// Cells x, y, pixels per cell side; enabled (bit 0) and measure
+    /// (bits 1-2).
     pixel_grid: UVec4,
     /// Threshold, maximum history, trace rate, previous frame (bits; all
     /// ones when none).
@@ -258,8 +259,8 @@ impl History {
         }
     }
 }
-/// EXPERIMENT per-pixel tier state: ping-pong cell histories (mean RGB and
-/// count, surface point and face; 32 bytes) and four counters.
+/// Far tier state: ping-pong cell histories (mean RGB and count, surface
+/// point, face and frame stamp; 32 bytes) and its counters.
 struct PixelState {
     cells: UVec2,
     history: [UploadBuffer; 2],
@@ -380,12 +381,12 @@ struct ViewRenderer {
     store_cache: Kernel,
     reconstruct: Kernel,
     publish: Kernel,
-    /// Per-pixel tier: classify (by MSAA), size the queue, trace it.
+    /// Far tier: classify (by MSAA), size the queue, trace it.
     pixels: [Kernel; 2],
     pixel_args: Kernel,
     pixel_trace: Kernel,
-    /// The step budget and bounces `pixel_trace` was built with.
-    pixel_steps: (u32, u32),
+    /// The step budget `pixel_trace` was built with.
+    pixel_steps: u32,
     modules: [bevy::render::render_resource::ShaderModule; 2],
     cameras: HashMap<RetainedViewEntity, CameraState>,
     frame: u32,
@@ -458,8 +459,8 @@ impl FromWorld for ViewRenderer {
             publish: make("publish_view", 0, false, [&[0, 1, 2, 3, 5, 6], &[0], &[0, 5, 7, 10, 11, 17]]),
             pixels: [0, 1].map(|m| make("classify_pixels", m, false, PIXEL_CLASSIFY_BINDINGS)),
             pixel_args: make("size_pixel_queue", 0, false, [&[], &[], &[23, 24]]),
-            pixel_trace: pixel_kernel(device, &modules, (PixelTierSettings::default().steps, PixelTierSettings::default().bounces)),
-            pixel_steps: (PixelTierSettings::default().steps, PixelTierSettings::default().bounces),
+            pixel_trace: pixel_kernel(device, &modules, FarTierSettings::default().steps),
+            pixel_steps: FarTierSettings::default().steps,
             modules,
             cameras: default(),
             frame: 0,
@@ -479,9 +480,9 @@ pub(super) const MAX_SUN_FLIPS: u64 = 2048;
 pub(super) const SUN_FLIP_BYTES: u64 = 16 + MAX_SUN_FLIPS * 16 + 32;
 pub(super) const SUN_FLIP_BIAS: i64 = 1 << 30;
 
-/// The per-pixel tier's trace under its ray budget: `steps` traversal
-/// steps per ray, exhaustion a miss (NAADF's rule).
-fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource::ShaderModule; 2], (steps, bounces): (u32, u32)) -> Kernel {
+/// The far tier's trace under its ray budget: `steps` traversal steps per
+/// ray, exhaustion a miss (NAADF's rule).
+fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource::ShaderModule; 2], steps: u32) -> Kernel {
     Kernel {
         pipeline: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("trace_pixel_queue"),
@@ -489,8 +490,7 @@ fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource:
             module: &modules[0],
             entry_point: Some("trace_pixel_queue"),
             compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &[("PATH_STEPS", f64::from(steps)), ("BUDGETED_RAYS", 1.0),
-                    ("DIFFUSE_HITS", f64::from(bounces))],
+                constants: &[("PATH_STEPS", f64::from(steps)), ("BUDGETED_RAYS", 1.0)],
                 ..default()
             },
             cache: None,
@@ -499,7 +499,7 @@ fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource:
     }
 }
 
-/// Per-pixel tier resources (automatic layouts must match exactly).
+/// Far tier resources (automatic layouts must match exactly).
 const PIXEL_CLASSIFY_BINDINGS: [&[u32]; 3] = [&[0, 1, 2], &[], &[0, 1, 4, 6, 8, 9, 19, 20, 21, 22, 23]];
 const PIXEL_TRACE_BINDINGS: [&[u32]; 3] = [&[0, 1, 2, 3, 4, 5, 8, 9, 10], &[], &[0, 20, 21, 22, 23]];
 
@@ -679,10 +679,9 @@ fn render_view(
             .retain(|_, camera| frame.0.wrapping_sub(camera.last_frame) <= 1);
         renderer.changes = std::mem::take(&mut *changes.lock().unwrap());
     }
-    let pixel_budget = (settings.pixel.steps, settings.pixel.bounces);
-    if renderer.pixel_steps != pixel_budget {
-        renderer.pixel_trace = pixel_kernel(&device, &renderer.modules, pixel_budget);
-        renderer.pixel_steps = pixel_budget;
+    if renderer.pixel_steps != settings.pixel.steps {
+        renderer.pixel_trace = pixel_kernel(&device, &renderer.modules, settings.pixel.steps);
+        renderer.pixel_steps = settings.pixel.steps;
         for camera in renderer.cameras.values_mut() {
             camera.binding_keys = [None, None];
         }
@@ -742,10 +741,8 @@ fn render_view(
             let scale = view.clip_from_view.y_axis.y * view.viewport.w as f32 * 0.5;
             forward.extend(scale)
         },
-        // w: enabled (bit 0), measure (bits 1-2; `pixel_owned`), jitter (3).
         pixel_grid: UVec4::new(pixel_cells.x, pixel_cells.y, pixel_size,
-            u32::from(pixel_enabled) | (settings.pixel.measure as u32) << 1
-                | u32::from(settings.pixel.jitter) << 3),
+            u32::from(pixel_enabled) | (settings.pixel.measure as u32) << 1),
         pixel_tune: Vec4::new(
             settings.pixel.voxel_pixels,
             settings.pixel.history,

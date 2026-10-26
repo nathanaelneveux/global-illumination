@@ -8,7 +8,9 @@ discovers faces after the depth/normal prepass and traces them with the shared
 estimator. A persistent world cache (`cache_radius`, default 64 voxels; 0 is
 cacheless) keeps receivers for pages near the cameras, terminates secondary
 rays, measures edit flux and exchanges RGB history with visible faces.
-Geometry stays every loaded page. Native transport contracts are in
+Beyond a projected-size threshold the far tier lights pixels directly
+instead ([far tier](#far-tier-per-pixel)), so far lighting costs follow the
+screen. Geometry stays every loaded page. Native transport contracts are in
 `gpu/view_tests.rs` and `gpu/view/cache_tests.rs`; integration evidence is in
 [the runtime checkpoint](history/far-view-runtime.md) and
 [the ownership comparison](history/option-comparison-2026-10-23.md).
@@ -160,6 +162,51 @@ corner sunlight and reconstruction are separately measured presentation costs,
 not hidden in the transport quota. Preparation and scanning have separate
 timestamps and their sum is the comparable discovery cost. State is bounded by
 viewport capacity, not loaded world size.
+
+### Far tier (per pixel)
+
+Faces small on screen are lit per pixel, in NAADF's manner, and own no view
+receiver (`FarTierSettings`, `far_tier`; `voxel_view_pixels.wgsl`). By
+default a pixel is far when a full-resolution voxel at its distance from the
+camera projects under 8 pixels across (`voxel_pixels`; about 220 voxels at
+1440p and 45 degrees), whatever the LoD stride or viewing angle; distance,
+not view depth, so turning does not move the boundary. `VoxelArea` and
+`BlockArea` measure the rough covered area instead. Discovery, the far pass
+and the material compute the same test from one camera header, so every
+pixel has exactly one owner.
+
+The far pass runs after the receiver passes, before the main pass, in its
+own timestamped stage (three dispatches):
+
+- **Classify** every `cell` x `cell` block (default 3) at one pixel, a
+  different one each frame. A far cell reprojects last frame's cells by
+  world position (bilinear; same face orientation, within four blocks along
+  the normal and two cells across), or, failing that, starts from last
+  frame's receiver for its face (count capped). Cells carry the frame that
+  wrote them; only far cells are written and readers reject other stamps,
+  so the near majority costs one depth load. Cells with fewer than 4
+  samples, or one frame in `rate` (default 4), are queued.
+- **Trace** the queue as a dense indirect dispatch with `trace_receiver`,
+  under a ray budget (`steps`, default 128): an exhausted ray is a miss and
+  a region missing from the directory is crossed as empty space
+  (`BUDGETED_RAYS`), instead of walking the world to tell unloaded from sky.
+  Histories cap at `history` (default 32).
+- **Material:** far pixels read a 3x3 cell filter (coplanar first, parallel
+  planes within four blocks, weighted by sample count and distance) and
+  trace one sun ray per light per fragment; receiver hole-filling covers
+  cells with no sample yet. A new receiver entering from the far band
+  starts from the far cell under it with one unit of weight.
+
+Measured crossover: a cell costs about 0.02-0.05 us of GPU and a receiver
+0.15 us (0.5 us in a crowded pool), so receivers win only where one face
+covers more than roughly 30-90 px. In the 200-chunk `lod` flight the view
+tier's fixed GPU cost falls from about 30 to 8 ms (receivers 44k to 0); the
+default lab and far-48 pay +0.3-0.5 ms. Known limitation: in motion the far
+tier's indirect light changes more frame to frame than receivers' (the 3x3
+filter over sub-pixel faces): about 3x in the indirect-only view, +13% at
+the p99 in the final image. A temporal filter on the resolved signal is the
+likely fix. `config/gi-far-tier-off.ron` is the receivers-only control. See
+[the experiment](history/far-per-pixel.md).
 
 ### Two-way face cache
 

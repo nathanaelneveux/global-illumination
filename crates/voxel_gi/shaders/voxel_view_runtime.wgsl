@@ -13,8 +13,8 @@ struct ViewControl {
     display: vec4<f32>, // evidence goal, strength, temporal blend, measured retention
     cache: vec4<u32>, // writable epoch, worker-clock milliseconds, enabled, reserved
     discovery: vec4<u32>, // stationary, compatible previous viewport/overlap/MSAA; reserved
-    pixel_axis: vec4<f32>, // EXPERIMENT per-pixel tier: view forward, pixels per unit at depth 1
-    pixel_grid: vec4<u32>, // cells x, y, pixels per cell side, enabled
+    pixel_axis: vec4<f32>, // far tier (voxel_view_pixels.wgsl): view forward, pixels per unit at depth 1
+    pixel_grid: vec4<u32>, // cells x, y, pixels per cell side, enabled (bit 0) and measure (bits 1-2)
     pixel_tune: vec4<f32>, // voxel-size threshold px, max history, trace rate, previous valid
     previous_clip_from_world: mat4x4<f32>,
 }

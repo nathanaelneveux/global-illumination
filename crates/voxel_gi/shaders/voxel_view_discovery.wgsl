@@ -52,8 +52,8 @@ fn prepass_voxel_receiver(pixel: vec2<i32>) -> ViewReceiver {
     var surface = position;
     surface[receiver.face / 2u] = round(surface[receiver.face / 2u]);
     receiver.voxel = vec3<i32>(floor(surface - normal * 0.01));
-    // EXPERIMENT: faces under the per-pixel tier's size are lit per pixel
-    // and own no receiver.
+    // Faces small enough for the far tier are lit per pixel and own no
+    // receiver.
     if pixel_owned(receiver.voxel, receiver.face) {
         receiver.face = 0xffffffffu;
         return receiver;

@@ -139,6 +139,9 @@ mod tests {
         assert_eq!(cacheless.cache_radius, 0.0);
         assert_eq!(cacheless.transport, settings.transport);
         assert_eq!(config(include_str!("../config/gi-cache-32.ron")).cache_radius, 32.0);
+        let near_only = config(include_str!("../config/gi-far-tier-off.ron"));
+        assert_eq!(near_only.far_tier.voxel_pixels, 0.0);
+        assert_eq!(near_only.transport, settings.transport);
         for text in [include_str!("../config/gi-low.ron"), include_str!("../config/gi-high.ron")] {
             assert!(config(text).matching_quality().is_some());
         }

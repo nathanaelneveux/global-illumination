@@ -123,8 +123,8 @@ pub(super) struct Budget {
     pub uncovered: u32,
     pub displayed: u32,
     pub paused: u32,
-    /// EXPERIMENT per-pixel tier: GPU ms, owned and traced cells, cells with
-    /// reprojected history, mean history of owned cells.
+    /// Far tier: GPU ms, owned and traced cells, cells with reprojected
+    /// history, mean history of owned cells.
     pub pixel_ms: f32,
     pub pixel_owned: u32,
     pub pixel_traced: u32,

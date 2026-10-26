@@ -44,7 +44,7 @@ pub struct VoxelTransportExtension {
     /// disabled). Camera passes write it in encoder order before opaque draws.
     #[storage(110, read_only, visibility(fragment))]
     pub far: Handle<ShaderBuffer>,
-    /// EXPERIMENT: per-pixel tier cells for faces under its pixel size.
+    /// The far tier's cells: per-pixel lighting for faces small on screen.
     #[storage(111, read_only, visibility(fragment))]
     pub far_pixels: Handle<ShaderBuffer>,
 }

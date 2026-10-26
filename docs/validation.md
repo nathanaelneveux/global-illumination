@@ -112,6 +112,9 @@ Do not let that hide estimator regressions or inflate apparent sample efficiency
   reconstruction; unlike frozen prefixes it retains normal temporal response.
   Omitting `VOXEL_GI_SETTINGS` now enables reconstruction and is no longer an off
   control. Report cadence/freshness separately from fixed-prefix accuracy.
+  `config/gi-far-tier-off.ron` disables the far tier (receivers everywhere);
+  with `VOXEL_GI_VALIDATE_VIEW_COVERAGE=1` far-tier pixels show cyan and
+  receiver pixels green.
 
 ### Near/far lifecycle checks
 

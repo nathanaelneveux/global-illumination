@@ -1,8 +1,9 @@
-// EXPERIMENT: per-pixel lighting for faces smaller than `pixel_tune.x`
-// pixels, in NAADF's manner. No face identity: each cell (`pixel_grid.z`
-// pixels per side) traces one path per frame from one of its pixels (a
+// The far tier: per-pixel lighting for faces small on screen
+// (`FarTierSettings`), in NAADF's manner. No face identity: each cell
+// (`pixel_grid.z` pixels per side) samples one of its pixels per frame (a
 // different one each frame), keeps a screen-space history reprojected by
-// world position (up to `pixel_tune.y` samples), and writes a packed cell
+// world position (up to `pixel_tune.y` samples), traces a path when that
+// history is short or one frame in `pixel_tune.z`, and writes a packed cell
 // the material filters. Cost follows the screen. Three dispatches:
 // classify (reproject every cell, queue those to trace), size the queue's
 // indirect dispatch, trace the queue densely.
@@ -32,7 +33,7 @@ struct PixelOutput {
 @group(2) @binding(23) var<storage, read_write> pixel_queue: array<atomic<u32>>;
 @group(2) @binding(24) var<storage, read_write> pixel_args: array<u32, 3>;
 
-/// The same test the material makes (`PixelMeasure`, mode in grid.w bits
+/// The same test the material makes (`FarTierMeasure`, mode in grid.w bits
 /// 1-2), by distance from the camera, not view depth, so turning does not
 /// move the boundary: 0, a full-resolution voxel at this distance under the
 /// threshold's pixels across; 1, its rough covered area (side squared times the cosine
@@ -113,9 +114,8 @@ fn classify_pixels(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= grid.x * grid.y { return; }
     let size = grid.z;
     let cell = vec2<u32>(id.x % grid.x, id.x / grid.x);
-    // One pixel of the cell per frame, cycling through all of them (or the
-    // first, without jitter: grid.w bit 3).
-    let k = select(0u, (view.history.z * 3u + (cell.x ^ cell.y)) % (size * size), (grid.w & 8u) != 0u);
+    // One pixel of the cell per frame, cycling through all of them.
+    let k = (view.history.z * 3u + (cell.x ^ cell.y)) % (size * size);
     let local = vec2<u32>(k % size, k / size);
     let pixel = vec2<i32>(view.viewport.xy + cell * size + local);
     if any(vec2<u32>(pixel) >= view.viewport.xy + view.viewport.zw) { return; }

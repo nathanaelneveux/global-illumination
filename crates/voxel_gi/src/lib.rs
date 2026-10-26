@@ -47,7 +47,7 @@ use bevy::prelude::*;
 use bevy::tasks::Task;
 
 use field::ReceiverField;
-pub use settings::{PixelMeasure, PixelTierSettings, TransportSettings, VoxelGiQuality, VoxelGiSettings};
+pub use settings::{FarTierMeasure, FarTierSettings, TransportSettings, VoxelGiQuality, VoxelGiSettings};
 pub use sources::{VoxelGiEmitter, VoxelGiEnvironment};
 pub use world::{MaterialTransport, VoxelMaterialTransportTable};
 

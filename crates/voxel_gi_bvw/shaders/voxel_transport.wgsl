@@ -109,13 +109,13 @@ struct FarOutput {
 @group(#{MATERIAL_BIND_GROUP}) @binding(110)
 var<storage, read> far_view: FarOutput;
 
-// EXPERIMENT: the per-pixel tier (voxel_view_pixels.wgsl). Faces whose block
-// projects under `origin.z` pixels have no receiver; their cells hold
-// per-pixel indirect light.
+// The far tier (voxel_view_pixels.wgsl). Faces small on screen by its
+// measure (`pixel_owned`) have no receiver; its cells hold their per-pixel
+// indirect light.
 struct FarCells {
     camera: vec4<f32>,
     axis: vec4<f32>, // view forward, pixels per unit at depth 1
-    grid: vec4<u32>, // cells x, y, pixels per cell side, enabled
+    grid: vec4<u32>, // cells x, y, pixels per cell side, enabled (bit 0) and measure (bits 1-2)
     origin: vec4<u32>, // viewport origin, threshold px (bits), this frame's stamp
     cells: array<vec4<u32>>,
 }
@@ -318,7 +318,7 @@ fn far_sun(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     var v = vec3<i32>(0, 0, s);
     if abs(axis.y) > 0.5 { u = vec3<i32>(s, 0, 0); }
     else if abs(axis.z) > 0.5 { u = vec3<i32>(s, 0, 0); v = vec3<i32>(0, s, 0); }
-    // EXPERIMENT per-pixel tier: one ray per light from this fragment.
+    // Far tier: one ray per light from this fragment, as in NAADF.
     if pixel_owned(vec3<i32>(floor(position - axis * 0.01)), face) {
         var sum = vec3(0.0);
         for (var light = 0u; light < min(transport_settings.sun_count, 4u); light += 1u) {
@@ -561,7 +561,7 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
     var view_coverage = vec3(1.0, 0.0, 0.0);
     let voxel = vec3<i32>(floor(in.world_position.xyz - in.world_normal * 0.01));
     if transport_settings.enabled != 0u && pixel_owned(voxel, face_index_of(normalize(in.world_normal))) {
-        // EXPERIMENT: per-pixel tier; receivers only fill its holes.
+        // Far tier; receivers only fill its holes.
         var far = pixel_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal), voxel_stride(voxel));
         if far.w > 0.0 { view_coverage = vec3(0.0, 1.0, 1.0); }
         else if far_view.shape.z != 0u {
