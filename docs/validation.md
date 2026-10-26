@@ -115,6 +115,19 @@ Do not let that hide estimator regressions or inflate apparent sample efficiency
   `config/gi-far-tier-off.ron` disables the far tier (receivers everywhere);
   with `VOXEL_GI_VALIDATE_VIEW_COVERAGE=1` far-tier pixels show cyan and
   receiver pixels green.
+- **Settings A/B and sweeps in one build:** `tools/runs.sh LIST
+  label:profile[:settings.ron|-][:ENV=V,...]...` runs labelled headless
+  profiles (settings relative to the repository, e.g. a control config or a
+  generated `target/gates/*.ron`) and lists `label run log`.
+  `tools/view_costs.py LIST` tabulates frame percentiles, view-tier GPU
+  stages (discovery, presentation, far tier; "fixed" is the part the
+  transport budget does not control), receivers, far cells and histories.
+  `tools/far_flicker.py LIST COVERAGE_LABEL LABEL...` measures frame-to-frame
+  light change inside the far tier's pixels of a `motion` walk
+  (`VOXEL_GI_VALIDATE_MOTION_WALK`), using a `VIEW_COVERAGE` run of the same
+  walk as the mask and the receivers' pixels as the control; use
+  `LIGHT_COMPONENT=indirect` for the indirect signal. Frame times there are
+  offscreen cadence, single runs are noisy.
 
 ### Near/far lifecycle checks
 
