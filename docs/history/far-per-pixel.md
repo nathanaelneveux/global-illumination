@@ -284,3 +284,38 @@ Regression check against 4c9e065 (M4, headless 1440p, one run each):
   all-targets clean.
 
 Deferred: far-tier flicker in motion, until the user has played with it.
+
+## Review fixes (2026-10-26)
+
+An outside review of 3db2821 found five defects, all confirmed and fixed
+with tests at the real defaults (the first fixture used cell 2 and rate 1,
+which hid the first two):
+
+1. **Sampler (9e6ede1).** Far cells passed the frame number as the sample
+   index. Under rate 4 a cell traced on one residue mod 4, so the base-2
+   dimension stayed in a 90 degree azimuth sector: a directional bias.
+   Each cell now keeps its own attempt sequence.
+2. **Pixel cycle (9e6ede1).** `frame * 3 mod 9` visited one column of a
+   3-px cell; the step is now 5.
+3. **Custom direct RGB (4b52a6b)** was missing on far pixels (noted as not
+   done in the experiment, but not fixed before promotion). It is now a
+   per-frame presentation term.
+4. **Edited coarse pages (09c8a8f)** kept their stride although an edit can
+   break block uniformity; the stride is now kept only while every edited
+   block is one material.
+5. **Reach (bd5baaa).** The far trace ignored a shorter `transport.reach`;
+   it now specializes on it like the receiver trace.
+
+The review suggested some flicker might be sampling. Remeasured after the
+fixes (far-48 walk, far-tier pixels, mean / p99 frame-to-frame change):
+indirect only, off 0.0022 / 0.029, before 0.0058 / 0.085, after 0.0062 /
+0.095; final image, after 0.0310 / 0.160 (before 0.0293 / 0.148, off
+0.0289 / 0.131 from the earlier run). It did not drop. The biased
+sampler and the one-column cycle varied less from frame to frame, which
+was bias rather than noise; with full coverage each new sample varies
+more. The flicker is the 3x3 reconstruction over sub-pixel faces, as
+measured before.
+
+Cost after the fixes, one run each against fresh off runs (fixed GPU, off
+-> on): default lab 3.45 -> 3.83 ms; far-48 4.27 -> 5.29; lod 29.1 -> 7.2.
+Frame p50 23.6 -> 23.5, 21.9 -> 21.7, 90.7 -> 85.9 ms.

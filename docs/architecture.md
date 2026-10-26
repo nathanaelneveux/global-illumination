@@ -179,7 +179,8 @@ The far pass runs after the receiver passes, before the main pass, in its
 own timestamped stage (three dispatches):
 
 - **Classify** every `cell` x `cell` block (default 3) at one pixel, a
-  different one each frame. A far cell reprojects last frame's cells by
+  different one each frame (stepping by 5, coprime with every cell area,
+  so each cell visits all its pixels). A far cell reprojects last frame's cells by
   world position (bilinear; same face orientation, within four blocks along
   the normal and two cells across), or, failing that, starts from last
   frame's receiver for its face (count capped). Cells carry the frame that
@@ -190,7 +191,12 @@ own timestamped stage (three dispatches):
   under a ray budget (`steps`, default 128): an exhausted ray is a miss and
   a region missing from the directory is crossed as empty space
   (`BUDGETED_RAYS`), instead of walking the world to tell unloaded from sky.
-  Histories cap at `history` (default 32).
+  It specializes on the transport reach like the receiver trace. Each cell
+  keeps its own sample sequence (it follows the world point through
+  reprojection and advances per attempt; the frame number would restrict a
+  rate-scheduled cell to one residue of the quasi-random sequence).
+  Histories cap at `history` (default 32). Custom direct RGB is added to
+  the cell's output each frame, outside its history, as receivers do.
 - **Material:** far pixels read a 3x3 cell filter (coplanar first, parallel
   planes within four blocks, weighted by sample count and distance) and
   trace one sun ray per light per fragment; receiver hole-filling covers
