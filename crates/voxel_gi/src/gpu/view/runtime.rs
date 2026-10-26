@@ -385,8 +385,8 @@ struct ViewRenderer {
     pixels: [Kernel; 2],
     pixel_args: Kernel,
     pixel_trace: Kernel,
-    /// The step budget `pixel_trace` was built with.
-    pixel_steps: u32,
+    /// The step budget and reach policy `pixel_trace` was built with.
+    pixel_steps: (u32, bool),
     modules: [bevy::render::render_resource::ShaderModule; 2],
     cameras: HashMap<RetainedViewEntity, CameraState>,
     frame: u32,
@@ -459,8 +459,8 @@ impl FromWorld for ViewRenderer {
             publish: make("publish_view", 0, false, [&[0, 1, 2, 3, 5, 6], &[0], &[0, 5, 7, 10, 11, 17]]),
             pixels: [0, 1].map(|m| make("classify_pixels", m, false, PIXEL_CLASSIFY_BINDINGS)),
             pixel_args: make("size_pixel_queue", 0, false, PIXEL_ARGS_BINDINGS),
-            pixel_trace: pixel_kernel(device, &modules, FarTierSettings::default().steps),
-            pixel_steps: FarTierSettings::default().steps,
+            pixel_trace: pixel_kernel(device, &modules, FarTierSettings::default().steps, false),
+            pixel_steps: (FarTierSettings::default().steps, false),
             modules,
             cameras: default(),
             frame: 0,
@@ -480,9 +480,14 @@ pub(super) const MAX_SUN_FLIPS: u64 = 2048;
 pub(super) const SUN_FLIP_BYTES: u64 = 16 + MAX_SUN_FLIPS * 16 + 32;
 pub(super) const SUN_FLIP_BIAS: i64 = 1 << 30;
 
-/// The far tier's trace under its ray budget: `steps` traversal steps per
-/// ray, exhaustion a miss (NAADF's rule).
-fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource::ShaderModule; 2], steps: u32) -> Kernel {
+/// The far trace's pipeline constants: its ray budget (`steps` traversal
+/// steps per ray, exhaustion a miss: NAADF's rule) and the same transport
+/// reach policy the receiver trace specializes on.
+pub(super) fn pixel_trace_constants(steps: u32, limited: bool) -> [(&'static str, f64); 3] {
+    [("PATH_STEPS", f64::from(steps)), ("BUDGETED_RAYS", 1.0), ("LIMITED_REACH", f64::from(limited))]
+}
+
+fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource::ShaderModule; 2], steps: u32, limited: bool) -> Kernel {
     Kernel {
         pipeline: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("trace_pixel_queue"),
@@ -490,7 +495,7 @@ fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource:
             module: &modules[0],
             entry_point: Some("trace_pixel_queue"),
             compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &[("PATH_STEPS", f64::from(steps)), ("BUDGETED_RAYS", 1.0)],
+                constants: &pixel_trace_constants(steps, limited),
                 ..default()
             },
             cache: None,
@@ -680,9 +685,11 @@ fn render_view(
             .retain(|_, camera| frame.0.wrapping_sub(camera.last_frame) <= 1);
         renderer.changes = std::mem::take(&mut *changes.lock().unwrap());
     }
-    if renderer.pixel_steps != settings.pixel.steps {
-        renderer.pixel_trace = pixel_kernel(&device, &renderer.modules, settings.pixel.steps);
-        renderer.pixel_steps = settings.pixel.steps;
+    let limited = scene.params.transport.x < crate::tracer::MAX_PATH_DISTANCE;
+    let pixel_policy = (settings.pixel.steps, limited);
+    if renderer.pixel_steps != pixel_policy {
+        renderer.pixel_trace = pixel_kernel(&device, &renderer.modules, pixel_policy.0, limited);
+        renderer.pixel_steps = pixel_policy;
         for camera in renderer.cameras.values_mut() {
             camera.binding_keys = [None, None];
         }
@@ -818,7 +825,6 @@ fn render_view(
     encoder.clear_buffer(&pixel_state.stats.buffer, 0, None);
     encoder.clear_buffer(&pixel_state.queue.buffer, 0, Some(4));
     let multisampled = msaa.samples() > 1;
-    let limited = scene.params.transport.x < crate::tracer::MAX_PATH_DISTANCE;
     let kernels = [
         &renderer.discover[usize::from(multisampled)],
         &renderer.index,

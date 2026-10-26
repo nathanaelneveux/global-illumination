@@ -46,6 +46,18 @@ impl Far {
     /// `light`: a custom-direct point light (no Bevy light draws it) 6
     /// voxels above the floor's centre.
     fn new(cell: u32, rate: u32, light: bool) -> Self {
+        let mut sources = TransportSources::default();
+        if light {
+            sources.points.push(crate::sources::PointTransportLight {
+                position: Vec3::new(16., 10., 16.), intensity: Vec3::ZERO, range: 64., custom_visible: Vec3::splat(100.),
+            });
+        }
+        Self::with(cell, rate, sources, None, None)
+    }
+
+    /// `ceiling`: an emissive slab at y 28-29 over the floor's middle;
+    /// `reach`: the transport reach (the far trace then specializes on it).
+    fn with(cell: u32, rate: u32, sources: TransportSources, ceiling: Option<u16>, reach: Option<f32>) -> Self {
         let mut gpu = crate::gpu::tests::native_tracer();
         let mut page = vec![AIR; volume_len(PAGE_SIZE)];
         for x in 0..32 {
@@ -55,17 +67,25 @@ impl Far {
                 }
             }
         }
-        let scene = Arc::new(TransportScene::with_page_delta(&TransportScene::default(), vec![(IVec3::ZERO, page)], &[]));
-        let materials = VoxelMaterialTransportTable::default();
-        let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
-        let mut sources = TransportSources::default();
-        if light {
-            sources.points.push(crate::sources::PointTransportLight {
-                position: Vec3::new(16., 10., 16.), intensity: Vec3::ZERO, range: 64., custom_visible: Vec3::splat(100.),
-            });
+        let mut materials = VoxelMaterialTransportTable::default();
+        if let Some(emissive) = ceiling {
+            for x in 8..24 {
+                for z in 8..24 {
+                    for y in 28..30 {
+                        page[linear_index(UVec3::new(x, y, z), PAGE_SIZE)] = emissive;
+                    }
+                }
+            }
+            let mut material = materials.get(emissive as u8);
+            material.emission = Vec3::splat(8.0);
+            materials.set(emissive as u8, material);
         }
+        let scene = Arc::new(TransportScene::with_page_delta(&TransportScene::default(), vec![(IVec3::ZERO, page)], &[]));
+        let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
         gpu.submit_compact(scene, &sources, &materials, &mut TraceWork::default(), 0, &emitters).unwrap();
-        let scene = gpu.view_scene().unwrap();
+        let mut scene = gpu.view_scene().unwrap();
+        if let Some(reach) = reach { scene.params.transport.x = reach; }
+        let limited = scene.params.transport.x < crate::tracer::MAX_PATH_DISTANCE;
         let device = &gpu.context.device;
         let queue = &gpu.context.queue;
         let rig = Rig::new(device);
@@ -77,7 +97,7 @@ impl Far {
             let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(name), layout: None, module: &module, entry_point: Some(name),
                 compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[("PATH_STEPS", 128.0), ("BUDGETED_RAYS", 1.0)],
+                    constants: &pixel_trace_constants(128, limited),
                     ..default()
                 }, cache: None,
             });
@@ -275,4 +295,28 @@ fn native_far_cells_show_custom_direct_light_outside_their_history() {
         }
         previous = Some(view_at(0.).inverse());
     }
+}
+
+#[test]
+#[ignore = "native per-pixel tier"]
+fn native_far_tier_honours_transport_reach() {
+    // An emissive slab 24 voxels above the floor, no sky: with the reach at
+    // 16 the far tier, like receivers, sees none of it; at full reach it does.
+    let dark = || TransportSources { environment: Vec3::ZERO, ..default() };
+    let light_at = |reach| {
+        let mut far = Far::with(3, 1, dark(), Some(5), reach);
+        let mut previous = None;
+        let mut words = Vec::new();
+        for frame in 0..4 {
+            words = far.frame(frame, view_at(0.), previous).0;
+            previous = Some(view_at(0.).inverse());
+        }
+        // The middle cell, under the slab.
+        let middle = 16 + (2 * far.pixels.cells.x as usize + 2) * 4;
+        f16((words[middle] & 0xffff) as u16)
+    };
+    let full = light_at(None);
+    let limited = light_at(Some(16.0));
+    assert!(full > 0.01, "the slab lights the floor at full reach: {full}");
+    assert_eq!(limited, 0.0, "beyond the reach the slab contributes nothing");
 }
