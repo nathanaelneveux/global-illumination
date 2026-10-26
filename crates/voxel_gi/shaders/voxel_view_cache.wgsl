@@ -200,7 +200,7 @@ fn load_shared_faces(@builtin(global_invocation_id) id: vec3<u32>) {
         // far cell at its centre, with one unit of weight like any topology
         // prior: borrowed, never counted support.
         if prior.weight == 0.0 && view.pixel_grid.w != 0u {
-            let cell = previous_cell(receiver.surface, receiver.face, receiver.voxel);
+            let cell = previous_cell(receiver.surface, receiver.face, receiver.voxel).mean;
             if cell.w > 0.0 {
                 prior = FacePrior(cell.rgb, cell.rgb * cell.rgb, 1.0);
                 atomicAdd(&pixel_stats[5], 1u);

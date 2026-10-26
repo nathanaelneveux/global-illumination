@@ -15,6 +15,11 @@ struct PixelHistory {
     // Only far cells are written; a reader trusts a cell only with the
     // stamp it expects, so the near majority of cells costs no writes.
     face: u32,
+    // This cell's next path index (its own attempt sequence; the history
+    // count is capped and the trace schedule follows the frame, so neither
+    // can index the quasi-random sampler). Follows the world point through
+    // reprojection.
+    sequence: u32,
 }
 struct PixelOutput {
     camera: vec4<f32>, // xyz
@@ -64,12 +69,15 @@ fn write_pixel(index: u32, value: PixelHistory) {
 /// cells around its old screen position), keeping the same face orientation
 /// within four blocks along its normal and two cells' world footprint across
 /// (NAADF's depth/normal test: a jittered sample of sub-pixel terraces lands
-/// on a neighbouring plane most frames). w is the sample count, 0 if none.
-fn previous_cell(surface: vec3<f32>, face: u32, voxel: vec3<i32>) -> vec4<f32> {
+/// on a neighbouring plane most frames). `mean.w` is the sample count, 0 if
+/// none; `sequence` is the best-weighted cell's.
+struct PreviousCell { mean: vec4<f32>, sequence: u32 }
+fn previous_cell(surface: vec3<f32>, face: u32, voxel: vec3<i32>) -> PreviousCell {
+    var found: PreviousCell;
     let previous = bitcast<u32>(view.pixel_tune.w);
-    if previous == 0xffffffffu { return vec4(0.0); }
+    if previous == 0xffffffffu { return found; }
     let clip = view.previous_clip_from_world * vec4(surface, 1.0);
-    if clip.w <= 0.0 { return vec4(0.0); }
+    if clip.w <= 0.0 { return found; }
     let grid = view.pixel_grid;
     let size = grid.z;
     let normal = face_normal(face);
@@ -83,6 +91,7 @@ fn previous_cell(surface: vec3<f32>, face: u32, voxel: vec3<i32>) -> vec4<f32> {
     var weight = 0.0;
     var sum = vec3(0.0);
     var samples = 0.0;
+    var best = 0.0;
     for (var y = 0; y <= 1; y++) {
         for (var x = 0; x <= 1; x++) {
             let q = base + vec2(x, y);
@@ -95,10 +104,11 @@ fn previous_cell(surface: vec3<f32>, face: u32, voxel: vec3<i32>) -> vec4<f32> {
             sum += old.mean.rgb * w;
             samples += old.mean.w * w;
             weight += w;
+            if w > best { best = w; found.sequence = old.sequence; }
         }
     }
-    if weight == 0.0 { return vec4(0.0); }
-    return vec4(sum / weight, samples / weight);
+    if weight > 0.0 { found.mean = vec4(sum / weight, samples / weight); }
+    return found;
 }
 
 @compute @workgroup_size(64)
@@ -114,8 +124,9 @@ fn classify_pixels(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= grid.x * grid.y { return; }
     let size = grid.z;
     let cell = vec2<u32>(id.x % grid.x, id.x / grid.x);
-    // One pixel of the cell per frame, cycling through all of them.
-    let k = (view.history.z * 3u + (cell.x ^ cell.y)) % (size * size);
+    // One pixel of the cell per frame, cycling through all of them: 5 is
+    // coprime with every supported cell area (1, 4, 9, 16).
+    let k = (view.history.z * 5u + (cell.x ^ cell.y)) % (size * size);
     let local = vec2<u32>(k % size, k / size);
     let pixel = vec2<i32>(view.viewport.xy + cell * size + local);
     if any(vec2<u32>(pixel) >= view.viewport.xy + view.viewport.zw) { return; }
@@ -133,7 +144,9 @@ fn classify_pixels(@builtin(global_invocation_id) id: vec3<u32>) {
     let voxel = vec3<i32>(floor(surface - normal * 0.01));
     if !pixel_owned(voxel, face) { return; }
     atomicAdd(&pixel_stats[0], 1u);
-    var history = previous_cell(surface, face, voxel);
+    let found = previous_cell(surface, face, voxel);
+    var history = found.mean;
+    var sequence = found.sequence;
     if history.w > 0.0 {
         atomicAdd(&pixel_stats[3], 1u);
     } else {
@@ -147,12 +160,13 @@ fn classify_pixels(@builtin(global_invocation_id) id: vec3<u32>) {
         let owner = previous_owner(block_receiver(key));
         if owner != 0xffffffffu && previous_estimates[owner].mean.w > 0.0 {
             history = previous_estimates[owner].mean;
+            sequence = previous_estimates[owner].identity.x;
             atomicAdd(&pixel_stats[4], 1u);
         }
     }
     let count = min(history.w, view.pixel_tune.y);
     atomicAdd(&pixel_stats[2], u32(count));
-    write_pixel(id.x, PixelHistory(vec4(history.rgb, count), surface, face | (stamp << 3u)));
+    write_pixel(id.x, PixelHistory(vec4(history.rgb, count), surface, face | (stamp << 3u), sequence));
     let rate = max(u32(view.pixel_tune.z), 1u);
     if count < 4.0 || (id.x + view.history.z) % rate == 0u {
         let slot = atomicAdd(&pixel_queue[0], 1u);
@@ -171,10 +185,12 @@ fn trace_pixel_queue(@builtin(global_invocation_id) id: vec3<u32>) {
     let index = atomicLoad(&pixel_queue[1u + id.x]);
     var cell = current_pixels[index];
     atomicAdd(&pixel_stats[1], 1u);
-    let sample = trace_receiver(cell.surface, face_normal(cell.face & 7u), pcg(index * 9781u + 0x9e3779b9u), view.history.z);
+    let sample = trace_receiver(cell.surface, face_normal(cell.face & 7u), pcg(index * 9781u + 0x9e3779b9u), cell.sequence);
+    // Unknown is not black, but it still consumes its index.
+    cell.sequence += 1u;
     if sample.known {
         cell.mean.w = min(cell.mean.w + 1.0, view.pixel_tune.y);
         cell.mean = vec4(mix(cell.mean.rgb, sample.energy.value.rgb, 1.0 / cell.mean.w), cell.mean.w);
-        write_pixel(index, cell);
     }
+    write_pixel(index, cell);
 }

@@ -260,7 +260,7 @@ impl History {
     }
 }
 /// Far tier state: ping-pong cell histories (mean RGB and count, surface
-/// point, face and frame stamp; 32 bytes) and its counters.
+/// point, face and frame stamp, sample sequence; 48 bytes) and its counters.
 struct PixelState {
     cells: UVec2,
     history: [UploadBuffer; 2],
@@ -271,7 +271,7 @@ struct PixelState {
 }
 impl PixelState {
     fn new(device: &RenderDevice, cells: UVec2) -> Self {
-        let bytes = cells.element_product().max(1) as usize * 32;
+        let bytes = cells.element_product().max(1) as usize * 48;
         Self {
             cells,
             history: [0, 1].map(|_| storage(device, "Far per-pixel cell history", bytes)),
@@ -458,7 +458,7 @@ impl FromWorld for ViewRenderer {
             reconstruct: make("reconstruct_view", 0, false, [&[6], &[], &[0, 5, 7, 17]]),
             publish: make("publish_view", 0, false, [&[0, 1, 2, 3, 5, 6], &[0], &[0, 5, 7, 10, 11, 17]]),
             pixels: [0, 1].map(|m| make("classify_pixels", m, false, PIXEL_CLASSIFY_BINDINGS)),
-            pixel_args: make("size_pixel_queue", 0, false, [&[], &[], &[23, 24]]),
+            pixel_args: make("size_pixel_queue", 0, false, PIXEL_ARGS_BINDINGS),
             pixel_trace: pixel_kernel(device, &modules, FarTierSettings::default().steps),
             pixel_steps: FarTierSettings::default().steps,
             modules,
@@ -501,6 +501,7 @@ fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource:
 
 /// Far tier resources (automatic layouts must match exactly).
 const PIXEL_CLASSIFY_BINDINGS: [&[u32]; 3] = [&[0, 1, 2], &[], &[0, 1, 4, 6, 8, 9, 19, 20, 21, 22, 23]];
+const PIXEL_ARGS_BINDINGS: [&[u32]; 3] = [&[], &[], &[23, 24]];
 const PIXEL_TRACE_BINDINGS: [&[u32]; 3] = [&[0, 1, 2, 3, 4, 5, 8, 9, 10], &[], &[0, 20, 21, 22, 23]];
 
 fn sun_flip_offset(count: u32) -> u64 {
