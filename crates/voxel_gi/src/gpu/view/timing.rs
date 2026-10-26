@@ -130,6 +130,9 @@ pub(super) struct Budget {
     pub pixel_traced: u32,
     pub pixel_reprojected: u32,
     pub pixel_history: f32,
+    /// Handoffs: far cells seeded from receivers, receivers from cells.
+    pub pixel_seeded: u32,
+    pub receivers_seeded: u32,
     /// Received corner-sunlight flips as (min, max, flux) boxes, taken by the
     /// main world: one voxel each, plus one box bounding any overflow.
     pub sun_flips: Vec<(IVec3, IVec3, f32)>,
@@ -141,7 +144,7 @@ const STAGES: usize = 11;
 const STAMP_BYTES: usize = STAGES * 16;
 /// Timestamps, queue counters, pool words and per-pixel counters, then the
 /// flip region.
-const RECEIPT_BYTES: u64 = STAMP_BYTES as u64 + 48 + 16 + 16;
+const RECEIPT_BYTES: u64 = STAMP_BYTES as u64 + 48 + 16 + 32;
 const TICKET_BYTES: u64 = RECEIPT_BYTES + super::runtime::SUN_FLIP_BYTES;
 
 impl Budget {
@@ -210,6 +213,8 @@ impl Budget {
             pixel_traced: 0,
             pixel_reprojected: 0,
             pixel_history: 0.0,
+            pixel_seeded: 0,
+            receivers_seeded: 0,
             sun_flips: Vec::new(),
             period: f64::from(queue.get_timestamp_period()),
         }
@@ -270,6 +275,8 @@ impl Budget {
             self.pixel_traced = counter(17);
             self.pixel_history = counter(18) as f32 / counter(16).max(1) as f32;
             self.pixel_reprojected = counter(19);
+            self.pixel_seeded = counter(20);
+            self.receivers_seeded = counter(21);
             self.stage_ms = costs;
             self.discovery_ms = costs[0] + costs[9];
             self.pool_prepare_ms = costs[9];
@@ -338,7 +345,7 @@ impl Budget {
         encoder.copy_buffer_to_buffer(&self.resolve, 0, &ticket.buffer, 0, stamps);
         encoder.copy_buffer_to_buffer(counters, 0, &ticket.buffer, stamps, 48);
         encoder.copy_buffer_to_buffer(pool, 0, &ticket.buffer, stamps + 48, 16);
-        encoder.copy_buffer_to_buffer(pixel_stats, 0, &ticket.buffer, stamps + 64, 16);
+        encoder.copy_buffer_to_buffer(pixel_stats, 0, &ticket.buffer, stamps + 64, 32);
         encoder.copy_buffer_to_buffer(
             counters, sun_flips, &ticket.buffer, RECEIPT_BYTES, super::runtime::SUN_FLIP_BYTES,
         );

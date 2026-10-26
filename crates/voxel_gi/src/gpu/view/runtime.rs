@@ -206,7 +206,8 @@ struct Control {
     pixel_axis: Vec4,
     /// Cells x, y, pixels per cell side, enabled.
     pixel_grid: UVec4,
-    /// Voxel-size threshold (px), maximum history, trace rate, previous valid.
+    /// Threshold, maximum history, trace rate, previous frame (bits; all
+    /// ones when none).
     pixel_tune: Vec4,
     previous_clip_from_world: Mat4,
 }
@@ -273,7 +274,7 @@ impl PixelState {
         Self {
             cells,
             history: [0, 1].map(|_| storage(device, "Far per-pixel cell history", bytes)),
-            stats: storage(device, "Far per-pixel counters", 16),
+            stats: storage(device, "Far per-pixel counters", 32),
             queue: storage(device, "Far per-pixel trace queue", 4 + cells.element_product().max(1) as usize * 4),
             args: device.create_buffer(&BufferDescriptor {
                 label: Some("Far per-pixel trace dispatch"),
@@ -450,7 +451,7 @@ impl FromWorld for ViewRenderer {
                 [&[6, 10], &[0], &[0, 5, 7, 12, 13, 15, 16]],
             ),
             load_cache: make("load_shared_faces", 0, false,
-                [&[0, 1, 2, 3, 4, 5, 6, 7, 10], &[0, 1], &[0, 1, 4, 5, 6, 7, 10, 14, 15, 16]]),
+                [&[0, 1, 2, 3, 4, 5, 6, 7, 10], &[0, 1], &[0, 1, 4, 5, 6, 7, 10, 14, 15, 16, 19, 21]]),
             store_cache: make("store_shared_faces", 0, false,
                 [&[6, 10], &[], &[0, 5, 7, 10, 14, 15, 16]]),
             reconstruct: make("reconstruct_view", 0, false, [&[6], &[], &[0, 5, 7, 17]]),
@@ -499,7 +500,7 @@ fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource:
 }
 
 /// Per-pixel tier resources (automatic layouts must match exactly).
-const PIXEL_CLASSIFY_BINDINGS: [&[u32]; 3] = [&[0, 1, 2], &[], &[0, 8, 9, 19, 20, 21, 22, 23]];
+const PIXEL_CLASSIFY_BINDINGS: [&[u32]; 3] = [&[0, 1, 2], &[], &[0, 1, 4, 6, 8, 9, 19, 20, 21, 22, 23]];
 const PIXEL_TRACE_BINDINGS: [&[u32]; 3] = [&[0, 1, 2, 3, 4, 5, 8, 9, 10], &[], &[0, 20, 21, 22, 23]];
 
 fn sun_flip_offset(count: u32) -> u64 {
@@ -665,6 +666,8 @@ fn render_view(
                 far_pixel_traced = renderer.budget.pixel_traced,
                 far_pixel_reprojected = renderer.budget.pixel_reprojected,
                 far_pixel_history = renderer.budget.pixel_history,
+                far_pixel_seeded = renderer.budget.pixel_seeded,
+                far_receivers_seeded = renderer.budget.receivers_seeded,
                 far_stages_ms = ?renderer.budget.stage_ms.map(|ms| (ms * 100.0).round() / 100.0),
                 "GI view transport"
             );
@@ -739,14 +742,17 @@ fn render_view(
             let scale = view.clip_from_view.y_axis.y * view.viewport.w as f32 * 0.5;
             forward.extend(scale)
         },
-        // w: enabled (bit 0), measure (bits 1-2; `pixel_owned`).
+        // w: enabled (bit 0), measure (bits 1-2; `pixel_owned`), jitter (3).
         pixel_grid: UVec4::new(pixel_cells.x, pixel_cells.y, pixel_size,
-            u32::from(pixel_enabled) | (settings.pixel.measure as u32) << 1),
+            u32::from(pixel_enabled) | (settings.pixel.measure as u32) << 1
+                | u32::from(settings.pixel.jitter) << 3),
         pixel_tune: Vec4::new(
             settings.pixel.voxel_pixels,
             settings.pixel.history,
             settings.pixel.rate as f32,
-            f32::from(u8::from(camera.previous_clip.is_some())),
+            // The frame that wrote the previous cells (their stamp); all
+            // ones when there are none.
+            f32::from_bits(if camera.previous_clip.is_some() { camera.last_frame } else { u32::MAX }),
         ),
         previous_clip_from_world: camera.previous_clip.unwrap_or(clip),
     };

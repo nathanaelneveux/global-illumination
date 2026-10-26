@@ -200,3 +200,60 @@ FLIP against off: default lab 0.003-0.004 (off-vs-off 0.0012), far-48
 0.007-0.011 (far-48 at side 1, which owns nothing, reads 0.0026). A few
 pixels in the map have neither tier's value (no cell sample nearby and no
 receiver to fill from). Motion and flicker at the seam are not measured.
+
+## Update: distance, cheaper classify, handoffs, flicker
+
+- **Distance, not view depth.** All three measures use the distance from
+  the camera, so turning does not move the far boundary across faces at the
+  screen edges.
+- **Classify.** Cells carry the frame that wrote them (face bits 0-2, stamp
+  above). Only far cells are written; readers (reprojection, the material)
+  reject other stamps. For the side test a distance check runs before the
+  normal load. Default lab extra fixed cost: +0.7 -> +0.5 ms.
+- **Handoffs.** A far cell whose reprojection fails starts from last frame's
+  receiver for its face (same estimator, count capped at `history`); a new
+  receiver without a topology prior starts from the far cell under it with
+  one unit of weight (borrowed, never counted support). Both work but rarely
+  fire in these profiles (0-2 per sampled frame): faces seldom cross the
+  band with history on the other side, and 94% of cells reproject.
+- **Ablation settings:** `bounces`, `jitter`.
+
+Cost at side 8 against fresh tier-off runs (one each):
+
+| Run | Frame p50 / p95 / p99 ms | Fixed ms | Receivers | Owned | Cell history |
+| --- | --- | --- | --- | --- | --- |
+| default off | 23.5 / 25.4 / 26.4 | 3.38 | 11.0k | 0 | - |
+| default side 8 | 23.5 / 25.5 / 26.7 | 3.89 | 8.3k | 10.2k | 17 |
+| default side 12 | 23.5 / 25.4 / 26.4 | 4.17 | 7.7k | 15.0k | 17 |
+| far-48 off | 22.9 / 27.3 / 29.1 | 4.68 | 11.7k | 0 | - |
+| far-48 side 8 | 21.9 / 26.8 / 28.2 | 5.02 | 8.4k | 22.2k | 21 |
+| far-48 side 12 | 21.7 / 24.4 / 28.3 | 5.27 | 7.6k | 28.4k | 20 |
+| lod off | 90.0 / 213 / 800 | 29.9 | 43.8k | 0 | - |
+| lod side 8 | 87.0 / 251 / 906 | 7.9 | 0 | 295k | 6.5 |
+| lod side 12 | 86.4 / 248 / 903 | 7.8 | 0 | 293k | 6.3 |
+
+**Flicker** (`motion` walk at 4.32 voxels/s with far-48, two 16-frame
+bursts; mean and p99 absolute luminance change between consecutive frames
+inside the far tier's pixels, taken from a coverage-map run of the same
+poses; the per-face pixels are the control):
+
+| Walk, far-tier pixels | Mean | p99 |
+| --- | --- | --- |
+| Indirect only, off (two runs) | 0.0019, 0.0020 | 0.025, 0.026 |
+| Indirect only, side 8 | 0.0058 | 0.085 |
+| History 64 / 128 | 0.0056 / 0.0057 | 0.082 / 0.084 |
+| No jitter / no jitter, history 128 | 0.0063 / 0.0064 | 0.063 / 0.064 |
+| Final image, off | 0.0289 | 0.131 |
+| Final image, side 8 | 0.0293 | 0.148 |
+
+The per-face control region is unchanged in every run. In the indirect-only
+view the far tier flickers about 3x more than receivers (2x in the default
+lab: 0.0005 -> 0.0010). History length is not the cause, and jitter only
+moves it between the mean and the tail: the material's 3x3 reconstruction
+blends neighbouring cells that sampled the same orientation, and on
+sub-pixel terrain which cells landed on which faces changes every frame,
+where a receiver gives each pixel its own face's long history. In the final
+image texture and raster motion dominate: the tier adds 1.4% to the mean
+change and 13% to the p99 in its pixels. The fix NAADF uses is a temporal
+filter on the resolved per-pixel signal (reprojected, with neighbourhood
+clamping), not longer cell histories. Not built.

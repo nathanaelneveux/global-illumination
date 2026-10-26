@@ -195,7 +195,17 @@ fn load_shared_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     // Never restart a sampled face after a retention cap. This initializes
     // only a new, unmeasured identity, after retention and cache admission.
     if estimate.mean.w == 0.0 && estimate.identity.x == 0u {
-        let prior = bootstrap_face(receiver, (estimate.identity.y & PENDING_GEOMETRY) != 0u);
+        var prior = bootstrap_face(receiver, (estimate.identity.y & PENDING_GEOMETRY) != 0u);
+        // EXPERIMENT handoff: a face entering the mid band from the far
+        // tier starts from the far cell at its centre, with one unit of
+        // weight like any topology prior: borrowed, never counted support.
+        if prior.weight == 0.0 && view.pixel_grid.w != 0u {
+            let cell = previous_cell(receiver.surface, receiver.face, receiver.voxel);
+            if cell.w > 0.0 {
+                prior = FacePrior(cell.rgb, cell.rgb * cell.rgb, 1.0);
+                atomicAdd(&pixel_stats[5], 1u);
+            }
+        }
         if prior.weight > 0.0 {
             estimate.mean = vec4(prior.mean, prior.weight);
             // This is already a post-edit initialization, not old history to

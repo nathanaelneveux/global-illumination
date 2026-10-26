@@ -209,6 +209,10 @@ impl Fixture {
                                     (2, 14) => &scene.buffers[6],
                                     (2, 15) => &cache.meta,
                                     (2, 16) => &cache.guard,
+                                    // Per-pixel tier history and counters: the tier is
+                                    // off here (pixel_grid.w == 0), so never read.
+                                    (2, 19) => &self.camera.history[1].paths.buffer,
+                                    (2, 21) => &self.camera.history[1].tails.buffer,
                                     _ => panic!("unexpected bridge binding {group}:{binding}"),
                                 };
                                 BindGroupEntry {

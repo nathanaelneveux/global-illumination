@@ -85,6 +85,8 @@ pub struct PixelTierSettings {
     pub steps: u32,
     /// Diffuse hits per path (1-3; the other tiers use `transport.bounces`).
     pub bounces: u32,
+    /// Sample a different pixel of the cell each frame (else its first).
+    pub jitter: bool,
 }
 
 /// How `PixelTierSettings` decides a face is small (see there).
@@ -100,7 +102,7 @@ impl Default for PixelTierSettings {
     fn default() -> Self {
         // The measured per-face/per-pixel crossover (about 220 voxels at
         // 1440p; docs/history/far-per-pixel.md).
-        Self { voxel_pixels: 8.0, measure: PixelMeasure::VoxelSide, cell: 3, history: 32.0, rate: 4, steps: 128, bounces: 3 }
+        Self { voxel_pixels: 8.0, measure: PixelMeasure::VoxelSide, cell: 3, history: 32.0, rate: 4, steps: 128, bounces: 3, jitter: true }
     }
 }
 
@@ -114,6 +116,7 @@ impl PixelTierSettings {
             rate: self.rate.clamp(1, 8),
             steps: self.steps.clamp(16, 2048),
             bounces: self.bounces.clamp(1, 3),
+            jitter: self.jitter,
         }
     }
 }

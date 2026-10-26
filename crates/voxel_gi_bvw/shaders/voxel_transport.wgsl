@@ -116,7 +116,7 @@ struct FarCells {
     camera: vec4<f32>,
     axis: vec4<f32>, // view forward, pixels per unit at depth 1
     grid: vec4<u32>, // cells x, y, pixels per cell side, enabled
-    origin: vec4<u32>, // viewport origin, threshold px (bits)
+    origin: vec4<u32>, // viewport origin, threshold px (bits), this frame's stamp
     cells: array<vec4<u32>>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(111)
@@ -130,9 +130,8 @@ fn pixel_owned(voxel: vec3<i32>, face: u32) -> bool {
     let mode = (grid >> 1u) & 3u;
     let s = select(1, voxel_stride(voxel), mode == 2u);
     let ray = vec3<f32>(voxel & vec3(-s)) + 0.5 * f32(s) - far_cells.camera.xyz;
-    let depth = dot(ray, far_cells.axis.xyz);
-    if depth <= 0.0 { return false; }
-    let side = f32(s) * far_cells.axis.w / depth;
+    if dot(ray, far_cells.axis.xyz) <= 0.0 { return false; }
+    let side = f32(s) * far_cells.axis.w / length(ray);
     let threshold = bitcast<f32>(far_cells.origin.z);
     if mode == 0u { return side < threshold; }
     return side * side * abs(dot(vec3<f32>(FACE_NORMALS[face]), normalize(ray))) < threshold;
@@ -156,7 +155,8 @@ fn pixel_irradiance(pixel: vec2<f32>, position: vec3<f32>, normal: vec3<f32>, s:
             let q = centre + vec2(x, y);
             if any(q < vec2(0)) || any(q >= vec2<i32>(grid.xy)) { continue; }
             let cell = far_cells.cells[u32(q.y) * grid.x + u32(q.x)];
-            if cell.z != face { continue; }
+            // Only cells written this frame (face and stamp) are current.
+            if cell.z != (face | (far_cells.origin.w << 3u)) { continue; }
             let blue_count = unpack2x16float(cell.y);
             if blue_count.y <= 0.0 { continue; }
             let rgb = vec3(unpack2x16float(cell.x), blue_count.x);

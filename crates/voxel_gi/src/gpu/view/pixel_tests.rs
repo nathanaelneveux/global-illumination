@@ -75,7 +75,7 @@ fn native_small_faces_are_lit_per_pixel_without_receivers() {
         history: UVec4::new(0, mask, frame, 1),
         pixel_axis: Vec4::new(0., -1., 0., 4.),
         pixel_grid: UVec4::new(cells.x, cells.y, 2, u32::from(enabled)),
-        pixel_tune: Vec4::new(4., 32., 1., f32::from(u8::from(previous.is_some()))),
+        pixel_tune: Vec4::new(4., 32., 1., f32::from_bits(if previous.is_some() { frame - 1 } else { u32::MAX })),
         previous_clip_from_world: previous.unwrap_or(world.inverse()),
         ..default()
     };
@@ -101,6 +101,9 @@ fn native_small_faces_are_lit_per_pixel_without_receivers() {
                 let resource = match (group, binding) {
                     (0, b) => group0[b as usize].as_entire_binding(),
                     (2, 0) => camera.control.buffer.as_entire_binding(),
+                    (2, 1) => camera.history[1].receivers.buffer.as_entire_binding(),
+                    (2, 4) => camera.history[1].estimates.buffer.as_entire_binding(),
+                    (2, 6) => camera.history[1].hash.buffer.as_entire_binding(),
                     (2, 8) => wgpu::BindingResource::TextureView(&rig.depth_view),
                     (2, 9) => wgpu::BindingResource::TextureView(&rig.normal_view),
                     (2, 14..=16) => scene.buffers[6].as_entire_binding(),
@@ -132,7 +135,8 @@ fn native_small_faces_are_lit_per_pixel_without_receivers() {
     };
     let counts = |words: &[u32]| -> Vec<f32> {
         words[16..].chunks_exact(4).map(|c| {
-            assert_eq!(c[2], 2, "owned top faces");
+            assert_eq!(c[2] & 7, 2, "owned top faces");
+            assert_eq!(c[2] >> 3, words[15], "stamped with this frame");
             f16((c[1] >> 16) as u16)
         }).collect()
     };
@@ -140,6 +144,7 @@ fn native_small_faces_are_lit_per_pixel_without_receivers() {
     for frame in 0..6 {
         let words = run(frame, view_at(0.), previous);
         assert_eq!(&words[8..12], &[8, 8, 2, 1], "header grid");
+        assert_eq!(words[15], frame, "header stamp");
         let counts = counts(&words);
         assert!(counts.iter().all(|&n| n == frame as f32 + 1.), "frame {frame}: {counts:?}");
         let light = f16((words[16] & 0xffff) as u16);
