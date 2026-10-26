@@ -43,7 +43,9 @@ struct Far {
 const GRID: u32 = 4;
 
 impl Far {
-    fn new(cell: u32, rate: u32) -> Self {
+    /// `light`: a custom-direct point light (no Bevy light draws it) 6
+    /// voxels above the floor's centre.
+    fn new(cell: u32, rate: u32, light: bool) -> Self {
         let mut gpu = crate::gpu::tests::native_tracer();
         let mut page = vec![AIR; volume_len(PAGE_SIZE)];
         for x in 0..32 {
@@ -56,8 +58,13 @@ impl Far {
         let scene = Arc::new(TransportScene::with_page_delta(&TransportScene::default(), vec![(IVec3::ZERO, page)], &[]));
         let materials = VoxelMaterialTransportTable::default();
         let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
-        gpu.submit_compact(scene, &TransportSources::default(), &materials,
-            &mut TraceWork::default(), 0, &emitters).unwrap();
+        let mut sources = TransportSources::default();
+        if light {
+            sources.points.push(crate::sources::PointTransportLight {
+                position: Vec3::new(16., 10., 16.), intensity: Vec3::ZERO, range: 64., custom_visible: Vec3::splat(100.),
+            });
+        }
+        gpu.submit_compact(scene, &sources, &materials, &mut TraceWork::default(), 0, &emitters).unwrap();
         let scene = gpu.view_scene().unwrap();
         let device = &gpu.context.device;
         let queue = &gpu.context.queue;
@@ -185,7 +192,7 @@ fn counts_at(words: &[u32], cells: &[usize]) -> Vec<f32> {
 #[test]
 #[ignore = "native per-pixel tier"]
 fn native_small_faces_are_lit_per_pixel_without_receivers() {
-    let mut far = Far::new(2, 1);
+    let mut far = Far::new(2, 1, false);
     assert!(far.receivers(false) > 0, "control view allocates receivers");
     assert_eq!(far.receivers(true), 0, "per-pixel faces own no receiver");
     let mut previous = None;
@@ -210,7 +217,7 @@ fn native_small_faces_are_lit_per_pixel_without_receivers() {
 fn native_far_cells_at_default_settings_sample_every_pixel_and_index() {
     // The defaults: 3-pixel cells, one trace in four frames after warmup.
     let defaults = FarTierSettings::default();
-    let mut far = Far::new(defaults.cell, defaults.rate);
+    let mut far = Far::new(defaults.cell, defaults.rate, false);
     let cells = far.cells() as usize;
     let width = far.pixels.cells.x as usize;
     // The 16-pixel view leaves the last row and column partly outside it.
@@ -245,5 +252,27 @@ fn native_far_cells_at_default_settings_sample_every_pixel_and_index() {
         // or 9 in 32 frames by the cell's phase).
         let last = *sequence.last().unwrap();
         assert!((12..=13).contains(&last), "cell {index}: {sequence:?}");
+    }
+}
+
+#[test]
+#[ignore = "native per-pixel tier"]
+fn native_far_cells_show_custom_direct_light_outside_their_history() {
+    // A standalone emitter's direct RGB has no Bevy light to draw it: far
+    // cells add it at presentation, whether or not they traced this frame,
+    // and keep it out of the accumulated indirect mean.
+    let defaults = FarTierSettings::default();
+    let mut far = Far::new(defaults.cell, defaults.rate, true);
+    assert_eq!(far.scene.params.transport.y, 1.0);
+    let width = far.pixels.cells.x as usize;
+    let mut previous = None;
+    for frame in 0..8 {
+        let (words, history) = far.frame(frame, view_at(0.), previous);
+        for index in (0..far.cells() as usize).filter(|i| i % width < width - 1 && i / width < width - 1) {
+            let shown = f16((words[16 + index * 4] & 0xffff) as u16);
+            let mean = f32::from_bits(history[index * 12]);
+            assert!(shown > mean + 0.05, "frame {frame} cell {index}: shown {shown} over mean {mean}");
+        }
+        previous = Some(view_at(0.).inverse());
     }
 }

@@ -58,10 +58,18 @@ fn pixel_owned(voxel: vec3<i32>, face: u32) -> bool {
 
 fn pixel_stamp(frame: u32) -> u32 { return frame & 0x1fffffffu; }
 
-fn write_pixel(index: u32, value: PixelHistory) {
-    current_pixels[index] = value;
+/// Custom direct RGB (standalone `VoxelGiEmitter` sources, which have no
+/// Bevy light to draw it): a per-frame presentation term like receivers'
+/// (`publish_view`), never part of the accumulated indirect history.
+fn custom_direct(value: PixelHistory) -> vec3<f32> {
+    if params.transport.y <= 0.0 { return vec3(0.0); }
+    return direct_at(value.surface, face_normal(value.face & 7u)).custom_visible;
+}
+
+fn write_output(index: u32, value: PixelHistory) {
     let axis = (value.face & 7u) / 2u;
-    pixel_output.cells[index] = vec4(pack2x16float(value.mean.rg), pack2x16float(vec2(value.mean.b, value.mean.w)),
+    let shown = value.mean.rgb + custom_direct(value);
+    pixel_output.cells[index] = vec4(pack2x16float(shown.rg), pack2x16float(vec2(shown.b, value.mean.w)),
         value.face, bitcast<u32>(value.surface[axis]));
 }
 
@@ -166,11 +174,15 @@ fn classify_pixels(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let count = min(history.w, view.pixel_tune.y);
     atomicAdd(&pixel_stats[2], u32(count));
-    write_pixel(id.x, PixelHistory(vec4(history.rgb, count), surface, face | (stamp << 3u), sequence));
+    let value = PixelHistory(vec4(history.rgb, count), surface, face | (stamp << 3u), sequence);
+    current_pixels[id.x] = value;
     let rate = max(u32(view.pixel_tune.z), 1u);
     if count < 4.0 || (id.x + view.history.z) % rate == 0u {
+        // The trace writes this cell's output.
         let slot = atomicAdd(&pixel_queue[0], 1u);
         atomicStore(&pixel_queue[1u + slot], id.x);
+    } else {
+        write_output(id.x, value);
     }
 }
 
@@ -192,5 +204,6 @@ fn trace_pixel_queue(@builtin(global_invocation_id) id: vec3<u32>) {
         cell.mean.w = min(cell.mean.w + 1.0, view.pixel_tune.y);
         cell.mean = vec4(mix(cell.mean.rgb, sample.energy.value.rgb, 1.0 / cell.mean.w), cell.mean.w);
     }
-    write_pixel(index, cell);
+    current_pixels[index] = cell;
+    write_output(index, cell);
 }

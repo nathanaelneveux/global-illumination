@@ -500,7 +500,7 @@ fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource:
 }
 
 /// Far tier resources (automatic layouts must match exactly).
-const PIXEL_CLASSIFY_BINDINGS: [&[u32]; 3] = [&[0, 1, 2], &[], &[0, 1, 4, 6, 8, 9, 19, 20, 21, 22, 23]];
+const PIXEL_CLASSIFY_BINDINGS: [&[u32]; 3] = [&[0, 1, 2, 3, 5], &[], &[0, 1, 4, 6, 8, 9, 19, 20, 21, 22, 23]];
 const PIXEL_ARGS_BINDINGS: [&[u32]; 3] = [&[], &[], &[23, 24]];
 const PIXEL_TRACE_BINDINGS: [&[u32]; 3] = [&[0, 1, 2, 3, 4, 5, 8, 9, 10], &[], &[0, 20, 21, 22, 23]];
 
