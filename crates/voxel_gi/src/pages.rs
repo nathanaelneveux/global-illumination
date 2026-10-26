@@ -250,10 +250,11 @@ pub(super) fn start_scene_task(
             .map(|page| {
                 let origin = page * PAGE_EDGE as i32;
                 let sample = source.sample_page(page, full_resample.contains(&page));
-                let stride = sample.stride().trailing_zeros() as u8;
+                let mut stride = sample.stride().trailing_zeros() as u8;
                 let mut materials = sample.into_dense();
                 if let Some(edits) = edits.get(&page) {
                     apply_page_edits(&mut materials, origin, edits);
+                    stride = edited_stride(&materials, origin, edits, stride);
                 }
                 (page, materials, stride)
             })
@@ -321,6 +322,27 @@ pub(super) fn apply_page_edits(materials: &mut [u16], origin: IVec3, edits: &Has
     }
 }
 
+/// A coarse page's stride after exact edits: kept only while every edited
+/// block is still one material, the contract coarse receivers rely on
+/// (`block_receiver`, `receiver_exists`). Otherwise the page is traced and
+/// keyed at full resolution: removing one voxel from a stride-8 floor
+/// exposes a face inside its block that the block face cannot stand for.
+fn edited_stride(materials: &[u16], origin: IVec3, edits: &HashMap<IVec3, u16>, stride_log2: u8) -> u8 {
+    if stride_log2 == 0 {
+        return 0;
+    }
+    let size = 1u32 << stride_log2;
+    // Each touched block once: an explosion edits many voxels of a block.
+    let blocks: HashSet<UVec3> = edits.keys().map(|position| (position - origin).as_uvec3() / size * size).collect();
+    let uniform = |block: &UVec3| {
+        let first = materials[naadf::linear_index(*block, PAGE_SIZE)];
+        (0..size).all(|z| (0..size).all(|y| (0..size).all(|x| {
+            materials[naadf::linear_index(block + UVec3::new(x, y, z), PAGE_SIZE)] == first
+        })))
+    };
+    if blocks.iter().all(uniform) { stride_log2 } else { 0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::input::{VoxelGiInput, dense_page};
@@ -373,6 +395,30 @@ mod tests {
         apply_page_edits(&mut data, page * 32, &runtime.page_edits.0[&page]);
         assert_eq!(data[naadf::linear_index((position - page * 32).as_uvec3(), PAGE_SIZE)], AIR);
         assert_eq!(data.iter().filter(|&&m| m == AIR).count(), 1);
+    }
+
+    #[test]
+    fn edits_that_break_a_coarse_block_drop_the_page_to_full_resolution() {
+        // A stride-8 floor, one block thick (y 0-7).
+        let mut page = vec![AIR; naadf::volume_len(PAGE_SIZE)];
+        for z in 0..32 {
+            for y in 0..8 {
+                for x in 0..32 {
+                    page[naadf::linear_index(UVec3::new(x, y, z), PAGE_SIZE)] = 3;
+                }
+            }
+        }
+        let edited = |edits: &[(IVec3, u16)]| {
+            let edits: HashMap<IVec3, u16> = edits.iter().copied().collect();
+            let mut materials = page.clone();
+            apply_page_edits(&mut materials, IVec3::ZERO, &edits);
+            edited_stride(&materials, IVec3::ZERO, &edits, 3)
+        };
+        assert_eq!(edited(&[(IVec3::new(4, 7, 4), AIR)]), 0, "a hole exposes a face inside the block");
+        assert_eq!(edited(&[(IVec3::new(4, 7, 4), 3)]), 3, "rewriting the same material keeps blocks uniform");
+        let whole: Vec<_> = (0..8).flat_map(|z| (0..8).flat_map(move |y| (0..8).map(move |x| (IVec3::new(x, y, z), AIR)))).collect();
+        assert_eq!(edited(&whole), 3, "removing a whole block keeps the stride");
+        assert_eq!(edited_stride(&page, IVec3::ZERO, &HashMap::new(), 0), 0);
     }
 
     #[test]
