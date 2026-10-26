@@ -499,6 +499,76 @@ fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource:
     }
 }
 
+/// The view tier's passes in dispatch order. Each is one compute pass with
+/// one timestamp pair; `slot` is that pair and the stage's index in the
+/// receipt's costs (`timing::Budget`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Stage {
+    PreparePool,
+    Discover,
+    Index,
+    Reproject,
+    Retain,
+    LoadCache,
+    Trace,
+    Reconstruct,
+    StoreCache,
+    Publish,
+    Far,
+}
+
+/// How a stage's kernel is dispatched: the stage's workgroup count, one
+/// workgroup, or the far queue's indirect arguments.
+#[derive(Clone, Copy)]
+enum Dispatch {
+    Stage,
+    One,
+    Indirect,
+}
+
+impl Stage {
+    pub const ORDER: [Stage; 11] = [
+        Stage::PreparePool, Stage::Discover, Stage::Index, Stage::Reproject, Stage::Retain,
+        Stage::LoadCache, Stage::Trace, Stage::Reconstruct, Stage::StoreCache, Stage::Publish, Stage::Far,
+    ];
+    pub const COUNT: usize = 11;
+
+    pub const fn slot(self) -> usize {
+        match self {
+            Stage::Discover => 0,
+            Stage::Index => 1,
+            Stage::Reproject => 2,
+            Stage::Retain => 3,
+            Stage::LoadCache => 4,
+            Stage::Trace => 5,
+            Stage::Reconstruct => 6,
+            Stage::StoreCache => 7,
+            Stage::Publish => 8,
+            Stage::PreparePool => 9,
+            Stage::Far => 10,
+        }
+    }
+
+    /// The stage's kernels (indices into `render_view`'s kernel list) and
+    /// their dispatch; `Retain` dispatches per retention event instead.
+    fn kernels(self) -> &'static [(usize, Dispatch)] {
+        match self {
+            Stage::Discover => &[(0, Dispatch::Stage)],
+            Stage::Index => &[(1, Dispatch::Stage)],
+            Stage::Reproject => &[(2, Dispatch::Stage)],
+            Stage::LoadCache => &[(3, Dispatch::Stage)],
+            Stage::Trace => &[(4, Dispatch::Stage)],
+            Stage::Reconstruct => &[(5, Dispatch::Stage)],
+            Stage::StoreCache => &[(6, Dispatch::Stage)],
+            Stage::Publish => &[(7, Dispatch::Stage)],
+            Stage::PreparePool => &[(8, Dispatch::Stage)],
+            // Classify every cell, size the queue, trace it densely.
+            Stage::Far => &[(9, Dispatch::Stage), (10, Dispatch::One), (11, Dispatch::Indirect)],
+            Stage::Retain => &[],
+        }
+    }
+}
+
 fn sun_flip_offset(count: u32) -> u64 {
     (queue_words::PREFIX + 2 * u64::from(count)) * 4
 }
@@ -583,6 +653,16 @@ mod tests {
             assert!(group1.iter().all(|&b| b <= 1), "{name} group 1 {group1:?}");
             assert!(group2.iter().all(|&b| b <= 24), "{name} group 2 {group2:?}");
         }
+    }
+
+    #[test]
+    fn stage_table_is_a_permutation_of_slots_and_kernels() {
+        let mut slots: Vec<_> = Stage::ORDER.iter().map(|stage| stage.slot()).collect();
+        slots.sort_unstable();
+        assert_eq!(slots, (0..Stage::COUNT).collect::<Vec<_>>(), "one timestamp pair per stage");
+        let mut kernels: Vec<_> = Stage::ORDER.iter().flat_map(|stage| stage.kernels().iter().map(|k| k.0)).collect();
+        kernels.sort_unstable();
+        assert_eq!(kernels, (0..12).collect::<Vec<_>>(), "every listed kernel dispatched once");
     }
 
     #[test]
@@ -902,6 +982,7 @@ fn render_view(
     encoder.clear_buffer(&pixel_state.stats.buffer, 0, None);
     encoder.clear_buffer(&pixel_state.queue.buffer, 0, Some(4));
     let multisampled = msaa.samples() > 1;
+    // Indexed by `Stage::kernels`; bind groups are cached in this order.
     let kernels = [
         &renderer.discover[usize::from(multisampled)],
         &renderer.index,
@@ -989,76 +1070,55 @@ fn render_view(
     let mut executed = 0u32;
     // Each phase has a timestamp pair in the SAME pass. Cross-pass timestamp
     // pairs can collapse on Metal and falsely report zero or negative costs.
-    for stage in [9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10] {
-        let retained = stage == 3;
-        let dispatch_count = if stage == 10 {
-            if pixel_enabled { pixel_cells.element_product() } else { 0 }
-        } else if stage == 5 {
-            work
-        } else if stage == 0 {
+    for stage in Stage::ORDER {
+        let workgroups = match stage {
             // One cooperative workgroup per 2x2-cell discovery tile.
-            grid.x.div_ceil(2) * grid.y.div_ceil(2)
-        } else {
-            count
+            Stage::Discover => grid.x.div_ceil(2) * grid.y.div_ceil(2),
+            Stage::Trace => work.div_ceil(64),
+            Stage::Retain if changes.is_empty() => 0,
+            Stage::StoreCache if control.cache.z == 0 => 0,
+            Stage::Far if !pixel_enabled => 0,
+            Stage::Far => pixel_cells.element_product().div_ceil(64),
+            _ => count.div_ceil(64),
         };
-        if dispatch_count == 0 || (retained && changes.is_empty())
-            || (stage == 7 && control.cache.z == 0)
-        {
+        if workgroups == 0 {
             continue;
         }
-        executed |= 1 << stage;
-        let index = if stage == 10 { 9 } else if stage == 9 { 8 } else if stage > 3 { stage - 1 } else { stage };
-        let kernel = if retained {
-            &renderer.retain
-        } else {
-            kernels[index]
-        };
+        executed |= 1 << stage.slot();
         let timestamps = ticket
             .as_ref()
             .and(renderer.budget.queries.as_ref())
             .map(|queries| wgpu::ComputePassTimestampWrites {
                 query_set: queries,
-                beginning_of_pass_write_index: Some(stage as u32 * 2),
-                end_of_pass_write_index: Some(stage as u32 * 2 + 1),
+                beginning_of_pass_write_index: Some(stage.slot() as u32 * 2),
+                end_of_pass_write_index: Some(stage.slot() as u32 * 2 + 1),
             });
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Far view GI"),
             timestamp_writes: timestamps,
         });
-        pass.set_pipeline(&kernel.pipeline);
-        if retained {
+        if stage == Stage::Retain {
+            // One dispatch per retention event batch, each with its own
+            // event bindings.
+            pass.set_pipeline(&renderer.retain.pipeline);
             for groups in &changes {
                 for (group, binding) in groups.iter().enumerate() {
                     pass.set_bind_group(group as u32, &**binding, &[]);
                 }
-                pass.dispatch_workgroups(dispatch_count.div_ceil(64), 1, 1);
+                pass.dispatch_workgroups(workgroups, 1, 1);
             }
-        } else if stage == 10 {
-            // Classify every cell, size the queue, trace it densely.
-            for (group, binding) in camera.groups[camera.current][9].iter().enumerate() {
+            continue;
+        }
+        for &(kernel, dispatch) in stage.kernels() {
+            pass.set_pipeline(&kernels[kernel].pipeline);
+            for (group, binding) in camera.groups[camera.current][kernel].iter().enumerate() {
                 pass.set_bind_group(group as u32, &**binding, &[]);
             }
-            pass.dispatch_workgroups(dispatch_count.div_ceil(64), 1, 1);
-            pass.set_pipeline(&renderer.pixel_args.pipeline);
-            for (group, binding) in camera.groups[camera.current][10].iter().enumerate() {
-                pass.set_bind_group(group as u32, &**binding, &[]);
+            match dispatch {
+                Dispatch::Stage => pass.dispatch_workgroups(workgroups, 1, 1),
+                Dispatch::One => pass.dispatch_workgroups(1, 1, 1),
+                Dispatch::Indirect => pass.dispatch_workgroups_indirect(&pixel_state.args, 0),
             }
-            pass.dispatch_workgroups(1, 1, 1);
-            pass.set_pipeline(&renderer.pixel_trace.pipeline);
-            for (group, binding) in camera.groups[camera.current][11].iter().enumerate() {
-                pass.set_bind_group(group as u32, &**binding, &[]);
-            }
-            pass.dispatch_workgroups_indirect(&pixel_state.args, 0);
-        } else {
-            for (group, binding) in camera.groups[camera.current][index].iter().enumerate() {
-                pass.set_bind_group(group as u32, &**binding, &[]);
-            }
-            let groups = if stage == 0 {
-                dispatch_count
-            } else {
-                dispatch_count.div_ceil(64)
-            };
-            pass.dispatch_workgroups(groups, 1, 1);
         }
     }
     if let Some(ticket) = ticket {

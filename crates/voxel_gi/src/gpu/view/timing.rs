@@ -1,7 +1,7 @@
 //! Bounded asynchronous timing receipts. Only timestamps, queue counters and
 //! corner-sunlight flips cross back to the CPU per view dispatch, never lighting.
 use super::*;
-use super::runtime::{pixel_words, queue_words};
+use super::runtime::{Stage, pixel_words, queue_words};
 use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Use the same bounded feedback controller as near transport. Dividing a
@@ -140,8 +140,8 @@ pub(super) struct Budget {
     period: f64,
 }
 
-/// Dispatch stages with a timestamp pair each.
-const STAGES: usize = 11;
+/// Dispatch stages with a timestamp pair each (`Stage::slot`).
+const STAGES: usize = Stage::COUNT;
 const STAMP_BYTES: usize = STAGES * 16;
 /// Timestamps, queue counters, pool words and per-pixel counters, then the
 /// flip region.
@@ -251,7 +251,7 @@ impl Budget {
                     as f32
             });
             let total: f32 = costs.iter().sum();
-            let trace = costs[5];
+            let trace = costs[Stage::Trace.slot()];
             // Receipt words after the timestamps: the queue counters, the
             // pool's four words, then the far tier's counters.
             let word = |i: u64| {
@@ -276,8 +276,8 @@ impl Budget {
             self.displayed = counter(queue_words::DISPLAYED);
             self.paused = counter(queue_words::PAUSED);
             self.trace_ms = trace;
-            self.pixel_ms = costs[10];
-            self.presentation_ms = total - trace - costs[10];
+            self.pixel_ms = costs[Stage::Far.slot()];
+            self.presentation_ms = total - trace - self.pixel_ms;
             self.pixel_owned = pixel(pixel_words::OWNED);
             self.pixel_traced = pixel(pixel_words::TRACED);
             self.pixel_history = pixel(pixel_words::HISTORY) as f32 / pixel(pixel_words::OWNED).max(1) as f32;
@@ -285,16 +285,16 @@ impl Budget {
             self.pixel_seeded = pixel(pixel_words::SEEDED);
             self.receivers_seeded = pixel(pixel_words::RECEIVERS_SEEDED);
             self.stage_ms = costs;
-            self.discovery_ms = costs[0] + costs[9];
-            self.pool_prepare_ms = costs[9];
-            self.pool_scan_ms = costs[0];
+            self.discovery_ms = costs[Stage::Discover.slot()] + costs[Stage::PreparePool.slot()];
+            self.pool_prepare_ms = costs[Stage::PreparePool.slot()];
+            self.pool_scan_ms = costs[Stage::Discover.slot()];
             self.pool_free = pool(0);
             self.pool_claimed = pool(1);
             self.pool_exhausted = pool(2);
             self.pool_retained = pool(3);
             self.discovery_sum_ms += f64::from(self.discovery_ms);
             self.discovery_count += 1;
-            self.cache_ms = costs[4] + costs[7];
+            self.cache_ms = costs[Stage::LoadCache.slot()] + costs[Stage::StoreCache.slot()];
             self.cache_loads += u64::from(counter(queue_words::CACHE_LOADS));
             self.cache_promotions += u64::from(counter(queue_words::CACHE_PROMOTIONS));
             let attempted = counter(queue_words::ATTEMPTED);
