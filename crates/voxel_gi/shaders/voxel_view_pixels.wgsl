@@ -30,7 +30,14 @@ struct PixelOutput {
 }
 @group(2) @binding(19) var<storage, read> previous_pixels: array<PixelHistory>;
 @group(2) @binding(20) var<storage, read_write> current_pixels: array<PixelHistory>;
-// Owned, traced, history sum, reprojected, seeded from receivers.
+// Far-tier counters (Rust: runtime::pixel_words), read back with the
+// timing receipt.
+const PIXEL_OWNED: u32 = 0u;
+const PIXEL_TRACED: u32 = 1u;
+const PIXEL_HISTORY: u32 = 2u;
+const PIXEL_REPROJECTED: u32 = 3u;
+const PIXEL_SEEDED: u32 = 4u;
+const PIXEL_RECEIVERS_SEEDED: u32 = 5u;
 @group(2) @binding(21) var<storage, read_write> pixel_stats: array<atomic<u32>, 8>;
 @group(2) @binding(22) var<storage, read_write> pixel_output: PixelOutput;
 // Cells to trace this frame: a count, then cell indices (dense, so the
@@ -151,12 +158,12 @@ fn classify_pixels(@builtin(global_invocation_id) id: vec3<u32>) {
     surface[face / 2u] = round(surface[face / 2u]);
     let voxel = vec3<i32>(floor(surface - normal * 0.01));
     if !pixel_owned(voxel, face) { return; }
-    atomicAdd(&pixel_stats[0], 1u);
+    atomicAdd(&pixel_stats[PIXEL_OWNED], 1u);
     let found = previous_cell(surface, face, voxel);
     var history = found.mean;
     var sequence = found.sequence;
     if history.w > 0.0 {
-        atomicAdd(&pixel_stats[3], 1u);
+        atomicAdd(&pixel_stats[PIXEL_REPROJECTED], 1u);
     } else {
         // Handoff: a face crossing into the far band starts from its view
         // receiver's history (same estimator: emitter plus continuation)
@@ -169,11 +176,11 @@ fn classify_pixels(@builtin(global_invocation_id) id: vec3<u32>) {
         if owner != 0xffffffffu && previous_estimates[owner].mean.w > 0.0 {
             history = previous_estimates[owner].mean;
             sequence = previous_estimates[owner].identity.x;
-            atomicAdd(&pixel_stats[4], 1u);
+            atomicAdd(&pixel_stats[PIXEL_SEEDED], 1u);
         }
     }
     let count = min(history.w, view.pixel_tune.y);
-    atomicAdd(&pixel_stats[2], u32(count));
+    atomicAdd(&pixel_stats[PIXEL_HISTORY], u32(count));
     let value = PixelHistory(vec4(history.rgb, count), surface, face | (stamp << 3u), sequence);
     current_pixels[id.x] = value;
     let rate = max(u32(view.pixel_tune.z), 1u);
@@ -196,7 +203,7 @@ fn trace_pixel_queue(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= atomicLoad(&pixel_queue[0]) { return; }
     let index = atomicLoad(&pixel_queue[1u + id.x]);
     var cell = current_pixels[index];
-    atomicAdd(&pixel_stats[1], 1u);
+    atomicAdd(&pixel_stats[PIXEL_TRACED], 1u);
     let sample = trace_receiver(cell.surface, face_normal(cell.face & 7u), pcg(index * 9781u + 0x9e3779b9u), cell.sequence);
     // Unknown is not black, but it still consumes its index.
     cell.sequence += 1u;

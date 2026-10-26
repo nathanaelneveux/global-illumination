@@ -1330,6 +1330,18 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn transport_params_mirror_the_shader() {
+        let f = |i: u32| Vec4::splat(i as f32);
+        let params = GpuParams {
+            counts: UVec4::splat(1), minimum: IVec4::splat(2), maximum: IVec4::splat(3),
+            environment: f(4), extra: f(5), transport: f(6),
+        };
+        let reflection = super::reflect::Reflection::new(&SHADER);
+        super::reflect::assert_mirrors(&ShaderBuffer::from(params).data.unwrap(), reflection.layout("Params"),
+            &["counts", "minimum", "maximum", "environment", "extra", "transport"]);
+    }
+
+    #[test]
     fn gpu_task_and_uniform_layouts_are_stable() {
         assert_eq!(
             ShaderBuffer::from(vec![GpuFaceTask::default()])

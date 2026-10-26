@@ -190,6 +190,40 @@ pub fn prepare_texture_array(
 mod tests {
     use super::*;
 
+    /// `struct name { ... }` as written in a shader source.
+    fn struct_text<'a>(source: &'a str, name: &str) -> &'a str {
+        let start = source.find(&format!("struct {name} {{")).unwrap_or_else(|| panic!("no struct {name}"));
+        let end = start + source[start..].find("\n}").unwrap() + 2;
+        &source[start..end]
+    }
+
+    /// Member (name, offset) pairs and size of `name`, parsing only the
+    /// given struct texts (dependencies first).
+    fn layout(texts: &[&str], name: &str) -> (Vec<(String, u32)>, u32) {
+        let module = naga::front::wgsl::parse_str(&texts.join("\n")).unwrap();
+        let ty = module.types.iter().find(|(_, ty)| ty.name.as_deref() == Some(name)).unwrap().1;
+        let naga::TypeInner::Struct { members, span } = &ty.inner else { panic!("{name} is not a struct") };
+        (members.iter().map(|m| (m.name.clone().unwrap(), m.offset)).collect(), *span)
+    }
+
+    #[test]
+    fn material_far_views_mirror_the_view_tier() {
+        // The material reads buffers the view tier writes; its copies of
+        // their structs must keep the same members at the same offsets.
+        let material = include_str!("../shaders/voxel_transport.wgsl");
+        let runtime = include_str!("../../voxel_gi/shaders/voxel_view_runtime.wgsl");
+        let pixels = include_str!("../../voxel_gi/shaders/voxel_view_pixels.wgsl");
+        let pixel = |source| struct_text(source, "FarPixel");
+        assert_eq!(
+            layout(&[pixel(material), struct_text(material, "FarOutput")], "FarOutput"),
+            layout(&[pixel(runtime), struct_text(runtime, "FarOutput")], "FarOutput"),
+        );
+        assert_eq!(layout(&[pixel(material)], "FarPixel"), layout(&[pixel(runtime)], "FarPixel"));
+        let (cells, cells_span) = layout(&[struct_text(material, "FarCells")], "FarCells");
+        let (output, output_span) = layout(&[struct_text(pixels, "PixelOutput")], "PixelOutput");
+        assert_eq!((cells, cells_span), (output, output_span), "FarCells mirrors the far tier's PixelOutput");
+    }
+
     #[test]
     fn terrain_shader_composes_with_bevys_real_pbr_modules_without_a_window() {
         use bevy::render::{RenderPlugin, settings::WgpuSettings};

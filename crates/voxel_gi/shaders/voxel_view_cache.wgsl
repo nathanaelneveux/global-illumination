@@ -43,7 +43,7 @@ fn load_shared_face(index: u32, receiver: ViewReceiver) {
     let incarnation = shared_state[base + 7u].x;
     let count = shared_state[base + 1u].y & 0x7fffffffu;
     let next = shared_state[base + 1u].z;
-    atomicAdd(&queue[10], 1u);
+    atomicAdd(&queue[QUEUE_CACHE_LOADS], 1u);
     // On first admission retain the better-supported valid estimate. Histories
     // may share path prefixes: do NOT sum their counts or mix them as independent
     // measurements. Once admitted, always load the resident authority, including
@@ -59,7 +59,7 @@ fn load_shared_face(index: u32, receiver: ViewReceiver) {
             bitcast<f32>(shared_meta[slot * 3u + 1u].x));
         estimate.identity.x = next;
     } else {
-        atomicAdd(&queue[11], 1u);
+        atomicAdd(&queue[QUEUE_CACHE_PROMOTIONS], 1u);
         estimate.identity.x = max(estimate.identity.x, next);
     }
     if estimate.shown.w == 0.0 && count > 0u {
@@ -76,8 +76,8 @@ fn load_shared_face(index: u32, receiver: ViewReceiver) {
     }
     estimate.identity.w = incarnation;
     let pending = continuations[index].status == 1u;
-    let owner_count = atomicLoad(&queue[0]);
-    let rank = atomicLoad(&queue[12u + view.grid.z + index]);
+    let owner_count = atomicLoad(&queue[QUEUE_OWNERS]);
+    let rank = atomicLoad(&queue[QUEUE_PREFIX + view.grid.z + index]);
     let ordinal = (rank + owner_count - wave.range.x % max(owner_count, 1u)) % max(owner_count, 1u);
     var visits = 0u;
     if ordinal < min(owner_count, wave.range.y) && wave.range.z > 0u {
@@ -91,7 +91,7 @@ fn load_shared_face(index: u32, receiver: ViewReceiver) {
     // it would skip QMC indices according to path length and bias the prefix.
     let starts = visits - select(0u, 1u, pending && visits > 0u);
     shared_state[base + 1u].z = first + starts;
-    atomicStore(&queue[12u + view.grid.z + index], first);
+    atomicStore(&queue[QUEUE_PREFIX + view.grid.z + index], first);
     estimate.identity.x = select(first, paths[index].sequence, pending);
     estimates[index] = estimate;
     receivers[index].sequence = estimate.identity.x;
@@ -203,7 +203,7 @@ fn load_shared_faces(@builtin(global_invocation_id) id: vec3<u32>) {
             let cell = previous_cell(receiver.surface, receiver.face, receiver.voxel).mean;
             if cell.w > 0.0 {
                 prior = FacePrior(cell.rgb, cell.rgb * cell.rgb, 1.0);
-                atomicAdd(&pixel_stats[5], 1u);
+                atomicAdd(&pixel_stats[PIXEL_RECEIVERS_SEEDED], 1u);
             }
         }
         if prior.weight > 0.0 {
@@ -235,7 +235,7 @@ fn store_shared_faces(@builtin(global_invocation_id) id: vec3<u32>) {
     shared_state[base + 1u].x = 0u;
     shared_state[base + 3u].x = 0u;
     shared_state[base + 1u].y = count | select(0u, 0x80000000u, estimate.moment.w > 0.0);
-    shared_state[base + 1u].z = atomicLoad(&queue[12u + view.grid.z + id.x]);
+    shared_state[base + 1u].z = atomicLoad(&queue[QUEUE_PREFIX + view.grid.z + id.x]);
     shared_meta[slot * 3u + 1u].x = bitcast<u32>(estimate.moment.w);
     // The presentation prior can contain borrowed support, but never enters
     // raw mean/moments or the physical count read by cached_energy.

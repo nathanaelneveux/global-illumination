@@ -39,9 +39,54 @@ impl Reflection {
         groups.map(|group| group.into_iter().collect())
     }
 
+    /// A `const` of type u32, by name.
     #[cfg(test)]
-    pub fn module(&self) -> &naga::Module {
-        &self.module
+    pub fn constant(&self, name: &str) -> u32 {
+        let (_, constant) = self
+            .module
+            .constants
+            .iter()
+            .find(|(_, constant)| constant.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no const {name}"));
+        match self.module.global_expressions[constant.init] {
+            naga::Expression::Literal(naga::Literal::U32(value)) => value,
+            ref other => panic!("{name} is {other:?}, not a u32 literal"),
+        }
+    }
+
+    /// A struct's members (name, byte offset) and size.
+    #[cfg(test)]
+    pub fn layout(&self, name: &str) -> (Vec<(String, u32)>, u32) {
+        let ty = self
+            .module
+            .types
+            .iter()
+            .find(|(_, ty)| ty.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no struct {name}"))
+            .1;
+        match &ty.inner {
+            naga::TypeInner::Struct { members, span } => (
+                members.iter().map(|m| (m.name.clone().unwrap_or_default(), m.offset)).collect(),
+                *span,
+            ),
+            other => panic!("{name} is {other:?}"),
+        }
+    }
+}
+
+/// Serialized like an upload, each field's first word must hold its
+/// marker (index + 1, as u32 or f32) at the WGSL member's offset, in the
+/// same order and under the same name.
+#[cfg(test)]
+pub(crate) fn assert_mirrors(bytes: &[u8], wgsl: (Vec<(String, u32)>, u32), fields: &[&str]) {
+    let (members, span) = wgsl;
+    assert_eq!(members.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), fields, "member names and order");
+    assert_eq!(bytes.len(), span as usize, "struct size");
+    for (index, (name, offset)) in members.iter().enumerate() {
+        let at = *offset as usize;
+        let word = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let marker = index as u32 + 1;
+        assert!(word == marker || f32::from_bits(word) == marker as f32, "{name} at {offset} reads {word:#x}");
     }
 }
 

@@ -44,6 +44,22 @@ struct FarOutput {
     links: array<u32, 131072>, // spatial list, independent of physical slot order
     pixels: array<FarPixel>,
 }
+// Words of the `queue` buffer (Rust: runtime::queue_words): counters read
+// back with the timing receipt, then from QUEUE_PREFIX the visible-owner
+// queue (grid.z), each owner's queue rank (grid.z) and the sun flips.
+const QUEUE_OWNERS: u32 = 0u;
+const QUEUE_OVERFLOW: u32 = 1u;
+const QUEUE_COMPLETED: u32 = 2u;
+const QUEUE_KNOWN: u32 = 3u;
+const QUEUE_HISTORY: u32 = 4u;
+const QUEUE_MAX_HISTORY: u32 = 5u;
+const QUEUE_UNCOVERED: u32 = 6u;
+const QUEUE_DISPLAYED: u32 = 7u;
+const QUEUE_PAUSED: u32 = 8u;
+const QUEUE_ATTEMPTED: u32 = 9u;
+const QUEUE_CACHE_LOADS: u32 = 10u;
+const QUEUE_CACHE_PROMOTIONS: u32 = 11u;
+const QUEUE_PREFIX: u32 = 12u;
 @group(2) @binding(0) var<uniform> view: ViewControl;
 @group(2) @binding(1) var<storage, read> previous_receivers: array<ViewReceiver>;
 @group(2) @binding(2) var<storage, read> previous_paths: array<ViewPath>;
@@ -112,7 +128,7 @@ fn index_receivers(@builtin(global_invocation_id) id: vec3<u32>) {
         if same_receiver(receivers[claim.old_value - 1u], receiver) { return; }
         slot = (slot + 1u) & view.grid.w;
     }
-    atomicAdd(&queue[1], 1u); // explicit overflow diagnostic, never alias keys
+    atomicAdd(&queue[QUEUE_OVERFLOW], 1u); // explicit overflow diagnostic, never alias keys
 }
 
 /// Frames between a retained face's corner sun refreshes (shadow edges may
@@ -186,9 +202,9 @@ fn reproject_paths(@builtin(global_invocation_id) id: vec3<u32>) {
     continuations[id.x] = state;
     estimates[id.x] = estimate;
     if pending { return; }
-    let entry = atomicAdd(&queue[0], 1u);
-    atomicStore(&queue[12u + entry], id.x);
-    atomicStore(&queue[12u + view.grid.z + id.x], entry);
+    let entry = atomicAdd(&queue[QUEUE_OWNERS], 1u);
+    atomicStore(&queue[QUEUE_PREFIX + entry], id.x);
+    atomicStore(&queue[QUEUE_PREFIX + view.grid.z + id.x], entry);
 }
 
 // A face whose corner sunlight flipped (both measurements known) reports the
@@ -222,7 +238,7 @@ fn report_sun_flips(receiver: ViewReceiver, normal: vec3<f32>, material: u32, be
     }
     if flux <= 0.0 { return; }
     flux *= dot(materials[material & 255u].diffuse.rgb, w);
-    let base = 12u + 2u * view.grid.z;
+    let base = QUEUE_PREFIX + 2u * view.grid.z;
     let slot = atomicAdd(&queue[base], 1u);
     if slot >= MAX_SUN_FLIPS {
         let overflow = base + 4u + MAX_SUN_FLIPS * 4u;
@@ -245,9 +261,9 @@ fn report_sun_flips(receiver: ViewReceiver, normal: vec3<f32>, material: u32, be
 
 @compute @workgroup_size(64)
 fn trace_visible_paths(@builtin(global_invocation_id) id: vec3<u32>) {
-    let count = atomicLoad(&queue[0]);
+    let count = atomicLoad(&queue[QUEUE_OWNERS]);
     if id.x >= min(count, wave.range.y) || wave.range.z == 0u { return; }
-    let index = atomicLoad(&queue[12u + (wave.range.x + id.x) % count]);
+    let index = atomicLoad(&queue[QUEUE_PREFIX + (wave.range.x + id.x) % count]);
     // One invocation exclusively owns this receiver, including sequential
     // visits. Extra allowance can advance several three-hit waves without
     // concurrent writes to a face or a permanent one-path-per-frame ceiling.
@@ -258,14 +274,14 @@ fn trace_visible_paths(@builtin(global_invocation_id) id: vec3<u32>) {
     // Cache admission reserved this dispatch's sequence range before tracing.
     // An older unfinished path keeps its own sequence while background work
     // is free to consume later, disjoint ranges.
-    var next = atomicLoad(&queue[12u + view.grid.z + index]);
+    var next = atomicLoad(&queue[QUEUE_PREFIX + view.grid.z + index]);
     if continuations[index].status != 1u { next += 1u; }
     for (var visit = 0u; visit < visits; visit++) {
-        atomicAdd(&queue[9], 1u);
+        atomicAdd(&queue[QUEUE_ATTEMPTED], 1u);
         advance_view_path(index);
         let state = continuations[index];
         if state.status != 2u && state.status != 3u { continue; }
-        atomicAdd(&queue[2], 1u);
+        atomicAdd(&queue[QUEUE_COMPLETED], 1u);
         var estimate = estimates[index];
         // Unknown is not black. Advance every attempted sequence, including
         // rejected paths; the next visit may begin immediately in this pass.
@@ -275,7 +291,7 @@ fn trace_visible_paths(@builtin(global_invocation_id) id: vec3<u32>) {
         } else { estimate.identity.x += 1u; }
         receivers[index].sequence = estimate.identity.x;
         if paths[index].known != 0u {
-            atomicAdd(&queue[3], 1u);
+            atomicAdd(&queue[QUEUE_KNOWN], 1u);
             let value = paths[index].emitter + paths[index].continuation;
             if estimate.moment.w > 0.0 {
                 let change = estimate.moment.w;
@@ -294,10 +310,10 @@ fn trace_visible_paths(@builtin(global_invocation_id) id: vec3<u32>) {
         // Unfinished work owns its current index. A completed path's successor
         // is not owned until started. Return only the unstarted suffix, without
         // rewinding past ranges already consumed by the background scheduler.
-        let first = atomicLoad(&queue[12u + view.grid.z + index]);
+        let first = atomicLoad(&queue[QUEUE_PREFIX + view.grid.z + index]);
         let used = select(estimates[index].identity.x, paths[index].sequence + 1u,
             continuations[index].status == 1u);
-        atomicStore(&queue[12u + view.grid.z + index], max(first, used));
+        atomicStore(&queue[QUEUE_PREFIX + view.grid.z + index], max(first, used));
     }
 }
 
@@ -484,11 +500,11 @@ fn publish_view(@builtin(global_invocation_id) id: vec3<u32>) {
                 let byte = (value.identity.z >> (corner * 8u)) & 255u;
                 output.sky[corner] = (byte & 15u) | ((byte & 128u) << 24u);
             }
-            atomicAdd(&queue[4], u32(value.mean.w));
-            atomicMax(&queue[5], u32(value.mean.w));
-            if value.mean.w == 0.0 { atomicAdd(&queue[6], 1u); }
-            if output.evidence > 0.0 { atomicAdd(&queue[7], 1u); }
-            if continuations[owner].status == 1u { atomicAdd(&queue[8], 1u); }
+            atomicAdd(&queue[QUEUE_HISTORY], u32(value.mean.w));
+            atomicMax(&queue[QUEUE_MAX_HISTORY], u32(value.mean.w));
+            if value.mean.w == 0.0 { atomicAdd(&queue[QUEUE_UNCOVERED], 1u); }
+            if output.evidence > 0.0 { atomicAdd(&queue[QUEUE_DISPLAYED], 1u); }
+            if continuations[owner].status == 1u { atomicAdd(&queue[QUEUE_PAUSED], 1u); }
         }
     }
     far_output.pixels[id.x] = output;

@@ -1,6 +1,7 @@
 //! Bounded asynchronous timing receipts. Only timestamps, queue counters and
 //! corner-sunlight flips cross back to the CPU per view dispatch, never lighting.
 use super::*;
+use super::runtime::{pixel_words, queue_words};
 use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Use the same bounded feedback controller as near transport. Dividing a
@@ -144,7 +145,7 @@ const STAGES: usize = 11;
 const STAMP_BYTES: usize = STAGES * 16;
 /// Timestamps, queue counters, pool words and per-pixel counters, then the
 /// flip region.
-const RECEIPT_BYTES: u64 = STAMP_BYTES as u64 + 48 + 16 + 32;
+const RECEIPT_BYTES: u64 = STAMP_BYTES as u64 + queue_words::PREFIX * 4 + 16 + pixel_words::COUNT * 4;
 const TICKET_BYTES: u64 = RECEIPT_BYTES + super::runtime::SUN_FLIP_BYTES;
 
 impl Budget {
@@ -251,46 +252,52 @@ impl Budget {
             });
             let total: f32 = costs.iter().sum();
             let trace = costs[5];
-            let counter = |i: usize| {
-                u32::from_le_bytes(bytes[STAMP_BYTES + i * 4..STAMP_BYTES + 4 + i * 4].try_into().unwrap())
+            // Receipt words after the timestamps: the queue counters, the
+            // pool's four words, then the far tier's counters.
+            let word = |i: u64| {
+                let at = STAMP_BYTES + i as usize * 4;
+                u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
             };
-            let active = counter(0);
+            let counter = |i: u64| word(i);
+            let pool = |i: u64| word(queue_words::PREFIX + i);
+            let pixel = |i: u64| word(queue_words::PREFIX + 4 + i);
+            let active = counter(queue_words::OWNERS);
             assert_eq!(
-                counter(1),
+                counter(queue_words::OVERFLOW),
                 0,
                 "far receiver hash overflow; no keys may be silently dropped"
             );
             self.active = active;
-            self.completed = counter(2);
-            self.known = counter(3);
-            self.history = counter(4) as f32 / active.max(1) as f32;
-            self.max_history = counter(5);
-            self.uncovered = counter(6);
-            self.displayed = counter(7);
-            self.paused = counter(8);
+            self.completed = counter(queue_words::COMPLETED);
+            self.known = counter(queue_words::KNOWN);
+            self.history = counter(queue_words::HISTORY) as f32 / active.max(1) as f32;
+            self.max_history = counter(queue_words::MAX_HISTORY);
+            self.uncovered = counter(queue_words::UNCOVERED);
+            self.displayed = counter(queue_words::DISPLAYED);
+            self.paused = counter(queue_words::PAUSED);
             self.trace_ms = trace;
             self.pixel_ms = costs[10];
             self.presentation_ms = total - trace - costs[10];
-            self.pixel_owned = counter(16);
-            self.pixel_traced = counter(17);
-            self.pixel_history = counter(18) as f32 / counter(16).max(1) as f32;
-            self.pixel_reprojected = counter(19);
-            self.pixel_seeded = counter(20);
-            self.receivers_seeded = counter(21);
+            self.pixel_owned = pixel(pixel_words::OWNED);
+            self.pixel_traced = pixel(pixel_words::TRACED);
+            self.pixel_history = pixel(pixel_words::HISTORY) as f32 / pixel(pixel_words::OWNED).max(1) as f32;
+            self.pixel_reprojected = pixel(pixel_words::REPROJECTED);
+            self.pixel_seeded = pixel(pixel_words::SEEDED);
+            self.receivers_seeded = pixel(pixel_words::RECEIVERS_SEEDED);
             self.stage_ms = costs;
             self.discovery_ms = costs[0] + costs[9];
             self.pool_prepare_ms = costs[9];
             self.pool_scan_ms = costs[0];
-            self.pool_free = counter(12);
-            self.pool_claimed = counter(13);
-            self.pool_exhausted = counter(14);
-            self.pool_retained = counter(15);
+            self.pool_free = pool(0);
+            self.pool_claimed = pool(1);
+            self.pool_exhausted = pool(2);
+            self.pool_retained = pool(3);
             self.discovery_sum_ms += f64::from(self.discovery_ms);
             self.discovery_count += 1;
             self.cache_ms = costs[4] + costs[7];
-            self.cache_loads += u64::from(counter(10));
-            self.cache_promotions += u64::from(counter(11));
-            let attempted = counter(9);
+            self.cache_loads += u64::from(counter(queue_words::CACHE_LOADS));
+            self.cache_promotions += u64::from(counter(queue_words::CACHE_PROMOTIONS));
+            let attempted = counter(queue_words::ATTEMPTED);
             if attempted > 0 {
                 // View-first owns the primary lighting budget, not just a
                 // distant supplement. Keep the wave bounded while allowing
@@ -343,9 +350,10 @@ impl Budget {
         let stamps = STAMP_BYTES as u64;
         encoder.resolve_query_set(self.queries.as_ref().unwrap(), 0..STAGES as u32 * 2, &self.resolve, 0);
         encoder.copy_buffer_to_buffer(&self.resolve, 0, &ticket.buffer, 0, stamps);
-        encoder.copy_buffer_to_buffer(counters, 0, &ticket.buffer, stamps, 48);
-        encoder.copy_buffer_to_buffer(pool, 0, &ticket.buffer, stamps + 48, 16);
-        encoder.copy_buffer_to_buffer(pixel_stats, 0, &ticket.buffer, stamps + 64, 32);
+        let counted = queue_words::PREFIX * 4;
+        encoder.copy_buffer_to_buffer(counters, 0, &ticket.buffer, stamps, counted);
+        encoder.copy_buffer_to_buffer(pool, 0, &ticket.buffer, stamps + counted, 16);
+        encoder.copy_buffer_to_buffer(pixel_stats, 0, &ticket.buffer, stamps + counted + 16, pixel_words::COUNT * 4);
         encoder.copy_buffer_to_buffer(
             counters, sun_flips, &ticket.buffer, RECEIPT_BYTES, super::runtime::SUN_FLIP_BYTES,
         );

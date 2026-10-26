@@ -223,7 +223,7 @@ fn index_retained_receiver(index: u32, receiver: ViewReceiver) {
         if claim.exchanged { return; }
         if claim.old_value != 0u { slot = (slot + 1u) & view.grid.w; }
     }
-    atomicAdd(&queue[1], 1u);
+    atomicAdd(&queue[QUEUE_OVERFLOW], 1u);
 }
 
 // All old slots are classified before discovery. Surviving faces keep their

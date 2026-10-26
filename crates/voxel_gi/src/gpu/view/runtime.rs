@@ -275,7 +275,7 @@ impl PixelState {
         Self {
             cells,
             history: [0, 1].map(|_| storage(device, "Far per-pixel cell history", bytes)),
-            stats: storage(device, "Far per-pixel counters", 32),
+            stats: storage(device, "Far per-pixel counters", pixel_words::COUNT as usize * 4),
             queue: storage(device, "Far per-pixel trace queue", 4 + cells.element_product().max(1) as usize * 4),
             args: device.create_buffer(&BufferDescriptor {
                 label: Some("Far per-pixel trace dispatch"),
@@ -330,7 +330,8 @@ impl CameraState {
             control: uniform("Far view control"),
             params: uniform("Far transport parameters"),
             wave: uniform("Far wave allowance"),
-            queue: storage(device, "Far visible owner queue and sequence reservations", (count as usize * 2 + 12) * 4 + SUN_FLIP_BYTES as usize),
+            queue: storage(device, "Far visible owner queue and sequence reservations",
+                (count as usize * 2 + queue_words::PREFIX as usize) * 4 + SUN_FLIP_BYTES as usize),
             cursor: 0,
             last_frame: 0,
             binding_keys: [None, None],
@@ -499,7 +500,38 @@ fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource:
 }
 
 fn sun_flip_offset(count: u32) -> u64 {
-    (12 + 2 * u64::from(count)) * 4
+    (queue_words::PREFIX + 2 * u64::from(count)) * 4
+}
+
+/// Words of the per-camera `queue` buffer (voxel_view_runtime.wgsl's
+/// `QUEUE_*`): receipt counters, then from `PREFIX` the visible-owner queue,
+/// each owner's rank, and the sun flips.
+pub(super) mod queue_words {
+    pub const OWNERS: u64 = 0;
+    pub const OVERFLOW: u64 = 1;
+    pub const COMPLETED: u64 = 2;
+    pub const KNOWN: u64 = 3;
+    pub const HISTORY: u64 = 4;
+    pub const MAX_HISTORY: u64 = 5;
+    pub const UNCOVERED: u64 = 6;
+    pub const DISPLAYED: u64 = 7;
+    pub const PAUSED: u64 = 8;
+    pub const ATTEMPTED: u64 = 9;
+    pub const CACHE_LOADS: u64 = 10;
+    pub const CACHE_PROMOTIONS: u64 = 11;
+    pub const PREFIX: u64 = 12;
+}
+
+/// Words of the far tier's counter buffer (voxel_view_pixels.wgsl's
+/// `PIXEL_*`).
+pub(super) mod pixel_words {
+    pub const OWNED: u64 = 0;
+    pub const TRACED: u64 = 1;
+    pub const HISTORY: u64 = 2;
+    pub const REPROJECTED: u64 = 3;
+    pub const SEEDED: u64 = 4;
+    pub const RECEIVERS_SEEDED: u64 = 5;
+    pub const COUNT: u64 = 8;
 }
 
 fn grid_size(viewport: UVec2, receivers: u32) -> UVec2 {
@@ -551,6 +583,44 @@ mod tests {
             assert!(group1.iter().all(|&b| b <= 1), "{name} group 1 {group1:?}");
             assert!(group2.iter().all(|&b| b <= 24), "{name} group 2 {group2:?}");
         }
+    }
+
+    #[test]
+    fn rust_and_wgsl_view_layouts_agree() {
+        let reflection = crate::gpu::reflect::Reflection::new(&shader(false));
+        let f = |i: u32| Vec4::splat(i as f32);
+        let u = |i: u32| UVec4::splat(i);
+        let m = |i: u32| Mat4::from_cols(f(i), f(i), f(i), f(i));
+        let control = Control {
+            world_from_clip: m(1), clip_from_world: m(2), camera: f(3), viewport: u(4), grid: u(5),
+            history: u(6), display: f(7), cache: u(8), discovery: u(9), pixel_axis: f(10),
+            pixel_grid: u(11), pixel_tune: f(12), previous_clip_from_world: m(13),
+        };
+        crate::gpu::reflect::assert_mirrors(&ShaderBuffer::from(control).data.unwrap(), reflection.layout("ViewControl"), &[
+            "world_from_clip", "clip_from_world", "camera", "viewport", "grid", "history", "display",
+            "cache", "discovery", "pixel_axis", "pixel_grid", "pixel_tune", "previous_clip_from_world",
+        ]);
+        let wave = Wave { range: u(1), ticket: u(2) };
+        crate::gpu::reflect::assert_mirrors(&ShaderBuffer::from(wave).data.unwrap(), reflection.layout("ViewWave"), &["range", "ticket"]);
+        // Far tier: cell histories are allocated at 48 bytes, the output
+        // header is PIXEL_HEADER_BYTES.
+        assert_eq!(reflection.layout("PixelHistory").1, 48);
+        let (output, _) = reflection.layout("PixelOutput");
+        assert_eq!(output.last().unwrap(), &("cells".to_string(), PIXEL_HEADER_BYTES as u32));
+        // Counter words read back by the timing receipt.
+        for (name, word) in [("QUEUE_OWNERS", queue_words::OWNERS), ("QUEUE_OVERFLOW", queue_words::OVERFLOW),
+            ("QUEUE_COMPLETED", queue_words::COMPLETED), ("QUEUE_KNOWN", queue_words::KNOWN),
+            ("QUEUE_HISTORY", queue_words::HISTORY), ("QUEUE_MAX_HISTORY", queue_words::MAX_HISTORY),
+            ("QUEUE_UNCOVERED", queue_words::UNCOVERED), ("QUEUE_DISPLAYED", queue_words::DISPLAYED),
+            ("QUEUE_PAUSED", queue_words::PAUSED), ("QUEUE_ATTEMPTED", queue_words::ATTEMPTED),
+            ("QUEUE_CACHE_LOADS", queue_words::CACHE_LOADS), ("QUEUE_CACHE_PROMOTIONS", queue_words::CACHE_PROMOTIONS),
+            ("QUEUE_PREFIX", queue_words::PREFIX), ("PIXEL_OWNED", pixel_words::OWNED),
+            ("PIXEL_TRACED", pixel_words::TRACED), ("PIXEL_HISTORY", pixel_words::HISTORY),
+            ("PIXEL_REPROJECTED", pixel_words::REPROJECTED), ("PIXEL_SEEDED", pixel_words::SEEDED),
+            ("PIXEL_RECEIVERS_SEEDED", pixel_words::RECEIVERS_SEEDED)] {
+            assert_eq!(u64::from(reflection.constant(name)), word, "{name}");
+        }
+        assert!(pixel_words::RECEIVERS_SEEDED < pixel_words::COUNT);
     }
 
     #[test]
@@ -828,7 +898,7 @@ fn render_view(
     encoder.copy_buffer_to_buffer(&scene.buffers[3], 0, &output.buffer, 32, 16384);
     encoder.clear_buffer(&current.hash.buffer, 0, None);
     encoder.clear_buffer(&current.pool.buffer, 0, Some(POOL_PREFIX_BYTES as u64));
-    encoder.clear_buffer(&camera.queue.buffer, 0, Some(48));
+    encoder.clear_buffer(&camera.queue.buffer, 0, Some(queue_words::PREFIX * 4));
     encoder.clear_buffer(&pixel_state.stats.buffer, 0, None);
     encoder.clear_buffer(&pixel_state.queue.buffer, 0, Some(4));
     let multisampled = msaa.samples() > 1;
