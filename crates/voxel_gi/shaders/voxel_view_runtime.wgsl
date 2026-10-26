@@ -15,7 +15,7 @@ struct ViewControl {
     discovery: vec4<u32>, // stationary, compatible previous viewport/overlap/MSAA; reserved
     pixel_axis: vec4<f32>, // EXPERIMENT per-pixel tier: view forward, pixels per unit at depth 1
     pixel_grid: vec4<u32>, // cells x, y, pixels per cell side, enabled
-    pixel_tune: vec4<f32>, // face-size threshold px, max history, trace rate, previous valid
+    pixel_tune: vec4<f32>, // voxel-size threshold px, max history, trace rate, previous valid
     previous_clip_from_world: mat4x4<f32>,
 }
 struct ViewEstimate {

@@ -8,11 +8,13 @@ per-pixel had never been tried.
 
 ## What the branch does
 
-- **Ownership.** A face whose block projects under `pixel_tier.face_pixels`
-  pixels of area (side squared times its cosine to the view ray, at the
-  block centre's view depth) is per-pixel. Discovery, the per-pixel pass
-  and the material compute the same test from the same camera header, so
-  they agree per pixel. Per-pixel faces own no receiver.
+- **Ownership.** A pixel is per-pixel where a full-resolution voxel at its
+  view depth projects under `pixel_tier.voxel_pixels` pixels across: a pure
+  distance band (about 1,740 / `voxel_pixels` voxels at 1440p and 45
+  degrees), whatever the LoD stride or viewing angle. (The first version,
+  receipts below, used the block face's projected area.) Discovery, the
+  per-pixel pass and the material compute the same test from the same
+  camera header, so they agree per pixel. Per-pixel faces own no receiver.
 - **Indirect.** Each `cell`x`cell` block of pixels samples one pixel per
   frame (cycling), reprojects a screen-space history by world position
   (bilinear over previous cells; same face orientation, within four blocks
@@ -20,7 +22,7 @@ per-pixel had never been tried.
   its history is under 4 or one frame in `rate`. A dense indirect dispatch
   traces the queue with the existing `trace_receiver` estimator under a
   `steps` ray budget where an exhausted ray is a miss (NAADF's rule,
-  `PATH_STEPS` / `EXHAUSTED_IS_SKY` pipeline constants on this kernel only).
+  `PATH_STEPS` / `BUDGETED_RAYS` pipeline constants on this kernel only).
   History caps at `history` samples.
 - **Material.** Per-pixel faces read a 3x3 cell filter (coplanar first,
   parallel planes within four blocks, weighted by sample count and
@@ -92,3 +94,65 @@ GPU by about 14 ms. Where tiny faces are few (far-48, the default lab) it
 is neutral to 1 ms worse, and with LoD bands it only takes grazing faces.
 Open before adoption: per-path cost at the horizon, flicker in motion with
 short histories, and the darker shading against a reference.
+
+## Update: horizon cost, distance knob, crossover sweep
+
+**Horizon paths.** In far-48 a few thousand paths cost 2-4 ms whether rays
+had 32 or 128 steps and 1 or 3 bounces; the classify scan alone was
+0.5-0.7 ms. The cost was `geometry_ahead`: a ray entering a region missing
+from the directory (the empty air above terrain) walked region by region,
+up to 2,048 of them and outside the step budget, to tell unloaded space
+from sky. Horizon rays walked most of the 48-chunk world. Under
+`BUDGETED_RAYS` the far tier now crosses missing regions as empty space
+within its step budget (exhausted is a miss). Far-48 pass: 2.0-4.2 ms ->
+1.03-1.16 ms (0.55 ms classify, 0.5 ms for about 6.5k paths). The world
+cache and receivers still use the full walk: there it decides "unknown"
+near unloaded pages.
+
+**Distance knob.** Ownership is now by full-resolution voxel size
+(`voxel_pixels`), above.
+
+**Sweep** (one run each, one build, lod-off twice; "fixed" is discovery +
+presentation + per-pixel pass, the GPU cost the transport budget does not
+control; trace is budgeted):
+
+| Run | Frame p50 / p95 / p99 ms | Fixed ms | Receivers | Owned cells | Cell history |
+| --- | --- | --- | --- | --- | --- |
+| far-48 off | 22.4 / 27.3 / 28.8 | 4.25 | 11.6k | 0 | - |
+| far-48 at 2 (870 v) | 22.1 / 27.6 / 29.6 | 4.99 | 11.6k | 1.1k | 25 |
+| far-48 at 4 (435 v) | 22.2 / 27.6 / 29.6 | 5.02 | 11.3k | 2.0k | 22 |
+| far-48 at 6 (290 v) | 22.2 / 26.9 / 28.8 | 5.07 | 10.1k | 9.1k | 22 |
+| far-48 at 8 (217 v) | 22.0 / 25.5 / 27.2 | 4.98 | 8.7k | 20.1k | 22 |
+| far-48 at 12 (145 v) | 22.0 / 24.4 / 26.1 | 5.35 | 7.9k | 25.2k | 20 |
+| lod off | 91.7 / 216 / 887, 90.7 / 205 / 790 | 28.2, 28.4 | 40k | 0 | - |
+| lod at 1 | 83.8 / 241 / 793 | 28.9 | 54k | 21k | 3 |
+| lod at 2 | 84.0 / 237 / 908 | 31.0 | 61k | 65k | 4 |
+| lod at 4 | 86.5 / 218 / 778 | 15.2 | 36k | 150k | 6 |
+| lod at 6 | 87.9 / 255 / 886 | 10.3 | 9.9k | 239k | 6 |
+| lod at 8 | 85.5 / 227 / 789 | 10.7 | 0 | 287k | 6 |
+| lod at 12 | 85.6 / 237 / 775 | 6.7 | 0 | 296k | 6 |
+| default off | 23.4 / 25.6 / 27.1 | 3.52 | 11.0k | 0 | - |
+| default at 6 | 23.5 / 25.5 / 26.7 | 4.20 | 10.9k | 0.2k | 10 |
+| default at 12 | 23.5 / 25.5 / 27.0 | 4.09 | 8.0k | 12.2k | 17 |
+
+Marginal costs: a per-pixel cell (3x3 px) costs about 0.02-0.05 us; a
+receiver about 0.15 us in far-48 and about 0.5 us in the crowded lod pool
+(reconstruction). Per-face is cheaper only where one face covers more than
+roughly 30-90 px, about `voxel_pixels` 6-8 (220-290 voxels at 1440p);
+beyond it per-pixel is cheaper, and in the lod flight much cheaper. A low
+threshold (2) is worse than off: the freed pool admits more mid-distance
+faces, whose reconstruction costs more. The classify scan is a fixed 0.5
+ms even when nothing is owned, which is most of the per-pixel cost in
+far-48 and the default lab. Frame p50 is within noise everywhere; far-48
+tails improved at 8 and 12 (single runs).
+
+Quality: settled captures against off at 8/12 differ by FLIP 0.003
+(default lab; off-vs-off 0.0012) and 0.008 (far-48), invisible in crops;
+the mid-motion streaming capture differs 0.06-0.07, the same as off-vs-off
+(0.063). Per-pixel history is short (6 cells' samples in the flight, about
+20 in far-48, against 170-300 for far-48 receivers); flicker is not
+measured. Branch default is now `voxel_pixels: 8`.
+
+The tier-off lod control crashed once on the receiver hash overflow
+assertion (`timing.rs`, 64 failed linear probes); a rerun was clean. That
+path is main's, not this branch's.

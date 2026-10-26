@@ -122,17 +122,12 @@ struct FarCells {
 @group(#{MATERIAL_BIND_GROUP}) @binding(111)
 var<storage, read> far_cells: FarCells;
 
-// Projected block-face area in pixels against the threshold, exactly as
-// the per-pixel tier and discovery compute it.
-fn pixel_owned(voxel: vec3<i32>, face: u32) -> bool {
-    if far_cells.grid.w == 0u || face >= 6u { return false; }
-    let s = voxel_stride(voxel);
-    let centre = vec3<f32>(voxel & vec3(-s)) + 0.5 * f32(s);
-    let ray = centre - far_cells.camera.xyz;
-    let depth = dot(ray, far_cells.axis.xyz);
-    if depth <= 0.0 { return false; }
-    let side = f32(s) * far_cells.axis.w / depth;
-    return side * side * abs(dot(vec3<f32>(FACE_NORMALS[face]), normalize(ray))) < bitcast<f32>(far_cells.origin.z);
+// A full-resolution voxel's projected size against the threshold, exactly
+// as the per-pixel tier and discovery compute it.
+fn pixel_owned(voxel: vec3<i32>) -> bool {
+    if far_cells.grid.w == 0u { return false; }
+    let depth = dot(vec3<f32>(voxel) + 0.5 - far_cells.camera.xyz, far_cells.axis.xyz);
+    return depth > 0.0 && far_cells.axis.w < bitcast<f32>(far_cells.origin.z) * depth;
 }
 
 // The cells around this pixel on this face: coplanar ones, else parallel
@@ -316,7 +311,7 @@ fn far_sun(position: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     if abs(axis.y) > 0.5 { u = vec3<i32>(s, 0, 0); }
     else if abs(axis.z) > 0.5 { u = vec3<i32>(s, 0, 0); v = vec3<i32>(0, s, 0); }
     // EXPERIMENT per-pixel tier: one ray per light from this fragment.
-    if pixel_owned(voxel, face) {
+    if pixel_owned(vec3<i32>(floor(position - axis * 0.01))) {
         var sum = vec3(0.0);
         for (var light = 0u; light < min(transport_settings.sun_count, 4u); light += 1u) {
             let direction = transport_settings.sun_direction[light].xyz;
@@ -557,7 +552,7 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
     var indirect = vec3(0.0);
     var view_coverage = vec3(1.0, 0.0, 0.0);
     let voxel = vec3<i32>(floor(in.world_position.xyz - in.world_normal * 0.01));
-    if transport_settings.enabled != 0u && pixel_owned(voxel, face_index_of(normalize(in.world_normal))) {
+    if transport_settings.enabled != 0u && pixel_owned(voxel) {
         // EXPERIMENT: per-pixel tier; receivers only fill its holes.
         var far = pixel_irradiance(in.position.xy, in.world_position.xyz, normalize(in.world_normal), voxel_stride(voxel));
         if far.w > 0.0 { view_coverage = vec3(0.0, 1.0, 1.0); }

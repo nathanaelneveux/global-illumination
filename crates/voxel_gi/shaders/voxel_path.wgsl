@@ -4,11 +4,14 @@
 override DIFFUSE_HITS: u32 = 3u;
 override LIMITED_REACH: bool = false;
 // EXPERIMENT per-pixel tier: NAADF's ray budget. Path, sun and emitter
-// visibility rays stop after PATH_STEPS traversal steps; with
-// EXHAUSTED_IS_SKY a ray out of steps is a miss, as in NAADF. The defaults
-// are today's unbounded rule.
+// visibility rays stop after PATH_STEPS traversal steps. With BUDGETED_RAYS
+// a ray out of steps is a miss, as in NAADF, and a region missing from the
+// directory is crossed as empty space (the `visible_geometry` rule) instead
+// of walking the rest of the world to tell unloaded from sky, which made
+// horizon rays cost the same at any step budget. The defaults are today's
+// rule.
 override PATH_STEPS: u32 = 2048u;
-override EXHAUSTED_IS_SKY: bool = false;
+override BUDGETED_RAYS: bool = false;
 struct Params {
     counts: vec4<u32>, // tasks, samples per face, directory mask, light count
     minimum: vec4<i32>, // xyz: scene bounds, w: shared corner task count
@@ -233,8 +236,8 @@ fn hemisphere(n: vec3<f32>, u: f32, v: f32) -> vec3<f32> {
     return tangent * (cos(phi) * sqrt(v)) + bitangent * (sin(phi) * sqrt(v)) + n * sqrt(1.0 - v);
 }
 fn trace(origin: vec3<f32>, direction: vec3<f32>, max_distance: f32) -> RayResult {
-    var result = trace_domain_limited(origin, direction, max_distance, false, PATH_STEPS);
-    if EXHAUSTED_IS_SKY && result.status == 2u && result.material == 0xffffffffu { result.status = 0u; }
+    var result = trace_domain_limited(origin, direction, max_distance, BUDGETED_RAYS, PATH_STEPS);
+    if BUDGETED_RAYS && result.status == 2u && result.material == 0xffffffffu { result.status = 0u; }
     return result;
 }
 

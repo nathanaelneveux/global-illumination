@@ -47,7 +47,7 @@ fn native_small_faces_are_lit_per_pixel_without_receivers() {
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some(name), layout: None, module: &module, entry_point: Some(name),
             compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &[("PATH_STEPS", 128.0), ("EXHAUSTED_IS_SKY", 1.0)],
+                constants: &[("PATH_STEPS", 128.0), ("BUDGETED_RAYS", 1.0)],
                 ..default()
             }, cache: None,
         });

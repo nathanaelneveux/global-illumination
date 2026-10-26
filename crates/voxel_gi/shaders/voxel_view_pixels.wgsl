@@ -28,19 +28,13 @@ struct PixelOutput {
 @group(2) @binding(23) var<storage, read_write> pixel_queue: array<atomic<u32>>;
 @group(2) @binding(24) var<storage, read_write> pixel_args: array<u32, 3>;
 
-/// The same test the material makes: the face's block (its stride) covers
-/// fewer than the threshold's pixels, its side's projection at the block
-/// centre's view depth squared times its cosine to the view ray, so a
-/// grazing face a few pixels wide but under one tall counts as small.
-fn pixel_owned(voxel: vec3<i32>, face: u32) -> bool {
+/// The same test the material makes: a full-resolution voxel at this
+/// voxel's view depth projects under the threshold's pixels across. A pure
+/// distance band, whatever the LoD stride or viewing angle.
+fn pixel_owned(voxel: vec3<i32>) -> bool {
     if view.pixel_grid.w == 0u { return false; }
-    let s = voxel_stride(voxel);
-    let centre = vec3<f32>(voxel & vec3(-s)) + 0.5 * f32(s);
-    let ray = centre - view.camera.xyz;
-    let depth = dot(ray, view.pixel_axis.xyz);
-    if depth <= 0.0 { return false; }
-    let side = f32(s) * view.pixel_axis.w / depth;
-    return side * side * abs(dot(face_normal(face), normalize(ray))) < view.pixel_tune.x;
+    let depth = dot(vec3<f32>(voxel) + 0.5 - view.camera.xyz, view.pixel_axis.xyz);
+    return depth > 0.0 && view.pixel_axis.w < view.pixel_tune.x * depth;
 }
 
 fn write_pixel(index: u32, value: PixelHistory) {
@@ -77,7 +71,7 @@ fn classify_pixels(@builtin(global_invocation_id) id: vec3<u32>) {
     var surface = prepass_position(pixel, z);
     surface[face / 2u] = round(surface[face / 2u]);
     let voxel = vec3<i32>(floor(surface - normal * 0.01));
-    if !pixel_owned(voxel, face) { write_pixel(id.x, none); return; }
+    if !pixel_owned(voxel) { write_pixel(id.x, none); return; }
     atomicAdd(&pixel_stats[0], 1u);
 
     // Reproject: bilinear over the previous cells around this point's old

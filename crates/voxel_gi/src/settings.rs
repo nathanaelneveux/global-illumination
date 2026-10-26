@@ -48,7 +48,7 @@ pub struct VoxelGiSettings {
     /// Fraction of the transport allowance spent refreshing the cache; the
     /// visible faces get the remainder. Not extra budget.
     pub cache_share: f32,
-    /// EXPERIMENT (far per pixel): faces smaller than this many pixels are
+    /// EXPERIMENT (far per pixel): beyond a projected voxel size, pixels are
     /// lit per pixel, NAADF style, and get no view receiver.
     pub pixel_tier: PixelTierSettings,
     /// Scheduler work bounds: measured, not host policy.
@@ -56,7 +56,9 @@ pub struct VoxelGiSettings {
     pub(crate) scheduler: SchedulerSettings,
 }
 
-/// EXPERIMENT: per-pixel lighting for faces under `face_pixels` pixels.
+/// EXPERIMENT: per-pixel lighting where a full-resolution voxel projects
+/// under `voxel_pixels` pixels across (a distance band: about 1,740 /
+/// `voxel_pixels` voxels at 1440p and a 45 degree field of view).
 /// Each `cell`x`cell` block of pixels traces one path per frame (one of
 /// `rate` frames once its history is long) from a jittered pixel, keeps a
 /// reprojected screen-space history of up to `history` samples, and the
@@ -65,10 +67,10 @@ pub struct VoxelGiSettings {
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PixelTierSettings {
-    /// Projected face area in pixels (side squared times its cosine to the
-    /// view ray) below which a face is per-pixel lit; 4 is a 2x2-pixel
-    /// face. 0 disables the tier.
-    pub face_pixels: f32,
+    /// Projected size in pixels of a full-resolution voxel below which its
+    /// pixels are per-pixel lit, whatever the LoD stride or viewing angle.
+    /// 0 disables the tier.
+    pub voxel_pixels: f32,
     /// Pixels per side of one traced cell (1-4).
     pub cell: u32,
     /// Maximum temporal history in samples.
@@ -78,23 +80,27 @@ pub struct PixelTierSettings {
     /// Traversal steps per ray (NAADF: 100 for GI); a ray out of steps is a
     /// miss. 2048 is the other tiers' rule (exhausted is unknown).
     pub steps: u32,
+    /// Diffuse hits per path (1-3; the other tiers use `transport.bounces`).
+    pub bounces: u32,
 }
 
 impl Default for PixelTierSettings {
     fn default() -> Self {
-        // Best measured on the lod flight (docs/history/far-per-pixel.md).
-        Self { face_pixels: 16.0, cell: 3, history: 32.0, rate: 4, steps: 128 }
+        // The measured per-face/per-pixel crossover (about 220 voxels at
+        // 1440p; docs/history/far-per-pixel.md).
+        Self { voxel_pixels: 8.0, cell: 3, history: 32.0, rate: 4, steps: 128, bounces: 3 }
     }
 }
 
 impl PixelTierSettings {
     pub(crate) fn normalized(self) -> Self {
         Self {
-            face_pixels: if self.face_pixels.is_finite() { self.face_pixels.clamp(0.0, 64.0) } else { 0.0 },
+            voxel_pixels: if self.voxel_pixels.is_finite() { self.voxel_pixels.clamp(0.0, 64.0) } else { 0.0 },
             cell: self.cell.clamp(1, 4),
             history: if self.history.is_finite() { self.history.clamp(1.0, 1024.0) } else { 32.0 },
             rate: self.rate.clamp(1, 8),
             steps: self.steps.clamp(16, 2048),
+            bounces: self.bounces.clamp(1, 3),
         }
     }
 }

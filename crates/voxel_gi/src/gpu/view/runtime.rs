@@ -206,7 +206,7 @@ struct Control {
     pixel_axis: Vec4,
     /// Cells x, y, pixels per cell side, enabled.
     pixel_grid: UVec4,
-    /// Face-size threshold (px), maximum history, trace rate, previous valid.
+    /// Voxel-size threshold (px), maximum history, trace rate, previous valid.
     pixel_tune: Vec4,
     previous_clip_from_world: Mat4,
 }
@@ -383,8 +383,8 @@ struct ViewRenderer {
     pixels: [Kernel; 2],
     pixel_args: Kernel,
     pixel_trace: Kernel,
-    /// The step budget `pixels` was built with (PATH_STEPS).
-    pixel_steps: u32,
+    /// The step budget and bounces `pixel_trace` was built with.
+    pixel_steps: (u32, u32),
     modules: [bevy::render::render_resource::ShaderModule; 2],
     cameras: HashMap<RetainedViewEntity, CameraState>,
     frame: u32,
@@ -457,8 +457,8 @@ impl FromWorld for ViewRenderer {
             publish: make("publish_view", 0, false, [&[0, 1, 2, 3, 5, 6], &[0], &[0, 5, 7, 10, 11, 17]]),
             pixels: [0, 1].map(|m| make("classify_pixels", m, false, PIXEL_CLASSIFY_BINDINGS)),
             pixel_args: make("size_pixel_queue", 0, false, [&[], &[], &[23, 24]]),
-            pixel_trace: pixel_kernel(device, &modules, PixelTierSettings::default().steps),
-            pixel_steps: PixelTierSettings::default().steps,
+            pixel_trace: pixel_kernel(device, &modules, (PixelTierSettings::default().steps, PixelTierSettings::default().bounces)),
+            pixel_steps: (PixelTierSettings::default().steps, PixelTierSettings::default().bounces),
             modules,
             cameras: default(),
             frame: 0,
@@ -480,7 +480,7 @@ pub(super) const SUN_FLIP_BIAS: i64 = 1 << 30;
 
 /// The per-pixel tier's trace under its ray budget: `steps` traversal
 /// steps per ray, exhaustion a miss (NAADF's rule).
-fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource::ShaderModule; 2], steps: u32) -> Kernel {
+fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource::ShaderModule; 2], (steps, bounces): (u32, u32)) -> Kernel {
     Kernel {
         pipeline: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("trace_pixel_queue"),
@@ -488,7 +488,8 @@ fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource:
             module: &modules[0],
             entry_point: Some("trace_pixel_queue"),
             compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &[("PATH_STEPS", f64::from(steps)), ("EXHAUSTED_IS_SKY", 1.0)],
+                constants: &[("PATH_STEPS", f64::from(steps)), ("BUDGETED_RAYS", 1.0),
+                    ("DIFFUSE_HITS", f64::from(bounces))],
                 ..default()
             },
             cache: None,
@@ -675,9 +676,10 @@ fn render_view(
             .retain(|_, camera| frame.0.wrapping_sub(camera.last_frame) <= 1);
         renderer.changes = std::mem::take(&mut *changes.lock().unwrap());
     }
-    if renderer.pixel_steps != settings.pixel.steps {
-        renderer.pixel_trace = pixel_kernel(&device, &renderer.modules, settings.pixel.steps);
-        renderer.pixel_steps = settings.pixel.steps;
+    let pixel_budget = (settings.pixel.steps, settings.pixel.bounces);
+    if renderer.pixel_steps != pixel_budget {
+        renderer.pixel_trace = pixel_kernel(&device, &renderer.modules, pixel_budget);
+        renderer.pixel_steps = pixel_budget;
         for camera in renderer.cameras.values_mut() {
             camera.binding_keys = [None, None];
         }
@@ -693,7 +695,7 @@ fn render_view(
         .unwrap_or_else(|| CameraState::new(&device, grid));
     let pixel_size = settings.pixel.cell;
     let pixel_cells = view.viewport.zw().map(|v| v.div_ceil(pixel_size));
-    let pixel_enabled = settings.pixel.face_pixels > 0.0
+    let pixel_enabled = settings.pixel.voxel_pixels > 0.0
         && u64::from(pixel_cells.element_product()) * 16 + PIXEL_HEADER_BYTES <= pixel_output.buffer.size();
     if camera.pixel.as_ref().is_none_or(|state| state.cells != pixel_cells) {
         camera.pixel = Some(PixelState::new(&device, pixel_cells));
@@ -739,7 +741,7 @@ fn render_view(
         },
         pixel_grid: UVec4::new(pixel_cells.x, pixel_cells.y, pixel_size, u32::from(pixel_enabled)),
         pixel_tune: Vec4::new(
-            settings.pixel.face_pixels,
+            settings.pixel.voxel_pixels,
             settings.pixel.history,
             settings.pixel.rate as f32,
             f32::from(u8::from(camera.previous_clip.is_some())),
