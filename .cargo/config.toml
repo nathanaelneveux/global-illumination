@@ -1,7 +1,3 @@
-# Cache paths and machine-specific profiles stay outside version control.
+# Cache paths, wrappers and machine-specific profiles stay outside version
+# control (local.toml), so a fresh clone builds anywhere, Windows included.
 include = [{ path = "local.toml", optional = true }]
-
-[build]
-# Cargo incorporates the resolved wrapper path into workspace artifact hashes.
-# Keep it inside each checkout, not in the shared cache or a global location.
-rustc-workspace-wrapper = "tools/rustc-workspace.sh"

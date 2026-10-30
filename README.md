@@ -19,7 +19,9 @@ cargo run -p voxel_gi --example minimal   # a complete host in about 150 lines
 cargo run --locked                        # the lab: a streaming BVW world with GI
 ```
 
-Changes are in the [CHANGELOG](CHANGELOG.md). The rest of this README and
+Changes are in the [CHANGELOG](CHANGELOG.md). Only an Apple M4 has been
+measured so far; [testing on another GPU](docs/testing-other-gpus.md) explains
+how to try it on yours. The rest of this README and
 `docs/` describe the lab: the development app, its validation harness, and the
 design history behind the crates.
 

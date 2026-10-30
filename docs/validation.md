@@ -654,14 +654,16 @@ frame time includes GPU time once the GPU is the bottleneck;
 
 ## Shared Cargo cache
 
-The tracked `.cargo/config.toml` isolates workspace artifacts with the checkout-local
-`tools/rustc-workspace.sh`. It optionally includes ignored `.cargo/local.toml` for
-machine-specific settings. This machine's local file shares compatible dependency
-intermediates with related Bevy prototypes:
+The tracked `.cargo/config.toml` only includes the ignored `.cargo/local.toml`
+for machine-specific settings, so a fresh clone builds anywhere (Windows has no
+POSIX shell for a wrapper script). This machine's local file shares compatible
+dependency intermediates with related Bevy prototypes and isolates workspace
+artifacts with the checkout-local `tools/rustc-workspace.sh`:
 
 ```toml
 [build]
 build-dir = "/Users/nathanaelneveux/Developer/.cargo-build/bevy-0.19"
+rustc-workspace-wrapper = "tools/rustc-workspace.sh"
 
 [profile.dev]
 opt-level = 1
@@ -677,8 +679,8 @@ debug-assertions = false
 ```
 
 Configure a suitable absolute path in `.cargo/local.toml` on another machine; do
-not check a user's path into the project. Keep the tracked wrapper configuration
-in place. Cargo hashes the resolved `rustc-workspace-wrapper` path into workspace
+not check a user's path into the project. Set the wrapper with any shared
+`build-dir`. Cargo hashes the resolved `rustc-workspace-wrapper` path into workspace
 artifact names, so different checkouts do not alias the application while registry
 dependencies remain shared. The POSIX wrapper only executes the original compiler
 command; it changes no compiler flags. Do not move it to one global path. See
