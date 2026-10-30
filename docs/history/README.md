@@ -25,3 +25,9 @@ Notable records:
 - [Streaming performance](streaming-performance.md) and
   [experiments](experiments.md): measured wins that remain in the engine.
 - [Code review, 2026-10-13](CODE_REVIEW_2026-10-13.txt).
+
+Dead experiment branches no document cites are kept as `archive/<branch>`
+tags (2026-10-30: 31 superseded `experiment/*` and `codex/*` branches), so
+their commits stay reachable without crowding the branch list; `git branch
+<name> archive/<name>` restores one. Branches the documents cite by name,
+and those checked out in worktrees, remain branches.
