@@ -60,7 +60,8 @@ statistics.
 | Responsibility | Owner / source |
 | --- | --- |
 | Plugin wiring and runtime state | `lib.rs` |
-| Host input: pages, edits, voxel source | `input.rs`, `pages.rs` |
+| Host input: pages, edits, voxel source, interest envelope | `input.rs`, `pages.rs` |
+| Host block types to transport materials | `palette.rs` (`MaterialPalette`) |
 | BVW events, edits and source (connector crate) | `voxel_gi_bvw/src/lib.rs` |
 | Scene/receiver representation | `world.rs`, `field.rs` |
 | Acceleration, packing and shared GPU transactions | `naadf.rs`, `gpu_scene.rs`, `gpu/geometry.rs` |
@@ -78,7 +79,8 @@ statistics.
 | Uncertainty heuristic statement (tests) | `statistics.rs` |
 | Direct-sun corner words and change footprints | `sky.rs`, `voxel_path.wgsl`, `voxel_trace.wgsl` (`trace_footprints`) |
 | Temporal display and initialization | `history.rs` |
-| Material data and shared buffers | `render.rs` |
+| Material data and shared buffers; GI material bindings; stock material | `render.rs` (`VoxelGiBindings`, `VoxelGiStandardMaterial`), `voxel_gi_standard.wgsl` |
+| Presentation for host materials (`voxel_gi::presentation`) | `voxel_gi_presentation.wgsl` |
 | BVW mesh material (connector crate) | `voxel_gi_bvw/src/material.rs`, `voxel_gi_bvw/shaders/voxel_transport.wgsl` |
 | Accounting; test fixtures | `telemetry.rs`; `research.rs` (tests only) |
 | HUD and tuning panel (debug crate) | `voxel_gi_debug/src/lib.rs` |

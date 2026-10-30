@@ -88,9 +88,12 @@ def tool(args, out):
 
 def main(base_label, cand_label):
     base, cand = runs(base_label), runs(cand_label)
-    missing = [n for n in base if base[n][0] is None or cand.get(n, (None,))[0] is None]
-    if missing:
-        print("MISSING/FAILED runs:", missing)
+    # A subset list (e.g. only response and tunnel) compares what it has.
+    names = ["streaming", "cave", "static", "static-sun", "static-indirect", "walk1", "walk2", "turn",
+             "tunnel", "response"]
+    missing = [n for n in names if base.get(n, (None,))[0] is None or cand.get(n, (None,))[0] is None]
+    if failed := [n for n in missing if n in base or n in cand]:
+        print("MISSING/FAILED runs:", failed)
     rows = []
     for name in ["streaming", "cave"]:
         if name in missing: continue
