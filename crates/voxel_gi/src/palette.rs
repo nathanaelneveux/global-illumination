@@ -36,7 +36,20 @@ impl std::error::Error for PaletteFull {}
 /// assert_eq!(palette.get(&"glass"), Some(AIR));
 /// ```
 /// Copy `table()` into the `VoxelMaterialTransportTable` resource, and map
-/// voxels with `get` (or a dense lookup built from it) in `sample_page`.
+/// voxels in `sample_page`. `get` is a hash lookup; with integer block IDs,
+/// build a dense table once (GI samples every voxel of every page), giving
+/// blocks you never registered a fallback:
+///
+/// ```
+/// # use voxel_gi::{MaterialPalette, MaterialTransport};
+/// # use bevy::math::Vec3;
+/// let mut palette = MaterialPalette::<u16>::new();
+/// palette.insert(7, MaterialTransport { diffuse: Vec3::splat(0.2), emission: Vec3::ZERO }).unwrap();
+/// let fallback = palette.optics_id(MaterialTransport::default()).unwrap();
+/// let dense: Vec<u16> = (0..=u16::MAX).map(|id| palette.get(&id).unwrap_or(fallback)).collect();
+/// assert_eq!(dense[7], palette.get(&7).unwrap());
+/// assert_eq!(dense[8], fallback);
+/// ```
 pub struct MaterialPalette<K> {
     ids: HashMap<K, u16>,
     optics: Vec<MaterialTransport>,
@@ -58,7 +71,15 @@ impl<K: Hash + Eq> MaterialPalette<K> {
     /// with identical optics, else the next free ID. Re-inserting a key
     /// remaps it.
     pub fn insert(&mut self, key: K, optics: MaterialTransport) -> Result<u16, PaletteFull> {
-        let id = match self.optics.iter().position(|known| *known == optics) {
+        let id = self.optics_id(optics)?;
+        self.ids.insert(key, id);
+        Ok(id)
+    }
+
+    /// The transport material for these optics without a key (a fallback
+    /// for unregistered blocks, say): shared with keys of identical optics.
+    pub fn optics_id(&mut self, optics: MaterialTransport) -> Result<u16, PaletteFull> {
+        Ok(match self.optics.iter().position(|known| *known == optics) {
             Some(index) => index as u16,
             None => {
                 if self.optics.len() == 256 {
@@ -69,9 +90,7 @@ impl<K: Hash + Eq> MaterialPalette<K> {
                 self.table.set(id as u8, optics);
                 id
             }
-        };
-        self.ids.insert(key, id);
-        Ok(id)
+        })
     }
 
     /// A key whose voxels neither block GI light nor receive it (glass,
@@ -121,5 +140,17 @@ mod tests {
         assert_eq!(palette.insert(1000, MaterialTransport { diffuse: Vec3::splat(3.0 / 256.0), emission: Vec3::ZERO }), Ok(3),
             "known optics still map when full");
         assert_eq!(palette.len(), 256);
+    }
+
+    #[test]
+    fn keyless_optics_share_ids_with_keys() {
+        let mut palette = MaterialPalette::new();
+        let stone = MaterialTransport { diffuse: Vec3::splat(0.5), emission: Vec3::ZERO };
+        let fallback = palette.optics_id(MaterialTransport::default()).unwrap();
+        assert_eq!(palette.insert("stone", stone), Ok(fallback + 1));
+        assert_eq!(palette.optics_id(stone), Ok(fallback + 1));
+        assert_eq!(palette.insert("unknown", MaterialTransport::default()), Ok(fallback));
+        assert_eq!(palette.get(&"never"), None, "keyless optics register no key");
+        assert_eq!(palette.len(), 2);
     }
 }

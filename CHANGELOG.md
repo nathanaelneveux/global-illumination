@@ -18,7 +18,7 @@ The crates share one version. The format follows
     small on screen (`far_tier.voxel_pixels`, default 8).
   - Host input: 32³ pages declared through `VoxelGiInput`, voxels read through
     `VoxelSource` at full or coarse stride, `MaterialPalette` for mapping
-    block types to transport materials, and `VoxelGiEmitter` for lights with
+    block types to transport materials (with keyless fallback optics), and `VoxelGiEmitter` for lights with
     no Bevy counterpart. Declared pages bound GI's interest.
   - Presentation: the `voxel_gi::presentation` WGSL module and
     `VoxelGiBindings` for lighting your own material (meshes or a
