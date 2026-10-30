@@ -7,10 +7,31 @@ data (including its stored levels of detail) becomes GI's `VoxelSource`, and
 
 Any `VoxelWorldConfig` with `u8` materials works; a BVW chunk is exactly one
 GI page (32³), and chunk spawn, update and despawn become page events. Add
-`VoxelGiBvwPlugin` for your `VoxelWorldConfig`, give BVW the material
-from `material_template`, and pass your block optics through
-`voxel_gi::MaterialPalette` (BVW's `u8` material indices map one to one when
-there are at most 256).
+`VoxelGiBvwPlugin` for your `VoxelWorldConfig` and give BVW the material
+from `material_template`.
+
+GI receives BVW's `u8` material indices unchanged, so set each block's
+optics in `VoxelMaterialTransportTable` at its BVW index. Don't use
+`voxel_gi::MaterialPalette` here: it assigns its own sequential IDs and
+merges blocks with identical optics, so its IDs need not match BVW's, and a
+block could take another block's emission. GI treats every solid BVW voxel
+as opaque.
+
+```rust
+use bevy::prelude::*;
+use voxel_gi::{MaterialTransport, VoxelMaterialTransportTable};
+
+const STONE: u8 = 0;
+const LAMP: u8 = 3;
+
+fn block_optics(mut table: ResMut<VoxelMaterialTransportTable>) {
+    table.set(STONE, MaterialTransport { diffuse: Vec3::splat(0.4), ..default() });
+    table.set(
+        LAMP,
+        MaterialTransport { diffuse: Vec3::splat(0.8), emission: Vec3::new(4.0, 2.4, 1.0) },
+    );
+}
+```
 
 LoD chunks are read at their stored stride; colliders and full resolution
 belong to your near LoD bands, as in BVW. Licensed under MIT or Apache-2.0.

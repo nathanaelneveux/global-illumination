@@ -53,7 +53,10 @@ lines. The pieces:
    share an ID, and transparent blocks map to `AIR`. Copy
    `palette.table()` into the `VoxelMaterialTransportTable` resource. With
    integer block IDs, build a dense table from the palette once, with
-   `optics_id(MaterialTransport::default())` for unregistered blocks.
+   `optics_id(MaterialTransport::default())` for unregistered blocks, and
+   have your `VoxelSource` report palette IDs. A source that reports your
+   own IDs unchanged (as `voxel_gi_bvw` does) needs the table set at those
+   IDs instead.
 5. **Light your meshes.** Either use `VoxelGiStandardMaterial` (Bevy's
    `StandardMaterial` lit by GI; add `VoxelGiStandardMaterialPlugin` and
    build it with `standard_material`), or light your own material:
