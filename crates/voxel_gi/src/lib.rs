@@ -58,7 +58,8 @@ pub use input::{
 pub use gpu::view::ViewReceipts;
 pub use gpu::include_traversal;
 pub use render::{
-    GiDebugView, GpuTransportSettings, GpuTraversalParams, VoxelGiDisplay, VoxelGiMaterialData,
+    GiDebugView, GpuTransportSettings, GpuTraversalParams, PRESENTATION_SHADER, VoxelGiBindings,
+    VoxelGiDisplay, VoxelGiMaterialData, VoxelGiMaterialPlugin, presentation_shader_source,
 };
 pub use telemetry::MAIN_STAGE_NAMES as GI_MAIN_STAGE_NAMES;
 use dispatch::{apply_trace_task, start_trace_task};

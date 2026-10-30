@@ -1,7 +1,7 @@
 //! The `bevy_voxel_world` mesh material lit by voxel GI: BVW's texture array
-//! and vertex layout over `StandardMaterial`, with GI's bindings copied from
-//! `VoxelGiMaterialData` whenever it changes.
-use voxel_gi::{GpuTransportSettings, GpuTraversalParams, VoxelGiMaterialData};
+//! and vertex layout over `StandardMaterial`, with GI's bindings
+//! (`VoxelGiBindings`) and its presentation module (`voxel_gi::presentation`).
+use voxel_gi::{VoxelGiBindings, VoxelGiMaterialData, VoxelGiMaterialPlugin};
 use bevy::image::{ImageAddressMode, ImageSampler, TextureReinterpretationError};
 use bevy::pbr::{
     ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
@@ -11,47 +11,25 @@ use bevy::render::render_resource::{
     AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError, TextureViewDescriptor,
     TextureViewDimension,
 };
-use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 use bevy_voxel_world::rendering::vertex_layout;
 
 pub const VOXEL_TRANSPORT_SHADER: &str = "shaders/voxel_transport.wgsl";
-/// The terrain material shader with the shared voxel traversal included
-/// (inserted by `install_render_assets`).
+/// The terrain material shader (inserted by `install`).
 pub const VOXEL_TRANSPORT_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("2ae5baf3-fcaf-4036-8021-b3296b833947");
 
-pub type VoxelTransportMaterial = ExtendedMaterial<StandardMaterial, VoxelTransportExtension>;
+/// `StandardMaterial` with GI's bindings, then BVW's texture array and shader.
+pub type VoxelTransportMaterial =
+    ExtendedMaterial<ExtendedMaterial<StandardMaterial, VoxelGiBindings>, VoxelTransportExtension>;
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct VoxelTransportExtension {
     #[texture(100, dimension = "2d_array")]
     #[sampler(101)]
     pub voxel_texture: Handle<Image>,
-    #[uniform(104)]
-    pub settings: GpuTransportSettings,
-    /// Transport geometry (region directory, headers, cells) and its bounds:
-    /// faces missing from the view tier trace sun visibility through it.
-    #[storage(106, read_only, visibility(fragment))]
-    pub directory: Handle<ShaderBuffer>,
-    #[storage(107, read_only, visibility(fragment))]
-    pub regions: Handle<ShaderBuffer>,
-    #[storage(108, read_only, visibility(fragment))]
-    pub cells: Handle<ShaderBuffer>,
-    #[uniform(109)]
-    pub traversal: GpuTraversalParams,
-    /// Current view's GPU-resident indirect reconstruction (zero header when
-    /// disabled). Camera passes write it in encoder order before opaque draws.
-    #[storage(110, read_only, visibility(fragment))]
-    pub far: Handle<ShaderBuffer>,
-    /// The far tier's cells: per-pixel lighting for faces small on screen.
-    #[storage(111, read_only, visibility(fragment))]
-    pub far_pixels: Handle<ShaderBuffer>,
 }
 
-/// `voxel_traversal.wgsl`'s `params`: the sun visibility distance
-/// (`counts.x`, 0 before the first scene), directory mask (`counts.z`) and
-/// region bounds. The default has empty bounds, so nothing is traversed.
 impl MaterialExtension for VoxelTransportExtension {
     fn fragment_shader() -> ShaderRef {
         VOXEL_TRANSPORT_SHADER_HANDLE.into()
@@ -90,51 +68,28 @@ pub(crate) fn install(app: &mut App) {
     if !app.is_plugin_added::<MaterialPlugin<VoxelTransportMaterial>>() {
         app.add_plugins(MaterialPlugin::<VoxelTransportMaterial>::default());
     }
-    app.add_systems(PostUpdate, sync_material_data);
+    app.add_plugins(VoxelGiMaterialPlugin::<VoxelTransportMaterial>::new(|material| {
+        &mut material.base.extension
+    }));
     let _ = app.world_mut().resource_mut::<Assets<Shader>>().insert(
         VOXEL_TRANSPORT_SHADER_HANDLE.id(),
-        Shader::from_wgsl(
-            voxel_gi::include_traversal(include_str!("../shaders/voxel_transport.wgsl")),
-            VOXEL_TRANSPORT_SHADER,
-        ),
+        Shader::from_wgsl(include_str!("../shaders/voxel_transport.wgsl"), VOXEL_TRANSPORT_SHADER),
     );
-}
-
-fn sync_material_data(data: Res<VoxelGiMaterialData>, mut materials: ResMut<Assets<VoxelTransportMaterial>>) {
-    if !data.is_changed() {
-        return;
-    }
-    for (_, material) in materials.iter_mut() {
-        let extension = &mut material.extension;
-        extension.directory = data.directory.clone();
-        extension.regions = data.regions.clone();
-        extension.cells = data.cells.clone();
-        extension.traversal = data.traversal;
-        extension.far = data.far.clone();
-        extension.far_pixels = data.far_pixels.clone();
-        extension.settings = data.settings;
-    }
 }
 
 /// A BVW voxel material over `texture` (a 2D array, see `prepare_texture_array`).
 pub fn material_template(texture: Handle<Image>, data: &VoxelGiMaterialData) -> VoxelTransportMaterial {
     ExtendedMaterial {
-        base: StandardMaterial {
-            reflectance: 0.05,
-            metallic: 0.05,
-            perceptual_roughness: 0.95,
-            ..default()
+        base: ExtendedMaterial {
+            base: StandardMaterial {
+                reflectance: 0.05,
+                metallic: 0.05,
+                perceptual_roughness: 0.95,
+                ..default()
+            },
+            extension: VoxelGiBindings::from(data),
         },
-        extension: VoxelTransportExtension {
-            voxel_texture: texture,
-            directory: data.directory.clone(),
-            regions: data.regions.clone(),
-            cells: data.cells.clone(),
-            settings: data.settings,
-            traversal: data.traversal,
-            far: data.far.clone(),
-            far_pixels: data.far_pixels.clone(),
-        },
+        extension: VoxelTransportExtension { voxel_texture: texture },
     }
 }
 
@@ -190,40 +145,6 @@ pub fn prepare_texture_array(
 mod tests {
     use super::*;
 
-    /// `struct name { ... }` as written in a shader source.
-    fn struct_text<'a>(source: &'a str, name: &str) -> &'a str {
-        let start = source.find(&format!("struct {name} {{")).unwrap_or_else(|| panic!("no struct {name}"));
-        let end = start + source[start..].find("\n}").unwrap() + 2;
-        &source[start..end]
-    }
-
-    /// Member (name, offset) pairs and size of `name`, parsing only the
-    /// given struct texts (dependencies first).
-    fn layout(texts: &[&str], name: &str) -> (Vec<(String, u32)>, u32) {
-        let module = naga::front::wgsl::parse_str(&texts.join("\n")).unwrap();
-        let ty = module.types.iter().find(|(_, ty)| ty.name.as_deref() == Some(name)).unwrap().1;
-        let naga::TypeInner::Struct { members, span } = &ty.inner else { panic!("{name} is not a struct") };
-        (members.iter().map(|m| (m.name.clone().unwrap(), m.offset)).collect(), *span)
-    }
-
-    #[test]
-    fn material_far_views_mirror_the_view_tier() {
-        // The material reads buffers the view tier writes; its copies of
-        // their structs must keep the same members at the same offsets.
-        let material = include_str!("../shaders/voxel_transport.wgsl");
-        let runtime = include_str!("../../voxel_gi/shaders/voxel_view_runtime.wgsl");
-        let pixels = include_str!("../../voxel_gi/shaders/voxel_view_pixels.wgsl");
-        let pixel = |source| struct_text(source, "FarPixel");
-        assert_eq!(
-            layout(&[pixel(material), struct_text(material, "FarOutput")], "FarOutput"),
-            layout(&[pixel(runtime), struct_text(runtime, "FarOutput")], "FarOutput"),
-        );
-        assert_eq!(layout(&[pixel(material)], "FarPixel"), layout(&[pixel(runtime)], "FarPixel"));
-        let (cells, cells_span) = layout(&[struct_text(material, "FarCells")], "FarCells");
-        let (output, output_span) = layout(&[struct_text(pixels, "PixelOutput")], "PixelOutput");
-        assert_eq!((cells, cells_span), (output, output_span), "FarCells mirrors the far tier's PixelOutput");
-    }
-
     #[test]
     fn terrain_shader_composes_with_bevys_real_pbr_modules_without_a_window() {
         use bevy::render::{RenderPlugin, settings::WgpuSettings};
@@ -270,15 +191,16 @@ mod tests {
                 Ok(module)
             },
         );
+        // The material imports `voxel_gi::presentation` (VoxelGiPlugin
+        // registers it in an app; here, by hand).
+        let _ = app.world_mut().resource_mut::<Assets<Shader>>().insert(
+            voxel_gi::PRESENTATION_SHADER.id(),
+            Shader::from_wgsl(voxel_gi::presentation_shader_source(), "voxel_gi/presentation.wgsl"),
+        );
         let handle = app
             .world_mut()
             .resource_mut::<Assets<Shader>>()
-            .add(Shader::from_wgsl(
-                voxel_gi::include_traversal(include_str!(
-                    "../shaders/voxel_transport.wgsl"
-                )),
-                VOXEL_TRANSPORT_SHADER,
-            ));
+            .add(Shader::from_wgsl(include_str!("../shaders/voxel_transport.wgsl"), VOXEL_TRANSPORT_SHADER));
         let mut defs: Vec<ShaderDefVal> = [
             "VERTEX_POSITIONS",
             "VERTEX_NORMALS",
@@ -435,7 +357,7 @@ mod tests {
             let prepared = render_world
                 .resource::<bevy::render::render_asset::RenderAssets<bevy::render::storage::GpuShaderBuffer>>();
             let material_assets = app.world().resource::<Assets<VoxelTransportMaterial>>();
-            let extension = &material_assets.get(&material).unwrap().extension;
+            let extension = &material_assets.get(&material).unwrap().base.extension;
             assert_eq!(extension.traversal.counts.x, 768);
             for (handle, buffer) in [&extension.directory, &extension.regions, &extension.cells]
                 .into_iter()

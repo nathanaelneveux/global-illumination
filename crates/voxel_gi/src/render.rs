@@ -278,6 +278,114 @@ pub fn install_render_assets(app: &mut App) {
         );
     }
     super::gpu::view::install(app, far, far_pixels);
+    if let Some(mut shaders) = app.world_mut().get_resource_mut::<Assets<Shader>>() {
+        let _ = shaders.insert(
+            PRESENTATION_SHADER.id(),
+            Shader::from_wgsl(presentation_shader_source(), "voxel_gi/presentation.wgsl"),
+        );
+    }
+}
+
+/// The `voxel_gi::presentation` WGSL import module (registered by
+/// `VoxelGiPlugin`): indirect light, sunlight and emission at a fragment for
+/// host materials, over the bindings `VoxelGiBindings` supplies.
+pub const PRESENTATION_SHADER: Handle<Shader> =
+    bevy::asset::uuid_handle!("6b7a1c2e-7d43-4f0e-9a51-2c8e5b9d0f14");
+
+/// The `voxel_gi::presentation` module's source, for hosts composing
+/// shaders outside Bevy's asset pipeline (e.g. composition tests).
+pub fn presentation_shader_source() -> String {
+    super::gpu::include_traversal(include_str!("../shaders/voxel_gi_presentation.wgsl"))
+}
+
+/// GI's bindings for a host material (104 and 106-111 of the material bind
+/// group, where `voxel_gi::presentation` reads them). Wrap the host material
+/// as `ExtendedMaterial<HostMaterial, VoxelGiBindings>`: the host keeps its
+/// own shaders and bindings, which must leave those numbers free. Build it
+/// with `VoxelGiBindings::from(&VoxelGiMaterialData)` and add
+/// `VoxelGiMaterialPlugin` to keep it current.
+#[derive(Asset, TypePath, bevy::render::render_resource::AsBindGroup, Debug, Clone, PartialEq)]
+pub struct VoxelGiBindings {
+    #[uniform(104)]
+    pub settings: GpuTransportSettings,
+    /// Transport geometry (region directory, headers, cells) and its bounds,
+    /// for sun visibility of faces the view tier does not cover.
+    #[storage(106, read_only, visibility(fragment))]
+    pub directory: Handle<ShaderBuffer>,
+    #[storage(107, read_only, visibility(fragment))]
+    pub regions: Handle<ShaderBuffer>,
+    #[storage(108, read_only, visibility(fragment))]
+    pub cells: Handle<ShaderBuffer>,
+    #[uniform(109)]
+    pub traversal: GpuTraversalParams,
+    /// The current view's receiver output (zero header when disabled).
+    #[storage(110, read_only, visibility(fragment))]
+    pub far: Handle<ShaderBuffer>,
+    /// The far tier's cells.
+    #[storage(111, read_only, visibility(fragment))]
+    pub far_pixels: Handle<ShaderBuffer>,
+}
+
+impl bevy::pbr::MaterialExtension for VoxelGiBindings {}
+
+impl From<&VoxelGiMaterialData> for VoxelGiBindings {
+    fn from(data: &VoxelGiMaterialData) -> Self {
+        Self {
+            settings: data.settings,
+            directory: data.directory.clone(),
+            regions: data.regions.clone(),
+            cells: data.cells.clone(),
+            traversal: data.traversal,
+            far: data.far.clone(),
+            far_pixels: data.far_pixels.clone(),
+        }
+    }
+}
+
+/// Keeps every `M`'s `VoxelGiBindings` current with `VoxelGiMaterialData`
+/// (new GPU allocations get new handles). `access` finds the bindings in
+/// an `M`; `extended()` covers `ExtendedMaterial<Base, VoxelGiBindings>`.
+pub struct VoxelGiMaterialPlugin<M: Material> {
+    access: fn(&mut M) -> &mut VoxelGiBindings,
+}
+
+impl<M: Material> VoxelGiMaterialPlugin<M> {
+    pub fn new(access: fn(&mut M) -> &mut VoxelGiBindings) -> Self {
+        Self { access }
+    }
+}
+
+impl<B: Material> VoxelGiMaterialPlugin<bevy::pbr::ExtendedMaterial<B, VoxelGiBindings>> {
+    pub fn extended() -> Self {
+        Self::new(|material| &mut material.extension)
+    }
+}
+
+#[derive(Resource)]
+struct BindingsAccess<M: Material>(fn(&mut M) -> &mut VoxelGiBindings);
+
+impl<M: Material> Plugin for VoxelGiMaterialPlugin<M> {
+    fn build(&self, app: &mut App) {
+        app.insert_resource(BindingsAccess::<M>(self.access))
+            .add_systems(PostUpdate, sync_bindings::<M>);
+    }
+}
+
+fn sync_bindings<M: Material>(
+    data: Res<VoxelGiMaterialData>,
+    access: Res<BindingsAccess<M>>,
+    mut materials: ResMut<Assets<M>>,
+) {
+    if !data.is_changed() {
+        return;
+    }
+    let current = VoxelGiBindings::from(&*data);
+    for (_, material) in materials.iter_mut() {
+        let bindings = (access.0)(material);
+        if *bindings != current {
+            *bindings = current.clone();
+        }
+    }
 }
 
 #[cfg(test)]

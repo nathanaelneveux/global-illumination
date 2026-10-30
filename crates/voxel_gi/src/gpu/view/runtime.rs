@@ -711,6 +711,22 @@ mod tests {
     }
 
     #[test]
+    fn presentation_module_mirrors_the_view_tier() {
+        // Host materials read buffers the view tier writes through
+        // voxel_gi::presentation; its copies of their structs must keep the
+        // same members at the same offsets.
+        let presentation = crate::gpu::reflect::Reflection::new(
+            &crate::render::presentation_shader_source()
+                .replace("#define_import_path voxel_gi::presentation", "")
+                .replace("#{MATERIAL_BIND_GROUP}", "2"),
+        );
+        let runtime = crate::gpu::reflect::Reflection::new(&shader(false));
+        assert_eq!(presentation.layout("FarOutput"), runtime.layout("FarOutput"));
+        assert_eq!(presentation.layout("FarPixel"), runtime.layout("FarPixel"));
+        assert_eq!(presentation.layout("FarCells"), runtime.layout("PixelOutput"), "the far tier's cells");
+    }
+
+    #[test]
     fn rust_and_wgsl_view_layouts_agree() {
         let reflection = crate::gpu::reflect::Reflection::new(&shader(false));
         let f = |i: u32| Vec4::splat(i as f32);
