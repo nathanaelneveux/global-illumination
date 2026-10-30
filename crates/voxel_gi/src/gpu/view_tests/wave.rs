@@ -178,8 +178,10 @@ fn prepare(
     first: u32,
     samples: u32,
 ) -> TraceWork {
-    let emitters = Arc::new(EmissionDistribution::build(&fixture.scene,
-        &fixture.materials));
+    let emitters = Arc::new(EmissionDistribution::build(
+        &fixture.scene,
+        &fixture.materials,
+    ));
     let mut work = TraceWork::from_probes(&fixture.receivers);
     for face in &mut work.faces {
         face.sequence = first;

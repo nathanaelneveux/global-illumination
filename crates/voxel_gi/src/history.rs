@@ -102,7 +102,10 @@ fn measured_display(
     };
     #[cfg(not(test))]
     let has_measurement = donor.display[face].confidence > 0.0;
-    if donor.face_mask & (1 << face) == 0 || !has_measurement || donor.source_revision != source_revision {
+    if donor.face_mask & (1 << face) == 0
+        || !has_measurement
+        || donor.source_revision != source_revision
+    {
         return None;
     }
     let updated = measured.updated_at.or(donor.updated_at)?;
@@ -122,7 +125,9 @@ impl SurfaceProbe {
     pub(crate) fn resolve_display(&mut self, previous: &Self, now: Instant, response_seconds: f32) {
         self.display = previous.display;
         for face in 0..6 {
-            if self.face_mask & self.trace_mask & (1 << face) == 0 || self.stats().samples[face] == 0 {
+            if self.face_mask & self.trace_mask & (1 << face) == 0
+                || self.stats().samples[face] == 0
+            {
                 continue;
             }
             self.resolve_face(
@@ -175,11 +180,7 @@ impl SurfaceProbe {
         let alpha = time_alpha.min(evidence / (1.0 + (4.0 * noise).powi(2)));
         let radiance = self.stats().radiance[face];
         let display = &mut self.display[face];
-        display.indirect = temporal_blend(
-            display.indirect,
-            radiance,
-            alpha.clamp(0.0, 1.0),
-        );
+        display.indirect = temporal_blend(display.indirect, radiance, alpha.clamp(0.0, 1.0));
         // Unknown remains unknown in storage. The corner renderer uses
         // available values conservatively without switching shadow modes.
         let confidence =
@@ -408,10 +409,12 @@ mod tests {
             previous.stats_mut().face_updated_at[2] = Some(start);
             for batch in 1..=16 {
                 let mut next = previous.clone();
-                next.stats_mut().face_updated_at[2] = Some(start + Duration::from_millis(batch as u64 * 50));
+                next.stats_mut().face_updated_at[2] =
+                    Some(start + Duration::from_millis(batch as u64 * 50));
                 next.stats_mut().samples[2] = batch * 4;
                 next.stats_mut().radiance[2] = Vec3::ONE * target;
-                next.stats_mut().second_moment[2] = next.stats().radiance[2] * next.stats().radiance[2];
+                next.stats_mut().second_moment[2] =
+                    next.stats().radiance[2] * next.stats().radiance[2];
                 next.resolve_display(
                     &previous,
                     start + Duration::from_millis(batch as u64 * 50),
@@ -460,7 +463,8 @@ mod tests {
                 probe.resolve_face(2, Some(at - Duration::from_millis(50)), at, 0.075);
                 assert!(probe.display[2].indirect.cmple(previous_display).all());
                 assert_eq!(
-                    probe.stats().radiance[2], mean,
+                    probe.stats().radiance[2],
+                    mean,
                     "display never changes simulation energy"
                 );
                 assert_eq!(probe.stats().second_moment[2], second);
@@ -540,8 +544,16 @@ mod tests {
         assert_eq!(probe.stats().samples[2], 16);
         assert_eq!(probe.display[2].indirect, Vec3::ONE);
         probe.update_face_mask(5);
-        assert_eq!(probe.stats().samples[2], 16, "unchanged face retains its history");
-        assert_eq!(probe.stats().samples[0], 0, "new face is genuinely unmeasured");
+        assert_eq!(
+            probe.stats().samples[2],
+            16,
+            "unchanged face retains its history"
+        );
+        assert_eq!(
+            probe.stats().samples[0],
+            0,
+            "new face is genuinely unmeasured"
+        );
         assert_eq!(probe.stats().radiance[0], Vec3::ZERO);
     }
 

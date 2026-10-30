@@ -113,9 +113,16 @@ impl PageSample {
     /// A page at `stride` (a power of two from 1 to 32) with `(32 / stride)³`
     /// cell materials, x fastest.
     pub fn coarse(stride: u32, cells: Vec<u16>) -> Self {
-        assert!(stride.is_power_of_two() && stride <= PAGE_EDGE, "page stride {stride} must be a power of two up to {PAGE_EDGE}");
+        assert!(
+            stride.is_power_of_two() && stride <= PAGE_EDGE,
+            "page stride {stride} must be a power of two up to {PAGE_EDGE}"
+        );
         let edge = (PAGE_EDGE / stride) as usize;
-        assert_eq!(cells.len(), edge * edge * edge, "a stride-{stride} page has {edge}³ cells");
+        assert_eq!(
+            cells.len(),
+            edge * edge * edge,
+            "a stride-{stride} page has {edge}³ cells"
+        );
         debug_assert!(
             cells.iter().all(|&material| material <= AIR),
             "transport materials are 0..=255 or AIR; map host block types with MaterialPalette"
@@ -146,7 +153,8 @@ impl PageSample {
                 let row = (z * PAGE_EDGE + y) * PAGE_EDGE;
                 let cell_row = ((z / self.stride) * edge + y / self.stride) * edge;
                 for x in 0..PAGE_EDGE {
-                    materials[(row + x) as usize] = self.cells[(cell_row + x / self.stride) as usize];
+                    materials[(row + x) as usize] =
+                        self.cells[(cell_row + x / self.stride) as usize];
                 }
             }
         }
@@ -198,14 +206,19 @@ mod tests {
         });
         assert_eq!(page.stride(), 8);
         let dense = page.clone().into_dense();
-        let at = |x: u32, y: u32, z: u32| dense[super::super::naadf::linear_index(UVec3::new(x, y, z), PAGE_SIZE)];
+        let at = |x: u32, y: u32, z: u32| {
+            dense[super::super::naadf::linear_index(UVec3::new(x, y, z), PAGE_SIZE)]
+        };
         assert_eq!(at(8, 0, 24), 5);
         assert_eq!(at(15, 7, 31), 5);
         assert_eq!(at(16, 0, 24), AIR);
         assert_eq!(at(7, 0, 24), AIR);
         assert_eq!(dense.iter().filter(|&&m| m == 5).count(), 512);
         assert_eq!(page.material(UVec3::new(9, 3, 30)), 5);
-        assert_eq!(dense_page(IVec3::ZERO, |_| Some(2)).into_dense(), vec![2; 32 * 32 * 32]);
+        assert_eq!(
+            dense_page(IVec3::ZERO, |_| Some(2)).into_dense(),
+            vec![2; 32 * 32 * 32]
+        );
         assert_eq!(PageSample::air(), coarse_page(IVec3::ZERO, 32, |_| None));
         assert_eq!(PageSample::air().material(UVec3::splat(31)), AIR);
     }

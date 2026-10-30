@@ -503,5 +503,4 @@ mod tests {
             assert!(max.cmple(IVec3::splat(i32::MAX / PAGE_EDGE as i32)).all());
         }
     }
-
 }

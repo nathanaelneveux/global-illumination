@@ -93,9 +93,14 @@ impl ResponseRun {
                 match stage {
                     1 => (HOLE, WorldVoxel::Air),
                     2 => (HOLE, WorldVoxel::Solid(2)),
-                    3 => (HOLE + IVec3::Y, WorldVoxel::Solid(
-                        if super::profiles::place_emitter() { 4 } else { 2 },
-                    )),
+                    3 => (
+                        HOLE + IVec3::Y,
+                        WorldVoxel::Solid(if super::profiles::place_emitter() {
+                            4
+                        } else {
+                            2
+                        }),
+                    ),
                     4 => (HOLE + IVec3::Y, WorldVoxel::Air),
                     _ => (IVec3::new(8, 45, -9), WorldVoxel::Air),
                 }

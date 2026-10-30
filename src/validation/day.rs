@@ -47,8 +47,12 @@ pub(super) fn turn() -> bool {
 }
 
 pub(super) const TURN_CAPTURES: &[(f32, &str)] = &[
-    (59.0, "day-before-turn"), (120.4, "return-0400ms"), (121.0, "return-1000ms"),
-    (123.0, "return-3000ms"), (130.0, "return-10s"), (180.0, "day-180s"),
+    (59.0, "day-before-turn"),
+    (120.4, "return-0400ms"),
+    (121.0, "return-1000ms"),
+    (123.0, "return-3000ms"),
+    (130.0, "return-10s"),
+    (180.0, "day-180s"),
 ];
 
 /// Looking away (yaw 180 degrees about the eye) during the turn.
@@ -62,12 +66,7 @@ impl DayRun {
             "axis": "world Z, from the canyon sun"})
     }
 
-    pub fn tick(
-        &mut self,
-        elapsed: f32,
-        commands: &mut Commands,
-        stats: &VoxelGiStats,
-    ) {
+    pub fn tick(&mut self, elapsed: f32, commands: &mut Commands, stats: &VoxelGiStats) {
         let mut angle = self.offset + self.rate * elapsed;
         if self.step > 0.0 {
             angle = self.offset + ((angle - self.offset) / self.step).floor() * self.step;

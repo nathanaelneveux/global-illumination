@@ -37,9 +37,7 @@ fn setup_lighting(mut commands: Commands) {
     let cave = preset == crate::scene_presets::ScenePreset::Cave;
     let canyon = preset == crate::scene_presets::ScenePreset::Canyon;
     if cave {
-        commands.insert_resource(voxel_gi::VoxelGiEnvironment(
-            crate::cave_scene::ENVIRONMENT,
-        ));
+        commands.insert_resource(voxel_gi::VoxelGiEnvironment(crate::cave_scene::ENVIRONMENT));
     }
     if canyon {
         commands.insert_resource(voxel_gi::VoxelGiEnvironment(
@@ -171,9 +169,13 @@ mod tests {
                 .unwrap()
                 .shadow_maps_enabled
         );
-        app.world_mut().resource_mut::<voxel_gi::VoxelGiDisplay>().voxel_sun = false;
+        app.world_mut()
+            .resource_mut::<voxel_gi::VoxelGiDisplay>()
+            .voxel_sun = false;
         assert!(update(&mut app), "F7 must restore raster shadows");
-        app.world_mut().resource_mut::<voxel_gi::VoxelGiDisplay>().voxel_sun = true;
+        app.world_mut()
+            .resource_mut::<voxel_gi::VoxelGiDisplay>()
+            .voxel_sun = true;
         let mesh = app.world_mut().spawn(Mesh3d::default()).id();
         assert!(update(&mut app), "other receivers still need shadow maps");
         app.world_mut().despawn(mesh);

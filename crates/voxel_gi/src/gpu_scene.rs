@@ -215,7 +215,8 @@ impl PackedScene {
                             uniform &= material == first;
                             // NAADF's tagged 16-bit cell: solid+material OR empty+extents.
                             let cell = if material == AIR {
-                                let bounds = voxel_bounds.get_or_insert_with(|| source.brick_voxel_bounds(brick));
+                                let bounds = voxel_bounds
+                                    .get_or_insert_with(|| source.brick_voxel_bounds(brick));
                                 pack_extents(bounds[i]) << 1
                             } else {
                                 (u32::from(material) << 1) | 1
@@ -328,7 +329,12 @@ impl PackedScene {
 
     /// Linear-probing insert; false when the probe chain would exceed what the
     /// shader searches (the caller then rebuilds at a larger capacity).
-    fn directory_insert(&mut self, key: IVec3, header: usize, dirty: &mut Vec<Range<usize>>) -> bool {
+    fn directory_insert(
+        &mut self,
+        key: IVec3,
+        header: usize,
+        dirty: &mut Vec<Range<usize>>,
+    ) -> bool {
         let mask = self.directory.len() - 1;
         let mut slot = hash_region(key) as usize & mask;
         let mut distance = 0;
@@ -498,7 +504,9 @@ mod tests {
         let mut solid = vec![AIR; volume_len(PAGE_SIZE)];
         solid[linear_index(UVec3::splat(3), PAGE_SIZE)] = 7;
         for step in 0..60i32 {
-            let enter: Vec<_> = (0..6).map(|i| IVec3::new(step + i, (i * 7 + step) % 5 - 2, i - 3)).collect();
+            let enter: Vec<_> = (0..6)
+                .map(|i| IVec3::new(step + i, (i * 7 + step) % 5 - 2, i - 3))
+                .collect();
             let leave: Vec<_> = live
                 .iter()
                 .copied()
@@ -536,7 +544,11 @@ mod tests {
                 None
             };
             for (&key, allocation) in &packed.regions {
-                assert_eq!(lookup(key), Some(allocation.header), "region {key} at step {step}");
+                assert_eq!(
+                    lookup(key),
+                    Some(allocation.header),
+                    "region {key} at step {step}"
+                );
             }
             for page in &leave {
                 for z in 0..2 {
@@ -547,9 +559,15 @@ mod tests {
                     }
                 }
             }
-            assert_eq!(gpu.iter().filter(|entry| entry.w != -1).count(), packed.regions.len());
+            assert_eq!(
+                gpu.iter().filter(|entry| entry.w != -1).count(),
+                packed.regions.len()
+            );
         }
-        assert!(rebuilds < 12, "{rebuilds} whole-table uploads in 60 streaming steps");
+        assert!(
+            rebuilds < 12,
+            "{rebuilds} whole-table uploads in 60 streaming steps"
+        );
     }
 
     fn directory_entries(packed: &PackedScene) -> Vec<[i32; 4]> {
@@ -614,11 +632,16 @@ mod tests {
         for allocation in packed.regions.values() {
             let header = packed.headers[allocation.header];
             assert_eq!(header.w >> 28, 3, "stride log2 in header w bits 28-30");
-            assert_eq!(header.w & 0x00ff_ffff, header.w & 0x0fff_ffff, "skip bounds unchanged");
+            assert_eq!(
+                header.w & 0x00ff_ffff,
+                header.w & 0x0fff_ffff,
+                "skip bounds unchanged"
+            );
         }
         // The same materials at full resolution are a different region: the
         // view keys its faces per voxel again, so it must not be reused.
-        let full = TransportScene::with_strided_page_delta(&coarse, vec![(IVec3::ZERO, page, 0)], &[]);
+        let full =
+            TransportScene::with_strided_page_delta(&coarse, vec![(IVec3::ZERO, page, 0)], &[]);
         assert_eq!(full.changed_regions(&coarse).len(), coarse.regions.len());
         packed.update(&full);
         for allocation in packed.regions.values() {

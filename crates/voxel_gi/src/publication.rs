@@ -1,9 +1,8 @@
 //! Main-world scene publication. Geometry is prepared off-thread; receiver pages
 //! publish atomically with retained measurements and display-only initialization.
 use super::{
-    SceneBuildResult, ReceiverField, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats,
-    advance_transport_revision, enqueue_urgent, history, page_of,
-    probe_metrics,
+    ReceiverField, SceneBuildResult, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats,
+    advance_transport_revision, enqueue_urgent, history, page_of, probe_metrics,
     telemetry::GiWorkTimings,
     update_stats_from_counters,
     world::{PAGE_EDGE, SurfaceProbe, SurfaceProbeDescriptor},
@@ -14,7 +13,6 @@ use bevy::{
     tasks::{block_on, poll_once},
 };
 use std::time::{Duration, Instant};
-
 
 /// Page-level conservative donor availability. New streamed page interiors
 /// cannot inherit from another page three or more cells away; skip their empty
@@ -123,7 +121,10 @@ pub(super) fn apply_scene_task(
     let Some(mut result) = runtime.scene_publication.take() else {
         return;
     };
-    let budget = settings.scheduler.scene_publish_budget.min(Duration::from_millis(8));
+    let budget = settings
+        .scheduler
+        .scene_publish_budget
+        .min(Duration::from_millis(8));
     let mut published = 0;
     while let Some((page, descriptors)) = result.pages.pop_front() {
         // Empty pages need no merge; skip them without spending a whole frame.
@@ -320,7 +321,12 @@ fn reconcile_scene_page(
             .push(descriptor.voxel);
         field.probes.insert_box(descriptor.voxel, probe);
     }
-    if !old_affected.is_empty() && field.pages.get(&page).is_none_or(|probes| probes.is_empty()) {
+    if !old_affected.is_empty()
+        && field
+            .pages
+            .get(&page)
+            .is_none_or(|probes| probes.is_empty())
+    {
         // The page's receivers are gone (retired by the receiver radius, or
         // its surfaces removed): release its resident slots and sun corners.
         runtime.slot_retirements.push(page);
@@ -377,17 +383,17 @@ fn finish_scene_page(
     stats.loaded_pages = runtime.loaded_pages.len();
     stats.scheduler.last_scene_build_ms = result.build_time.as_secs_f32() * 1_000.0;
     debug!(
-            loaded_pages = stats.loaded_pages,
-            naadf_regions = runtime.scene.regions.len(),
-            surface_probes = stats.surface_probes,
-            pending_probes = stats.scheduler.pending_probes,
-            relit_probes,
-            coverage_percent = format_args!("{:.1}", stats.interactive_coverage * 100.0),
-            bootstrap_percent = format_args!("{:.1}", stats.bootstrap_coverage * 100.0),
-            build_ms = format_args!("{:.1}", stats.scheduler.last_scene_build_ms),
-            publish_ms = format_args!("{:.1}", publish_started.elapsed().as_secs_f64() * 1000.0),
-            "incremental world-space voxel transport scene rebuilt"
-        );
+        loaded_pages = stats.loaded_pages,
+        naadf_regions = runtime.scene.regions.len(),
+        surface_probes = stats.surface_probes,
+        pending_probes = stats.scheduler.pending_probes,
+        relit_probes,
+        coverage_percent = format_args!("{:.1}", stats.interactive_coverage * 100.0),
+        bootstrap_percent = format_args!("{:.1}", stats.bootstrap_coverage * 100.0),
+        build_ms = format_args!("{:.1}", stats.scheduler.last_scene_build_ms),
+        publish_ms = format_args!("{:.1}", publish_started.elapsed().as_secs_f64() * 1000.0),
+        "incremental world-space voxel transport scene rebuilt"
+    );
 }
 
 fn luminance(value: Vec3) -> f32 {
@@ -422,7 +428,9 @@ pub(super) fn finalize_change_flux(
         match &mut weight.kind {
             ChangeKind::Load { .. } => weight.flux = sky * super::world::REGION_EDGE as f32,
             ChangeKind::Edit { measure, .. } => {
-                let size = (bounds.max - bounds.min + IVec3::splat(3)).max(IVec3::ONE).as_i64vec3();
+                let size = (bounds.max - bounds.min + IVec3::splat(3))
+                    .max(IVec3::ONE)
+                    .as_i64vec3();
                 let positions = (size.x * size.y * size.z) as u64;
                 if positions <= budget {
                     budget -= positions;
@@ -444,12 +452,21 @@ mod donor_tests {
     fn edits_are_measured_on_the_gpu_within_the_scan_budget() {
         use super::super::geometry::{Bounds, ChangeKind, ChangeWeight, GeometryChange};
         let small = Bounds::point(IVec3::ZERO);
-        let huge = Bounds { min: IVec3::ZERO, max: IVec3::splat(40) };
+        let huge = Bounds {
+            min: IVec3::ZERO,
+            max: IVec3::splat(40),
+        };
         let mut change = GeometryChange::default();
         for b in [small, huge] {
             change.weights.insert(
                 b,
-                ChangeWeight { kind: ChangeKind::Edit { voxels: 1, measure: false }, flux: 0.5 },
+                ChangeWeight {
+                    kind: ChangeKind::Edit {
+                        voxels: 1,
+                        measure: false,
+                    },
+                    flux: 0.5,
+                },
             );
         }
         finalize_change_flux(&mut change, &Default::default());
@@ -457,16 +474,18 @@ mod donor_tests {
         // (the distance curve), never an underestimate.
         assert_eq!(
             change.weights[&small],
-            ChangeWeight { kind: ChangeKind::Edit { voxels: 1, measure: true }, flux: 0.5 }
+            ChangeWeight {
+                kind: ChangeKind::Edit {
+                    voxels: 1,
+                    measure: true
+                },
+                flux: 0.5
+            }
         );
         assert_eq!(change.weights[&huge], ChangeWeight::UNKNOWN);
     }
 
-    fn unchanged_page_fixture() -> (
-        VoxelGiRuntime,
-        ReceiverField,
-        Vec<SurfaceProbeDescriptor>,
-    ) {
+    fn unchanged_page_fixture() -> (VoxelGiRuntime, ReceiverField, Vec<SurfaceProbeDescriptor>) {
         let mut field = ReceiverField::default();
         let descriptors: Vec<_> = (0..32)
             .flat_map(|z| {
@@ -660,10 +679,7 @@ mod donor_tests {
         for &p in &receivers {
             let a = seed(p, false);
             let b = seed(p, true);
-            assert_eq!(
-                (a.indirect, a.confidence),
-                (b.indirect, b.confidence)
-            );
+            assert_eq!((a.indirect, a.confidence), (b.indirect, b.confidence));
         }
         let mut times: [Vec<Duration>; 2] = default();
         let mut counts = [0; 2];

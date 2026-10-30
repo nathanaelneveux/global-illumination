@@ -86,12 +86,22 @@ fn full_region_reference(coordinate: IVec3, materials: Vec<u16>) -> NaadfRegion 
     // Bounds are no longer stored; the on-demand ones must equal this
     // independent per-voxel and per-brick construction.
     for index in 0..volume_len(REGION_SIZE) {
-        let local = UVec3::new(index as u32 % 16, (index as u32 / 16) % 16, index as u32 / 256);
-        assert_eq!(region.voxel_aadf(local), voxel_aadf[linear_index(local, REGION_SIZE)]);
+        let local = UVec3::new(
+            index as u32 % 16,
+            (index as u32 / 16) % 16,
+            index as u32 / 256,
+        );
+        assert_eq!(
+            region.voxel_aadf(local),
+            voxel_aadf[linear_index(local, REGION_SIZE)]
+        );
     }
     for index in 0..volume_len(BRICK_GRID_SIZE) {
         let brick = UVec3::new(index as u32 % 4, (index as u32 / 4) % 4, index as u32 / 16);
-        assert_eq!(region.brick_aadf(brick), brick_aadf[linear_index(brick, BRICK_GRID_SIZE)]);
+        assert_eq!(
+            region.brick_aadf(brick),
+            brick_aadf[linear_index(brick, BRICK_GRID_SIZE)]
+        );
     }
     region
 }
@@ -189,7 +199,11 @@ fn rebuild_on_any_change(
     } else {
         TopLevelAadf::build(&regions)
     };
-    TransportScene { regions, top_level, ..default() }
+    TransportScene {
+        regions,
+        top_level,
+        ..default()
+    }
 }
 
 fn assert_same_scene(actual: &TransportScene, reference: &TransportScene) {
@@ -316,7 +330,6 @@ fn occupied_region_edits_share_only_top_level_acceleration() {
     );
 }
 
-
 #[test]
 fn brick_uniform_regions_store_one_material_per_brick_and_answer_like_dense() {
     let coordinate = IVec3::new(3, -1, 2);
@@ -335,8 +348,14 @@ fn brick_uniform_regions_store_one_material_per_brick_and_answer_like_dense() {
     assert!(region.matches_materials(&materials));
     let mut edited = materials.clone();
     edited[5] = 7;
-    assert!(!region.matches_materials(&edited), "one voxel differs from its brick");
+    assert!(
+        !region.matches_materials(&edited),
+        "one voxel differs from its brick"
+    );
     let edited = NaadfRegion::build(coordinate, edited);
-    assert!(matches!(edited.storage, RegionStorage::Dense { .. }), "a mixed brick needs voxels");
+    assert!(
+        matches!(edited.storage, RegionStorage::Dense { .. }),
+        "a mixed brick needs voxels"
+    );
     assert_same_region(region, full_region_reference(coordinate, materials));
 }

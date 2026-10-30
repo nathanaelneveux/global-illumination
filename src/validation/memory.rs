@@ -95,7 +95,10 @@ mod tests {
     fn footprint_header_parses_each_unit() {
         let header = "zsh [52522]: 64-bit    Footprint: 2096 KB (16384 bytes per page)";
         assert_eq!(parse_footprint(header), Some(2096 * 1024));
-        assert_eq!(parse_footprint("x Footprint: 1.5 GB (y)"), Some(1_610_612_736));
+        assert_eq!(
+            parse_footprint("x Footprint: 1.5 GB (y)"),
+            Some(1_610_612_736)
+        );
         assert_eq!(parse_footprint("no header"), None);
     }
 }

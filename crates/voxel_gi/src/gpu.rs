@@ -13,10 +13,10 @@ use bevy::render::render_resource::{
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::storage::ShaderBuffer;
 
+use super::color::FiniteColor;
 use super::emission::EmissionDistribution;
 use super::gpu_scene::PackedScene;
 use super::sources::TransportSources;
-use super::color::FiniteColor;
 use super::tracer::HISTORY_LIMIT;
 use super::work::TraceWork;
 #[cfg(test)]
@@ -24,9 +24,8 @@ use super::world::SurfaceProbe;
 use super::world::{TransportScene, VoxelMaterialTransportTable};
 
 /// The world-space consumer with the shared transport and traversal included.
-static SHADER: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    include_paths(include_str!("../shaders/voxel_trace.wgsl"))
-});
+static SHADER: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| include_paths(include_str!("../shaders/voxel_trace.wgsl")));
 
 /// Compose a transport consumer without duplicating the lighting estimator.
 pub(crate) fn include_paths(source: &str) -> String {
@@ -36,11 +35,7 @@ pub(crate) fn include_paths(source: &str) -> String {
         1,
         "shader needs one path include"
     );
-    include_traversal(&source.replacen(
-        MARKER,
-        include_str!("../shaders/voxel_path.wgsl"),
-        1,
-    ))
+    include_traversal(&source.replacen(MARKER, include_str!("../shaders/voxel_path.wgsl"), 1))
 }
 
 /// Insert the shared traversal (`voxel_traversal.wgsl`) at its include marker,
@@ -51,11 +46,7 @@ pub fn include_traversal(source: &str) -> String {
         source.contains(MARKER),
         "shader lacks the traversal include marker"
     );
-    source.replacen(
-        MARKER,
-        include_str!("../shaders/voxel_traversal.wgsl"),
-        1,
-    )
+    source.replacen(MARKER, include_str!("../shaders/voxel_traversal.wgsl"), 1)
 }
 
 fn include_retention(source: &str) -> String {
@@ -868,7 +859,12 @@ impl GpuTracer {
             )
         });
         readback.ensure(device, readback_bytes + timestamp_bytes as usize)?;
-        if prepare_resident && self.resident.as_ref().is_some_and(|r| r.footprints().is_some()) {
+        if prepare_resident
+            && self
+                .resident
+                .as_ref()
+                .is_some_and(|r| r.footprints().is_some())
+        {
             // Its own submission, ahead of the batch that applies the events.
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("GI change footprints"),
@@ -937,11 +933,7 @@ impl GpuTracer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &**bindings, &[]);
-            pass.dispatch_workgroups(
-                (face_count as u32).div_ceil(self.faces_per_workgroup),
-                1,
-                1,
-            );
+            pass.dispatch_workgroups((face_count as u32).div_ceil(self.faces_per_workgroup), 1, 1);
         }
         if face_count > 0
             && let Some(resident) = &mut self.resident
@@ -1268,7 +1260,9 @@ fn dispatch_footprints(tracer: &mut GpuTracer, encoder: &mut wgpu::CommandEncode
     else {
         return;
     };
-    let Some((threads, tasks)) = resident.footprints() else { return };
+    let Some((threads, tasks)) = resident.footprints() else {
+        return;
+    };
     let bindings = cached_bindings(
         footprint_bindings,
         &context.device,
@@ -1288,7 +1282,11 @@ fn dispatch_footprints(tracer: &mut GpuTracer, encoder: &mut wgpu::CommandEncode
         finish_footprint_bindings,
         &context.device,
         || finish_footprint_pipeline.get_bind_group_layout(0).into(),
-        [(20, &resident.footprint_tasks), (21, &resident.footprint_sums), (22, resident.events_buffer())],
+        [
+            (20, &resident.footprint_tasks),
+            (21, &resident.footprint_sums),
+            (22, resident.events_buffer()),
+        ],
     );
     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
         label: Some("GI change footprints"),
@@ -1306,8 +1304,7 @@ fn spectrum_vec(energy: Vec3) -> Vec4 {
     energy.extend(0.0)
 }
 fn decode_spectrum(value: &[f32], _unused: f32) -> Vec3 {
-    Vec3::new(value[0], value[1], value[2])
-        .finite_or_zero()
+    Vec3::new(value[0], value[1], value[2]).finite_or_zero()
 }
 fn encode_words(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|word| word.to_le_bytes()).collect()
@@ -1333,12 +1330,26 @@ pub(super) mod tests {
     fn transport_params_mirror_the_shader() {
         let f = |i: u32| Vec4::splat(i as f32);
         let params = GpuParams {
-            counts: UVec4::splat(1), minimum: IVec4::splat(2), maximum: IVec4::splat(3),
-            environment: f(4), extra: f(5), transport: f(6),
+            counts: UVec4::splat(1),
+            minimum: IVec4::splat(2),
+            maximum: IVec4::splat(3),
+            environment: f(4),
+            extra: f(5),
+            transport: f(6),
         };
         let reflection = super::reflect::Reflection::new(&SHADER);
-        super::reflect::assert_mirrors(&ShaderBuffer::from(params).data.unwrap(), reflection.layout("Params"),
-            &["counts", "minimum", "maximum", "environment", "extra", "transport"]);
+        super::reflect::assert_mirrors(
+            &ShaderBuffer::from(params).data.unwrap(),
+            reflection.layout("Params"),
+            &[
+                "counts",
+                "minimum",
+                "maximum",
+                "environment",
+                "extra",
+                "transport",
+            ],
+        );
     }
 
     #[test]
@@ -1435,18 +1446,24 @@ pub(super) mod tests {
         // panics ("Mismatched pop_error_scope call").
         let device = native_tracer().context.device;
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let outer = device.wgpu_device().push_error_scope(wgpu::ErrorFilter::Validation);
+        let outer = device
+            .wgpu_device()
+            .push_error_scope(wgpu::ErrorFilter::Validation);
         let worker = {
             let (device, barrier) = (device.clone(), barrier.clone());
             std::thread::spawn(move || {
-                let held = device.wgpu_device().push_error_scope(wgpu::ErrorFilter::Validation);
+                let held = device
+                    .wgpu_device()
+                    .push_error_scope(wgpu::ErrorFilter::Validation);
                 barrier.wait(); // held while the other thread pushes and pops
                 barrier.wait();
                 assert!(bevy::tasks::block_on(held.pop()).is_none());
             })
         };
         barrier.wait();
-        let inner = device.wgpu_device().push_error_scope(wgpu::ErrorFilter::Validation);
+        let inner = device
+            .wgpu_device()
+            .push_error_scope(wgpu::ErrorFilter::Validation);
         assert!(bevy::tasks::block_on(inner.pop()).is_none());
         // With one shared stack the worker's scope is on top here: panic.
         assert!(bevy::tasks::block_on(outer.pop()).is_none());
@@ -1569,9 +1586,7 @@ pub(super) mod tests {
         gpu.trace(lit, &sources, &materials, &mut probes, 128, &emitters)
             .unwrap();
         let mut history = probes.remove(0);
-        assert!(
-            history.stats().radiance[2].x > 0.01
-        );
+        assert!(history.stats().radiance[2].x > 0.01);
         history.display[2].indirect = history.stats().radiance[2];
         let original = history.display[2].indirect;
         let now = Instant::now();
@@ -1656,5 +1671,4 @@ pub(super) mod tests {
             .collect();
         (scene, sources, initial)
     }
-
 }

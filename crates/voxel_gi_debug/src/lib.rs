@@ -12,7 +12,9 @@ use bevy::ui::Checked;
 use bevy::ui_widgets::{Activate, SliderPrecision, SliderStep, SliderValue, ValueChange};
 use std::time::{Duration, Instant};
 
-use voxel_gi::{GiDebugView, VoxelGiDisplay, VoxelGiQuality, VoxelGiSettings, VoxelGiStats, VoxelGiSystems};
+use voxel_gi::{
+    GiDebugView, VoxelGiDisplay, VoxelGiQuality, VoxelGiSettings, VoxelGiStats, VoxelGiSystems,
+};
 
 /// Debug overlay and controls for voxel GI.
 pub struct VoxelGiDebugPlugin {
@@ -126,7 +128,13 @@ impl Knob {
         }
     }
 
-    fn set(self, value: f32, settings: &mut VoxelGiSettings, display: &mut VoxelGiDisplay, panel: &mut PanelState) {
+    fn set(
+        self,
+        value: f32,
+        settings: &mut VoxelGiSettings,
+        display: &mut VoxelGiDisplay,
+        panel: &mut PanelState,
+    ) {
         match self {
             Self::GpuShare => settings.gpu_time_share = value,
             Self::CacheRadius => settings.cache_radius = value,
@@ -169,7 +177,11 @@ impl Toggle {
             Self::Corners => display.corner_reconstruction = value,
             Self::VoxelSun => display.voxel_sun = value,
             Self::Irradiance => {
-                display.debug_view = if value { GiDebugView::Irradiance } else { GiDebugView::None }
+                display.debug_view = if value {
+                    GiDebugView::Irradiance
+                } else {
+                    GiDebugView::None
+                }
             }
         }
     }
@@ -341,7 +353,11 @@ fn on_slider(
     }
 }
 
-fn on_checkbox(change: On<ValueChange<bool>>, toggles: Query<&Toggle>, mut display: ResMut<VoxelGiDisplay>) {
+fn on_checkbox(
+    change: On<ValueChange<bool>>,
+    toggles: Query<&Toggle>,
+    mut display: ResMut<VoxelGiDisplay>,
+) {
     if let Ok(toggle) = toggles.get(change.source) {
         toggle.set(change.value, &mut display);
     }
@@ -367,7 +383,11 @@ fn on_button(
     match *action {
         Action::TogglePanel => {
             for mut node in &mut panels {
-                node.display = if node.display == Display::None { Display::Flex } else { Display::None };
+                node.display = if node.display == Display::None {
+                    Display::Flex
+                } else {
+                    Display::None
+                };
             }
         }
         Action::Quality(quality) => {
@@ -403,7 +423,10 @@ fn finish_paste(
         return;
     };
     panel.paste = None;
-    let message = match result.map_err(|error| format!("{error:?}")).and_then(|text| VoxelGiSettings::from_ron(&text)) {
+    let message = match result
+        .map_err(|error| format!("{error:?}"))
+        .and_then(|text| VoxelGiSettings::from_ron(&text))
+    {
         Ok(pasted) => {
             *settings = pasted;
             panel.draft = None;
@@ -447,7 +470,11 @@ fn sync_controls(
         Some(quality) => format!("Current: {quality:?}"),
         None => "Current: custom".into(),
     };
-    let label = if panel.draft.is_some() { format!("{label} (light model change staged)") } else { label };
+    let label = if panel.draft.is_some() {
+        format!("{label} (light model change staged)")
+    } else {
+        label
+    };
     for mut text in &mut labels {
         text.0 = label.clone();
     }
@@ -524,7 +551,10 @@ fn toggle_voxel_gi(
 ) {
     if keyboard.just_pressed(KeyCode::F7) {
         gi.voxel_sun = !gi.voxel_sun;
-        info!(voxel_sky = gi.voxel_sun, "direct sky lighting changed (F5 controls cached face/corner blending)");
+        info!(
+            voxel_sky = gi.voxel_sun,
+            "direct sky lighting changed (F5 controls cached face/corner blending)"
+        );
     }
     if keyboard.just_pressed(KeyCode::F6) {
         gi.debug_view = if gi.debug_view == voxel_gi::GiDebugView::None {
@@ -532,11 +562,17 @@ fn toggle_voxel_gi(
         } else {
             voxel_gi::GiDebugView::None
         };
-        info!(irradiance_only = gi.debug_view != voxel_gi::GiDebugView::None, "voxel GI diagnostic view changed");
+        info!(
+            irradiance_only = gi.debug_view != voxel_gi::GiDebugView::None,
+            "voxel GI diagnostic view changed"
+        );
     }
     if keyboard.just_pressed(KeyCode::F5) {
         gi.corner_reconstruction = !gi.corner_reconstruction;
-        info!(smooth_corners = gi.corner_reconstruction, "voxel GI reconstruction changed");
+        info!(
+            smooth_corners = gi.corner_reconstruction,
+            "voxel GI reconstruction changed"
+        );
     }
     if keyboard.just_pressed(KeyCode::F5) || keyboard.just_pressed(KeyCode::F7) {
         let sky_mode = if !gi.voxel_sun {
@@ -605,19 +641,41 @@ mod tests {
             .add_observer(on_button);
         let world = app.world_mut();
         let slider = world.spawn(Knob::Spatial).id();
-        world.trigger(ValueChange { source: slider, value: 0.25_f32, is_final: true });
-        assert_eq!(world.resource::<VoxelGiSettings>().spatial_reconstruction, 0.25);
+        world.trigger(ValueChange {
+            source: slider,
+            value: 0.25_f32,
+            is_final: true,
+        });
+        assert_eq!(
+            world.resource::<VoxelGiSettings>().spatial_reconstruction,
+            0.25
+        );
         let checkbox = world.spawn(Toggle::VoxelSun).id();
-        world.trigger(ValueChange { source: checkbox, value: false, is_final: true });
+        world.trigger(ValueChange {
+            source: checkbox,
+            value: false,
+            is_final: true,
+        });
         assert!(!world.resource::<VoxelGiDisplay>().voxel_sun);
         let high = world.spawn(Action::Quality(VoxelGiQuality::High)).id();
         world.trigger(Activate { entity: high });
         let settings = world.resource::<VoxelGiSettings>().clone();
         assert_eq!(settings.matching_quality(), Some(VoxelGiQuality::High));
-        assert_eq!(settings.spatial_reconstruction, 0.25, "presets leave look settings alone");
+        assert_eq!(
+            settings.spatial_reconstruction, 0.25,
+            "presets leave look settings alone"
+        );
         let reach = world.spawn(Knob::Reach).id();
-        world.trigger(ValueChange { source: reach, value: 64.0_f32, is_final: true });
-        assert_eq!(world.resource::<VoxelGiSettings>().transport.reach, 768.0, "staged, not applied");
+        world.trigger(ValueChange {
+            source: reach,
+            value: 64.0_f32,
+            is_final: true,
+        });
+        assert_eq!(
+            world.resource::<VoxelGiSettings>().transport.reach,
+            768.0,
+            "staged, not applied"
+        );
         let apply = world.spawn(Action::ApplyModel).id();
         world.trigger(Activate { entity: apply });
         assert_eq!(world.resource::<VoxelGiSettings>().transport.reach, 64.0);
@@ -626,22 +684,46 @@ mod tests {
     #[test]
     fn knobs_and_toggles_write_back_what_they_read() {
         let knobs = [
-            Knob::GpuShare, Knob::CacheRadius, Knob::ViewReceivers, Knob::CacheShare, Knob::Spatial,
-            Knob::NoiseThreshold, Knob::Response, Knob::Gain, Knob::Reach, Knob::Bounces,
+            Knob::GpuShare,
+            Knob::CacheRadius,
+            Knob::ViewReceivers,
+            Knob::CacheShare,
+            Knob::Spatial,
+            Knob::NoiseThreshold,
+            Knob::Response,
+            Knob::Gain,
+            Knob::Reach,
+            Knob::Bounces,
         ];
-        let (mut settings, mut display, mut panel) =
-            (VoxelGiSettings::default(), VoxelGiDisplay::default(), PanelState::default());
+        let (mut settings, mut display, mut panel) = (
+            VoxelGiSettings::default(),
+            VoxelGiDisplay::default(),
+            PanelState::default(),
+        );
         for knob in knobs {
             let (min, max, _, _) = knob.range();
             let value = knob.get(&settings, &display, &panel);
-            assert!((min..=max).contains(&value), "{} default {value} outside {min}..{max}", knob.label());
+            assert!(
+                (min..=max).contains(&value),
+                "{} default {value} outside {min}..{max}",
+                knob.label()
+            );
             knob.set(max, &mut settings, &mut display, &mut panel);
-            assert!((knob.get(&settings, &display, &panel) - max).abs() < 1e-3, "{}", knob.label());
+            assert!(
+                (knob.get(&settings, &display, &panel) - max).abs() < 1e-3,
+                "{}",
+                knob.label()
+            );
         }
         // The light model is staged, never applied by dragging.
         assert_eq!(settings.transport, VoxelGiSettings::default().transport);
         assert_eq!(panel.draft.unwrap().bounces, 3);
-        for toggle in [Toggle::Enabled, Toggle::Corners, Toggle::VoxelSun, Toggle::Irradiance] {
+        for toggle in [
+            Toggle::Enabled,
+            Toggle::Corners,
+            Toggle::VoxelSun,
+            Toggle::Irradiance,
+        ] {
             let before = toggle.get(&display);
             toggle.set(!before, &mut display);
             assert_eq!(toggle.get(&display), !before);
@@ -662,7 +744,10 @@ mod tests {
         world.insert_resource(keyboard);
         for expected in [true, false] {
             world.run_system_once(toggle_voxel_gi).unwrap();
-            assert_eq!(world.resource::<voxel_gi::VoxelGiDisplay>().enabled, expected);
+            assert_eq!(
+                world.resource::<voxel_gi::VoxelGiDisplay>().enabled,
+                expected
+            );
         }
     }
 
@@ -691,7 +776,13 @@ mod tests {
             assert_eq!(display.enabled, gi);
             assert!(display.corner_reconstruction);
         }
-        assert!(app.world().get::<Window>(window).unwrap().title.contains("voxel corners"));
+        assert!(
+            app.world()
+                .get::<Window>(window)
+                .unwrap()
+                .title
+                .contains("voxel corners")
+        );
     }
 
     #[test]
@@ -703,7 +794,12 @@ mod tests {
             settled_coverage: 0.125,
             main_thread_ms_per_frame: Some(1.25),
             gpu_ms_per_frame: Some(0.375),
-            view_gpu: voxel_gi::ViewReceipts { trace_ms: 1.0, presentation_ms: 0.5, discovery_ms: 0.25, ..default() },
+            view_gpu: voxel_gi::ViewReceipts {
+                trace_ms: 1.0,
+                presentation_ms: 0.5,
+                discovery_ms: 0.25,
+                ..default()
+            },
             ..default()
         };
         assert_eq!(

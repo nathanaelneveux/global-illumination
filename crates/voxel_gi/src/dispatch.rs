@@ -2,7 +2,7 @@
 //! CPU jobs and GPU picks. Bulk selection happens on the GPU; every loaded
 //! receiver remains eligible independently of camera visibility.
 use super::{
-    TraceBatchResult, ReceiverField, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats, emission,
+    ReceiverField, TraceBatchResult, VoxelGiRuntime, VoxelGiSettings, VoxelGiStats, emission,
     enqueue_urgent, gpu, probe_metrics, scheduling, telemetry::GiWorkTimings,
     update_stats_from_counters, work::TraceWork,
 };
@@ -45,11 +45,7 @@ pub(super) fn start_trace_task(
             || !runtime.scene.regions.is_empty(),
             |tracer| {
                 tracer.needs_geometry(&runtime.scene)
-                    || tracer.needs_model(
-                        &runtime.sources,
-                        &runtime.materials,
-                        runtime.transport,
-                    )
+                    || tracer.needs_model(&runtime.sources, &runtime.materials, runtime.transport)
             },
         );
     if field.order.is_empty() && runtime.gpu_pending.is_empty() && !maintenance {
@@ -60,9 +56,12 @@ pub(super) fn start_trace_task(
         return;
     };
     let selection_started = Instant::now();
-    let focus = cameras.iter().find(|(camera, _)| camera.is_active).map_or(IVec3::ZERO, |(_, transform)| {
-        transform.translation().floor().as_ivec3()
-    });
+    let focus = cameras
+        .iter()
+        .find(|(camera, _)| camera.is_active)
+        .map_or(IVec3::ZERO, |(_, transform)| {
+            transform.translation().floor().as_ivec3()
+        });
     runtime.batch_size = runtime.batch_size.min(settings.batch_limit());
     // Three owned staging allocations bound queue latency and memory. When full,
     // poll without selecting more work: never turn backpressure into a CPU wait.
@@ -79,9 +78,10 @@ pub(super) fn start_trace_task(
         settings.gpu_share() * settings.world_budget_fraction(),
         settings.budget_ms(),
     );
-    let can_submit =
-        settings.world_budget_fraction() > 0.0
-            && !field.order.is_empty() && runtime.gpu_pending.len() < 3 && runtime.gpu_allowance_ms > 0.0;
+    let can_submit = settings.world_budget_fraction() > 0.0
+        && !field.order.is_empty()
+        && runtime.gpu_pending.len() < 3
+        && runtime.gpu_allowance_ms > 0.0;
     let mut selected = if can_submit {
         info_span!("gi_select").in_scope(|| select_transport(&mut runtime, &field))
     } else {
@@ -311,10 +311,7 @@ pub(super) fn select_probes(
 /// request made urgent, with their revision caps and rollbacks. Bulk
 /// coverage, refinement and the world sweep are picked on the GPU from its
 /// own statistics (`select_*` in voxel_accumulate.wgsl), in the same batch.
-pub(super) fn select_transport(
-    runtime: &mut VoxelGiRuntime,
-    field: &ReceiverField,
-) -> TraceWork {
+pub(super) fn select_transport(runtime: &mut VoxelGiRuntime, field: &ReceiverField) -> TraceWork {
     let mut selected = std::mem::take(&mut runtime.trace_scratch);
     selected.clear();
     let mut seen = std::mem::take(&mut runtime.selection_seen);
@@ -453,10 +450,7 @@ pub(super) fn apply_trace_task(
         // A material-table revision can change emission without rebuilding
         // geometry. Older source results were rejected above.
         old.emission = runtime.materials.get(old.material).emission;
-        job.publish(
-            &batch.work.faces[job.faces()],
-            old,
-        );
+        job.publish(&batch.work.faces[job.faces()], old);
         let (_, new_samples, new_covered, new_settled) = probe_metrics(old, transport_revision);
         runtime.completed_samples =
             runtime.completed_samples.saturating_sub(old_samples) + new_samples;

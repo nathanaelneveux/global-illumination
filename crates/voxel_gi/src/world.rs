@@ -6,8 +6,8 @@ use std::time::Instant;
 
 use bevy::prelude::*;
 
-use super::naadf::{Aadf, build_aadf, linear_index, volume_len};
 use super::color::FiniteColor;
+use super::naadf::{Aadf, build_aadf, linear_index, volume_len};
 mod delta;
 pub(crate) use delta::SceneStamp;
 
@@ -115,7 +115,11 @@ const BRICKS_PER_REGION: usize = (BRICKS_PER_AXIS * BRICKS_PER_AXIS * BRICKS_PER
 /// The brick (x fastest) holding the voxel at a region's linear `index`.
 fn brick_of_index(index: usize) -> usize {
     let index = index as u32;
-    let local = UVec3::new(index % REGION_EDGE, (index / REGION_EDGE) % REGION_EDGE, index / (REGION_EDGE * REGION_EDGE));
+    let local = UVec3::new(
+        index % REGION_EDGE,
+        (index / REGION_EDGE) % REGION_EDGE,
+        index / (REGION_EDGE * REGION_EDGE),
+    );
     linear_index(local / BRICK_EDGE, BRICK_GRID_SIZE)
 }
 
@@ -125,9 +129,10 @@ impl NaadfRegion {
             RegionStorage::Empty => incoming.iter().all(|value| *value == AIR),
             RegionStorage::Uniform(material) => incoming.iter().all(|value| value == material),
             RegionStorage::Dense { materials, .. } => materials.as_ref() == incoming,
-            RegionStorage::Bricks(bricks) => incoming.iter().enumerate().all(|(index, value)| {
-                *value == bricks[brick_of_index(index)]
-            }),
+            RegionStorage::Bricks(bricks) => incoming
+                .iter()
+                .enumerate()
+                .all(|(index, value)| *value == bricks[brick_of_index(index)]),
         }
     }
     pub(crate) fn uniform_material(&self) -> Option<u16> {
@@ -235,7 +240,10 @@ impl NaadfRegion {
         let brick_size = UVec3::splat(BRICK_EDGE);
         if let RegionStorage::Bricks(bricks) = &self.storage {
             let solid = bricks[linear_index(brick, BRICK_GRID_SIZE)] != AIR;
-            return build_aadf(brick_size, &[solid; (BRICK_EDGE * BRICK_EDGE * BRICK_EDGE) as usize]);
+            return build_aadf(
+                brick_size,
+                &[solid; (BRICK_EDGE * BRICK_EDGE * BRICK_EDGE) as usize],
+            );
         }
         let RegionStorage::Dense { materials, .. } = &self.storage else {
             return vec![Aadf::default(); volume_len(brick_size)];
@@ -251,7 +259,9 @@ impl NaadfRegion {
     /// Empty-space bounds of the region's 4^3 bricks (brick order x fastest).
     pub(crate) fn brick_bounds(&self) -> Vec<Aadf> {
         match &self.storage {
-            RegionStorage::Dense { brick_occupied, .. } => build_aadf(BRICK_GRID_SIZE, brick_occupied),
+            RegionStorage::Dense { brick_occupied, .. } => {
+                build_aadf(BRICK_GRID_SIZE, brick_occupied)
+            }
             RegionStorage::Bricks(bricks) => {
                 let occupied: Vec<bool> = bricks.iter().map(|material| *material != AIR).collect();
                 build_aadf(BRICK_GRID_SIZE, &occupied)
@@ -265,7 +275,9 @@ impl NaadfRegion {
             RegionStorage::Empty => AIR,
             RegionStorage::Uniform(material) => *material,
             RegionStorage::Dense { materials, .. } => materials[linear_index(local, REGION_SIZE)],
-            RegionStorage::Bricks(bricks) => bricks[linear_index(local / BRICK_EDGE, BRICK_GRID_SIZE)],
+            RegionStorage::Bricks(bricks) => {
+                bricks[linear_index(local / BRICK_EDGE, BRICK_GRID_SIZE)]
+            }
         }
     }
 
@@ -409,7 +421,10 @@ impl TransportScene {
         changed_pages: Vec<(IVec3, Vec<u16>)>,
         removed_pages: &[IVec3],
     ) -> Self {
-        let pages = changed_pages.into_iter().map(|(page, materials)| (page, materials, 0)).collect();
+        let pages = changed_pages
+            .into_iter()
+            .map(|(page, materials)| (page, materials, 0))
+            .collect();
         Self::with_strided_page_delta(previous, pages, removed_pages)
     }
 
@@ -435,7 +450,9 @@ impl TransportScene {
         // and starving rendering/physics on lower-core-count machines.
         let built: Vec<_> = changed_pages
             .into_iter()
-            .flat_map(|(page, materials, stride)| build_page_regions(page, &materials, stride, previous))
+            .flat_map(|(page, materials, stride)| {
+                build_page_regions(page, &materials, stride, previous)
+            })
             .collect();
         for region in built {
             if previous
@@ -487,7 +504,6 @@ impl TransportScene {
             .get(&region_coordinate)
             .map(|region| region.material(local.as_uvec3()))
     }
-
 }
 
 #[derive(Clone, Debug)]
@@ -721,7 +737,10 @@ impl SurfaceProbe {
         self.request_refresh();
         self.relit_mask |= self.face_mask;
         let limit = super::geometry::NEAR_HISTORY;
-        self.progress.bootstrap = self.progress.bootstrap.map(|count| u32::from(count).min(limit) as u8);
+        self.progress.bootstrap = self
+            .progress
+            .bootstrap
+            .map(|count| u32::from(count).min(limit) as u8);
         #[cfg(test)]
         if let Some(stats) = self.stats.as_mut() {
             stats.samples = stats.samples.map(|count| count.min(limit));
@@ -936,10 +955,7 @@ mod tests {
         );
         let material = table.get(7);
         assert_eq!(material.diffuse, Vec3::ONE);
-        assert_eq!(
-            material.emission,
-            Vec3::ZERO
-        );
+        assert_eq!(material.emission, Vec3::ZERO);
     }
 
     #[test]

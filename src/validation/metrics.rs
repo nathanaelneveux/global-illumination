@@ -1,11 +1,11 @@
 //! Frame timing and transport work observations from public GI stats.
 //! Deliberately separate from visual ground truth: captures judge lighting.
-use voxel_gi::{GI_MAIN_STAGE_NAMES, VoxelGiStats};
-#[cfg(test)]
-use voxel_gi::SchedulerStats;
 use bevy::prelude::*;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+#[cfg(test)]
+use voxel_gi::SchedulerStats;
+use voxel_gi::{GI_MAIN_STAGE_NAMES, VoxelGiStats};
 
 pub(super) fn distribution(values: &[f32]) -> Value {
     if values.is_empty() {
@@ -121,7 +121,10 @@ mod tests {
             ..default()
         };
         let mut stats = VoxelGiStats {
-            scheduler: SchedulerStats { last_main_stage_ms: [2.0; 6], ..default() },
+            scheduler: SchedulerStats {
+                last_main_stage_ms: [2.0; 6],
+                ..default()
+            },
             ..default()
         };
         metrics.record_frame(1.0, "startup", 20.0, false, &stats, Some([3.0; 7]));
@@ -141,7 +144,11 @@ mod tests {
             loaded_pages: 3,
             interactive_coverage: 1.0,
             bootstrap_coverage: 0.5,
-            scheduler: SchedulerStats { transport_batches: 1, last_trace_batch_ms: 2.0, ..default() },
+            scheduler: SchedulerStats {
+                transport_batches: 1,
+                last_trace_batch_ms: 2.0,
+                ..default()
+            },
             ..default()
         };
         for elapsed in [0.3, 0.6] {

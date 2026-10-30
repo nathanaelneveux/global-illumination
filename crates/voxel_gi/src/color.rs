@@ -11,7 +11,11 @@ pub(crate) trait FiniteColor {
 
 impl FiniteColor for Vec3 {
     fn finite_or_zero(self) -> Self {
-        if self.is_finite() { self.max(Vec3::ZERO) } else { Vec3::ZERO }
+        if self.is_finite() {
+            self.max(Vec3::ZERO)
+        } else {
+            Vec3::ZERO
+        }
     }
     fn bounded(self, maximum: f32) -> Self {
         self.finite_or_zero().min(Vec3::splat(maximum))

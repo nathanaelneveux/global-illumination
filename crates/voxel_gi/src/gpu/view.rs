@@ -7,8 +7,8 @@ use bevy::render::extract_resource::ExtractResource;
 use std::sync::Mutex;
 mod runtime;
 mod timing;
-pub(crate) use runtime::install;
 pub use runtime::ViewReceipts;
+pub(crate) use runtime::install;
 
 // FarOutput's fixed header, optical table, face hash and spatial lists. Shared by
 // the active allocation and material placeholder; the unsized tail needs at
@@ -100,10 +100,21 @@ impl GpuTracer {
                 ),
                 // Bevy renders its own direct RGB. Standalone VoxelGiEmitter
                 // RGB is instead supplied by the transport presentation.
-                transport: Vec4::new(self.view_transport.reach,
-                    f32::from(sources.directional.iter().any(|light| light.custom_visible != Vec3::ZERO)
-                        || sources.points.iter().any(|light| light.custom_visible != Vec3::ZERO)),
-                    0.0, 0.0),
+                transport: Vec4::new(
+                    self.view_transport.reach,
+                    f32::from(
+                        sources
+                            .directional
+                            .iter()
+                            .any(|light| light.custom_visible != Vec3::ZERO)
+                            || sources
+                                .points
+                                .iter()
+                                .any(|light| light.custom_visible != Vec3::ZERO),
+                    ),
+                    0.0,
+                    0.0,
+                ),
             },
             buffers: [
                 &self.directory,

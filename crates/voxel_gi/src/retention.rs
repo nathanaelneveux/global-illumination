@@ -147,7 +147,11 @@ impl SpatialHistory {
         );
         let urgent = bounds
             .iter()
-            .map(|b| edits.iter().any(|&voxel| b.distance_squared(Bounds::point(voxel)) == 0))
+            .map(|b| {
+                edits
+                    .iter()
+                    .any(|&voxel| b.distance_squared(Bounds::point(voxel)) == 0)
+            })
             .collect();
         Some(RetentionEvent {
             bounds,
@@ -181,7 +185,6 @@ impl SpatialHistory {
     pub fn take_events(&mut self) -> Vec<RetentionEvent> {
         std::mem::take(&mut self.pending)
     }
-
 }
 
 /// CPU statement of the GPU rule for one receiver: the curve cap from the
@@ -230,10 +233,9 @@ pub(super) fn source_limit(events: &[RetentionEvent], voxel: IVec3) -> u32 {
     let mut cap = u32::MAX;
     for event in events {
         if let Some(base) = event.source_cap {
-            let near = event
-                .spheres
-                .iter()
-                .any(|(center, radius)| voxel.as_vec3().distance_squared(*center) <= radius * radius);
+            let near = event.spheres.iter().any(|(center, radius)| {
+                voxel.as_vec3().distance_squared(*center) <= radius * radius
+            });
             cap = cap.min(if near { base.min(4) } else { base });
         }
     }
@@ -253,8 +255,8 @@ pub(super) fn woken(events: &[RetentionEvent], voxel: IVec3) -> bool {
 mod tests {
     use super::*;
     use crate::geometry::ChangeKind;
-    use bevy::platform::collections::HashMap;
     use crate::geometry::PageChanges;
+    use bevy::platform::collections::HashMap;
 
     fn event(point: IVec3, weight: Option<ChangeWeight>) -> GeometryChange {
         let mut change = GeometryChange {
@@ -278,7 +280,10 @@ mod tests {
             resolve(&history.take_events(), receiver).1
         };
         let edit = ChangeWeight {
-            kind: ChangeKind::Edit { voxels: 1, measure: false },
+            kind: ChangeKind::Edit {
+                voxels: 1,
+                measure: false,
+            },
             flux: 10.0,
         };
         let change = change_at(IVec3::ZERO, edit, IVec3::new(10, 0, 0)).unwrap();
@@ -288,7 +293,10 @@ mod tests {
             kind: ChangeKind::Load { top: 5 },
             flux: 2.0,
         };
-        assert_eq!(change_at(IVec3::new(0, 5, 0), load, IVec3::new(4, 12, 0)), Some(0.0));
+        assert_eq!(
+            change_at(IVec3::new(0, 5, 0), load, IVec3::new(4, 12, 0)),
+            Some(0.0)
+        );
         let expected = 2.0 * 6.0 / (std::f32::consts::PI * (16 + 25) as f32);
         let below = change_at(IVec3::new(0, 5, 0), load, IVec3::new(4, 0, 0)).unwrap();
         assert!((below - expected).abs() < 1e-6);
@@ -305,7 +313,10 @@ mod tests {
         assert_eq!(change_at(IVec3::ZERO, unload, IVec3::ONE), Some(0.0));
         let mut unknown = SpatialHistory::default();
         unknown.record(event(IVec3::ZERO, None), &[]);
-        assert_eq!(resolve(&unknown.take_events(), IVec3::new(64, 0, 0)), (809, None));
+        assert_eq!(
+            resolve(&unknown.take_events(), IVec3::new(64, 0, 0)),
+            (809, None)
+        );
     }
 
     #[test]
@@ -319,7 +330,10 @@ mod tests {
         assert_eq!(resolve(&events, IVec3::ZERO).0, 809);
         assert_eq!(source_limit(&events, IVec3::ZERO), 64);
         assert_eq!(source_limit(&events, IVec3::new(0, 0, 295)), 4);
-        assert!(woken(&events, IVec3::new(4000, 0, 0)), "source changes wake everyone");
+        assert!(
+            woken(&events, IVec3::new(4000, 0, 0)),
+            "source changes wake everyone"
+        );
         let mut far = SpatialHistory::default();
         far.record(event(IVec3::new(4000, 0, 0), None), &[]);
         let far = far.take_events();

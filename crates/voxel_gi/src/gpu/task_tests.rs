@@ -33,4 +33,3 @@ fn task_encoding_matches_shader_layout_and_clears_reused_tails() {
         }
     }
 }
-

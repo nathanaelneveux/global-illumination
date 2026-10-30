@@ -143,4 +143,3 @@ fn construction_matches_full_sweep_oracle() {
         }
     }
 }
-

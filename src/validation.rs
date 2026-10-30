@@ -3,8 +3,8 @@
 mod background;
 mod cave;
 mod day;
-mod host_timing;
 mod handoff;
+mod host_timing;
 mod house;
 mod memory;
 mod metrics;
@@ -16,9 +16,14 @@ mod tunnel;
 
 use voxel_gi_bvw::VoxelTransportMaterial;
 /// Face normals in the lab's face order (+X, -X, +Y, -Y, +Z, -Z).
-const FACE_OFFSETS: [IVec3; 6] = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
-use voxel_gi_bvw::BvwVoxelEdits;
-use voxel_gi::{VoxelGiEmitter, MaterialTransport, VoxelGiInput, VoxelGiSettings, VoxelGiStats, VoxelMaterialTransportTable};
+const FACE_OFFSETS: [IVec3; 6] = [
+    IVec3::X,
+    IVec3::NEG_X,
+    IVec3::Y,
+    IVec3::NEG_Y,
+    IVec3::Z,
+    IVec3::NEG_Z,
+];
 use crate::assets::{PrototypeConfig, TemplateAssets};
 use crate::{player::Player, terrain::PrototypeWorld};
 use bevy::camera::{RenderTarget, ShadowLodOrigin};
@@ -32,6 +37,11 @@ use profiles::Profile;
 use serde_json::json;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use voxel_gi::{
+    MaterialTransport, VoxelGiEmitter, VoxelGiInput, VoxelGiSettings, VoxelGiStats,
+    VoxelMaterialTransportTable,
+};
+use voxel_gi_bvw::BvwVoxelEdits;
 
 #[derive(Resource, Default)]
 pub(super) struct CaptureEvidence {
@@ -90,7 +100,9 @@ fn pace_gpu_frames(
     use std::sync::atomic::{AtomicBool, Ordering};
     if let Some(done) = previous.take() {
         while !done.load(Ordering::Acquire) {
-            let _ = device.wgpu_device().poll(bevy::render::render_resource::PollType::Poll);
+            let _ = device
+                .wgpu_device()
+                .poll(bevy::render::render_resource::PollType::Poll);
             std::thread::sleep(std::time::Duration::from_micros(100));
         }
     }
@@ -110,12 +122,7 @@ pub(super) fn setup_capture_target(
         return;
     }
     let (width, height) = offscreen_size();
-    let mut image = Image::new_target_texture(
-        width,
-        height,
-        TextureFormat::Rgba8UnormSrgb,
-        None,
-    );
+    let mut image = Image::new_target_texture(width, height, TextureFormat::Rgba8UnormSrgb, None);
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     let target = images.add(image);
     for camera in &cameras {
@@ -251,14 +258,17 @@ pub(super) fn run_validation(
             return;
         }
         run.profile = profile;
-        if matches!(profile, Profile::Motion | Profile::Tunnel | Profile::Streaming)
-            || (profile == Profile::Cave && skylight::mode().is_some())
+        if matches!(
+            profile,
+            Profile::Motion | Profile::Tunnel | Profile::Streaming
+        ) || (profile == Profile::Cave && skylight::mode().is_some())
         {
             run.motion_static = std::env::var_os("VOXEL_GI_VALIDATE_MOTION_STATIC").is_some();
             run.motion_walk = profiles::motion_walk();
             let component = std::env::var("VOXEL_GI_VALIDATE_LIGHT_COMPONENT").ok();
             run.motion_diagnostic = match profiles::motion_diagnostic(
-                std::env::var_os("VOXEL_GI_VALIDATE_VIEW_COVERAGE").is_some(), component.as_deref(),
+                std::env::var_os("VOXEL_GI_VALIDATE_VIEW_COVERAGE").is_some(),
+                component.as_deref(),
             ) {
                 Ok(mode) => mode,
                 Err(message) => {
@@ -382,9 +392,15 @@ pub(super) fn run_validation(
         run.day.tick(elapsed, &mut commands, &stats);
         if day::turn() {
             let (eye, target) = (crate::canyon_scene::EYE, crate::canyon_scene::TARGET);
-            let target = if day::looking_away(elapsed) { 2.0 * eye - target } else { target };
+            let target = if day::looking_away(elapsed) {
+                2.0 * eye - target
+            } else {
+                target
+            };
             for camera in &cameras {
-                commands.entity(camera).insert(Transform::from_translation(eye).looking_at(target, Vec3::Y));
+                commands
+                    .entity(camera)
+                    .insert(Transform::from_translation(eye).looking_at(target, Vec3::Y));
             }
         }
     }
@@ -412,25 +428,36 @@ pub(super) fn run_validation(
         );
     }
     if profile == Profile::Cave {
-        run.skylight.tick(elapsed, &mut world, &mut dirty, &mut transport_materials);
+        run.skylight
+            .tick(elapsed, &mut world, &mut dirty, &mut transport_materials);
         if let Some(angle) = skylight::sun_angle(elapsed) {
             commands.insert_resource(crate::world_environment::SunAngle(angle));
         }
         if skylight::away() {
             let (eye, target) = skylight::AWAY_VIEW;
             for camera in &cameras {
-                commands.entity(camera).insert(Transform::from_translation(eye).looking_at(target, Vec3::Y));
+                commands
+                    .entity(camera)
+                    .insert(Transform::from_translation(eye).looking_at(target, Vec3::Y));
             }
         }
     }
     if profile == Profile::Tunnel {
-        run.tunnel.tick(elapsed, &mut world, &mut dirty, &mut commands, &cameras, &mut lights);
+        run.tunnel.tick(
+            elapsed,
+            &mut world,
+            &mut dirty,
+            &mut commands,
+            &cameras,
+            &mut lights,
+        );
     }
     if profile == Profile::Lod {
         // bevy_voxel_world's noise_terrain_lod flight, replayed from time zero.
         let transform = crate::lod_scene::camera(elapsed);
         for camera in &cameras {
-            commands.entity(camera)
+            commands
+                .entity(camera)
                 .remove::<bevy_ahoy::prelude::CharacterControllerCameraOf>()
                 .insert(transform);
         }
@@ -439,32 +466,50 @@ pub(super) fn run_validation(
         // Replay an absolute path, independent of asynchronous startup physics
         // and controller synchronization. Mutating the body Transform alone can
         // be overwritten by the KCC and silently turn this into a static test.
-        let distance = if profiles::turn_burst() { 0.0 } else { 4.32 * (elapsed - 15.0).clamp(0.0, 15.0) };
+        let distance = if profiles::turn_burst() {
+            0.0
+        } else {
+            4.32 * (elapsed - 15.0).clamp(0.0, 15.0)
+        };
         let eye = generator.player_spawn_position() + Vec3::Y * 1.62 + Vec3::Z * distance;
-        let yaw = if elapsed >= 15.0 { std::f32::consts::PI } else { 0.0 };
+        let yaw = if elapsed >= 15.0 {
+            std::f32::consts::PI
+        } else {
+            0.0
+        };
         let transform = Transform::from_translation(eye).with_rotation(Quat::from_rotation_y(yaw));
         for camera in &cameras {
-            commands.entity(camera)
+            commands
+                .entity(camera)
                 .remove::<bevy_ahoy::prelude::CharacterControllerCameraOf>()
                 .insert(transform);
         }
-        if (15.0..30.0).contains(&elapsed) { run.moves += 1; }
+        if (15.0..30.0).contains(&elapsed) {
+            run.moves += 1;
+        }
     }
     if profile == Profile::Motion {
         // Same eye and two repeatable orientations, separated by 0.15 degrees.
         // Exact returns distinguish selection flicker from camera parallax.
         // Walk mode instead moves steadily forward along the view from 15 s.
-        let moved = !run.motion_static && run.motion_walk.is_none()
-            && (15.0..30.0).contains(&elapsed) && elapsed as u32 % 2 == 1;
+        let moved = !run.motion_static
+            && run.motion_walk.is_none()
+            && (15.0..30.0).contains(&elapsed)
+            && elapsed as u32 % 2 == 1;
         let yaw = if moved { 0.15f32.to_radians() } else { 0.0 };
         // Use the generator's fixed spawn, not the physics body's position
         // during asynchronous startup (which can still be falling).
-        let rotation = Quat::from_rotation_y(std::f32::consts::PI + yaw) * Quat::from_rotation_x(-0.12);
-        let walked = run.motion_walk.map_or(0.0, |speed| speed * (elapsed - 15.0).clamp(0.0, 15.0));
-        let eye = generator.player_spawn_position() + Vec3::Y * 1.62 + rotation * Vec3::NEG_Z * walked;
+        let rotation =
+            Quat::from_rotation_y(std::f32::consts::PI + yaw) * Quat::from_rotation_x(-0.12);
+        let walked = run
+            .motion_walk
+            .map_or(0.0, |speed| speed * (elapsed - 15.0).clamp(0.0, 15.0));
+        let eye =
+            generator.player_spawn_position() + Vec3::Y * 1.62 + rotation * Vec3::NEG_Z * walked;
         let transform = Transform::from_translation(eye).with_rotation(rotation);
         for camera in &cameras {
-            commands.entity(camera)
+            commands
+                .entity(camera)
                 .remove::<bevy_ahoy::prelude::CharacterControllerCameraOf>()
                 .insert(transform);
         }
@@ -474,8 +519,10 @@ pub(super) fn run_validation(
     }
     let mut next = *display;
     profile.configure(elapsed, &mut next);
-    if matches!(profile, Profile::Motion | Profile::Tunnel | Profile::Streaming)
-        || (profile == Profile::Cave && skylight::mode().is_some())
+    if matches!(
+        profile,
+        Profile::Motion | Profile::Tunnel | Profile::Streaming
+    ) || (profile == Profile::Cave && skylight::mode().is_some())
     {
         next.debug_view = voxel_gi::GiDebugView::from_index(run.motion_diagnostic);
     }
@@ -595,11 +642,18 @@ pub(super) fn run_validation(
             let eye = player.translation.floor().as_ivec3();
             let exposed = |voxel: IVec3| {
                 matches!(world.get_voxel(voxel), WorldVoxel::Solid(_))
-                    && FACE_OFFSETS.iter().any(|normal| !matches!(world.get_voxel(voxel + *normal), WorldVoxel::Solid(_)))
+                    && FACE_OFFSETS.iter().any(|normal| {
+                        !matches!(world.get_voxel(voxel + *normal), WorldVoxel::Solid(_))
+                    })
             };
             let target = (-12..=12)
-                .flat_map(|z| (-12..=12).flat_map(move |y| (-12..=12).map(move |x| eye + IVec3::new(x, y, z))))
-                .filter(|voxel| (9.0..144.0).contains(&(voxel.as_vec3() + 0.5).distance_squared(player.translation)))
+                .flat_map(|z| {
+                    (-12..=12).flat_map(move |y| (-12..=12).map(move |x| eye + IVec3::new(x, y, z)))
+                })
+                .filter(|voxel| {
+                    (9.0..144.0)
+                        .contains(&(voxel.as_vec3() + 0.5).distance_squared(player.translation))
+                })
                 .filter(|voxel| exposed(*voxel))
                 .min_by_key(|voxel| {
                     (
@@ -706,7 +760,10 @@ pub(super) fn run_validation(
     let (memory, footprint) = run.memory.finish();
     if let Some(text) = footprint {
         // Category breakdown at the end of the workload (IOAccelerator is GPU).
-        let _ = std::fs::write(evidence.output.as_ref().unwrap().join("footprint.txt"), text);
+        let _ = std::fs::write(
+            evidence.output.as_ref().unwrap().join("footprint.txt"),
+            text,
+        );
     }
     let report = json!({
         "schema_version": 3, "status": "completed", "profile": profile.name(),
@@ -842,5 +899,4 @@ mod tests {
         assert!(!has_rgb_variation(&[100, 180, 240, 100, 180, 240]));
         assert!(has_rgb_variation(&[100, 180, 240, 100, 179, 240]));
     }
-
 }

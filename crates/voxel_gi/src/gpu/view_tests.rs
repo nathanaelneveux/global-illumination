@@ -16,9 +16,7 @@ struct ViewReceiver {
 }
 
 fn shader() -> String {
-    include_paths(include_str!(
-        "../../shaders/voxel_view_trace.wgsl"
-    ))
+    include_paths(include_str!("../../shaders/voxel_view_trace.wgsl"))
 }
 
 #[test]
@@ -239,12 +237,7 @@ fn compare(gpu: &GpuTracer, work: &TraceWork, first: u32, samples: u32) -> (usiz
             let energy = vector(&record[20..]) + vector(&record[24..]);
             assert!(energy.is_finite() && energy.min_element() >= 0.0);
             sum += energy;
-            assert!(
-                (vector(&record[28..]) - near.direct)
-                    .abs()
-                    .max_element()
-                    < 2e-5
-            );
+            assert!((vector(&record[28..]) - near.direct).abs().max_element() < 2e-5);
         }
         assert_eq!(
             count, near.samples,
@@ -272,8 +265,10 @@ fn view_paths_match_near_prefixes_across_sources_and_reach() {
         ("skylight", research::skylight_room()),
         ("cave", research::cave()),
     ] {
-        let emitters = Arc::new(EmissionDistribution::build(&fixture.scene,
-            &fixture.materials));
+        let emitters = Arc::new(EmissionDistribution::build(
+            &fixture.scene,
+            &fixture.materials,
+        ));
         let probes: Vec<_> = fixture
             .receivers
             .iter()
@@ -335,11 +330,7 @@ fn view_paths_preserve_dark_unknown_and_inactive_measurements() {
             .unwrap();
         let (_, unknown) = compare(&gpu, &work, 0, 17);
         assert_eq!(unknown > 0, gap);
-        assert!(
-            work.faces
-                .iter()
-                .all(|face| face.radiance == Vec3::ZERO)
-        );
+        assert!(work.faces.iter().all(|face| face.radiance == Vec3::ZERO));
         if !gap {
             assert!(work.faces.iter().all(|face| face.samples == 17));
         }
@@ -360,8 +351,10 @@ fn view_paths_preserve_dark_unknown_and_inactive_measurements() {
 #[ignore = "native near/view termination on the same frozen raw cache"]
 fn view_paths_match_near_at_the_surface_cache_boundary() {
     let fixture = research::furnace();
-    let emitters = Arc::new(EmissionDistribution::build(&fixture.scene,
-        &fixture.materials));
+    let emitters = Arc::new(EmissionDistribution::build(
+        &fixture.scene,
+        &fixture.materials,
+    ));
     let mut warm = super::tests::native_tracer();
     warm.enable_resident().unwrap();
     let all_faces = super::cache_tests::all_interior_faces(&fixture);
@@ -405,8 +398,10 @@ fn view_paths_match_near_at_the_surface_cache_boundary() {
 #[ignore = "native analytic far cache-miss bounce-tail qualification"]
 fn view_cache_misses_measure_the_missing_multibounce_tail() {
     let fixture = research::furnace();
-    let emitters = Arc::new(EmissionDistribution::build(&fixture.scene,
-        &fixture.materials));
+    let emitters = Arc::new(EmissionDistribution::build(
+        &fixture.scene,
+        &fixture.materials,
+    ));
     let mut gpu = GpuTracer::with_kernel(super::tests::native_tracer().context, false).unwrap();
     let material = fixture.materials.get(4);
     let reference = material.emission / (Vec3::ONE - material.diffuse);

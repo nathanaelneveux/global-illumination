@@ -10,9 +10,9 @@ use bevy_enhanced_input::prelude::*;
 use bevy_voxel_world::prelude::{VoxelWorld, VoxelWorldCamera, WorldVoxel};
 
 use crate::terrain::{PrototypeWorld, TerrainMaterial, terrain_view_distance};
-use voxel_gi_bvw::BvwVoxelEdits;
-use voxel_gi::VoxelGiInput;
 use crate::world_environment::sky_color;
+use voxel_gi::VoxelGiInput;
+use voxel_gi_bvw::BvwVoxelEdits;
 
 const FOG_START: f32 = 96.0;
 const PLAYER_RADIUS: f32 = 0.3;
@@ -150,7 +150,11 @@ fn show_crosshair_while_aiming(
     cursor: Single<&CursorOptions, With<PrimaryWindow>>,
     mut crosshair: Query<&mut Visibility, With<Crosshair>>,
 ) {
-    let wanted = if cursor.visible { Visibility::Hidden } else { Visibility::Inherited };
+    let wanted = if cursor.visible {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
     for mut visibility in &mut crosshair {
         visibility.set_if_neq(wanted);
     }
@@ -388,8 +392,8 @@ fn edit_voxels(
     if std::env::var_os("VOXEL_GI_VALIDATE").is_some() {
         return;
     }
-    let bombing = hud_bomb
-        || (!cursor_options.visible && bomb_events.contains(ActionEvents::START));
+    let bombing =
+        hud_bomb || (!cursor_options.visible && bomb_events.contains(ActionEvents::START));
     let breaking = !cursor_options.visible && break_events.contains(ActionEvents::START);
     let material = placement_material(
         cursor_options.visible,
@@ -514,7 +518,10 @@ mod tests {
             assert!(offset.length_squared() <= 25);
             assert!(targets.contains(&(center - offset)));
         }
-        assert_eq!(destruction_positions(center, 0).collect::<Vec<_>>(), [center]);
+        assert_eq!(
+            destruction_positions(center, 0).collect::<Vec<_>>(),
+            [center]
+        );
     }
 
     #[test]

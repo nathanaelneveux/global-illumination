@@ -11,7 +11,7 @@ use crate::scene_presets::ScenePreset;
 use crate::structures::{Bounds, StructureLayer, VoxelOp, showcase};
 use crate::terrain_meshing::build_chunk_mesh;
 use crate::terrain_noise::{BEDROCK_FLOOR_Y, MAX_SURFACE_Y, TerrainColumn, TerrainNoise};
-use voxel_gi::{MaterialTransport, VoxelGiInput, VoxelMaterialTransportTable, VoxelGiMaterialData};
+use voxel_gi::{MaterialTransport, VoxelGiInput, VoxelGiMaterialData, VoxelMaterialTransportTable};
 use voxel_gi_bvw::material_template;
 
 pub type MaterialIndex = u8;
@@ -103,7 +103,8 @@ pub fn terrain_view_distance() -> f32 {
 /// projects, LoD 0 is a small full-resolution band near the camera and the
 /// only one that spawns colliders (`chunk_colliders`); LoD 1 is still full
 /// resolution, so full detail reaches farther than physics.
-const LOD_BANDS: [(f32, LodLevel, u32); 4] = [(2.0, 0, 32), (8.0, 1, 32), (16.0, 2, 16), (32.0, 4, 8)];
+const LOD_BANDS: [(f32, LodLevel, u32); 4] =
+    [(2.0, 0, 32), (8.0, 1, 32), (16.0, 2, 16), (32.0, 4, 8)];
 const LOD_FARTHEST: (LodLevel, u32) = (8, 4);
 const LOD_HYSTERESIS_CHUNKS: f32 = 1.0;
 
@@ -154,7 +155,11 @@ impl Plugin for TerrainPlugin {
             }
         }
         if crate::gi_lab::gi_enabled() {
-            let texture = app.world().resource::<crate::assets::TemplateAssets>().voxel_texture.clone();
+            let texture = app
+                .world()
+                .resource::<crate::assets::TemplateAssets>()
+                .voxel_texture
+                .clone();
             let data = app.world().resource::<VoxelGiMaterialData>().clone();
             app.add_plugins(
                 VoxelWorldPlugin::with_config(PrototypeWorld::default())

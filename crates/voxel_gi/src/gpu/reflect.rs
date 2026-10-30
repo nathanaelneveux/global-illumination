@@ -12,9 +12,12 @@ pub(crate) struct Reflection {
 impl Reflection {
     pub fn new(source: &str) -> Self {
         let module = naga::front::wgsl::parse_str(source).expect("kernel source parses");
-        let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
-            .validate(&module)
-            .expect("kernel source validates");
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("kernel source validates");
         Self { module, info }
     }
 
@@ -66,7 +69,10 @@ impl Reflection {
             .1;
         match &ty.inner {
             naga::TypeInner::Struct { members, span } => (
-                members.iter().map(|m| (m.name.clone().unwrap_or_default(), m.offset)).collect(),
+                members
+                    .iter()
+                    .map(|m| (m.name.clone().unwrap_or_default(), m.offset))
+                    .collect(),
                 *span,
             ),
             other => panic!("{name} is {other:?}"),
@@ -80,13 +86,23 @@ impl Reflection {
 #[cfg(test)]
 pub(crate) fn assert_mirrors(bytes: &[u8], wgsl: (Vec<(String, u32)>, u32), fields: &[&str]) {
     let (members, span) = wgsl;
-    assert_eq!(members.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), fields, "member names and order");
+    assert_eq!(
+        members
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        fields,
+        "member names and order"
+    );
     assert_eq!(bytes.len(), span as usize, "struct size");
     for (index, (name, offset)) in members.iter().enumerate() {
         let at = *offset as usize;
         let word = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
         let marker = index as u32 + 1;
-        assert!(word == marker || f32::from_bits(word) == marker as f32, "{name} at {offset} reads {word:#x}");
+        assert!(
+            word == marker || f32::from_bits(word) == marker as f32,
+            "{name} at {offset} reads {word:#x}"
+        );
     }
 }
 
@@ -105,6 +121,10 @@ mod tests {
              @compute @workgroup_size(1) fn two() { helper(); }",
         );
         assert_eq!(reflection.bindings("one"), [vec![0], vec![], vec![]]);
-        assert_eq!(reflection.bindings("two"), [vec![3], vec![], vec![7]], "through a helper");
+        assert_eq!(
+            reflection.bindings("two"),
+            [vec![3], vec![], vec![7]],
+            "through a helper"
+        );
     }
 }

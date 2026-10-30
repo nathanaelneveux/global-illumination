@@ -1,13 +1,13 @@
 //! The lab's voxel GI wiring: launch settings, the debug overlay's
 //! configuration, scripted validation and the gameplay action buttons.
 use crate::player::{BombAtAim, PlaceEmissiveBlock};
-use voxel_gi_debug::VoxelGiDebugPlugin;
-use voxel_gi::VoxelGiSettings;
-#[cfg(debug_assertions)]
-use voxel_gi::VoxelGiSystems;
 use bevy::feathers::controls::FeathersButton;
 use bevy::prelude::*;
 use bevy::ui_widgets::Activate;
+use voxel_gi::VoxelGiSettings;
+#[cfg(debug_assertions)]
+use voxel_gi::VoxelGiSystems;
+use voxel_gi_debug::VoxelGiDebugPlugin;
 
 /// Add before `VoxelGiPlugin`: launch settings must be in place first.
 pub struct GiLabPlugin;
@@ -23,7 +23,8 @@ impl Plugin for GiLabPlugin {
         // overlay text; headless runs have no window for the UI.
         // VOXEL_GI_VALIDATE_DEBUG_UI=1 shows the overlay, panel open, in
         // validation captures (checks the UI itself, not lighting).
-        let debug_ui_capture = std::env::var("VOXEL_GI_VALIDATE_DEBUG_UI").is_ok_and(|value| value == "1");
+        let debug_ui_capture =
+            std::env::var("VOXEL_GI_VALIDATE_DEBUG_UI").is_ok_and(|value| value == "1");
         let ui = (!scripted() && !crate::headless_validation()) || debug_ui_capture;
         app.add_plugins(VoxelGiDebugPlugin {
             ui,
@@ -40,7 +41,10 @@ impl Plugin for GiLabPlugin {
             crate::validation::install_gpu_pacing(app);
             app.init_resource::<crate::validation::CaptureEvidence>()
                 .add_systems(PostStartup, crate::validation::setup_capture_target)
-                .add_systems(Update, crate::validation::run_validation.after(VoxelGiSystems));
+                .add_systems(
+                    Update,
+                    crate::validation::run_validation.after(VoxelGiSystems),
+                );
         }
     }
 }
@@ -131,18 +135,27 @@ mod tests {
     #[test]
     fn lab_configs_parse_and_keep_their_meaning() {
         let settings = VoxelGiSettings::default();
-        assert_eq!(config(include_str!("../config/gi-display-spatial.ron")), settings);
+        assert_eq!(
+            config(include_str!("../config/gi-display-spatial.ron")),
+            settings
+        );
         let control = config(include_str!("../config/gi-display-unfiltered.ron"));
         assert_eq!(control.spatial_reconstruction, 0.0);
         assert_eq!(control.transport, settings.transport);
         let cacheless = config(include_str!("../config/gi-cacheless.ron"));
         assert_eq!(cacheless.cache_radius, 0.0);
         assert_eq!(cacheless.transport, settings.transport);
-        assert_eq!(config(include_str!("../config/gi-cache-32.ron")).cache_radius, 32.0);
+        assert_eq!(
+            config(include_str!("../config/gi-cache-32.ron")).cache_radius,
+            32.0
+        );
         let near_only = config(include_str!("../config/gi-far-tier-off.ron"));
         assert_eq!(near_only.far_tier.voxel_pixels, 0.0);
         assert_eq!(near_only.transport, settings.transport);
-        for text in [include_str!("../config/gi-low.ron"), include_str!("../config/gi-high.ron")] {
+        for text in [
+            include_str!("../config/gi-low.ron"),
+            include_str!("../config/gi-high.ron"),
+        ] {
             assert!(config(text).matching_quality().is_some());
         }
     }

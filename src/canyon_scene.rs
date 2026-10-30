@@ -1,8 +1,8 @@
 //! Deterministic, opt-in long-range daylight fixture. The host renderer and
 //! offline transport studies share this exact geometry and optical palette.
-use voxel_gi::{MaterialTransport, VoxelMaterialTransportTable};
 use bevy::prelude::*;
 use bevy_voxel_world::prelude::WorldVoxel;
+use voxel_gi::{MaterialTransport, VoxelMaterialTransportTable};
 
 pub const SIZE: IVec3 = IVec3::new(256, 256, 512);
 pub const SPAWN: Vec3 = Vec3::new(128.0, 20.0, 80.0);

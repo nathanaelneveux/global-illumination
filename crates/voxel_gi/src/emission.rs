@@ -52,7 +52,6 @@ impl EmissionCache {
             distribution,
         }
     }
-
 }
 
 /// The sampling distribution depends on emitter materials and their six face
@@ -99,9 +98,7 @@ impl EmissionDistribution {
             }
         }
         if emitting == [0; 4] {
-            return Self {
-                ..Self::default()
-            };
+            return Self { ..Self::default() };
         }
         let mut faces = Vec::new();
         let mut total = 0.0_f64;
@@ -145,9 +142,7 @@ impl EmissionDistribution {
             }
         }
         if total == 0.0 {
-            return Self {
-                ..Self::default()
-            };
+            return Self { ..Self::default() };
         }
         let total_weight = total as f32;
         for face in &mut faces {
@@ -202,8 +197,7 @@ impl EmissionDistribution {
         materials: &VoxelMaterialTransportTable,
     ) -> f32 {
         if self.tree.is_empty() {
-            return materials.get(material).emission.max_element()
-                / self.total_weight.max(1e-20);
+            return materials.get(material).emission.max_element() / self.total_weight.max(1e-20);
         }
         tree::probability(&self.tree, &self.faces, position, normal, voxel, face)
     }
@@ -226,7 +220,7 @@ mod tests {
     use super::*;
     use crate::naadf::{linear_index, volume_len};
     use crate::world::PAGE_SIZE;
-    use crate::{Vec3, MaterialTransport};
+    use crate::{MaterialTransport, Vec3};
 
     #[test]
     fn distribution_reuses_unrelated_residency_but_tracks_emitter_changes() {

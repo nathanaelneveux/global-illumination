@@ -3,8 +3,7 @@
 use super::color::FiniteColor;
 use super::{
     ReceiverField, VoxelGiRuntime, VoxelGiStats, VoxelMaterialTransportTable,
-    advance_transport_revision, telemetry::GiWorkTimings,
-    update_stats_from_counters,
+    advance_transport_revision, telemetry::GiWorkTimings, update_stats_from_counters,
 };
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
@@ -199,7 +198,11 @@ fn gradual_sun(next: &[DirectionalTransportLight], previous: &[DirectionalTransp
             a.direction.normalize().dot(b.direction.normalize()) >= limit
                 && small(a.radiance, b.radiance)
                 && (a.custom_visible - b.custom_visible).abs().max_element()
-                    <= 0.1 * a.custom_visible.max(b.custom_visible).max_element().max(0.5)
+                    <= 0.1
+                        * a.custom_visible
+                            .max(b.custom_visible)
+                            .max_element()
+                            .max(0.5)
         })
 }
 
@@ -434,7 +437,9 @@ mod tests {
             app.world().resource::<VoxelGiRuntime>().sources.points[0].position,
             Vec3::X
         );
-        app.world_mut().entity_mut(entity).remove::<VoxelGiEmitter>();
+        app.world_mut()
+            .entity_mut(entity)
+            .remove::<VoxelGiEmitter>();
         app.update();
         assert!(
             app.world()
@@ -526,7 +531,9 @@ mod tests {
         assert!(contributes(Vec3::ZERO, Vec3::ONE));
 
         for entity in [point, sun, emitter] {
-            app.world_mut().entity_mut(entity).remove::<VoxelGiEmitter>();
+            app.world_mut()
+                .entity_mut(entity)
+                .remove::<VoxelGiEmitter>();
         }
         app.update();
         let runtime = app.world().resource::<VoxelGiRuntime>();
@@ -621,7 +628,10 @@ mod tests {
         }
         let mut with_point = sun(0.3, 2.0);
         with_point.points.push(point(0.0, 1.0));
-        assert!(matches!(with_point.change_from(&base), SourceChange::Local(_)));
+        assert!(matches!(
+            with_point.change_from(&base),
+            SourceChange::Local(_)
+        ));
     }
 
     #[test]
@@ -640,9 +650,15 @@ mod tests {
         assert_eq!(source_limit(&events, IVec3::ZERO), 4);
         assert_eq!(source_limit(&events, IVec3::Y * 200), 64);
         invalidate_source_change(&mut runtime, &mut field, &mut stats, SourceChange::Global);
-        assert_eq!(source_limit(&runtime.spatial_history.take_events(), IVec3::Y * 200), 4);
+        assert_eq!(
+            source_limit(&runtime.spatial_history.take_events(), IVec3::Y * 200),
+            4
+        );
         invalidate_model(&mut runtime, &mut field, &mut stats);
-        assert_eq!(source_limit(&runtime.spatial_history.take_events(), IVec3::Y * 200), 0);
+        assert_eq!(
+            source_limit(&runtime.spatial_history.take_events(), IVec3::Y * 200),
+            0
+        );
         assert_eq!(runtime.source_revision, 3);
     }
 

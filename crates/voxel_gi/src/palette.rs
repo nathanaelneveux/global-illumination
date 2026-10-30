@@ -58,7 +58,11 @@ pub struct MaterialPalette<K> {
 
 impl<K: Hash + Eq> Default for MaterialPalette<K> {
     fn default() -> Self {
-        Self { ids: HashMap::default(), optics: Vec::new(), table: VoxelMaterialTransportTable::default() }
+        Self {
+            ids: HashMap::default(),
+            optics: Vec::new(),
+            table: VoxelMaterialTransportTable::default(),
+        }
     }
 }
 
@@ -79,18 +83,20 @@ impl<K: Hash + Eq> MaterialPalette<K> {
     /// The transport material for these optics without a key (a fallback
     /// for unregistered blocks, say): shared with keys of identical optics.
     pub fn optics_id(&mut self, optics: MaterialTransport) -> Result<u16, PaletteFull> {
-        Ok(match self.optics.iter().position(|known| *known == optics) {
-            Some(index) => index as u16,
-            None => {
-                if self.optics.len() == 256 {
-                    return Err(PaletteFull);
+        Ok(
+            match self.optics.iter().position(|known| *known == optics) {
+                Some(index) => index as u16,
+                None => {
+                    if self.optics.len() == 256 {
+                        return Err(PaletteFull);
+                    }
+                    self.optics.push(optics);
+                    let id = self.optics.len() as u16 - 1;
+                    self.table.set(id as u8, optics);
+                    id
                 }
-                self.optics.push(optics);
-                let id = self.optics.len() as u16 - 1;
-                self.table.set(id as u8, optics);
-                id
-            }
-        })
+            },
+        )
     }
 
     /// A key whose voxels neither block GI light nor receive it (glass,
@@ -131,26 +137,51 @@ mod tests {
     fn distinct_optics_get_ids_until_the_table_is_full() {
         let mut palette = MaterialPalette::new();
         for i in 0..256u32 {
-            let optics = MaterialTransport { diffuse: Vec3::splat(i as f32 / 256.0), emission: Vec3::ZERO };
+            let optics = MaterialTransport {
+                diffuse: Vec3::splat(i as f32 / 256.0),
+                emission: Vec3::ZERO,
+            };
             assert_eq!(palette.insert(i, optics), Ok(i as u16));
             assert_eq!(palette.table().get(i as u8).diffuse, optics.diffuse);
         }
-        let more = MaterialTransport { diffuse: Vec3::ONE, emission: Vec3::ONE };
+        let more = MaterialTransport {
+            diffuse: Vec3::ONE,
+            emission: Vec3::ONE,
+        };
         assert_eq!(palette.insert(999, more), Err(PaletteFull));
-        assert_eq!(palette.insert(1000, MaterialTransport { diffuse: Vec3::splat(3.0 / 256.0), emission: Vec3::ZERO }), Ok(3),
-            "known optics still map when full");
+        assert_eq!(
+            palette.insert(
+                1000,
+                MaterialTransport {
+                    diffuse: Vec3::splat(3.0 / 256.0),
+                    emission: Vec3::ZERO
+                }
+            ),
+            Ok(3),
+            "known optics still map when full"
+        );
         assert_eq!(palette.len(), 256);
     }
 
     #[test]
     fn keyless_optics_share_ids_with_keys() {
         let mut palette = MaterialPalette::new();
-        let stone = MaterialTransport { diffuse: Vec3::splat(0.5), emission: Vec3::ZERO };
+        let stone = MaterialTransport {
+            diffuse: Vec3::splat(0.5),
+            emission: Vec3::ZERO,
+        };
         let fallback = palette.optics_id(MaterialTransport::default()).unwrap();
         assert_eq!(palette.insert("stone", stone), Ok(fallback + 1));
         assert_eq!(palette.optics_id(stone), Ok(fallback + 1));
-        assert_eq!(palette.insert("unknown", MaterialTransport::default()), Ok(fallback));
-        assert_eq!(palette.get(&"never"), None, "keyless optics register no key");
+        assert_eq!(
+            palette.insert("unknown", MaterialTransport::default()),
+            Ok(fallback)
+        );
+        assert_eq!(
+            palette.get(&"never"),
+            None,
+            "keyless optics register no key"
+        );
         assert_eq!(palette.len(), 2);
     }
 }

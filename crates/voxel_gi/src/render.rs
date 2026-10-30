@@ -1,12 +1,12 @@
 //! What GI-lit materials bind: shared geometry, the visible-face output and
 //! the presentation uniform, published as `VoxelGiMaterialData`.
 use bevy::prelude::*;
+use bevy::render::RenderSystems;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_asset::{RenderAssets, prepare_assets};
 use bevy::render::render_resource::{Buffer, ShaderType};
 use bevy::render::storage::{GpuShaderBuffer, ShaderBuffer};
 use bevy::render::{Render, RenderApp};
-use bevy::render::RenderSystems;
 
 #[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
 pub struct GpuTraversalParams {
@@ -75,10 +75,18 @@ impl GiDebugView {
     }
 
     pub fn from_index(index: u32) -> Self {
-        [Self::None, Self::Irradiance, Self::Coverage, Self::Indirect, Self::Sun, Self::ExactCornerSun, Self::FaceValidity]
-            .get(index as usize)
-            .copied()
-            .unwrap_or_default()
+        [
+            Self::None,
+            Self::Irradiance,
+            Self::Coverage,
+            Self::Indirect,
+            Self::Sun,
+            Self::ExactCornerSun,
+            Self::FaceValidity,
+        ]
+        .get(index as usize)
+        .copied()
+        .unwrap_or_default()
     }
 }
 
@@ -111,7 +119,6 @@ impl Default for GpuTransportSettings {
         }
     }
 }
-
 
 /// Everything a GI-lit material binds, kept current by voxel GI: the shared
 /// transport geometry (directory, regions, cells), its traversal parameters,
@@ -255,11 +262,22 @@ pub fn install_render_assets(app: &mut App) {
     let far = app
         .world_mut()
         .resource_mut::<Assets<ShaderBuffer>>()
-        .add(ShaderBuffer::from(vec![UVec4::ZERO; super::gpu::view::EMPTY_OUTPUT_BYTES as usize / 16]));
-    let far_pixels = app
-        .world_mut()
-        .resource_mut::<Assets<ShaderBuffer>>()
-        .add(ShaderBuffer::from(vec![UVec4::ZERO; super::gpu::view::PIXEL_HEADER_BYTES as usize / 16 + 1]));
+        .add(ShaderBuffer::from(vec![
+            UVec4::ZERO;
+            super::gpu::view::EMPTY_OUTPUT_BYTES
+                as usize
+                / 16
+        ]));
+    let far_pixels =
+        app.world_mut()
+            .resource_mut::<Assets<ShaderBuffer>>()
+            .add(ShaderBuffer::from(vec![
+                UVec4::ZERO;
+                super::gpu::view::PIXEL_HEADER_BYTES
+                    as usize
+                    / 16
+                    + 1
+            ]));
     app.insert_resource(VoxelGiMaterialData {
         directory: geometry.clone(),
         regions: geometry.clone(),
@@ -314,9 +332,15 @@ impl bevy::pbr::MaterialExtension for VoxelGiStandardShader {
 }
 
 /// A `VoxelGiStandardMaterial` over `base`.
-pub fn standard_material(base: StandardMaterial, data: &VoxelGiMaterialData) -> VoxelGiStandardMaterial {
+pub fn standard_material(
+    base: StandardMaterial,
+    data: &VoxelGiMaterialData,
+) -> VoxelGiStandardMaterial {
     bevy::pbr::ExtendedMaterial {
-        base: bevy::pbr::ExtendedMaterial { base, extension: VoxelGiBindings::from(data) },
+        base: bevy::pbr::ExtendedMaterial {
+            base,
+            extension: VoxelGiBindings::from(data),
+        },
         extension: VoxelGiStandardShader {},
     }
 }
@@ -328,7 +352,9 @@ impl Plugin for VoxelGiStandardMaterialPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             MaterialPlugin::<VoxelGiStandardMaterial>::default(),
-            VoxelGiMaterialPlugin::<VoxelGiStandardMaterial>::new(|material| &mut material.base.extension),
+            VoxelGiMaterialPlugin::<VoxelGiStandardMaterial>::new(|material| {
+                &mut material.base.extension
+            }),
         ));
     }
 }
@@ -439,7 +465,6 @@ fn sync_bindings<M: Material>(
 #[path = "render/coverage_tests.rs"]
 mod coverage_tests;
 
-
 #[cfg(test)]
 mod standard_tests {
     use super::*;
@@ -458,9 +483,16 @@ mod standard_tests {
                 .disable::<bevy::log::LogPlugin>()
                 .disable::<bevy::audio::AudioPlugin>()
                 .disable::<bevy::gilrs::GilrsPlugin>()
-                .set(WindowPlugin { primary_window: None, ..default() })
+                .set(WindowPlugin {
+                    primary_window: None,
+                    ..default()
+                })
                 .set(RenderPlugin {
-                    render_creation: WgpuSettings { backends: None, ..default() }.into(),
+                    render_creation: WgpuSettings {
+                        backends: None,
+                        ..default()
+                    }
+                    .into(),
                     ..default()
                 }),
         );
@@ -472,19 +504,38 @@ mod standard_tests {
                 PRESENTATION_SHADER.id(),
                 Shader::from_wgsl(presentation_shader_source(), "voxel_gi/presentation.wgsl"),
             );
-            let _ = shaders.insert(STANDARD_SHADER.id(), Shader::from_wgsl(STANDARD_SHADER_SOURCE, "voxel_gi/standard.wgsl"));
+            let _ = shaders.insert(
+                STANDARD_SHADER.id(),
+                Shader::from_wgsl(STANDARD_SHADER_SOURCE, "voxel_gi/standard.wgsl"),
+            );
         }
-        let mut cache = ShaderCache::new((), wgpu::Features::empty(), wgpu::DownlevelFlags::all(), |_, source, _| {
-            let ShaderCacheSource::Naga(module) = source else { panic!("expected Naga module") };
-            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        let mut cache = ShaderCache::new(
+            (),
+            wgpu::Features::empty(),
+            wgpu::DownlevelFlags::all(),
+            |_, source, _| {
+                let ShaderCacheSource::Naga(module) = source else {
+                    panic!("expected Naga module")
+                };
+                naga::valid::Validator::new(
+                    naga::valid::ValidationFlags::all(),
+                    naga::valid::Capabilities::all(),
+                )
                 .validate(&module)
                 .unwrap();
-            Ok(module)
-        });
-        let mut defs: Vec<ShaderDefVal> = ["VERTEX_POSITIONS", "VERTEX_NORMALS", "VERTEX_UVS", "VERTEX_UVS_A", "VERTEX_OUTPUT_INSTANCE_INDEX"]
-            .into_iter()
-            .map(Into::into)
-            .collect();
+                Ok(module)
+            },
+        );
+        let mut defs: Vec<ShaderDefVal> = [
+            "VERTEX_POSITIONS",
+            "VERTEX_NORMALS",
+            "VERTEX_UVS",
+            "VERTEX_UVS_A",
+            "VERTEX_OUTPUT_INSTANCE_INDEX",
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect();
         defs.extend([
             ShaderDefVal::UInt("MATERIAL_BIND_GROUP".into(), 3),
             ShaderDefVal::UInt("MAX_DIRECTIONAL_LIGHTS".into(), 10),
@@ -499,11 +550,19 @@ mod standard_tests {
             }
             match cache.get(0, STANDARD_SHADER.id(), &defs) {
                 Ok(module) => {
-                    assert!(module.entry_points.iter().any(|entry| entry.name == "fragment"));
+                    assert!(
+                        module
+                            .entry_points
+                            .iter()
+                            .any(|entry| entry.name == "fragment")
+                    );
                     break;
                 }
                 Err(bevy::shader::ShaderCacheError::ShaderImportNotYetAvailable)
-                    if std::time::Instant::now() < deadline => std::thread::yield_now(),
+                    if std::time::Instant::now() < deadline =>
+                {
+                    std::thread::yield_now()
+                }
                 Err(bevy::shader::ShaderCacheError::ProcessShaderError(error)) => {
                     panic!("{}", error.emit_to_string(&cache.composer))
                 }

@@ -26,14 +26,19 @@ pub(super) fn update_receiver_residency(
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
 ) {
     let Some(radius) = settings.cache_radius() else {
-        let left = runtime.receiver_pages.take().unwrap_or_else(|| runtime.loaded_pages.clone());
+        let left = runtime
+            .receiver_pages
+            .take()
+            .unwrap_or_else(|| runtime.loaded_pages.clone());
         runtime.receiver_pages = Some(HashSet::new());
         mark_receivers(&mut runtime, Vec::new(), left.into_iter().collect());
         return;
     };
-    let foci: Vec<Vec3> = cameras.iter()
+    let foci: Vec<Vec3> = cameras
+        .iter()
         .filter(|(camera, _)| camera.is_active)
-        .map(|(_, transform)| transform.translation()).collect();
+        .map(|(_, transform)| transform.translation())
+        .collect();
     if foci.is_empty() {
         return;
     }
@@ -120,7 +125,10 @@ impl Interest {
     const RECOMPUTE_FRAMES: u32 = 30;
 
     fn load(&mut self, page: IVec3) {
-        self.pages = Some(self.pages.map_or((page, page), |(min, max)| (min.min(page), max.max(page))));
+        self.pages = Some(
+            self.pages
+                .map_or((page, page), |(min, max)| (min.min(page), max.max(page))),
+        );
     }
 
     /// The interest in 16-voxel regions (inclusive), refreshed if due.
@@ -135,7 +143,8 @@ impl Interest {
             self.frames = 0;
         }
         let per_page = (PAGE_EDGE / 16) as i32;
-        self.pages.map(|(min, max)| (min * per_page, max * per_page + IVec3::splat(per_page - 1)))
+        self.pages
+            .map(|(min, max)| (min * per_page, max * per_page + IVec3::splat(per_page - 1)))
     }
 }
 
@@ -237,9 +246,16 @@ pub(super) fn start_scene_task(
         let focus = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
             page_of(camera.translation().floor().as_ivec3())
         });
-        let edited: HashSet<IVec3> = runtime.dirty_voxels.iter().map(|voxel| page_of(*voxel)).collect();
+        let edited: HashSet<IVec3> = runtime
+            .dirty_voxels
+            .iter()
+            .map(|voxel| page_of(*voxel))
+            .collect();
         dirty_pages.sort_unstable_by_key(|page| {
-            (!edited.contains(page), (page.as_i64vec3() - focus.as_i64vec3()).length_squared())
+            (
+                !edited.contains(page),
+                (page.as_i64vec3() - focus.as_i64vec3()).length_squared(),
+            )
         });
         let deferred = dirty_pages.split_off(MAX_SCENE_PAGES);
         runtime.dirty_pages.extend(deferred);
@@ -366,20 +382,36 @@ pub(super) fn apply_page_edits(materials: &mut [u16], origin: IVec3, edits: &Has
 /// (`block_receiver`, `receiver_exists`). Otherwise the page is traced and
 /// keyed at full resolution: removing one voxel from a stride-8 floor
 /// exposes a face inside its block that the block face cannot stand for.
-fn edited_stride(materials: &[u16], origin: IVec3, edits: &HashMap<IVec3, u16>, stride_log2: u8) -> u8 {
+fn edited_stride(
+    materials: &[u16],
+    origin: IVec3,
+    edits: &HashMap<IVec3, u16>,
+    stride_log2: u8,
+) -> u8 {
     if stride_log2 == 0 {
         return 0;
     }
     let size = 1u32 << stride_log2;
     // Each touched block once: an explosion edits many voxels of a block.
-    let blocks: HashSet<UVec3> = edits.keys().map(|position| (position - origin).as_uvec3() / size * size).collect();
+    let blocks: HashSet<UVec3> = edits
+        .keys()
+        .map(|position| (position - origin).as_uvec3() / size * size)
+        .collect();
     let uniform = |block: &UVec3| {
         let first = materials[naadf::linear_index(*block, PAGE_SIZE)];
-        (0..size).all(|z| (0..size).all(|y| (0..size).all(|x| {
-            materials[naadf::linear_index(block + UVec3::new(x, y, z), PAGE_SIZE)] == first
-        })))
+        (0..size).all(|z| {
+            (0..size).all(|y| {
+                (0..size).all(|x| {
+                    materials[naadf::linear_index(block + UVec3::new(x, y, z), PAGE_SIZE)] == first
+                })
+            })
+        })
     };
-    if blocks.iter().all(uniform) { stride_log2 } else { 0 }
+    if blocks.iter().all(uniform) {
+        stride_log2
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -393,7 +425,11 @@ mod tests {
     fn app(tracked: bool) -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_resource(if tracked { VoxelGiInput::tracked() } else { VoxelGiInput::default() })
+            .insert_resource(if tracked {
+                VoxelGiInput::tracked()
+            } else {
+                VoxelGiInput::default()
+            })
             .init_resource::<VoxelGiRuntime>()
             .init_resource::<GiWorkTimings>()
             .add_systems(Update, ingest_input);
@@ -406,7 +442,10 @@ mod tests {
         let mut app = app(true);
         let position = IVec3::new(-1, 31, 32);
         let page = page_of(position);
-        app.world_mut().resource_mut::<VoxelGiRuntime>().loaded_pages.insert(page);
+        app.world_mut()
+            .resource_mut::<VoxelGiRuntime>()
+            .loaded_pages
+            .insert(page);
         {
             let mut input = app.world_mut().resource_mut::<VoxelGiInput>();
             input.edit_voxel(position, Some(1));
@@ -414,11 +453,18 @@ mod tests {
             input.edit_voxel(position, Some(2));
         }
         app.update();
-        app.world_mut().resource_mut::<VoxelGiInput>().page_changed(page);
+        app.world_mut()
+            .resource_mut::<VoxelGiInput>()
+            .page_changed(page);
         app.update();
         let snapshot = app.world().resource::<VoxelGiRuntime>().page_edits.0[&page].clone();
         assert_eq!(snapshot[&position], 2);
-        assert!(!app.world().resource::<VoxelGiRuntime>().full_resample_pages.contains(&page));
+        assert!(
+            !app.world()
+                .resource::<VoxelGiRuntime>()
+                .full_resample_pages
+                .contains(&page)
+        );
         {
             let mut input = app.world_mut().resource_mut::<VoxelGiInput>();
             input.edit_voxel(position, None);
@@ -426,13 +472,18 @@ mod tests {
         }
         app.update();
         assert_eq!(snapshot[&position], 2, "worker view must not change");
-        app.world_mut().resource_mut::<VoxelGiInput>().page_loaded(page);
+        app.world_mut()
+            .resource_mut::<VoxelGiInput>()
+            .page_loaded(page);
         app.update();
         let runtime = app.world().resource::<VoxelGiRuntime>();
         assert!(runtime.dirty_pages.contains(&page));
         let mut data = dense_page(page, |_| Some(1)).into_dense();
         apply_page_edits(&mut data, page * 32, &runtime.page_edits.0[&page]);
-        assert_eq!(data[naadf::linear_index((position - page * 32).as_uvec3(), PAGE_SIZE)], AIR);
+        assert_eq!(
+            data[naadf::linear_index((position - page * 32).as_uvec3(), PAGE_SIZE)],
+            AIR
+        );
         assert_eq!(data.iter().filter(|&&m| m == AIR).count(), 1);
     }
 
@@ -440,20 +491,35 @@ mod tests {
     fn interest_widens_on_load_and_shrinks_only_when_recomputed() {
         let mut interest = Interest::default();
         let mut loaded = HashSet::new();
-        assert_eq!(interest.regions(&loaded), None, "no declared pages: no bounds");
+        assert_eq!(
+            interest.regions(&loaded),
+            None,
+            "no declared pages: no bounds"
+        );
         for page in [IVec3::new(-1, 0, 2), IVec3::new(3, 1, 2)] {
             loaded.insert(page);
             interest.load(page);
         }
         let both = Some((IVec3::new(-2, 0, 4), IVec3::new(7, 3, 5)));
-        assert_eq!(interest.regions(&loaded), both, "two 16-voxel regions per page edge");
+        assert_eq!(
+            interest.regions(&loaded),
+            both,
+            "two 16-voxel regions per page edge"
+        );
         loaded.remove(&IVec3::new(3, 1, 2));
         interest.stale = true;
-        assert_eq!(interest.regions(&loaded), both, "a stale box is kept until due");
+        assert_eq!(
+            interest.regions(&loaded),
+            both,
+            "a stale box is kept until due"
+        );
         for _ in 0..Interest::RECOMPUTE_FRAMES {
             interest.regions(&loaded);
         }
-        assert_eq!(interest.regions(&loaded), Some((IVec3::new(-2, 0, 4), IVec3::new(-1, 1, 5))));
+        assert_eq!(
+            interest.regions(&loaded),
+            Some((IVec3::new(-2, 0, 4), IVec3::new(-1, 1, 5)))
+        );
     }
 
     #[test]
@@ -473,9 +539,19 @@ mod tests {
             apply_page_edits(&mut materials, IVec3::ZERO, &edits);
             edited_stride(&materials, IVec3::ZERO, &edits, 3)
         };
-        assert_eq!(edited(&[(IVec3::new(4, 7, 4), AIR)]), 0, "a hole exposes a face inside the block");
-        assert_eq!(edited(&[(IVec3::new(4, 7, 4), 3)]), 3, "rewriting the same material keeps blocks uniform");
-        let whole: Vec<_> = (0..8).flat_map(|z| (0..8).flat_map(move |y| (0..8).map(move |x| (IVec3::new(x, y, z), AIR)))).collect();
+        assert_eq!(
+            edited(&[(IVec3::new(4, 7, 4), AIR)]),
+            0,
+            "a hole exposes a face inside the block"
+        );
+        assert_eq!(
+            edited(&[(IVec3::new(4, 7, 4), 3)]),
+            3,
+            "rewriting the same material keeps blocks uniform"
+        );
+        let whole: Vec<_> = (0..8)
+            .flat_map(|z| (0..8).flat_map(move |y| (0..8).map(move |x| (IVec3::new(x, y, z), AIR))))
+            .collect();
         assert_eq!(edited(&whole), 3, "removing a whole block keeps the stride");
         assert_eq!(edited_stride(&page, IVec3::ZERO, &HashMap::new(), 0), 0);
     }

@@ -44,14 +44,18 @@ pub(super) fn turn_burst() -> bool {
     *TURN.get_or_init(|| std::env::var_os("VOXEL_GI_VALIDATE_TURN_BURST").is_some())
 }
 
-static TURN_CAPTURES: std::sync::LazyLock<Vec<(f32, &'static str)>> = std::sync::LazyLock::new(|| {
-    let mut captures = vec![(14.5, "before-turn")];
-    for frame in 0..24 {
-        captures.push((15.0, &*Box::leak(format!("turn-{frame:02}").into_boxed_str())));
-    }
-    captures.extend([(16.0, "turn-1s"), (18.0, "turn-3s")]);
-    captures
-});
+static TURN_CAPTURES: std::sync::LazyLock<Vec<(f32, &'static str)>> =
+    std::sync::LazyLock::new(|| {
+        let mut captures = vec![(14.5, "before-turn")];
+        for frame in 0..24 {
+            captures.push((
+                15.0,
+                &*Box::leak(format!("turn-{frame:02}").into_boxed_str()),
+            ));
+        }
+        captures.extend([(16.0, "turn-1s"), (18.0, "turn-3s")]);
+        captures
+    });
 
 /// `edits` places an emitter instead of rock at 19 s and captures 16
 /// consecutive frames from the edit (VOXEL_GI_VALIDATE_PLACE_EMITTER=1).
@@ -60,25 +64,33 @@ pub(super) fn place_emitter() -> bool {
     *PLACE.get_or_init(|| std::env::var_os("VOXEL_GI_VALIDATE_PLACE_EMITTER").is_some())
 }
 
-static PLACE_EMITTER_CAPTURES: std::sync::LazyLock<Vec<(f32, &'static str)>> = std::sync::LazyLock::new(|| {
-    let mut captures = vec![(14.5, "room-settled")];
-    for frame in 0..16 {
-        captures.push((19.0, &*Box::leak(format!("emitter-place-{frame:02}").into_boxed_str())));
-    }
-    captures.push((21.0, "emitter-placed-later"));
-    captures
-});
+static PLACE_EMITTER_CAPTURES: std::sync::LazyLock<Vec<(f32, &'static str)>> =
+    std::sync::LazyLock::new(|| {
+        let mut captures = vec![(14.5, "room-settled")];
+        for frame in 0..16 {
+            captures.push((
+                19.0,
+                &*Box::leak(format!("emitter-place-{frame:02}").into_boxed_str()),
+            ));
+        }
+        captures.push((21.0, "emitter-placed-later"));
+        captures
+    });
 
 /// Two bursts of consecutive frames while walking (one capture per frame).
-static WALK_CAPTURES: std::sync::LazyLock<Vec<(f32, &'static str)>> = std::sync::LazyLock::new(|| {
-    let mut captures = vec![(14.4, "before")];
-    for (at, burst) in [(20.0, "a"), (26.0, "b")] {
-        for frame in 0..16 {
-            captures.push((at, &*Box::leak(format!("walk-{burst}-{frame:02}").into_boxed_str())));
+static WALK_CAPTURES: std::sync::LazyLock<Vec<(f32, &'static str)>> =
+    std::sync::LazyLock::new(|| {
+        let mut captures = vec![(14.4, "before")];
+        for (at, burst) in [(20.0, "a"), (26.0, "b")] {
+            for frame in 0..16 {
+                captures.push((
+                    at,
+                    &*Box::leak(format!("walk-{burst}-{frame:02}").into_boxed_str()),
+                ));
+            }
         }
-    }
-    captures
-});
+        captures
+    });
 
 impl Profile {
     pub fn parse(value: &str) -> Result<Self, String> {
@@ -165,14 +177,28 @@ impl Profile {
 
     pub fn captures(self) -> &'static [(f32, &'static str)] {
         if self == Self::Tunnel {
-            return &[(14.5, "entrance"),
-                (15.05, "depth01-0050ms"), (15.4, "depth01-0400ms"), (16.7, "depth01-1700ms"),
-                (17.05, "depth02-0050ms"), (17.4, "depth02-0400ms"), (18.7, "depth02-1700ms"),
-                (21.05, "depth04-0050ms"), (21.4, "depth04-0400ms"), (22.7, "depth04-1700ms"),
-                (29.05, "depth08-0050ms"), (29.4, "depth08-0400ms"), (30.7, "depth08-1700ms"),
-                (37.05, "depth12-0050ms"), (37.4, "depth12-0400ms"), (38.7, "depth12-1700ms"),
-                (53.05, "depth20-0050ms"), (53.4, "depth20-0400ms"), (54.7, "depth20-1700ms"),
-                (59.0, "tunnel-later")];
+            return &[
+                (14.5, "entrance"),
+                (15.05, "depth01-0050ms"),
+                (15.4, "depth01-0400ms"),
+                (16.7, "depth01-1700ms"),
+                (17.05, "depth02-0050ms"),
+                (17.4, "depth02-0400ms"),
+                (18.7, "depth02-1700ms"),
+                (21.05, "depth04-0050ms"),
+                (21.4, "depth04-0400ms"),
+                (22.7, "depth04-1700ms"),
+                (29.05, "depth08-0050ms"),
+                (29.4, "depth08-0400ms"),
+                (30.7, "depth08-1700ms"),
+                (37.05, "depth12-0050ms"),
+                (37.4, "depth12-0400ms"),
+                (38.7, "depth12-1700ms"),
+                (53.05, "depth20-0050ms"),
+                (53.4, "depth20-0400ms"),
+                (54.7, "depth20-1700ms"),
+                (59.0, "tunnel-later"),
+            ];
         }
         if self == Self::Streaming && turn_burst() {
             return &TURN_CAPTURES;
@@ -181,16 +207,33 @@ impl Profile {
             if motion_walk().is_some() {
                 return &WALK_CAPTURES;
             }
-            return &[(14.4, "before"), (16.4, "base-1"), (17.4, "turned-1"),
-                (18.4, "base-2"), (19.4, "turned-2"), (30.4, "returned")];
+            return &[
+                (14.4, "before"),
+                (16.4, "base-1"),
+                (17.4, "turned-1"),
+                (18.4, "base-2"),
+                (19.4, "turned-2"),
+                (30.4, "returned"),
+            ];
         }
-        if super::handoff::enabled(self) { return super::handoff::CAPTURES; }
+        if super::handoff::enabled(self) {
+            return super::handoff::CAPTURES;
+        }
         if matches!(self, Self::LiveCave | Self::LiveHallway) {
-            return &[(15., "live-15s"), (30., "live-30s"), (60., "live-60s"),
-                (120., "live-120s"), (180., "live-180s")];
+            return &[
+                (15., "live-15s"),
+                (30., "live-30s"),
+                (60., "live-60s"),
+                (120., "live-120s"),
+                (180., "live-180s"),
+            ];
         }
         if self == Self::Hallway {
-            return &[(15., "hallway-15s"), (30., "hallway-30s"), (60., "hallway-60s")];
+            return &[
+                (15., "hallway-15s"),
+                (30., "hallway-30s"),
+                (60., "hallway-60s"),
+            ];
         }
         if self == Self::DayCycle && super::day::turn() {
             return super::day::TURN_CAPTURES;
@@ -198,12 +241,28 @@ impl Profile {
         if self == Self::DayCycle {
             // Pairs one second apart: the sun moves a fraction of a degree,
             // so their difference is mostly flicker, not lighting change.
-            return &[(30., "day-030s"), (31., "day-031s"), (60., "day-060s"), (61., "day-061s"),
-                (90., "day-090s"), (91., "day-091s"), (120., "day-120s"), (121., "day-121s"),
-                (150., "day-150s"), (151., "day-151s"), (180., "day-180s"), (181., "day-181s")];
+            return &[
+                (30., "day-030s"),
+                (31., "day-031s"),
+                (60., "day-060s"),
+                (61., "day-061s"),
+                (90., "day-090s"),
+                (91., "day-091s"),
+                (120., "day-120s"),
+                (121., "day-121s"),
+                (150., "day-150s"),
+                (151., "day-151s"),
+                (180., "day-180s"),
+                (181., "day-181s"),
+            ];
         }
         if self == Self::Lod {
-            return &[(10.0, "lod-10s"), (20.0, "lod-20s"), (30.0, "lod-30s"), (39.0, "lod-39s")];
+            return &[
+                (10.0, "lod-10s"),
+                (20.0, "lod-20s"),
+                (30.0, "lod-30s"),
+                (39.0, "lod-39s"),
+            ];
         }
         if self == Self::Canyon {
             return &[
@@ -322,8 +381,16 @@ impl Profile {
     }
 
     pub fn phase(self, elapsed: f32) -> &'static str {
-        if self == Self::Motion { return if elapsed < 15.0 { "settling" } else { "small-turns" }; }
-        if self == Self::Lod { return if elapsed < 10.0 { "startup" } else { "flight" }; }
+        if self == Self::Motion {
+            return if elapsed < 15.0 {
+                "settling"
+            } else {
+                "small-turns"
+            };
+        }
+        if self == Self::Lod {
+            return if elapsed < 10.0 { "startup" } else { "flight" };
+        }
         if self == Self::Structures {
             if elapsed < 12.0 {
                 "approach"
@@ -332,7 +399,15 @@ impl Profile {
             } else {
                 "cave"
             }
-        } else if matches!(self, Self::Cave | Self::Canyon | Self::DayCycle | Self::Hallway | Self::LiveCave | Self::LiveHallway) {
+        } else if matches!(
+            self,
+            Self::Cave
+                | Self::Canyon
+                | Self::DayCycle
+                | Self::Hallway
+                | Self::LiveCave
+                | Self::LiveHallway
+        ) {
             if elapsed < 15.0 {
                 "startup"
             } else {
@@ -418,7 +493,10 @@ impl Profile {
 // irradiance, 2 coverage, 3 indirect, 4 direct sunlight, 5 exact corner sunlight.
 // Mode 6 reports missing support and invalid exposed-face identity separately.
 // Capture-only controls; ordinary gameplay/performance retains mode zero.
-pub(super) fn motion_diagnostic(coverage: bool, component: Option<&str>) -> Result<u32, &'static str> {
+pub(super) fn motion_diagnostic(
+    coverage: bool,
+    component: Option<&str>,
+) -> Result<u32, &'static str> {
     if coverage && component.is_some() {
         return Err("Choose VIEW_COVERAGE or LIGHT_COMPONENT, not both.");
     }
@@ -429,7 +507,9 @@ pub(super) fn motion_diagnostic(coverage: bool, component: Option<&str>) -> Resu
         Some("sun") => Ok(4),
         Some("sun-reference") => Ok(5),
         Some("face-validity") => Ok(6),
-        _ => Err("VOXEL_GI_VALIDATE_LIGHT_COMPONENT must be combined, indirect, sun, sun-reference or face-validity."),
+        _ => Err(
+            "VOXEL_GI_VALIDATE_LIGHT_COMPONENT must be combined, indirect, sun, sun-reference or face-validity.",
+        ),
     }
 }
 
@@ -439,7 +519,14 @@ mod tests {
 
     #[test]
     fn motion_diagnostics_are_explicit_and_exclusive() {
-        for (component, expected) in [(None, 0), (Some("combined"), 1), (Some("indirect"), 3), (Some("sun"), 4), (Some("sun-reference"), 5), (Some("face-validity"), 6)] {
+        for (component, expected) in [
+            (None, 0),
+            (Some("combined"), 1),
+            (Some("indirect"), 3),
+            (Some("sun"), 4),
+            (Some("sun-reference"), 5),
+            (Some("face-validity"), 6),
+        ] {
             assert_eq!(motion_diagnostic(false, component), Ok(expected));
         }
         assert_eq!(motion_diagnostic(true, None), Ok(2));
@@ -466,10 +553,7 @@ mod tests {
             for tick in 0..720 {
                 let mut settings = VoxelGiDisplay::default();
                 profile.configure(tick as f32 / 10.0, &mut settings);
-                assert_eq!(
-                    settings,
-                    VoxelGiDisplay::default()
-                );
+                assert_eq!(settings, VoxelGiDisplay::default());
             }
         }
         assert!(!Profile::Gameplay.sources());

@@ -41,9 +41,11 @@ pub(super) fn away() -> bool {
 }
 
 /// Eye and target facing the cave's -x/+z corner, the patch behind and right.
-pub(super) const AWAY_VIEW: (Vec3, Vec3) = (Vec3::new(30.0, 22.0, 50.0), Vec3::new(5.0, 14.0, 58.0));
+pub(super) const AWAY_VIEW: (Vec3, Vec3) =
+    (Vec3::new(30.0, 22.0, 50.0), Vec3::new(5.0, 14.0, 58.0));
 
-pub(super) const SUN_CAPTURES: &[(f32, &str)] = &[(14.5, "before"), (25.0, "sun-25s"), (40.0, "sun-40s")];
+pub(super) const SUN_CAPTURES: &[(f32, &str)] =
+    &[(14.5, "before"), (25.0, "sun-25s"), (40.0, "sun-40s")];
 
 pub(super) fn sun_angle(elapsed: f32) -> Option<f32> {
     sun().map(|(rate, offset)| offset + rate * (elapsed - OPEN_AT).max(0.0))
@@ -51,11 +53,13 @@ pub(super) fn sun_angle(elapsed: f32) -> Option<f32> {
 
 pub(super) fn mode() -> Option<&'static str> {
     static MODE: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| match std::env::var("VOXEL_GI_VALIDATE_CAVE_SKYLIGHT").as_deref() {
-        Ok("open") => Some("open"),
-        Ok("pre") => Some("pre"),
-        _ => None,
-    })
+    *MODE.get_or_init(
+        || match std::env::var("VOXEL_GI_VALIDATE_CAVE_SKYLIGHT").as_deref() {
+            Ok("open") => Some("open"),
+            Ok("pre") => Some("pre"),
+            _ => None,
+        },
+    )
 }
 
 pub(super) const CAPTURES: &[(f32, &str)] = &[
@@ -95,7 +99,11 @@ impl SkylightRun {
                 }
             }
         }
-        let fill = |world: &mut VoxelWorld<PrototypeWorld>, dirty: &mut VoxelGiInput, min: IVec3, max: IVec3, voxel| {
+        let fill = |world: &mut VoxelWorld<PrototypeWorld>,
+                    dirty: &mut VoxelGiInput,
+                    min: IVec3,
+                    max: IVec3,
+                    voxel| {
             for z in min.z..=max.z {
                 for x in min.x..=max.x {
                     for y in min.y..=max.y {
@@ -106,7 +114,11 @@ impl SkylightRun {
         };
         if !self.floor {
             // A moving sun slides the patch toward -x (to x ~33 at -25 deg).
-            let min = if sun().is_some() { IVec3::new(28, FLOOR_MIN.y, FLOOR_MIN.z) } else { FLOOR_MIN };
+            let min = if sun().is_some() {
+                IVec3::new(28, FLOOR_MIN.y, FLOOR_MIN.z)
+            } else {
+                FLOOR_MIN
+            };
             fill(world, dirty, min, FLOOR_MAX, WorldVoxel::Solid(2));
             self.floor = true;
         }

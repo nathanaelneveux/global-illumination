@@ -157,7 +157,7 @@ fn chunk_stride(shape: UVec3) -> Option<u32> {
         && samples > 0
         && samples.is_power_of_two()
         && CHUNK.is_multiple_of(samples))
-        .then_some(CHUNK / samples)
+    .then_some(CHUNK / samples)
 }
 
 /// A new source snapshot whenever GI input changed (chunk events, edits).
@@ -315,7 +315,10 @@ mod tests {
             let origin = key * 32;
             for stride in [1, 2, 4, 8, 16, 32] {
                 let stored = coarse_page(key, stride, |p| {
-                    ((p - origin).as_uvec3() / stride).element_sum().is_multiple_of(2).then_some(2)
+                    ((p - origin).as_uvec3() / stride)
+                        .element_sum()
+                        .is_multiple_of(2)
+                        .then_some(2)
                 });
                 let expected = stored.clone();
                 let sparse = stored.clone();

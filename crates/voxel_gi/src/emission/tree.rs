@@ -199,12 +199,8 @@ mod tests {
     fn light_selection_frequencies_match_reported_probabilities() {
         // Pearson goodness-of-fit with tiny expected bins pooled. Independent
         // uniforms isolate the light distribution from the production QMC map.
-        for fixture in [
-            crate::research::hallway(),
-            crate::research::cave(),
-        ] {
-            let distribution = EmissionDistribution::build(&fixture.scene,
-                &fixture.materials);
+        for fixture in [crate::research::hallway(), crate::research::cave()] {
+            let distribution = EmissionDistribution::build(&fixture.scene, &fixture.materials);
             for probe in fixture.receivers.iter().step_by(71).take(3) {
                 let face = probe.face_mask.trailing_zeros() as usize;
                 let normal = FACE_OFFSETS[face].as_vec3();

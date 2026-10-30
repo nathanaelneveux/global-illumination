@@ -43,8 +43,10 @@ pub(super) fn all_interior_faces(fixture: &crate::research::ResearchFixture) -> 
 fn cached_furnace_converges_to_infinite_bounce_series() {
     let fixture = crate::research::furnace();
     let material = fixture.materials.get(4);
-    let emitters = Arc::new(EmissionDistribution::build(&fixture.scene,
-        &fixture.materials));
+    let emitters = Arc::new(EmissionDistribution::build(
+        &fixture.scene,
+        &fixture.materials,
+    ));
     let mut gpu = tests::native_tracer();
     gpu.enable_resident().unwrap();
     let probes = all_interior_faces(&fixture);
@@ -75,7 +77,10 @@ fn cached_furnace_converges_to_infinite_bounce_series() {
                     *m += f64::from(v) / work.faces.len() as f64;
                 }
             }
-            eprintln!("CACHED_FURNACE batch={} mean={mean:?} expected={expected:?}", batch + 1);
+            eprintln!(
+                "CACHED_FURNACE batch={} mean={mean:?} expected={expected:?}",
+                batch + 1
+            );
             if batch >= 300 {
                 for (a, m) in averages.iter_mut().zip(&mean) {
                     *a += m / 2.0;
@@ -85,8 +90,13 @@ fn cached_furnace_converges_to_infinite_bounce_series() {
     }
     for (band, (measured, expected)) in averages.iter().zip(&expected).enumerate() {
         let ratio = *measured as f32 / expected;
-        eprintln!("CACHED_FURNACE band={band} measured={measured} expected={expected} ratio={ratio}");
-        assert!((ratio - 1.0).abs() < 0.02, "band {band}: {measured} != {expected}");
+        eprintln!(
+            "CACHED_FURNACE band={band} measured={measured} expected={expected} ratio={ratio}"
+        );
+        assert!(
+            (ratio - 1.0).abs() < 0.02,
+            "band {band}: {measured} != {expected}"
+        );
     }
 }
 
@@ -98,13 +108,21 @@ fn cached_furnace_converges_to_infinite_bounce_series() {
 fn cached_furnace_lag_by_history_policy() {
     let fixture = crate::research::furnace();
     let material = fixture.materials.get(4);
-    let emitters = Arc::new(EmissionDistribution::build(&fixture.scene,
-        &fixture.materials));
+    let emitters = Arc::new(EmissionDistribution::build(
+        &fixture.scene,
+        &fixture.materials,
+    ));
     let native = tests::native_tracer();
     let probes = all_interior_faces(&fixture);
     let r = channels(material.diffuse)[2];
     let expected = channels(material.emission)[2] / (1.0 - r);
-    for (limit, recency) in [(65_536, 1.0), (65_536, 1.5), (65_536, 2.0), (8_192, 1.0), (2_048, 1.0)] {
+    for (limit, recency) in [
+        (65_536, 1.0),
+        (65_536, 1.5),
+        (65_536, 2.0),
+        (8_192, 1.0),
+        (2_048, 1.0),
+    ] {
         let mut gpu = GpuTracer::new(native.context.clone()).unwrap();
         gpu.enable_resident().unwrap();
         let mut work = TraceWork::from_probes(&probes);
@@ -112,14 +130,27 @@ fn cached_furnace_lag_by_history_policy() {
         work.history_recency = recency;
         let mut line = String::new();
         for batch in 1..=400 {
-            gpu.trace_compact(fixture.scene.clone(), &fixture.sources, &fixture.materials,
-                &mut work, 16, &emitters).unwrap();
+            gpu.trace_compact(
+                fixture.scene.clone(),
+                &fixture.sources,
+                &fixture.materials,
+                &mut work,
+                16,
+                &emitters,
+            )
+            .unwrap();
             if [25, 50, 100, 200, 400].contains(&batch) {
-                let mean: f64 = work.faces.iter().map(|f| f64::from(channels(f.radiance)[2])).sum::<f64>()
+                let mean: f64 = work
+                    .faces
+                    .iter()
+                    .map(|f| f64::from(channels(f.radiance)[2]))
+                    .sum::<f64>()
                     / work.faces.len() as f64;
                 line += &format!(" {batch}:{:.4}", mean / f64::from(expected));
             }
         }
-        eprintln!("FURNACE_LAG limit={limit} recency={recency} blue r=0.7 fraction of fixed point:{line}");
+        eprintln!(
+            "FURNACE_LAG limit={limit} recency={recency} blue r=0.7 fraction of fixed point:{line}"
+        );
     }
 }

@@ -38,31 +38,11 @@ pub fn sun_direction() -> Vec3 {
 pub fn materials() -> VoxelMaterialTransportTable {
     let mut table = VoxelMaterialTransportTable::default();
     for (id, diffuse, emission) in [
-        (
-            2,
-            Vec3::splat(0.55),
-            Vec3::ZERO,
-        ),
-        (
-            4,
-            Vec3::splat(0.15),
-            Vec3::new(3.0, 0.45, 0.02),
-        ),
-        (
-            5,
-            Vec3::splat(0.2),
-            Vec3::new(0.03, 0.4, 12.0),
-        ),
-        (
-            6,
-            Vec3::splat(0.2),
-            Vec3::new(0.3, 6.0, 0.08),
-        ),
-        (
-            7,
-            Vec3::splat(0.2),
-            Vec3::new(14.0, 4.0, 0.8),
-        ),
+        (2, Vec3::splat(0.55), Vec3::ZERO),
+        (4, Vec3::splat(0.15), Vec3::new(3.0, 0.45, 0.02)),
+        (5, Vec3::splat(0.2), Vec3::new(0.03, 0.4, 12.0)),
+        (6, Vec3::splat(0.2), Vec3::new(0.3, 6.0, 0.08)),
+        (7, Vec3::splat(0.2), Vec3::new(14.0, 4.0, 0.8)),
     ] {
         table.set(id, MaterialTransport { diffuse, emission });
     }

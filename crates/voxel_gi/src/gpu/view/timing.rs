@@ -1,7 +1,7 @@
 //! Bounded asynchronous timing receipts. Only timestamps, queue counters and
 //! corner-sunlight flips cross back to the CPU per view dispatch, never lighting.
-use super::*;
 use super::runtime::{Stage, pixel_words, queue_words};
+use super::*;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Use the same bounded feedback controller as near transport. Dividing a
@@ -9,8 +9,14 @@ use std::sync::atomic::{AtomicU8, Ordering};
 /// for marginal path cost, eventually underfilling or starving every wave.
 fn next_wave(current: u32, attempted: u32, milliseconds: f32, target_ms: f32, limit: usize) -> u32 {
     crate::scheduling::next_budget(
-        current as usize, attempted as usize, milliseconds, target_ms, limit,
-    ).div_ceil(64) as u32 * 64
+        current as usize,
+        attempted as usize,
+        milliseconds,
+        target_ms,
+        limit,
+    )
+    .div_ceil(64) as u32
+        * 64
 }
 
 /// A receipt's flip region (`report_sun_flips`): a count, records, then the
@@ -28,8 +34,16 @@ fn decode_sun_flips(region: &[u8], flips: &mut Vec<(IVec3, IVec3, f32)>) {
         let overflow = 16 + limit as usize * 16;
         let at = |i: usize| i64::from(word(overflow + i * 4));
         let bias = super::runtime::SUN_FLIP_BIAS;
-        let min = IVec3::new((bias - at(0)) as i32, (bias - at(1)) as i32, (bias - at(2)) as i32);
-        let max = IVec3::new((at(3) - bias) as i32, (at(4) - bias) as i32, (at(5) - bias) as i32);
+        let min = IVec3::new(
+            (bias - at(0)) as i32,
+            (bias - at(1)) as i32,
+            (bias - at(2)) as i32,
+        );
+        let max = IVec3::new(
+            (at(3) - bias) as i32,
+            (at(4) - bias) as i32,
+            (at(5) - bias) as i32,
+        );
         flips.push((min, max, at(6) as f32 / 64.0));
     }
 }
@@ -103,7 +117,8 @@ const STAGES: usize = Stage::COUNT;
 const STAMP_BYTES: usize = STAGES * 16;
 /// Timestamps, queue counters, pool words and per-pixel counters, then the
 /// flip region.
-const RECEIPT_BYTES: u64 = STAMP_BYTES as u64 + queue_words::PREFIX * 4 + 16 + pixel_words::COUNT * 4;
+const RECEIPT_BYTES: u64 =
+    STAMP_BYTES as u64 + queue_words::PREFIX * 4 + 16 + pixel_words::COUNT * 4;
 const TICKET_BYTES: u64 = RECEIPT_BYTES + super::runtime::SUN_FLIP_BYTES;
 
 impl Budget {
@@ -181,11 +196,19 @@ impl Budget {
         }
     }
 
-    pub fn begin_frame(&mut self, device: &RenderDevice, elapsed: f32, share: f32, view_first: bool) {
+    pub fn begin_frame(
+        &mut self,
+        device: &RenderDevice,
+        elapsed: f32,
+        share: f32,
+        view_first: bool,
+    ) {
         if self.queries.is_none() {
             // Without timestamp queries the trace cannot be metered: a fixed,
             // conservative wave per frame instead of the time share.
-            warn_once!("Voxel GI: no TIMESTAMP_QUERY; the view tier traces a fixed {NO_TIMING_WAVE} paths per frame");
+            warn_once!(
+                "Voxel GI: no TIMESTAMP_QUERY; the view tier traces a fixed {NO_TIMING_WAVE} paths per frame"
+            );
             self.wave_size = NO_TIMING_WAVE;
             self.wave_cost = 1.0;
         }
@@ -237,7 +260,9 @@ impl Budget {
                 // A face that found no index slot in 64 probes is not
                 // owned this frame (not lit, not aliased); counted, not fatal.
                 self.hash_overflows += u64::from(overflow);
-                warn_once!("Voxel GI: {overflow} view receivers found no index slot this frame (see hash_overflows)");
+                warn_once!(
+                    "Voxel GI: {overflow} view receivers found no index slot this frame (see hash_overflows)"
+                );
             }
             self.active = active;
             self.completed = counter(queue_words::COMPLETED);
@@ -252,7 +277,8 @@ impl Budget {
             self.presentation_ms = total - trace - self.pixel_ms;
             self.pixel_owned = pixel(pixel_words::OWNED);
             self.pixel_traced = pixel(pixel_words::TRACED);
-            self.pixel_history = pixel(pixel_words::HISTORY) as f32 / pixel(pixel_words::OWNED).max(1) as f32;
+            self.pixel_history =
+                pixel(pixel_words::HISTORY) as f32 / pixel(pixel_words::OWNED).max(1) as f32;
             self.pixel_reprojected = pixel(pixel_words::REPROJECTED);
             self.pixel_seeded = pixel(pixel_words::SEEDED);
             self.receivers_seeded = pixel(pixel_words::RECEIVERS_SEEDED);
@@ -275,7 +301,11 @@ impl Budget {
                 // View-first owns the primary lighting budget, not just a
                 // distant supplement. Keep the wave bounded while allowing
                 // several sequential visits to a small visible working set.
-                let target = if view_first { (elapsed * 1000.0 * share).clamp(0.25, 4.0) } else { 1.0 };
+                let target = if view_first {
+                    (elapsed * 1000.0 * share).clamp(0.25, 4.0)
+                } else {
+                    1.0
+                };
                 let limit = if view_first { 65536 } else { 8192 };
                 self.wave_size = next_wave(self.wave_size, attempted, trace, target, limit);
                 self.wave_cost = trace.max(0.01);
@@ -295,7 +325,11 @@ impl Budget {
         };
         // Bank/repay milliseconds, not fractional workgroups. One bounded
         // wave may overdraw credit; the receipt charges its actual cost.
-        let work = if self.allowance > 0.0 { self.wave_size } else { 0 };
+        let work = if self.allowance > 0.0 {
+            self.wave_size
+        } else {
+            0
+        };
         let reserved = if work > 0 { self.wave_cost } else { 0.0 };
         self.allowance -= reserved;
         (
@@ -331,16 +365,29 @@ impl Budget {
         let counted = queue_words::PREFIX * 4;
         encoder.copy_buffer_to_buffer(counters, 0, &ticket.buffer, stamps, counted);
         encoder.copy_buffer_to_buffer(pool, 0, &ticket.buffer, stamps + counted, 16);
-        encoder.copy_buffer_to_buffer(pixel_stats, 0, &ticket.buffer, stamps + counted + 16, pixel_words::COUNT * 4);
         encoder.copy_buffer_to_buffer(
-            counters, sun_flips, &ticket.buffer, RECEIPT_BYTES, super::runtime::SUN_FLIP_BYTES,
+            pixel_stats,
+            0,
+            &ticket.buffer,
+            stamps + counted + 16,
+            pixel_words::COUNT * 4,
+        );
+        encoder.copy_buffer_to_buffer(
+            counters,
+            sun_flips,
+            &ticket.buffer,
+            RECEIPT_BYTES,
+            super::runtime::SUN_FLIP_BYTES,
         );
         // Copied: the flips are delivered, so the region starts over.
         encoder.clear_buffer(counters, sun_flips, Some(super::runtime::SUN_FLIP_BYTES));
         let ready = ticket.ready.clone();
-        encoder.map_buffer_on_submit(&ticket.buffer, wgpu::MapMode::Read, ..TICKET_BYTES, move |result| {
-            ready.store(if result.is_ok() { 1 } else { 2 }, Ordering::Release)
-        });
+        encoder.map_buffer_on_submit(
+            &ticket.buffer,
+            wgpu::MapMode::Read,
+            ..TICKET_BYTES,
+            move |result| ready.store(if result.is_ok() { 1 } else { 2 }, Ordering::Release),
+        );
         self.pending.push(ticket);
     }
 }
@@ -359,7 +406,11 @@ mod tests {
             assert_eq!(size % 64, 0);
         }
         assert!(size >= 2048);
-        assert_eq!(next_wave(4096, 32, 0.5, 1.0, 8192), 4096, "small views do not shrink capacity");
+        assert_eq!(
+            next_wave(4096, 32, 0.5, 1.0, 8192),
+            4096,
+            "small views do not shrink capacity"
+        );
     }
 
     #[test]
@@ -367,7 +418,8 @@ mod tests {
         use super::super::runtime::{MAX_SUN_FLIPS, SUN_FLIP_BIAS, SUN_FLIP_BYTES};
         use bevy::prelude::IVec3;
         let mut region = vec![0u8; SUN_FLIP_BYTES as usize];
-        let mut put = |at: usize, word: u32| region[at..at + 4].copy_from_slice(&word.to_le_bytes());
+        let mut put =
+            |at: usize, word: u32| region[at..at + 4].copy_from_slice(&word.to_le_bytes());
         put(0, MAX_SUN_FLIPS as u32 + 5);
         put(16, -3i32 as u32);
         put(20, 4);
@@ -375,14 +427,20 @@ mod tests {
         put(28, 0.5f32.to_bits());
         let overflow = 16 + MAX_SUN_FLIPS as usize * 16;
         let bias = SUN_FLIP_BIAS as i32;
-        for (i, word) in [bias + 10, bias - 2, bias, bias + 7, bias + 9, bias + 1, 128].into_iter().enumerate() {
+        for (i, word) in [bias + 10, bias - 2, bias, bias + 7, bias + 9, bias + 1, 128]
+            .into_iter()
+            .enumerate()
+        {
             put(overflow + i * 4, word as u32);
         }
         let mut flips = Vec::new();
         super::decode_sun_flips(&region, &mut flips);
         assert_eq!(flips.len(), MAX_SUN_FLIPS as usize + 1);
         assert_eq!(flips[0], (IVec3::new(-3, 4, 5), IVec3::new(-3, 4, 5), 0.5));
-        assert_eq!(*flips.last().unwrap(), (IVec3::new(-10, 2, 0), IVec3::new(7, 9, 1), 2.0));
+        assert_eq!(
+            *flips.last().unwrap(),
+            (IVec3::new(-10, 2, 0), IVec3::new(7, 9, 1), 2.0)
+        );
     }
 
     #[test]
@@ -390,11 +448,16 @@ mod tests {
     fn view_budget_runs_a_fixed_wave_without_timestamp_queries() {
         use bevy::render::renderer::{RenderDevice, RenderQueue, WgpuWrapper};
         let instance = wgpu::Instance::default();
-        let adapter = bevy::tasks::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
-        let (device, queue) = bevy::tasks::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: wgpu::Features::empty(),
-            ..Default::default()
-        })).unwrap();
+        let adapter = bevy::tasks::block_on(
+            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+        )
+        .unwrap();
+        let (device, queue) =
+            bevy::tasks::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                required_features: wgpu::Features::empty(),
+                ..Default::default()
+            }))
+            .unwrap();
         let device = RenderDevice::from(device);
         let queue = RenderQueue(std::sync::Arc::new(WgpuWrapper::new(queue)));
         let mut budget = super::Budget::new(&device, &queue);
@@ -402,13 +465,27 @@ mod tests {
         for _ in 0..3 {
             budget.begin_frame(&device, 1.0 / 60.0, 0.15, true);
             let (work, ticket) = budget.reserve();
-            assert_eq!(work, super::NO_TIMING_WAVE, "a fixed wave, not a stalled or unbounded one");
+            assert_eq!(
+                work,
+                super::NO_TIMING_WAVE,
+                "a fixed wave, not a stalled or unbounded one"
+            );
             let mut encoder = device.create_command_encoder(&Default::default());
             let counters = device.create_buffer(&wgpu::BufferDescriptor {
-                label: None, size: 1 << 16, usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                label: None,
+                size: 1 << 16,
+                usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            budget.finish(&mut encoder, &counters, 0, &counters, &counters, ticket.unwrap(), 0b111);
+            budget.finish(
+                &mut encoder,
+                &counters,
+                0,
+                &counters,
+                &counters,
+                ticket.unwrap(),
+                0b111,
+            );
             queue.submit([encoder.finish()]);
         }
     }
@@ -416,7 +493,9 @@ mod tests {
     #[test]
     fn view_first_can_spend_its_share_beyond_one_visit_per_owner() {
         let mut size = 8192;
-        for _ in 0..16 { size = next_wave(size, size, 1.0, 3.0, 65536); }
+        for _ in 0..16 {
+            size = next_wave(size, size, 1.0, 3.0, 65536);
+        }
         assert_eq!(size, 65536);
         assert!(next_wave(size, size, 9.0, 3.0, 65536) < size);
     }

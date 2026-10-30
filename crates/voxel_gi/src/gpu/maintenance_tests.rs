@@ -42,7 +42,11 @@ fn run_worker(world: &mut World) -> gi::TraceBatchResult {
 fn far_only_model_changes_publish_without_near_receivers() {
     let device = super::tests::native_tracer().context;
     let (scene, sources, _) = super::tests::open_floor_fixture();
-    let runtime = gi::VoxelGiRuntime { scene, sources, ..default() };
+    let runtime = gi::VoxelGiRuntime {
+        scene,
+        sources,
+        ..default()
+    };
     let mut world = world(runtime, default(), device);
     let first = run_worker(&mut world);
     let held = first.gpu_tracer.as_ref().unwrap().view_scene().unwrap();
@@ -53,10 +57,15 @@ fn far_only_model_changes_publish_without_near_receivers() {
         runtime.emission_cache = first.emission_cache;
         runtime.sources.environment *= 0.5;
         runtime.sources.directional.clear();
-        runtime.sources.points.push(gi::sources::PointTransportLight {
-            position: Vec3::new(8.0, 8.0, 8.0), intensity: gi::Vec3::ZERO,
-            range: 32.0, custom_visible: Vec3::ONE,
-        });
+        runtime
+            .sources
+            .points
+            .push(gi::sources::PointTransportLight {
+                position: Vec3::new(8.0, 8.0, 8.0),
+                intensity: gi::Vec3::ZERO,
+                range: 32.0,
+                custom_visible: Vec3::ONE,
+            });
         let mut materials = (*runtime.materials).clone();
         let mut material = materials.get(2);
         material.emission = Vec3::splat(4.0);
@@ -65,14 +74,27 @@ fn far_only_model_changes_publish_without_near_receivers() {
     }
     let next = run_worker(&mut world);
     let current = next.gpu_tracer.as_ref().unwrap().view_scene().unwrap();
-    assert_eq!(current.params.environment, held.params.environment * Vec4::new(0.5, 0.5, 0.5, 1.0));
+    assert_eq!(
+        current.params.environment,
+        held.params.environment * Vec4::new(0.5, 0.5, 0.5, 1.0)
+    );
     assert_eq!(current.params.maximum.w, 0);
-    assert_eq!(current.params.transport.y, 1.0, "custom direct RGB reaches far presentation");
+    assert_eq!(
+        current.params.transport.y, 1.0,
+        "custom direct RGB reaches far presentation"
+    );
     for index in [3, 4, 5] {
-        assert_ne!(held.buffers[index].id(), current.buffers[index].id(),
-            "changed model allocation must not mutate a retained descriptor");
+        assert_ne!(
+            held.buffers[index].id(),
+            current.buffers[index].id(),
+            "changed model allocation must not mutate a retained descriptor"
+        );
     }
-    assert_eq!(held.buffers[0].id(), current.buffers[0].id(), "unchanged geometry shares storage");
+    assert_eq!(
+        held.buffers[0].id(),
+        current.buffers[0].id(),
+        "unchanged geometry shares storage"
+    );
     assert!(current.params.extra.w > 0.0, "far-only emitters are built");
 }
 
@@ -81,7 +103,15 @@ fn far_only_model_changes_publish_without_near_receivers() {
 fn cacheless_retention_publishes_even_when_geometry_and_sources_are_unchanged() {
     let device = super::tests::native_tracer().context;
     let (scene, sources, _) = super::tests::open_floor_fixture();
-    let mut world = world(gi::VoxelGiRuntime { scene, sources, ..default() }, default(), device);
+    let mut world = world(
+        gi::VoxelGiRuntime {
+            scene,
+            sources,
+            ..default()
+        },
+        default(),
+        device,
+    );
     world.resource_mut::<gi::VoxelGiSettings>().cache_radius = 0.0;
     let first = run_worker(&mut world);
     {
@@ -93,29 +123,68 @@ fn cacheless_retention_publishes_even_when_geometry_and_sources_are_unchanged() 
     let mut second = run_worker(&mut world);
     let tracer = second.gpu_tracer.as_mut().unwrap();
     let packets = tracer.take_view_changes();
-    assert_eq!(packets.len(), 1, "zero world faces must not drop view edits");
-    let words = read_words(&tracer.context, &packets[0].events, packets[0].events.size());
+    assert_eq!(
+        packets.len(),
+        1,
+        "zero world faces must not drop view edits"
+    );
+    let words = read_words(
+        &tracer.context,
+        &packets[0].events,
+        packets[0].events.size(),
+    );
     assert_eq!(words[3], 2, "source-change flag");
     assert_eq!(words[8], 256, "same history cap as resident consumers");
     let resident = tracer.resident.as_ref().unwrap();
-    assert!(resident.cache_buffers().0.capacity <= 256, "no per-face state allocation");
+    assert!(
+        resident.cache_buffers().0.capacity <= 256,
+        "no per-face state allocation"
+    );
     assert!(second.bindings.is_empty());
     assert!(tracer.take_view_changes().is_empty(), "deliver once");
 
     use gi::geometry::{Bounds, ChangeKind, ChangeWeight};
     let mut events = vec![gi::retention::RetentionEvent::single(
         Bounds::point(IVec3::ONE),
-        ChangeWeight { kind: ChangeKind::Edit { voxels: 1, measure: true }, flux: 0.0 },
+        ChangeWeight {
+            kind: ChangeKind::Edit {
+                voxels: 1,
+                measure: true,
+            },
+            flux: 0.0,
+        },
     )];
     tracer.queue_retention(&mut events);
     let (scene, sources, _) = super::tests::open_floor_fixture();
-    let mut work = TraceWork { view_transport: true, ..default() };
-    assert!(tracer.submit_compact(scene, &sources, &default(), &mut work, 0,
-        &Arc::new(EmissionDistribution::default())).unwrap().is_none());
+    let mut work = TraceWork {
+        view_transport: true,
+        ..default()
+    };
+    assert!(
+        tracer
+            .submit_compact(
+                scene,
+                &sources,
+                &default(),
+                &mut work,
+                0,
+                &Arc::new(EmissionDistribution::default())
+            )
+            .unwrap()
+            .is_none()
+    );
     let packets = tracer.take_view_changes();
     assert_eq!(packets.len(), 1);
-    let words = read_words(&tracer.context, &packets[0].events, packets[0].events.size());
-    assert_eq!(words[19] & 7, 0, "unobserved outgoing flux is unknown, not measured darkness");
+    let words = read_words(
+        &tracer.context,
+        &packets[0].events,
+        packets[0].events.size(),
+    );
+    assert_eq!(
+        words[19] & 7,
+        0,
+        "unobserved outgoing flux is unknown, not measured darkness"
+    );
 }
 
 #[test]
@@ -195,15 +264,34 @@ fn scene_edits_reach_view_history_without_world_cache_pages() {
     use gi::geometry::{Bounds, ChangeKind, ChangeWeight, GeometryChange};
     let device = super::tests::native_tracer().context;
     let (scene, sources, _) = super::tests::open_floor_fixture();
-    let mut world = world(gi::VoxelGiRuntime { scene: scene.clone(), sources, ..default() }, default(), device);
+    let mut world = world(
+        gi::VoxelGiRuntime {
+            scene: scene.clone(),
+            sources,
+            ..default()
+        },
+        default(),
+        device,
+    );
     world.resource_mut::<gi::VoxelGiSettings>().cache_radius = 0.0;
     let first = run_worker(&mut world);
     let bounds = Bounds::point(IVec3::new(1, 4, 1));
-    let mut change = GeometryChange::from_bounds(&scene, &[bounds], gi::retention::INFLUENCE_RADIUS);
-    assert!(!change.nearby.is_empty(), "fixture has geometry for visible receivers");
-    change.weights.insert(bounds, ChangeWeight {
-        kind: ChangeKind::Edit { voxels: 1, measure: false }, flux: 2.0,
-    });
+    let mut change =
+        GeometryChange::from_bounds(&scene, &[bounds], gi::retention::INFLUENCE_RADIUS);
+    assert!(
+        !change.nearby.is_empty(),
+        "fixture has geometry for visible receivers"
+    );
+    change.weights.insert(
+        bounds,
+        ChangeWeight {
+            kind: ChangeKind::Edit {
+                voxels: 1,
+                measure: false,
+            },
+            flux: 2.0,
+        },
+    );
     {
         let mut runtime = world.resource_mut::<gi::VoxelGiRuntime>();
         runtime.gpu_tracer = first.gpu_tracer;
@@ -215,31 +303,60 @@ fn scene_edits_reach_view_history_without_world_cache_pages() {
         let retention = gi::retention::SpatialHistory::event(change, &[bounds.min]);
         runtime.scene_task = Some(AsyncComputeTaskPool::get().spawn(async move {
             gi::SceneBuildResult {
-                scene, changed: true, transport_changed: true, retention, pages: default(),
-                receivers_changed: false, exact_edits: vec![bounds.min],
+                scene,
+                changed: true,
+                transport_changed: true,
+                retention,
+                pages: default(),
+                receivers_changed: false,
+                exact_edits: vec![bounds.min],
                 build_time: std::time::Duration::ZERO,
             }
         }));
     }
     let deadline = Instant::now() + std::time::Duration::from_secs(5);
     loop {
-        world.run_system_once(gi::publication::apply_scene_task).unwrap();
-        if world.resource::<gi::VoxelGiRuntime>().scene_task.is_none() { break; }
+        world
+            .run_system_once(gi::publication::apply_scene_task)
+            .unwrap();
+        if world.resource::<gi::VoxelGiRuntime>().scene_task.is_none() {
+            break;
+        }
         assert!(Instant::now() < deadline, "scene publication timed out");
         std::thread::yield_now();
     }
     assert!(world.resource::<gi::ReceiverField>().pages.is_empty());
-    assert!(world.resource::<gi::VoxelGiRuntime>().spatial_history.has_events(),
-        "view receivers must receive geometry events without any world-cache page");
+    assert!(
+        world
+            .resource::<gi::VoxelGiRuntime>()
+            .spatial_history
+            .has_events(),
+        "view receivers must receive geometry events without any world-cache page"
+    );
     let mut next = run_worker(&mut world);
     let tracer = next.gpu_tracer.as_mut().unwrap();
     let packets = tracer.take_view_changes();
     assert_eq!(packets.len(), 1);
-    let words = read_words(&tracer.context, &packets[0].events, packets[0].events.size());
+    let words = read_words(
+        &tracer.context,
+        &packets[0].events,
+        packets[0].events.size(),
+    );
     assert_eq!(&words[12..15], &[1, 4, 1]);
-    assert_eq!(words[19] & 7, 0, "no cache observations: use distance retention");
-    assert_ne!(words[19] & 8, 0, "player-edit identity survives publication");
-    assert!(next.bindings.is_empty(), "events must not recreate world receivers");
+    assert_eq!(
+        words[19] & 7,
+        0,
+        "no cache observations: use distance retention"
+    );
+    assert_ne!(
+        words[19] & 8,
+        0,
+        "player-edit identity survives publication"
+    );
+    assert!(
+        next.bindings.is_empty(),
+        "events must not recreate world receivers"
+    );
 }
 
 #[test]
@@ -254,19 +371,36 @@ fn edit_flux_distinguishes_missing_cache_support_from_observed_darkness() {
     sources.directional.clear();
     let emitters = Arc::new(EmissionDistribution::default());
     let mut work = TraceWork::from_probes(&probes[..1]);
-    gpu.trace_compact(scene.clone(), &sources, &default(), &mut work, 4, &emitters).unwrap();
+    gpu.trace_compact(scene.clone(), &sources, &default(), &mut work, 4, &emitters)
+        .unwrap();
     for (position, expected_kind) in [(probes[0].voxel, 3), (IVec3::splat(1000), 0)] {
-        let event = gi::retention::RetentionEvent::single(Bounds::point(position), ChangeWeight {
-            kind: ChangeKind::Edit { voxels: 1, measure: true }, flux: 0.0,
-        });
-        let mut work = TraceWork { view_transport: true, retention_events: vec![event], ..default() };
+        let event = gi::retention::RetentionEvent::single(
+            Bounds::point(position),
+            ChangeWeight {
+                kind: ChangeKind::Edit {
+                    voxels: 1,
+                    measure: true,
+                },
+                flux: 0.0,
+            },
+        );
+        let mut work = TraceWork {
+            view_transport: true,
+            retention_events: vec![event],
+            ..default()
+        };
         gpu.queue_retention(&mut work.retention_events);
-        gpu.submit_compact(scene.clone(), &sources, &default(), &mut work, 0, &emitters).unwrap();
+        gpu.submit_compact(scene.clone(), &sources, &default(), &mut work, 0, &emitters)
+            .unwrap();
         let packets = gpu.take_view_changes();
         assert_eq!(packets.len(), 1);
         let words = read_words(&gpu.context, &packets[0].events, packets[0].events.size());
         assert_eq!(words[19] & 7, expected_kind, "edit at {position:?}");
-        assert_eq!(f32::from_bits(words[15]), 0.0, "known dark stays exactly zero");
+        assert_eq!(
+            f32::from_bits(words[15]),
+            0.0,
+            "known dark stays exactly zero"
+        );
     }
 }
 
@@ -317,7 +451,15 @@ fn retained_cache_pairs_stay_coherent_when_either_member_grows() {
     let materials = VoxelMaterialTransportTable::default();
     let emitters = Arc::new(EmissionDistribution::default());
     let mut work = TraceWork::from_probes(&probes[..1]);
-    gpu.trace_compact(scene.clone(), &sources, &materials, &mut work, 16, &emitters).unwrap();
+    gpu.trace_compact(
+        scene.clone(),
+        &sources,
+        &materials,
+        &mut work,
+        16,
+        &emitters,
+    )
+    .unwrap();
     for (count, grow_index) in [(2, false), (600, true)] {
         let resident = gpu.resident.as_ref().unwrap();
         let (state, index) = resident.cache_buffers();
@@ -325,13 +467,27 @@ fn retained_cache_pairs_stay_coherent_when_either_member_grows() {
         let state_words = read_words(&gpu.context, &held.0.buffer, held.0.capacity);
         let index_words = read_words(&gpu.context, &held.1.buffer, held.1.capacity);
         let mut work = TraceWork::from_probes(&probes[..count]);
-        gpu.trace_compact(scene.clone(), &sources, &materials, &mut work, 16, &emitters).unwrap();
+        gpu.trace_compact(
+            scene.clone(),
+            &sources,
+            &materials,
+            &mut work,
+            16,
+            &emitters,
+        )
+        .unwrap();
         let (state, index) = gpu.resident.as_ref().unwrap().cache_buffers();
         assert_ne!(state.buffer.id(), held.0.buffer.id());
         assert_ne!(index.buffer.id(), held.1.buffer.id());
         assert_eq!(index.capacity > held.1.capacity, grow_index);
-        assert_eq!(read_words(&gpu.context, &held.0.buffer, held.0.capacity), state_words);
-        assert_eq!(read_words(&gpu.context, &held.1.buffer, held.1.capacity), index_words);
+        assert_eq!(
+            read_words(&gpu.context, &held.0.buffer, held.0.capacity),
+            state_words
+        );
+        assert_eq!(
+            read_words(&gpu.context, &held.1.buffer, held.1.capacity),
+            index_words
+        );
         // Seeded histories survive the copy; later merges do not mutate the
         // retained generation. Check native words rather than CPU ownership.
         let current = read_words(&gpu.context, &state.buffer, state.capacity);

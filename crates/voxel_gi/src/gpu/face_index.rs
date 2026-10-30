@@ -69,7 +69,10 @@ impl FaceIndex {
     }
 
     pub(super) fn insert(&mut self, voxel: IVec3, face: usize, slot: u32) {
-        assert!(slot < 1 << SLOT_BITS, "resident slot exceeds the face index");
+        assert!(
+            slot < 1 << SLOT_BITS,
+            "resident slot exceeds the face index"
+        );
         if let Some(index) = self.find(voxel, face) {
             self.entries[index][3] = (face as u32) << SLOT_BITS | slot;
             self.dirty.push(index as u32);
@@ -210,7 +213,9 @@ impl FaceIndex {
             .iter()
             .enumerate()
             .filter_map(|(index, entry)| {
-                entry_key(entry).map(|(voxel, face)| (index + self.entries.len() - home(voxel, face, mask)) & mask)
+                entry_key(entry).map(|(voxel, face)| {
+                    (index + self.entries.len() - home(voxel, face, mask)) & mask
+                })
             })
             .max()
             .unwrap_or(0)
@@ -229,7 +234,11 @@ mod tests {
         let mut state = 12345u32;
         for step in 0..40_000u32 {
             state = super::super::super::sampling::pcg(state ^ step);
-            let voxel = IVec3::new((state % 23) as i32 - 11, (state >> 8) as i32 % 7, -((state >> 16) as i32 % 19));
+            let voxel = IVec3::new(
+                (state % 23) as i32 - 11,
+                (state >> 8) as i32 % 7,
+                -((state >> 16) as i32 % 19),
+            );
             let face = (state >> 24) as usize % 6;
             if state & 3 == 0 {
                 table.remove(voxel, face);

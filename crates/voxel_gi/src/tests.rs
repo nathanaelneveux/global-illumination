@@ -23,8 +23,15 @@ fn transport_failure_missing_device_does_not_select_cpu_implicitly() {
     world.init_resource::<VoxelGiStats>();
     world.init_resource::<GiWorkTimings>();
     world.run_system_once(start_trace_task).unwrap();
-    assert!(world.resource::<VoxelGiRuntime>().trace_task.is_none(), "no trace started");
-    assert_eq!(world.resource::<ReceiverField>().order, vec![IVec3::ZERO], "work kept for a device");
+    assert!(
+        world.resource::<VoxelGiRuntime>().trace_task.is_none(),
+        "no trace started"
+    );
+    assert_eq!(
+        world.resource::<ReceiverField>().order,
+        vec![IVec3::ZERO],
+        "work kept for a device"
+    );
 }
 
 #[test]
@@ -510,7 +517,9 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
             scene,
             changed: changes.changed,
             transport_changed: changes.transport.is_some(),
-            retention: changes.transport.and_then(|change| retention::SpatialHistory::event(change, &[])),
+            retention: changes
+                .transport
+                .and_then(|change| retention::SpatialHistory::event(change, &[])),
             // No receiver topology changed. This exercises scene acceptance,
             // not the separate page-merge/seeding tests above.
             pages: default(),
@@ -659,8 +668,7 @@ fn in_flight_lighting_cannot_restore_indices_moved_by_streaming() {
         field.probes.insert(voxel, SurfaceProbe::new(voxel, 4));
     }
     field.update_indices(&voxels, &HashMap::new());
-    let pending_result =
-        TraceWork::from_probes(std::slice::from_ref(&field.probes[&IVec3::Z]));
+    let pending_result = TraceWork::from_probes(std::slice::from_ref(&field.probes[&IVec3::Z]));
     let mut removed = HashMap::new();
     removed.insert(IVec3::ZERO, field.probes.remove(&IVec3::ZERO).unwrap());
     field.update_indices(&[], &removed);
@@ -768,8 +776,14 @@ fn cache_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
         ))
         .id();
     // Inactive streaming cameras load geometry, not lighting receivers.
-    world.spawn((Camera3d::default(), Camera { is_active: false, ..default() },
-        GlobalTransform::from_translation(Vec3::new(304.0, 16.0, 16.0))));
+    world.spawn((
+        Camera3d::default(),
+        Camera {
+            is_active: false,
+            ..default()
+        },
+        GlobalTransform::from_translation(Vec3::new(304.0, 16.0, 16.0)),
+    ));
     world
         .run_system_once(pages::update_receiver_residency)
         .unwrap();
@@ -826,13 +840,17 @@ fn cacheless_residency_retires_every_page_without_a_camera_or_geometry_changes()
     use bevy::ecs::system::RunSystemOnce;
     let mut world = World::new();
     let mut runtime = VoxelGiRuntime::default();
-    runtime.loaded_pages.extend([IVec3::ZERO, IVec3::new(1, 0, 0)]);
+    runtime
+        .loaded_pages
+        .extend([IVec3::ZERO, IVec3::new(1, 0, 0)]);
     world.insert_resource(runtime);
     world.insert_resource(VoxelGiSettings {
         cache_radius: 0.0,
         ..default()
     });
-    world.run_system_once(pages::update_receiver_residency).unwrap();
+    world
+        .run_system_once(pages::update_receiver_residency)
+        .unwrap();
     let runtime = world.resource::<VoxelGiRuntime>();
     assert!(runtime.receiver_pages.as_ref().unwrap().is_empty());
     assert_eq!(runtime.receiver_retired, runtime.loaded_pages);

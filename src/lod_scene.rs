@@ -54,7 +54,12 @@ pub fn voxel_at_height(position: IVec3, height: f64) -> WorldVoxel<u8> {
 pub fn height(x: i32, z: i32) -> f64 {
     let (mut sum, mut amplitude, mut frequency) = (0.0, 1.0, 1.1);
     for octave in 0..5u32 {
-        sum += amplitude * gradient_noise(x as f64 / 1000.0 * frequency, z as f64 / 1000.0 * frequency, octave);
+        sum += amplitude
+            * gradient_noise(
+                x as f64 / 1000.0 * frequency,
+                z as f64 / 1000.0 * frequency,
+                octave,
+            );
         amplitude *= 0.4;
         frequency *= 2.8;
     }
@@ -65,7 +70,8 @@ fn gradient_noise(x: f64, z: f64, seed: u32) -> f64 {
     let (x0, z0) = (x.floor(), z.floor());
     let (fx, fz) = (x - x0, z - z0);
     let corner = |dx: f64, dz: f64| {
-        let mut hash = (x0 as i64 + dx as i64) as u32 ^ ((z0 as i64 + dz as i64) as u32).wrapping_mul(0x9E37_79B9);
+        let mut hash = (x0 as i64 + dx as i64) as u32
+            ^ ((z0 as i64 + dz as i64) as u32).wrapping_mul(0x9E37_79B9);
         hash = (hash ^ seed.wrapping_mul(0x85EB_CA6B)).wrapping_mul(0x27D4_EB2D);
         hash ^= hash >> 15;
         let angle = f64::from(hash) / f64::from(u32::MAX) * std::f64::consts::TAU;

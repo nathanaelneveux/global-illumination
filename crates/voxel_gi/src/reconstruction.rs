@@ -53,7 +53,6 @@ mod tests {
             (7, 8),
             "coincident corners on disconnected faces cannot share a display/transport state"
         );
-
     }
 
     fn weighted_corner(

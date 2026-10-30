@@ -77,7 +77,11 @@ struct AddedPrepasses {
     normal: bool,
 }
 
-pub(crate) fn install(app: &mut App, output: Handle<ShaderBuffer>, pixel_output: Handle<ShaderBuffer>) {
+pub(crate) fn install(
+    app: &mut App,
+    output: Handle<ShaderBuffer>,
+    pixel_output: Handle<ShaderBuffer>,
+) {
     app.init_resource::<VoxelGiSettings>();
     app.init_resource::<crate::VoxelGiStats>();
     app.insert_resource(ViewSettings {
@@ -151,7 +155,10 @@ fn configure_views(
             view.interest = interest;
         }
         runtime.sun_changes.add(flips);
-        if let Some(change) = runtime.sun_changes.take(&runtime.scene, std::time::Instant::now()) {
+        if let Some(change) = runtime
+            .sun_changes
+            .take(&runtime.scene, std::time::Instant::now())
+        {
             // Events carry no page allocations: retired world pages must not
             // suppress the change for view-owned receivers.
             runtime.spatial_history.record(change, &[]);
@@ -160,7 +167,11 @@ fn configure_views(
     let enabled = true;
     if enabled != view.enabled {
         let mut asset = ShaderBuffer::default();
-        asset.buffer_description.size = if enabled { DISPLAY_BYTES } else { EMPTY_OUTPUT_BYTES };
+        asset.buffer_description.size = if enabled {
+            DISPLAY_BYTES
+        } else {
+            EMPTY_OUTPUT_BYTES
+        };
         asset.buffer_description.usage =
             BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
         view.output = buffers.add(asset);
@@ -200,9 +211,7 @@ fn configure_views(
             if !normal {
                 entity.insert(NormalPrepass);
             }
-        } else if !enabled
-            && let Some(added) = added
-        {
+        } else if !enabled && let Some(added) = added {
             let mut entity = commands.entity(entity);
             if added.depth {
                 entity.remove::<DepthPrepass>();
@@ -273,7 +282,9 @@ fn storage(device: &RenderDevice, label: &'static str, bytes: usize) -> Option<U
     match buffer.ensure(device, bytes) {
         Ok(_) => Some(buffer),
         Err(error) => {
-            warn_once!("Voxel GI: {label} ({bytes} bytes) exceeds device limits ({error:?}); this view runs without view GI");
+            warn_once!(
+                "Voxel GI: {label} ({bytes} bytes) exceeds device limits ({error:?}); this view runs without view GI"
+            );
             None
         }
     }
@@ -298,7 +309,11 @@ impl History {
                 "Far reprojection index",
                 (count * 2).next_power_of_two() as usize * 4,
             )?,
-            pool: storage(device, "Far shared receiver pool and spatial index", POOL_PREFIX_BYTES + count as usize * 16)?,
+            pool: storage(
+                device,
+                "Far shared receiver pool and spatial index",
+                POOL_PREFIX_BYTES + count as usize * 16,
+            )?,
         })
     }
 }
@@ -321,8 +336,16 @@ impl PixelState {
                 storage(device, "Far per-pixel cell history", bytes)?,
                 storage(device, "Far per-pixel cell history", bytes)?,
             ],
-            stats: storage(device, "Far per-pixel counters", pixel_words::COUNT as usize * 4)?,
-            queue: storage(device, "Far per-pixel trace queue", 4 + cells.element_product().max(1) as usize * 4)?,
+            stats: storage(
+                device,
+                "Far per-pixel counters",
+                pixel_words::COUNT as usize * 4,
+            )?,
+            queue: storage(
+                device,
+                "Far per-pixel trace queue",
+                4 + cells.element_product().max(1) as usize * 4,
+            )?,
             args: device.create_buffer(&BufferDescriptor {
                 label: Some("Far per-pixel trace dispatch"),
                 size: 16,
@@ -376,8 +399,11 @@ impl CameraState {
             control: uniform("Far view control"),
             params: uniform("Far transport parameters"),
             wave: uniform("Far wave allowance"),
-            queue: storage(device, "Far visible owner queue and sequence reservations",
-                (count as usize * 2 + queue_words::PREFIX as usize) * 4 + SUN_FLIP_BYTES as usize)?,
+            queue: storage(
+                device,
+                "Far visible owner queue and sequence reservations",
+                (count as usize * 2 + queue_words::PREFIX as usize) * 4 + SUN_FLIP_BYTES as usize,
+            )?,
             cursor: 0,
             last_frame: 0,
             binding_keys: [None, None],
@@ -398,12 +424,18 @@ fn shader(multisampled: bool) -> String {
         include_str!("../../../shaders/voxel_view_trace.wgsl"),
     );
     let source = include_retention(&include_paths(&source));
-    let source = source.replace("// #include voxel_view_cache.wgsl\n",
-        include_str!("../../../shaders/voxel_view_cache.wgsl"));
-    let source = source.replace("// #include voxel_view_discovery.wgsl\n",
-        include_str!("../../../shaders/voxel_view_discovery.wgsl"));
-    let source = source.replace("// #include voxel_view_pixels.wgsl\n",
-        include_str!("../../../shaders/voxel_view_pixels.wgsl"));
+    let source = source.replace(
+        "// #include voxel_view_cache.wgsl\n",
+        include_str!("../../../shaders/voxel_view_cache.wgsl"),
+    );
+    let source = source.replace(
+        "// #include voxel_view_discovery.wgsl\n",
+        include_str!("../../../shaders/voxel_view_discovery.wgsl"),
+    );
+    let source = source.replace(
+        "// #include voxel_view_pixels.wgsl\n",
+        include_str!("../../../shaders/voxel_view_pixels.wgsl"),
+    );
     if multisampled {
         source
             .replace("texture_depth_2d", "texture_depth_multisampled_2d")
@@ -498,7 +530,13 @@ impl FromWorld for ViewRenderer {
             publish: make("publish_view", 0),
             pixels: [0, 1].map(|m| make("classify_pixels", m)),
             pixel_args: make("size_pixel_queue", 0),
-            pixel_trace: pixel_kernel(device, &modules, &pixel_trace_bindings, FarTierSettings::default().steps, false),
+            pixel_trace: pixel_kernel(
+                device,
+                &modules,
+                &pixel_trace_bindings,
+                FarTierSettings::default().steps,
+                false,
+            ),
             pixel_trace_bindings,
             pixel_steps: (FarTierSettings::default().steps, false),
             modules,
@@ -524,11 +562,20 @@ pub(super) const SUN_FLIP_BIAS: i64 = 1 << 30;
 /// steps per ray, exhaustion a miss: NAADF's rule) and the same transport
 /// reach policy the receiver trace specializes on.
 pub(super) fn pixel_trace_constants(steps: u32, limited: bool) -> [(&'static str, f64); 3] {
-    [("PATH_STEPS", f64::from(steps)), ("BUDGETED_RAYS", 1.0), ("LIMITED_REACH", f64::from(limited))]
+    [
+        ("PATH_STEPS", f64::from(steps)),
+        ("BUDGETED_RAYS", 1.0),
+        ("LIMITED_REACH", f64::from(limited)),
+    ]
 }
 
-fn pixel_kernel(device: &RenderDevice, modules: &[bevy::render::render_resource::ShaderModule; 2],
-    bindings: &[Vec<u32>; 3], steps: u32, limited: bool) -> Kernel {
+fn pixel_kernel(
+    device: &RenderDevice,
+    modules: &[bevy::render::render_resource::ShaderModule; 2],
+    bindings: &[Vec<u32>; 3],
+    steps: u32,
+    limited: bool,
+) -> Kernel {
     Kernel {
         pipeline: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("trace_pixel_queue"),
@@ -574,8 +621,17 @@ enum Dispatch {
 
 impl Stage {
     pub const ORDER: [Stage; 11] = [
-        Stage::PreparePool, Stage::Discover, Stage::Index, Stage::Reproject, Stage::Retain,
-        Stage::LoadCache, Stage::Trace, Stage::Reconstruct, Stage::StoreCache, Stage::Publish, Stage::Far,
+        Stage::PreparePool,
+        Stage::Discover,
+        Stage::Index,
+        Stage::Reproject,
+        Stage::Retain,
+        Stage::LoadCache,
+        Stage::Trace,
+        Stage::Reconstruct,
+        Stage::StoreCache,
+        Stage::Publish,
+        Stage::Far,
     ];
     pub const COUNT: usize = 11;
 
@@ -609,7 +665,11 @@ impl Stage {
             Stage::Publish => &[(7, Dispatch::Stage)],
             Stage::PreparePool => &[(8, Dispatch::Stage)],
             // Classify every cell, size the queue, trace it densely.
-            Stage::Far => &[(9, Dispatch::Stage), (10, Dispatch::One), (11, Dispatch::Indirect)],
+            Stage::Far => &[
+                (9, Dispatch::Stage),
+                (10, Dispatch::One),
+                (11, Dispatch::Indirect),
+            ],
             Stage::Retain => &[],
         }
     }
@@ -730,7 +790,11 @@ fn render_view(
         renderer
             .budget
             .begin_frame(&device, elapsed, settings.share, settings.view_first);
-        settings.sun_flips.lock().unwrap().append(&mut renderer.budget.sun_flips);
+        settings
+            .sun_flips
+            .lock()
+            .unwrap()
+            .append(&mut renderer.budget.sun_flips);
         *settings.receipts.lock().unwrap() = ViewReceipts {
             available: renderer.budget.queries.is_some() && renderer.budget.receipts > 0,
             receipt: renderer.budget.receipts,
@@ -789,7 +853,13 @@ fn render_view(
     let limited = scene.params.transport.x < crate::tracer::MAX_PATH_DISTANCE;
     let pixel_policy = (settings.pixel.steps, limited);
     if renderer.pixel_steps != pixel_policy {
-        renderer.pixel_trace = pixel_kernel(&device, &renderer.modules, &renderer.pixel_trace_bindings, pixel_policy.0, limited);
+        renderer.pixel_trace = pixel_kernel(
+            &device,
+            &renderer.modules,
+            &renderer.pixel_trace_bindings,
+            pixel_policy.0,
+            limited,
+        );
         renderer.pixel_steps = pixel_policy;
         for camera in renderer.cameras.values_mut() {
             camera.binding_keys = [None, None];
@@ -811,8 +881,13 @@ fn render_view(
     let pixel_size = settings.pixel.cell_for(view.viewport.w);
     let pixel_cells = view.viewport.zw().map(|v| v.div_ceil(pixel_size));
     let pixel_enabled = settings.pixel.voxel_pixels > 0.0
-        && u64::from(pixel_cells.element_product()) * 16 + PIXEL_HEADER_BYTES <= pixel_output.buffer.size();
-    if camera.pixel.as_ref().is_none_or(|state| state.cells != pixel_cells) {
+        && u64::from(pixel_cells.element_product()) * 16 + PIXEL_HEADER_BYTES
+            <= pixel_output.buffer.size();
+    if camera
+        .pixel
+        .as_ref()
+        .is_none_or(|state| state.cells != pixel_cells)
+    {
         let Some(state) = PixelState::new(&device, pixel_cells) else {
             return;
         };
@@ -829,8 +904,14 @@ fn render_view(
         .unwrap_or_else(|| view.clip_from_view * view.world_from_view.affine().inverse());
     let discovery_view = (clip, view.viewport, settings.inner_radius, msaa.samples());
     let discovery_stable = camera.valid && camera.discovery_view == Some(discovery_view);
-    let discovery_compatible = camera.valid && camera.discovery_view.is_some_and(|(_, viewport, radius, samples)|
-        viewport == view.viewport && radius == settings.inner_radius && samples == msaa.samples());
+    let discovery_compatible = camera.valid
+        && camera
+            .discovery_view
+            .is_some_and(|(_, viewport, radius, samples)| {
+                viewport == view.viewport
+                    && radius == settings.inner_radius
+                    && samples == msaa.samples()
+            });
     camera.discovery_view = Some(discovery_view);
     let control = Control {
         world_from_clip: clip.inverse(),
@@ -841,36 +922,63 @@ fn render_view(
             .extend(settings.inner_radius),
         viewport: view.viewport,
         grid: UVec4::new(grid.x, grid.y, count, hash_mask),
-        history: UVec4::new(if camera.valid { count } else { 0 }, hash_mask, frame.0, u32::from(settings.view_first)),
+        history: UVec4::new(
+            if camera.valid { count } else { 0 },
+            hash_mask,
+            frame.0,
+            u32::from(settings.view_first),
+        ),
         display: Vec4::new(
             settings.noise_threshold,
             settings.spatial,
             1.0 - (-renderer.frame_seconds.max(1.0 / 240.0) / settings.response).exp(),
             settings.measured_retention,
         ),
-        cache: scene.cache.as_ref().map_or(UVec4::ZERO, |cache|
-            UVec4::new(cache.epoch, cache.origin.elapsed().as_millis() as u32,
-                u32::from(cache.enabled && settings.view_first), 0)),
-        discovery: UVec4::new(u32::from(discovery_stable), u32::from(discovery_compatible), 0, 0),
+        cache: scene.cache.as_ref().map_or(UVec4::ZERO, |cache| {
+            UVec4::new(
+                cache.epoch,
+                cache.origin.elapsed().as_millis() as u32,
+                u32::from(cache.enabled && settings.view_first),
+                0,
+            )
+        }),
+        discovery: UVec4::new(
+            u32::from(discovery_stable),
+            u32::from(discovery_compatible),
+            0,
+            0,
+        ),
         pixel_axis: {
             let forward = view.world_from_view.forward();
             // clip_from_view[1][1]: NDC y per unit of y / view depth.
             let scale = view.clip_from_view.y_axis.y * view.viewport.w as f32 * 0.5;
             forward.extend(scale)
         },
-        pixel_grid: UVec4::new(pixel_cells.x, pixel_cells.y, pixel_size,
-            u32::from(pixel_enabled) | (settings.pixel.measure as u32) << 1),
+        pixel_grid: UVec4::new(
+            pixel_cells.x,
+            pixel_cells.y,
+            pixel_size,
+            u32::from(pixel_enabled) | (settings.pixel.measure as u32) << 1,
+        ),
         pixel_tune: Vec4::new(
             settings.pixel.voxel_pixels,
             settings.pixel.history,
             settings.pixel.rate as f32,
             // The frame that wrote the previous cells (their stamp); all
             // ones when there are none.
-            f32::from_bits(if camera.previous_clip.is_some() { camera.last_frame } else { u32::MAX }),
+            f32::from_bits(if camera.previous_clip.is_some() {
+                camera.last_frame
+            } else {
+                u32::MAX
+            }),
         ),
         previous_clip_from_world: camera.previous_clip.unwrap_or(clip),
-        interest_min: settings.interest.map_or(IVec4::ZERO, |(min, _)| min.extend(1)),
-        interest_max: settings.interest.map_or(IVec4::ZERO, |(_, max)| max.extend(1)),
+        interest_min: settings
+            .interest
+            .map_or(IVec4::ZERO, |(min, _)| min.extend(1)),
+        interest_max: settings
+            .interest
+            .map_or(IVec4::ZERO, |(_, max)| max.extend(1)),
     };
     camera
         .control
@@ -971,12 +1079,24 @@ fn render_view(
                                 12 => change.unwrap().events.as_entire_binding(),
                                 13 => change.unwrap().control.as_entire_binding(),
                                 14 => scene.buffers[6].as_entire_binding(),
-                                15 => scene.cache.as_ref().map_or(&scene.buffers[6], |cache| &cache.meta).as_entire_binding(),
-                                16 => scene.cache.as_ref().map_or(&scene.buffers[6], |cache| &cache.guard).as_entire_binding(),
+                                15 => scene
+                                    .cache
+                                    .as_ref()
+                                    .map_or(&scene.buffers[6], |cache| &cache.meta)
+                                    .as_entire_binding(),
+                                16 => scene
+                                    .cache
+                                    .as_ref()
+                                    .map_or(&scene.buffers[6], |cache| &cache.guard)
+                                    .as_entire_binding(),
                                 17 => current.pool.buffer.as_entire_binding(),
                                 18 => previous.pool.buffer.as_entire_binding(),
-                                19 => pixel_state.history[1 - camera.current].buffer.as_entire_binding(),
-                                20 => pixel_state.history[camera.current].buffer.as_entire_binding(),
+                                19 => pixel_state.history[1 - camera.current]
+                                    .buffer
+                                    .as_entire_binding(),
+                                20 => pixel_state.history[camera.current]
+                                    .buffer
+                                    .as_entire_binding(),
                                 21 => pixel_state.stats.buffer.as_entire_binding(),
                                 22 => pixel_output.buffer.as_entire_binding(),
                                 23 => pixel_state.queue.buffer.as_entire_binding(),
@@ -997,7 +1117,12 @@ fn render_view(
     };
     let key_bindings = BindingKey {
         scene: scene.buffers.each_ref().map(Buffer::id),
-        cache: scene.cache.as_ref().map_or([scene.buffers[6].id(); 2], |cache| [cache.meta.id(), cache.guard.id()]),
+        cache: scene
+            .cache
+            .as_ref()
+            .map_or([scene.buffers[6].id(); 2], |cache| {
+                [cache.meta.id(), cache.guard.id()]
+            }),
         depth: depth.id(),
         normals: normals.id(),
         output: output.buffer.id(),
@@ -1076,10 +1201,15 @@ fn render_view(
         }
     }
     if let Some(ticket) = ticket {
-        renderer
-            .budget
-            .finish(encoder, &camera.queue.buffer, sun_flip_offset(count), &current.pool.buffer,
-                &pixel_state.stats.buffer, ticket, executed);
+        renderer.budget.finish(
+            encoder,
+            &camera.queue.buffer,
+            sun_flip_offset(count),
+            &current.pool.buffer,
+            &pixel_state.stats.buffer,
+            ticket,
+            executed,
+        );
     }
     camera.previous_clip = Some(clip);
     camera.current = 1 - camera.current;
@@ -1100,9 +1230,21 @@ mod tests {
         let started = std::time::Instant::now();
         let reflection = crate::gpu::reflect::Reflection::new(&shader(false));
         eprintln!("view shader reflection: {:?}", started.elapsed());
-        for name in ["prepare_receiver_pool", "discover_receivers", "index_receivers", "reproject_paths",
-            "trace_visible_paths", "retain_view_history", "load_shared_faces", "store_shared_faces",
-            "reconstruct_view", "publish_view", "classify_pixels", "size_pixel_queue", "trace_pixel_queue"] {
+        for name in [
+            "prepare_receiver_pool",
+            "discover_receivers",
+            "index_receivers",
+            "reproject_paths",
+            "trace_visible_paths",
+            "retain_view_history",
+            "load_shared_faces",
+            "store_shared_faces",
+            "reconstruct_view",
+            "publish_view",
+            "classify_pixels",
+            "size_pixel_queue",
+            "trace_pixel_queue",
+        ] {
             let [group0, group1, group2] = reflection.bindings(name);
             assert!(group0.iter().all(|&b| b <= 10), "{name} group 0 {group0:?}");
             assert!(group1.iter().all(|&b| b <= 1), "{name} group 1 {group1:?}");
@@ -1123,10 +1265,21 @@ mod tests {
     fn stage_table_is_a_permutation_of_slots_and_kernels() {
         let mut slots: Vec<_> = Stage::ORDER.iter().map(|stage| stage.slot()).collect();
         slots.sort_unstable();
-        assert_eq!(slots, (0..Stage::COUNT).collect::<Vec<_>>(), "one timestamp pair per stage");
-        let mut kernels: Vec<_> = Stage::ORDER.iter().flat_map(|stage| stage.kernels().iter().map(|k| k.0)).collect();
+        assert_eq!(
+            slots,
+            (0..Stage::COUNT).collect::<Vec<_>>(),
+            "one timestamp pair per stage"
+        );
+        let mut kernels: Vec<_> = Stage::ORDER
+            .iter()
+            .flat_map(|stage| stage.kernels().iter().map(|k| k.0))
+            .collect();
         kernels.sort_unstable();
-        assert_eq!(kernels, (0..12).collect::<Vec<_>>(), "every listed kernel dispatched once");
+        assert_eq!(
+            kernels,
+            (0..12).collect::<Vec<_>>(),
+            "every listed kernel dispatched once"
+        );
     }
 
     #[test]
@@ -1140,9 +1293,16 @@ mod tests {
                 .replace("#{MATERIAL_BIND_GROUP}", "2"),
         );
         let runtime = crate::gpu::reflect::Reflection::new(&shader(false));
-        assert_eq!(presentation.layout("FarOutput"), runtime.layout("FarOutput"));
+        assert_eq!(
+            presentation.layout("FarOutput"),
+            runtime.layout("FarOutput")
+        );
         assert_eq!(presentation.layout("FarPixel"), runtime.layout("FarPixel"));
-        assert_eq!(presentation.layout("FarCells"), runtime.layout("PixelOutput"), "the far tier's cells");
+        assert_eq!(
+            presentation.layout("FarCells"),
+            runtime.layout("PixelOutput"),
+            "the far tier's cells"
+        );
     }
 
     #[test]
@@ -1152,34 +1312,82 @@ mod tests {
         let u = |i: u32| UVec4::splat(i);
         let m = |i: u32| Mat4::from_cols(f(i), f(i), f(i), f(i));
         let control = Control {
-            world_from_clip: m(1), clip_from_world: m(2), camera: f(3), viewport: u(4), grid: u(5),
-            history: u(6), display: f(7), cache: u(8), discovery: u(9), pixel_axis: f(10),
-            pixel_grid: u(11), pixel_tune: f(12), previous_clip_from_world: m(13),
-            interest_min: IVec4::splat(14), interest_max: IVec4::splat(15),
+            world_from_clip: m(1),
+            clip_from_world: m(2),
+            camera: f(3),
+            viewport: u(4),
+            grid: u(5),
+            history: u(6),
+            display: f(7),
+            cache: u(8),
+            discovery: u(9),
+            pixel_axis: f(10),
+            pixel_grid: u(11),
+            pixel_tune: f(12),
+            previous_clip_from_world: m(13),
+            interest_min: IVec4::splat(14),
+            interest_max: IVec4::splat(15),
         };
-        crate::gpu::reflect::assert_mirrors(&ShaderBuffer::from(control).data.unwrap(), reflection.layout("ViewControl"), &[
-            "world_from_clip", "clip_from_world", "camera", "viewport", "grid", "history", "display",
-            "cache", "discovery", "pixel_axis", "pixel_grid", "pixel_tune", "previous_clip_from_world",
-            "interest_min", "interest_max",
-        ]);
-        let wave = Wave { range: u(1), ticket: u(2) };
-        crate::gpu::reflect::assert_mirrors(&ShaderBuffer::from(wave).data.unwrap(), reflection.layout("ViewWave"), &["range", "ticket"]);
+        crate::gpu::reflect::assert_mirrors(
+            &ShaderBuffer::from(control).data.unwrap(),
+            reflection.layout("ViewControl"),
+            &[
+                "world_from_clip",
+                "clip_from_world",
+                "camera",
+                "viewport",
+                "grid",
+                "history",
+                "display",
+                "cache",
+                "discovery",
+                "pixel_axis",
+                "pixel_grid",
+                "pixel_tune",
+                "previous_clip_from_world",
+                "interest_min",
+                "interest_max",
+            ],
+        );
+        let wave = Wave {
+            range: u(1),
+            ticket: u(2),
+        };
+        crate::gpu::reflect::assert_mirrors(
+            &ShaderBuffer::from(wave).data.unwrap(),
+            reflection.layout("ViewWave"),
+            &["range", "ticket"],
+        );
         // Far tier: cell histories are allocated at 48 bytes, the output
         // header is PIXEL_HEADER_BYTES.
         assert_eq!(reflection.layout("PixelHistory").1, 48);
         let (output, _) = reflection.layout("PixelOutput");
-        assert_eq!(output.last().unwrap(), &("cells".to_string(), PIXEL_HEADER_BYTES as u32));
+        assert_eq!(
+            output.last().unwrap(),
+            &("cells".to_string(), PIXEL_HEADER_BYTES as u32)
+        );
         // Counter words read back by the timing receipt.
-        for (name, word) in [("QUEUE_OWNERS", queue_words::OWNERS), ("QUEUE_OVERFLOW", queue_words::OVERFLOW),
-            ("QUEUE_COMPLETED", queue_words::COMPLETED), ("QUEUE_KNOWN", queue_words::KNOWN),
-            ("QUEUE_HISTORY", queue_words::HISTORY), ("QUEUE_MAX_HISTORY", queue_words::MAX_HISTORY),
-            ("QUEUE_UNCOVERED", queue_words::UNCOVERED), ("QUEUE_DISPLAYED", queue_words::DISPLAYED),
-            ("QUEUE_PAUSED", queue_words::PAUSED), ("QUEUE_ATTEMPTED", queue_words::ATTEMPTED),
-            ("QUEUE_CACHE_LOADS", queue_words::CACHE_LOADS), ("QUEUE_CACHE_PROMOTIONS", queue_words::CACHE_PROMOTIONS),
-            ("QUEUE_PREFIX", queue_words::PREFIX), ("PIXEL_OWNED", pixel_words::OWNED),
-            ("PIXEL_TRACED", pixel_words::TRACED), ("PIXEL_HISTORY", pixel_words::HISTORY),
-            ("PIXEL_REPROJECTED", pixel_words::REPROJECTED), ("PIXEL_SEEDED", pixel_words::SEEDED),
-            ("PIXEL_RECEIVERS_SEEDED", pixel_words::RECEIVERS_SEEDED)] {
+        for (name, word) in [
+            ("QUEUE_OWNERS", queue_words::OWNERS),
+            ("QUEUE_OVERFLOW", queue_words::OVERFLOW),
+            ("QUEUE_COMPLETED", queue_words::COMPLETED),
+            ("QUEUE_KNOWN", queue_words::KNOWN),
+            ("QUEUE_HISTORY", queue_words::HISTORY),
+            ("QUEUE_MAX_HISTORY", queue_words::MAX_HISTORY),
+            ("QUEUE_UNCOVERED", queue_words::UNCOVERED),
+            ("QUEUE_DISPLAYED", queue_words::DISPLAYED),
+            ("QUEUE_PAUSED", queue_words::PAUSED),
+            ("QUEUE_ATTEMPTED", queue_words::ATTEMPTED),
+            ("QUEUE_CACHE_LOADS", queue_words::CACHE_LOADS),
+            ("QUEUE_CACHE_PROMOTIONS", queue_words::CACHE_PROMOTIONS),
+            ("QUEUE_PREFIX", queue_words::PREFIX),
+            ("PIXEL_OWNED", pixel_words::OWNED),
+            ("PIXEL_TRACED", pixel_words::TRACED),
+            ("PIXEL_HISTORY", pixel_words::HISTORY),
+            ("PIXEL_REPROJECTED", pixel_words::REPROJECTED),
+            ("PIXEL_SEEDED", pixel_words::SEEDED),
+            ("PIXEL_RECEIVERS_SEEDED", pixel_words::RECEIVERS_SEEDED),
+        ] {
             assert_eq!(u64::from(reflection.constant(name)), word, "{name}");
         }
         const { assert!(pixel_words::RECEIVERS_SEEDED < pixel_words::COUNT) };
@@ -1197,12 +1405,28 @@ mod tests {
             )
             .validate(&module)
             .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
-            let layout = &module.types.iter().find(|(_, ty)| ty.name.as_deref() == Some("FarOutput")).unwrap().1.inner;
-            let naga::TypeInner::Struct { members, span } = layout else { panic!("FarOutput must be a struct"); };
+            let layout = &module
+                .types
+                .iter()
+                .find(|(_, ty)| ty.name.as_deref() == Some("FarOutput"))
+                .unwrap()
+                .1
+                .inner;
+            let naga::TypeInner::Struct { members, span } = layout else {
+                panic!("FarOutput must be a struct");
+            };
             assert_eq!(members.last().unwrap().offset as u64, OUTPUT_PREFIX_BYTES);
             assert_eq!(*span as u64, EMPTY_OUTPUT_BYTES);
-            let pool = &module.types.iter().find(|(_, ty)| ty.name.as_deref() == Some("ReceiverPool")).unwrap().1.inner;
-            let naga::TypeInner::Struct { members, .. } = pool else { panic!("ReceiverPool must be a struct"); };
+            let pool = &module
+                .types
+                .iter()
+                .find(|(_, ty)| ty.name.as_deref() == Some("ReceiverPool"))
+                .unwrap()
+                .1
+                .inner;
+            let naga::TypeInner::Struct { members, .. } = pool else {
+                panic!("ReceiverPool must be a struct");
+            };
             assert_eq!(members.last().unwrap().offset as usize, POOL_PREFIX_BYTES);
         }
     }

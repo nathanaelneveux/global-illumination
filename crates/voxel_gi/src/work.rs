@@ -96,11 +96,7 @@ impl ProbeWork {
     /// Publish only after geometry/source validation. Untouched faces and live
     /// order indices remain authoritative. Resident presentation has already
     /// been resolved by the same filter on the GPU; do not filter it twice.
-    pub fn publish(
-        &self,
-        faces: &[FaceWork],
-        probe: &mut SurfaceProbe,
-    ) {
+    pub fn publish(&self, faces: &[FaceWork], probe: &mut SurfaceProbe) {
         let same_revision =
             probe.transport_revision == self.transport_revision && self.retention.is_none();
         // These faces' merges were accepted: nothing left for the GPU to undo.
@@ -243,9 +239,7 @@ impl TraceWork {
             samples: if restart {
                 0
             } else {
-                measured.samples
-                    .min(stale_limit)
-                    .min(source_history_limit)
+                measured.samples.min(stale_limit).min(source_history_limit)
             },
             sequence: probe.sequence(face),
             presentation: probe.display[face]
@@ -269,11 +263,7 @@ impl TraceWork {
                 };
                 relit.min(stale_limit).min(source_history_limit)
             },
-            updated_at: if restart {
-                None
-            } else {
-                measured.updated_at
-            },
+            updated_at: if restart { None } else { measured.updated_at },
         });
     }
 

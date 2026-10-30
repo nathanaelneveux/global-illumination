@@ -1,17 +1,17 @@
 mod ambient_occlusion;
 mod app_controls;
 mod assets;
-mod cave_scene;
 mod canyon_scene;
-mod lod_scene;
-mod scene_presets;
+mod cave_scene;
 mod chunk_colliders;
+mod gi_lab;
+mod lod_scene;
 mod player;
+mod scene_presets;
 mod structures;
 mod terrain;
 mod terrain_meshing;
 mod terrain_noise;
-mod gi_lab;
 #[cfg(debug_assertions)]
 mod validation;
 mod world_environment;
@@ -123,11 +123,7 @@ fn main() -> AppExit {
     } else {
         gi_lab::init_gi_off_resources(&mut app);
     }
-    app.add_plugins((
-        TerrainPlugin,
-        ChunkColliderPlugin,
-        PlayerPlugin,
-    ));
+    app.add_plugins((TerrainPlugin, ChunkColliderPlugin, PlayerPlugin));
     app.run()
 }
 

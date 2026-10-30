@@ -59,7 +59,11 @@ pub(super) fn skylight_room() -> ResearchFixture {
         },
         receivers: (6..26)
             .step_by(2)
-            .flat_map(|z| (6..26).step_by(2).map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4)))
+            .flat_map(|z| {
+                (6..26)
+                    .step_by(2)
+                    .map(move |x| SurfaceProbe::new(IVec3::new(x, 4, z), 4))
+            })
             .collect(),
     }
 }
@@ -110,7 +114,6 @@ pub(super) fn furnace() -> ResearchFixture {
     }
 }
 
-
 /// A sealed 96x9x9 rock corridor with one emitter at one end and two baffles
 /// near the other (the lab's hallway chamber, closed). No environment light.
 pub(super) fn hallway() -> ResearchFixture {
@@ -119,8 +122,14 @@ pub(super) fn hallway() -> ResearchFixture {
     let (rock, emitter) = (5_u16, 4_u16);
     let material = |p: IVec3| {
         let local = p - ORIGIN;
-        let inside = (0..96).contains(&local.x) && (0..9).contains(&local.y) && (0..9).contains(&local.z);
-        let shell = local.x == 0 || local.x == 95 || local.y == 0 || local.y == 8 || local.z == 0 || local.z == 8;
+        let inside =
+            (0..96).contains(&local.x) && (0..9).contains(&local.y) && (0..9).contains(&local.z);
+        let shell = local.x == 0
+            || local.x == 95
+            || local.y == 0
+            || local.y == 8
+            || local.z == 0
+            || local.z == 8;
         let baffle = (local.x == 88 && local.z < 6) || (local.x == 92 && local.z > 2);
         if p == SOURCE {
             emitter
@@ -138,17 +147,34 @@ pub(super) fn hallway() -> ResearchFixture {
                 for y in 0..32 {
                     for x in 0..32 {
                         let local = UVec3::new(x, y, z);
-                        page[linear_index(local, PAGE_SIZE)] = material(coordinate * 32 + local.as_ivec3());
+                        page[linear_index(local, PAGE_SIZE)] =
+                            material(coordinate * 32 + local.as_ivec3());
                     }
                 }
             }
             (coordinate, page)
         })
         .collect();
-    let scene = Arc::new(TransportScene::with_page_delta(&TransportScene::default(), pages, &[]));
+    let scene = Arc::new(TransportScene::with_page_delta(
+        &TransportScene::default(),
+        pages,
+        &[],
+    ));
     let mut materials = VoxelMaterialTransportTable::default();
-    materials.set(rock as u8, MaterialTransport { diffuse: Vec3::splat(0.55), emission: Vec3::ZERO });
-    materials.set(emitter as u8, MaterialTransport { diffuse: Vec3::splat(0.8), emission: Vec3::new(12.0, 5.0, 1.0) });
+    materials.set(
+        rock as u8,
+        MaterialTransport {
+            diffuse: Vec3::splat(0.55),
+            emission: Vec3::ZERO,
+        },
+    );
+    materials.set(
+        emitter as u8,
+        MaterialTransport {
+            diffuse: Vec3::splat(0.8),
+            emission: Vec3::new(12.0, 5.0, 1.0),
+        },
+    );
     let receivers = (1..80)
         .flat_map(|x| {
             [-2, 0, 2].map(move |z| {
@@ -189,7 +215,13 @@ fn cave_materials() -> VoxelMaterialTransportTable {
         (6, 0.2, Vec3::new(0.3, 6.0, 0.08)),
         (7, 0.2, Vec3::new(14.0, 4.0, 0.8)),
     ] {
-        table.set(id, MaterialTransport { diffuse: Vec3::splat(diffuse), emission });
+        table.set(
+            id,
+            MaterialTransport {
+                diffuse: Vec3::splat(diffuse),
+                emission,
+            },
+        );
     }
     table
 }
@@ -203,15 +235,25 @@ fn cave_voxel(p: IVec3) -> u16 {
         return AIR;
     }
     if y == 4 {
-        return if (10..=54).contains(&x) && (10..=54).contains(&z) { 4 } else { 2 };
+        return if (10..=54).contains(&x) && (10..=54).contains(&z) {
+            4
+        } else {
+            2
+        };
     }
     if x == 4 || x == 59 || z == 4 || z == 59 || y == 43 {
         2
     } else if (30..=34).contains(&x) && (30..=34).contains(&z) && y <= 37 {
-        if y % 4 == 0 && (x == 30 || x == 34 || z == 30 || z == 34) { 5 } else { 2 }
+        if y % 4 == 0 && (x == 30 || x == 34 || z == 30 || z == 34) {
+            5
+        } else {
+            2
+        }
     } else if y >= 40 && x % 11 == 7 && z % 13 == 8 {
         6
-    } else if y == 10 && (((x == 5 || x == 58) && z % 8 == 0) || ((z == 5 || z == 58) && x % 8 == 0)) {
+    } else if y == 10
+        && (((x == 5 || x == 58) && z % 8 == 0) || ((z == 5 || z == 58) && x % 8 == 0))
+    {
         7
     } else {
         AIR

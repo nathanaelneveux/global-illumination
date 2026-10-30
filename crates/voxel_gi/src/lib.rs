@@ -1,7 +1,5 @@
 #![doc = include_str!("../README.md")]
-mod input;
-mod pages;
-mod palette;
+mod color;
 mod dispatch;
 mod emission;
 mod field;
@@ -9,7 +7,10 @@ mod geometry;
 mod gpu;
 mod gpu_scene;
 mod history;
+mod input;
 mod naadf;
+mod pages;
+mod palette;
 mod publication;
 mod reconstruction;
 pub(crate) mod render;
@@ -20,11 +21,10 @@ mod sampling;
 mod scheduling;
 mod settings;
 mod sky;
-mod color;
 mod sources;
-mod sun_changes;
 #[cfg(test)]
 mod statistics;
+mod sun_changes;
 mod telemetry;
 mod tracer;
 mod work;
@@ -40,31 +40,34 @@ use bevy::prelude::*;
 use bevy::tasks::Task;
 
 use field::ReceiverField;
-pub use settings::{FarTierMeasure, FarTierSettings, TransportSettings, VoxelGiQuality, VoxelGiSettings};
-pub use sources::{VoxelGiEmitter, VoxelGiEnvironment};
 pub use palette::{MaterialPalette, PaletteFull};
+pub use settings::{
+    FarTierMeasure, FarTierSettings, TransportSettings, VoxelGiQuality, VoxelGiSettings,
+};
+pub use sources::{VoxelGiEmitter, VoxelGiEnvironment};
 pub use world::{AIR, MaterialTransport, VoxelMaterialTransportTable};
 
-use pages::{ingest_input, start_scene_task};
-pub use input::{
-    PageSample, VOXEL_GI_PAGE_EDGE, VoxelGiInput, VoxelGiSource, VoxelSource, coarse_page, dense_page,
-};
-pub use gpu::view::ViewReceipts;
-pub use render::{
-    GiDebugView, PRESENTATION_SHADER, STANDARD_SHADER, VoxelGiBindings, VoxelGiDisplay, VoxelGiMaterialData, VoxelGiMaterialPlugin,
-    VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin, VoxelGiStandardShader, presentation_shader_source,
-    standard_material,
-};
-pub use telemetry::MAIN_STAGE_NAMES as GI_MAIN_STAGE_NAMES;
 use dispatch::{apply_trace_task, start_trace_task};
+pub use gpu::view::ViewReceipts;
+pub use input::{
+    PageSample, VOXEL_GI_PAGE_EDGE, VoxelGiInput, VoxelGiSource, VoxelSource, coarse_page,
+    dense_page,
+};
+use pages::{ingest_input, start_scene_task};
 use publication::apply_scene_task;
 use render::install_render_assets;
+pub use render::{
+    GiDebugView, PRESENTATION_SHADER, STANDARD_SHADER, VoxelGiBindings, VoxelGiDisplay,
+    VoxelGiMaterialData, VoxelGiMaterialPlugin, VoxelGiStandardMaterial,
+    VoxelGiStandardMaterialPlugin, VoxelGiStandardShader, presentation_shader_source,
+    standard_material,
+};
 use sources::{TransportSources, synchronize_material_table, synchronize_transport_sources};
 use telemetry::GiWorkTimings;
+pub use telemetry::MAIN_STAGE_NAMES as GI_MAIN_STAGE_NAMES;
 use tracer::BOOTSTRAP_SAMPLES;
 use work::TraceWork;
 use world::{PAGE_EDGE, SurfaceProbe, SurfaceProbeDescriptor, TransportScene};
-
 
 /// Voxel GI: page ingestion, transport and the view tier. Materials bind
 /// `VoxelGiMaterialData` (the BVW connector's material does this); the debug
@@ -399,7 +402,8 @@ fn update_stats_from_counters(
         runtime.settled_faces as f32 / faces as f32
     };
     // The world sweep is continuous on the GPU (oldest faces first).
-    stats.scheduler.fully_bootstrapped = stats.bootstrap_coverage >= 1.0 && field.publishing_pages.is_empty();
+    stats.scheduler.fully_bootstrapped =
+        stats.bootstrap_coverage >= 1.0 && field.publishing_pages.is_empty();
 }
 
 #[cfg(test)]
@@ -436,7 +440,11 @@ pub mod testing {
         bindings: &super::VoxelGiBindings,
     ) -> ([Handle<bevy::render::storage::ShaderBuffer>; 3], u32) {
         (
-            [bindings.directory.clone(), bindings.regions.clone(), bindings.cells.clone()],
+            [
+                bindings.directory.clone(),
+                bindings.regions.clone(),
+                bindings.cells.clone(),
+            ],
             bindings.traversal.counts.x,
         )
     }

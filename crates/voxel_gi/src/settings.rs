@@ -108,7 +108,14 @@ pub enum FarTierMeasure {
 
 impl Default for FarTierSettings {
     fn default() -> Self {
-        Self { voxel_pixels: 8.0, measure: FarTierMeasure::VoxelSide, cell: 0, history: 32.0, rate: 4, steps: 128 }
+        Self {
+            voxel_pixels: 8.0,
+            measure: FarTierMeasure::VoxelSide,
+            cell: 0,
+            history: 32.0,
+            rate: 4,
+            steps: 128,
+        }
     }
 }
 
@@ -123,10 +130,18 @@ impl FarTierSettings {
 
     pub(crate) fn normalized(self) -> Self {
         Self {
-            voxel_pixels: if self.voxel_pixels.is_finite() { self.voxel_pixels.clamp(0.0, 4096.0) } else { 0.0 },
+            voxel_pixels: if self.voxel_pixels.is_finite() {
+                self.voxel_pixels.clamp(0.0, 4096.0)
+            } else {
+                0.0
+            },
             measure: self.measure,
             cell: self.cell.min(4),
-            history: if self.history.is_finite() { self.history.clamp(1.0, 1024.0) } else { 32.0 },
+            history: if self.history.is_finite() {
+                self.history.clamp(1.0, 1024.0)
+            } else {
+                32.0
+            },
             rate: self.rate.clamp(1, 8),
             steps: self.steps.clamp(16, 2048),
         }
@@ -189,24 +204,31 @@ impl VoxelGiSettings {
 
     /// Parse RON settings; missing fields default and values are clamped.
     pub fn from_ron(text: &str) -> Result<Self, String> {
-        ron::from_str::<Self>(text).map(Self::normalized).map_err(|error| error.to_string())
+        ron::from_str::<Self>(text)
+            .map(Self::normalized)
+            .map_err(|error| error.to_string())
     }
 
     /// Pretty RON of every field.
     pub fn to_ron(&self) -> String {
-        ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()).expect("finite GI settings")
+        ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
+            .expect("finite GI settings")
     }
 
     /// The preset these settings' performance knobs match, if any.
     pub fn matching_quality(&self) -> Option<VoxelGiQuality> {
-        [VoxelGiQuality::Low, VoxelGiQuality::Default, VoxelGiQuality::High]
-            .into_iter()
-            .find(|quality| {
-                let preset = Self::quality(*quality);
-                preset.gpu_time_share == self.gpu_time_share
-                    && preset.cache_radius == self.cache_radius
-                    && preset.view_receivers == self.view_receivers
-            })
+        [
+            VoxelGiQuality::Low,
+            VoxelGiQuality::Default,
+            VoxelGiQuality::High,
+        ]
+        .into_iter()
+        .find(|quality| {
+            let preset = Self::quality(*quality);
+            preset.gpu_time_share == self.gpu_time_share
+                && preset.cache_radius == self.cache_radius
+                && preset.view_receivers == self.view_receivers
+        })
     }
 }
 
@@ -256,7 +278,10 @@ impl VoxelGiSettings {
         self.display_response = self
             .display_response
             .clamp(Duration::from_millis(10), Duration::from_millis(500));
-        self.scheduler.scene_publish_budget = self.scheduler.scene_publish_budget.min(Duration::from_millis(8));
+        self.scheduler.scene_publish_budget = self
+            .scheduler
+            .scene_publish_budget
+            .min(Duration::from_millis(8));
         self.view_receivers = self.view_receiver_limit();
         self.spatial_noise_threshold = self.noise_threshold();
         self.far_tier = self.far_tier.normalized();
@@ -272,7 +297,8 @@ impl VoxelGiSettings {
     }
 
     pub(super) fn view_receiver_limit(&self) -> u32 {
-        self.view_receivers.clamp(8_192, super::gpu::view::MAX_VIEW_RECEIVERS)
+        self.view_receivers
+            .clamp(8_192, super::gpu::view::MAX_VIEW_RECEIVERS)
     }
 
     pub(super) fn measured_retention(&self) -> f32 {
@@ -286,7 +312,8 @@ impl VoxelGiSettings {
         self.scheduler.samples_per_dispatch.clamp(1, 64)
     }
     pub(super) fn audit_interval(&self) -> Duration {
-        self.scheduler.stable_audit_interval
+        self.scheduler
+            .stable_audit_interval
             .clamp(Duration::from_millis(100), Duration::from_secs(30))
     }
     pub(super) fn stable_samples(&self) -> u32 {
@@ -400,7 +427,13 @@ mod tests {
         let imported =
             VoxelGiSettings::from_ron("(transport: (reach: 16.0, bounces: 0), view_receivers: 1)")
                 .unwrap();
-        assert_eq!(imported.transport, TransportSettings { reach: 16.0, bounces: 1 });
+        assert_eq!(
+            imported.transport,
+            TransportSettings {
+                reach: 16.0,
+                bounces: 1
+            }
+        );
         assert!(
             VoxelGiSettings::from_ron("(samples_per_dispatch: 16)").is_err(),
             "scheduler bounds are not host settings"
@@ -409,19 +442,38 @@ mod tests {
         assert!(VoxelGiSettings::from_ron("broken").is_err());
         let high = VoxelGiSettings::quality(VoxelGiQuality::High);
         assert_eq!(VoxelGiSettings::from_ron(&high.to_ron()).unwrap(), high);
-        assert_eq!(VoxelGiSettings::from_ron("()").unwrap(), VoxelGiSettings::default());
+        assert_eq!(
+            VoxelGiSettings::from_ron("()").unwrap(),
+            VoxelGiSettings::default()
+        );
     }
 
     #[test]
     fn quality_presets_change_only_cost_knobs_and_round_trip() {
-        for quality in [VoxelGiQuality::Low, VoxelGiQuality::Default, VoxelGiQuality::High] {
+        for quality in [
+            VoxelGiQuality::Low,
+            VoxelGiQuality::Default,
+            VoxelGiQuality::High,
+        ] {
             let preset = VoxelGiSettings::quality(quality);
             assert_eq!(preset.matching_quality(), Some(quality));
-            assert_eq!(preset.clone().normalized(), preset, "presets are within range");
-            let look = VoxelGiSettings { gpu_time_share: 0.2, cache_radius: 64.0, view_receivers: 65_536, ..preset };
+            assert_eq!(
+                preset.clone().normalized(),
+                preset,
+                "presets are within range"
+            );
+            let look = VoxelGiSettings {
+                gpu_time_share: 0.2,
+                cache_radius: 64.0,
+                view_receivers: 65_536,
+                ..preset
+            };
             assert_eq!(look, VoxelGiSettings::default());
         }
-        assert_eq!(VoxelGiSettings::quality(VoxelGiQuality::Default), VoxelGiSettings::default());
+        assert_eq!(
+            VoxelGiSettings::quality(VoxelGiQuality::Default),
+            VoxelGiSettings::default()
+        );
     }
 
     #[test]
@@ -429,11 +481,17 @@ mod tests {
         let cached = VoxelGiSettings::default();
         assert_eq!(cached.cache_radius(), Some(64.0));
         assert_eq!(cached.world_budget_fraction(), 0.25);
-        let cacheless = VoxelGiSettings { cache_radius: 0.0, ..default() };
+        let cacheless = VoxelGiSettings {
+            cache_radius: 0.0,
+            ..default()
+        };
         assert_eq!(cacheless.cache_radius(), None);
         assert_eq!(cacheless.world_budget_fraction(), 0.0);
         assert_eq!(cacheless.gpu_share(), cached.gpu_share());
-        let small = VoxelGiSettings { cache_radius: 32.0, ..default() };
+        let small = VoxelGiSettings {
+            cache_radius: 32.0,
+            ..default()
+        };
         assert_eq!(small.cache_radius(), Some(32.0));
         assert_eq!(small.world_budget_fraction(), 0.25);
     }
@@ -465,10 +523,7 @@ mod tests {
             ron::from_str::<VoxelGiSettings>(&encoded).unwrap(),
             settings
         );
-        assert_eq!(
-            ron::from_str::<VoxelGiSettings>("()").unwrap(),
-            settings
-        );
+        assert_eq!(ron::from_str::<VoxelGiSettings>("()").unwrap(), settings);
     }
 
     #[test]
@@ -519,8 +574,15 @@ mod tests {
     #[test]
     fn far_tier_cells_follow_the_view_height_unless_set() {
         let auto = FarTierSettings::default();
-        assert_eq!([720, 1080, 1440, 2160, 4320].map(|h| auto.cell_for(h)), [2, 2, 3, 4, 4]);
-        assert_eq!(FarTierSettings { cell: 2, ..auto }.cell_for(2160), 2, "an explicit size wins");
+        assert_eq!(
+            [720, 1080, 1440, 2160, 4320].map(|h| auto.cell_for(h)),
+            [2, 2, 3, 4, 4]
+        );
+        assert_eq!(
+            FarTierSettings { cell: 2, ..auto }.cell_for(2160),
+            2,
+            "an explicit size wins"
+        );
         assert_eq!(FarTierSettings { cell: 9, ..auto }.normalized().cell, 4);
     }
 }

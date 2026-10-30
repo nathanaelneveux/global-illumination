@@ -15,12 +15,7 @@ pub(crate) fn relative_error(mean: Vec3, second: Vec3, samples: u32) -> f32 {
 /// The presentation filter and the refinement scheduler have different error
 /// tolerances. A display-stabilizing floor must not make dark transport appear
 /// well measured. Callers supply a positive floor in normalized energy units.
-pub(crate) fn relative_error_with_floor(
-    mean: Vec3,
-    second: Vec3,
-    samples: u32,
-    floor: f32,
-) -> f32 {
+pub(crate) fn relative_error_with_floor(mean: Vec3, second: Vec3, samples: u32, floor: f32) -> f32 {
     if samples < 2 {
         return 1.0;
     }

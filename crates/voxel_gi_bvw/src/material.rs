@@ -1,7 +1,6 @@
 //! The `bevy_voxel_world` mesh material lit by voxel GI: BVW's texture array
 //! and vertex layout over `StandardMaterial`, with GI's bindings
 //! (`VoxelGiBindings`) and its presentation module (`voxel_gi::presentation`).
-use voxel_gi::{VoxelGiBindings, VoxelGiMaterialData, VoxelGiMaterialPlugin};
 use bevy::image::{ImageAddressMode, ImageSampler, TextureReinterpretationError};
 use bevy::pbr::{
     ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
@@ -13,6 +12,7 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::ShaderRef;
 use bevy_voxel_world::rendering::vertex_layout;
+use voxel_gi::{VoxelGiBindings, VoxelGiMaterialData, VoxelGiMaterialPlugin};
 
 pub const VOXEL_TRANSPORT_SHADER: &str = "shaders/voxel_transport.wgsl";
 /// The terrain material shader (inserted by `install`).
@@ -68,17 +68,23 @@ pub(crate) fn install(app: &mut App) {
     if !app.is_plugin_added::<MaterialPlugin<VoxelTransportMaterial>>() {
         app.add_plugins(MaterialPlugin::<VoxelTransportMaterial>::default());
     }
-    app.add_plugins(VoxelGiMaterialPlugin::<VoxelTransportMaterial>::new(|material| {
-        &mut material.base.extension
-    }));
+    app.add_plugins(VoxelGiMaterialPlugin::<VoxelTransportMaterial>::new(
+        |material| &mut material.base.extension,
+    ));
     let _ = app.world_mut().resource_mut::<Assets<Shader>>().insert(
         VOXEL_TRANSPORT_SHADER_HANDLE.id(),
-        Shader::from_wgsl(include_str!("../shaders/voxel_transport.wgsl"), VOXEL_TRANSPORT_SHADER),
+        Shader::from_wgsl(
+            include_str!("../shaders/voxel_transport.wgsl"),
+            VOXEL_TRANSPORT_SHADER,
+        ),
     );
 }
 
 /// A BVW voxel material over `texture` (a 2D array, see `prepare_texture_array`).
-pub fn material_template(texture: Handle<Image>, data: &VoxelGiMaterialData) -> VoxelTransportMaterial {
+pub fn material_template(
+    texture: Handle<Image>,
+    data: &VoxelGiMaterialData,
+) -> VoxelTransportMaterial {
     ExtendedMaterial {
         base: ExtendedMaterial {
             base: StandardMaterial {
@@ -89,7 +95,9 @@ pub fn material_template(texture: Handle<Image>, data: &VoxelGiMaterialData) -> 
             },
             extension: VoxelGiBindings::from(data),
         },
-        extension: VoxelTransportExtension { voxel_texture: texture },
+        extension: VoxelTransportExtension {
+            voxel_texture: texture,
+        },
     }
 }
 
@@ -195,12 +203,18 @@ mod tests {
         // registers it in an app; here, by hand).
         let _ = app.world_mut().resource_mut::<Assets<Shader>>().insert(
             voxel_gi::PRESENTATION_SHADER.id(),
-            Shader::from_wgsl(voxel_gi::presentation_shader_source(), "voxel_gi/presentation.wgsl"),
+            Shader::from_wgsl(
+                voxel_gi::presentation_shader_source(),
+                "voxel_gi/presentation.wgsl",
+            ),
         );
         let handle = app
             .world_mut()
             .resource_mut::<Assets<Shader>>()
-            .add(Shader::from_wgsl(include_str!("../shaders/voxel_transport.wgsl"), VOXEL_TRANSPORT_SHADER));
+            .add(Shader::from_wgsl(
+                include_str!("../shaders/voxel_transport.wgsl"),
+                VOXEL_TRANSPORT_SHADER,
+            ));
         let mut defs: Vec<ShaderDefVal> = [
             "VERTEX_POSITIONS",
             "VERTEX_NORMALS",
@@ -226,19 +240,28 @@ mod tests {
             }
             match cache.get(0, handle.id(), &defs) {
                 Ok(module) => {
-                    let fragment = module.entry_points.iter()
-                        .find(|entry| entry.name == "fragment").unwrap();
+                    let fragment = module
+                        .entry_points
+                        .iter()
+                        .find(|entry| entry.name == "fragment")
+                        .unwrap();
                     let naga::TypeInner::Struct { members, .. } =
-                        &module.types[fragment.function.arguments[0].ty].inner else {
-                            panic!("terrain fragment must receive its vertex output struct");
-                        };
-                    assert!(members.iter().any(|member| matches!(member.binding,
-                        Some(naga::Binding::Location {
-                            location: 0,
-                            interpolation: Some(naga::Interpolation::Perspective),
-                            sampling: Some(naga::Sampling::Centroid), ..
-                        })
-                    )), "world position must not extrapolate from an uncovered MSAA pixel centre");
+                        &module.types[fragment.function.arguments[0].ty].inner
+                    else {
+                        panic!("terrain fragment must receive its vertex output struct");
+                    };
+                    assert!(
+                        members.iter().any(|member| matches!(
+                            member.binding,
+                            Some(naga::Binding::Location {
+                                location: 0,
+                                interpolation: Some(naga::Interpolation::Perspective),
+                                sampling: Some(naga::Sampling::Centroid),
+                                ..
+                            })
+                        )),
+                        "world position must not extrapolate from an uncovered MSAA pixel centre"
+                    );
                     break;
                 }
                 Err(bevy::shader::ShaderCacheError::ShaderImportNotYetAvailable)
@@ -341,11 +364,7 @@ mod tests {
                     mapped_at_creation: false,
                 })
             });
-            voxel_gi::testing::publish_geometry(
-                app.world_mut(),
-                buffers.clone(),
-                768,
-            );
+            voxel_gi::testing::publish_geometry(app.world_mut(), buffers.clone(), 768);
             voxel_gi::testing::set_display(
                 app.world_mut(),
                 generation & 1 == 1,
@@ -354,14 +373,15 @@ mod tests {
             app.update();
             app.update();
             let render_world = app.sub_app(bevy::render::RenderApp).world();
-            let prepared = render_world
-                .resource::<bevy::render::render_asset::RenderAssets<bevy::render::storage::GpuShaderBuffer>>();
+            let prepared =
+                render_world.resource::<bevy::render::render_asset::RenderAssets<
+                    bevy::render::storage::GpuShaderBuffer,
+                >>();
             let material_assets = app.world().resource::<Assets<VoxelTransportMaterial>>();
             let extension = &material_assets.get(&material).unwrap().base.extension;
             let (handles, nodes) = voxel_gi::testing::geometry_bindings(extension);
             assert_eq!(nodes, 768);
-            for (handle, buffer) in handles.iter().zip(&buffers)
-            {
+            for (handle, buffer) in handles.iter().zip(&buffers) {
                 assert_eq!(prepared.get(handle).unwrap().buffer.id(), buffer.id());
             }
             assert!(

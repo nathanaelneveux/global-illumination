@@ -45,8 +45,7 @@ impl Fixture {
                 TraceWork::from_probes(&probes[264..265]),
             )
         };
-        let emitters = Arc::new(EmissionDistribution::build(&scene,
-            &materials));
+        let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
         work.shared_view_cache = true;
         gpu.trace_compact(
             scene.clone(),
@@ -309,19 +308,40 @@ fn native_new_face_bootstrap_is_weak_and_does_not_restart_sampling() {
         ..default()
     };
     let upload_control = |f: &mut Fixture, c: Control| {
-        f.camera.control.upload(&f.gpu.context.device, &f.gpu.context.queue,
-            &ShaderBuffer::from(vec![c]).data.unwrap()).unwrap();
+        f.camera
+            .control
+            .upload(
+                &f.gpu.context.device,
+                &f.gpu.context.queue,
+                &ShaderBuffer::from(vec![c]).data.unwrap(),
+            )
+            .unwrap();
     };
     // The old exposed block has been removed. Only its last-frame raw face
     // survives, not a displayed/reconstructed RGB value or a current slot.
     let donor = voxel + normal;
-    f.camera.history[1].receivers.upload(device, queue,
-        &ShaderBuffer::from(vec![Receiver { voxel: donor, face: face as u32,
-            surface: donor.as_vec3() + Vec3::splat(0.5) + normal.as_vec3() * 0.5,
-            sequence: 64 }]).data.unwrap()).unwrap();
-    let hash = pcg(pcg(pcg(donor.x as u32) ^ donor.y as u32) ^ donor.z as u32)
-        ^ pcg(face as u32 + 1);
-    queue.write_buffer(&f.camera.history[1].hash.buffer, u64::from(hash & mask) * 4, &1u32.to_le_bytes());
+    f.camera.history[1]
+        .receivers
+        .upload(
+            device,
+            queue,
+            &ShaderBuffer::from(vec![Receiver {
+                voxel: donor,
+                face: face as u32,
+                surface: donor.as_vec3() + Vec3::splat(0.5) + normal.as_vec3() * 0.5,
+                sequence: 64,
+            }])
+            .data
+            .unwrap(),
+        )
+        .unwrap();
+    let hash =
+        pcg(pcg(pcg(donor.x as u32) ^ donor.y as u32) ^ donor.z as u32) ^ pcg(face as u32 + 1);
+    queue.write_buffer(
+        &f.camera.history[1].hash.buffer,
+        u64::from(hash & mask) * 4,
+        &1u32.to_le_bytes(),
+    );
     let mut old = [0u32; 16];
     old[..3].copy_from_slice(&rgb.map(f32::to_bits));
     old[4..7].copy_from_slice(&rgb.map(|v| (v * v + 1.).to_bits()));
@@ -332,8 +352,13 @@ fn native_new_face_bootstrap_is_weak_and_does_not_restart_sampling() {
     upload_control(&mut f, control);
     for support in [1.0f32, 64.] {
         old[3] = support.to_bits();
-        f.gpu.context.queue.write_buffer(&f.camera.history[1].estimates.buffer, 0,
-            &old.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>());
+        f.gpu.context.queue.write_buffer(
+            &f.camera.history[1].estimates.buffer,
+            0,
+            &old.into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
         f.pass("load", None);
         let e = f.estimate();
         if support == 1. {
@@ -341,43 +366,80 @@ fn native_new_face_bootstrap_is_weak_and_does_not_restart_sampling() {
         } else {
             assert_eq!(&e[..3], &old[..3]);
             assert_eq!(&e[4..7], &old[4..7]);
-            assert_eq!(f32::from_bits(e[3]), 1., "zero-ray prior has one effective weight");
+            assert_eq!(
+                f32::from_bits(e[3]),
+                1.,
+                "zero-ray prior has one effective weight"
+            );
             assert_eq!(e[12], 0, "a prior does not consume a QMC path");
-            assert_eq!(&e[8..11], &old[..3], "first display starts at raw prior, not black");
+            assert_eq!(
+                &e[8..11],
+                &old[..3],
+                "first display starts at raw prior, not black"
+            );
         }
     }
     // Repeated admission does not add pseudo-counts. An empty resident face
     // accepts the view prior, then becomes the single authority for both.
     let side = (face + 2) % 6;
     for (position, orientation, expected) in [
-        (donor, side, 1.0), // newly exposed perpendicular wall
-        (voxel - normal, face, 1.0), // placement covers an aligned face
+        (donor, side, 1.0),                      // newly exposed perpendicular wall
+        (voxel - normal, face, 1.0),             // placement covers an aligned face
         (voxel - FACE_OFFSETS[side], side, 1.0), // covered perpendicular floor
-        (voxel + normal * 4, face, 0.0), // not a local topology neighbor
+        (voxel + normal * 4, face, 0.0),         // not a local topology neighbor
         (donor, face, 1.0),
     ] {
         let queue = &f.gpu.context.queue;
         let mut encoder = f.gpu.context.device.create_command_encoder(&default());
         encoder.clear_buffer(&f.camera.history[1].hash.buffer, 0, None);
         queue.submit([encoder.finish()]);
-        f.camera.history[1].receivers.upload(&f.gpu.context.device, queue,
-            &ShaderBuffer::from(vec![Receiver { voxel: position, face: orientation as u32,
-                surface: position.as_vec3() + Vec3::splat(0.5) + FACE_OFFSETS[orientation].as_vec3() * 0.5,
-                sequence: 64 }]).data.unwrap()).unwrap();
+        f.camera.history[1]
+            .receivers
+            .upload(
+                &f.gpu.context.device,
+                queue,
+                &ShaderBuffer::from(vec![Receiver {
+                    voxel: position,
+                    face: orientation as u32,
+                    surface: position.as_vec3()
+                        + Vec3::splat(0.5)
+                        + FACE_OFFSETS[orientation].as_vec3() * 0.5,
+                    sequence: 64,
+                }])
+                .data
+                .unwrap(),
+            )
+            .unwrap();
         let hash = pcg(pcg(pcg(position.x as u32) ^ position.y as u32) ^ position.z as u32)
             ^ pcg(orientation as u32 + 1);
-        queue.write_buffer(&f.camera.history[1].hash.buffer, u64::from(hash & mask) * 4, &1u32.to_le_bytes());
+        queue.write_buffer(
+            &f.camera.history[1].hash.buffer,
+            u64::from(hash & mask) * 4,
+            &1u32.to_le_bytes(),
+        );
         f.set_estimate(&blank);
         f.pass("load", None);
         let e = f.estimate();
-        assert_eq!(f32::from_bits(e[3]), expected, "donor {position:?} face {orientation}");
-        if expected > 0. { assert_eq!(&e[..3], &old[..3]); }
+        assert_eq!(
+            f32::from_bits(e[3]),
+            expected,
+            "donor {position:?} face {orientation}"
+        );
+        if expected > 0. {
+            assert_eq!(&e[..3], &old[..3]);
+        }
     }
     let mut resident = f.resident();
     resident[..28].fill(0);
     let offset = u64::from(f.work.faces[0].resident.x) * 144;
-    f.gpu.context.queue.write_buffer(&scene.buffers[6], offset,
-        &resident.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>());
+    f.gpu.context.queue.write_buffer(
+        &scene.buffers[6],
+        offset,
+        &resident
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    );
     control.cache.z = 1;
     upload_control(&mut f, control);
     f.passes(&["load", "store"], 4, None);
@@ -388,15 +450,22 @@ fn native_new_face_bootstrap_is_weak_and_does_not_restart_sampling() {
         f.allowance(1);
         f.passes(&["load", "trace", "store"], 1, None);
         let path = crate::gpu::maintenance_tests::read_words(
-            &f.gpu.context, &f.camera.history[0].paths.buffer, 128);
+            &f.gpu.context,
+            &f.camera.history[0].paths.buffer,
+            128,
+        );
         assert_eq!(path[3], n - 1, "prior must not skip or repeat paths");
         assert_eq!(path[23], 1, "fixture path must be known");
-        for i in 0..3 { sum[i] += f32::from_bits(path[20 + i]) + f32::from_bits(path[24 + i]); }
+        for i in 0..3 {
+            sum[i] += f32::from_bits(path[20 + i]) + f32::from_bits(path[24 + i]);
+        }
         let e = f.estimate();
         assert_eq!(f32::from_bits(e[3]), (n + 1) as f32);
         for i in 0..3 {
-            assert!((f32::from_bits(e[i]) - sum[i] / (n + 1) as f32).abs() < 1e-5,
-                "prior influence must dilute as 1/(N+1), including dark samples");
+            assert!(
+                (f32::from_bits(e[i]) - sum[i] / (n + 1) as f32).abs() < 1e-5,
+                "prior influence must dilute as 1/(N+1), including dark samples"
+            );
         }
     }
     // A previously sampled identity capped to zero must not be bootstrapped
@@ -418,8 +487,16 @@ fn native_new_face_bootstrap_is_weak_and_does_not_restart_sampling() {
     f.set_estimate(&blank);
     f.passes(&["load", "store"], 1, None);
     assert_eq!(f32::from_bits(f.estimate()[3]), 1.);
-    assert_eq!(f.estimate()[15], 0, "pending geometry has no resident authority");
-    assert_eq!(f.resident(), authority, "pending geometry cannot modify resident transport");
+    assert_eq!(
+        f.estimate()[15],
+        0,
+        "pending geometry has no resident authority"
+    );
+    assert_eq!(
+        f.resident(),
+        authority,
+        "pending geometry cannot modify resident transport"
+    );
 }
 
 #[test]
@@ -429,10 +506,11 @@ fn native_two_way_cache_reserved_paths_match_furnace_energy() {
     let mut e = vec![0u32; 16];
     e[13] = 4;
     f.set_estimate(&e);
-    f.gpu
-        .context
-        .queue
-        .write_buffer(&f.camera.control.buffer, super::CONTROL_VIEW_FIRST_OFFSET, &1u32.to_le_bytes());
+    f.gpu.context.queue.write_buffer(
+        &f.camera.control.buffer,
+        super::CONTROL_VIEW_FIRST_OFFSET,
+        &1u32.to_le_bytes(),
+    );
     f.wave(32, 3);
     // Bound command-buffer size, as the runtime does with per-frame submits.
     // Thousands of Metal compute encoders in one submit can lose the device.
@@ -449,11 +527,8 @@ fn native_two_way_cache_reserved_paths_match_furnace_energy() {
         result[5], result[6]
     );
     assert!(result[5] > 16384);
-    let counters = crate::gpu::maintenance_tests::read_words(
-        &f.gpu.context,
-        &f.camera.queue.buffer,
-        48,
-    );
+    let counters =
+        crate::gpu::maintenance_tests::read_words(&f.gpu.context, &f.camera.queue.buffer, 48);
     let tail = crate::gpu::maintenance_tests::read_words(
         &f.gpu.context,
         &f.camera.history[0].tails.buffer,
@@ -687,10 +762,11 @@ fn native_two_way_cache_rejects_stale_writes_and_obeys_retention() {
     // The old encoder descriptor has the old token even if its buffers still
     // happen to be the current allocation.
     let cache = held.cache.as_ref().unwrap();
-    f.gpu
-        .context
-        .queue
-        .write_buffer(&f.camera.control.buffer, super::CONTROL_EPOCH_OFFSET, &cache.epoch.to_le_bytes());
+    f.gpu.context.queue.write_buffer(
+        &f.camera.control.buffer,
+        super::CONTROL_EPOCH_OFFSET,
+        &cache.epoch.to_le_bytes(),
+    );
     f.pass("store", Some(&held));
     assert_eq!(f.resident(), capped);
     f.control();
@@ -744,7 +820,11 @@ fn native_returning_face_reports_the_sun_change_it_missed() {
     let material = f.work.faces[0].material as u32;
     let flips = |f: &Fixture| {
         // The flip region follows the owner queue: 12 + 2 * receivers words.
-        let words = crate::gpu::maintenance_tests::read_words(&f.gpu.context, &f.camera.queue.buffer, 24 * 4);
+        let words = crate::gpu::maintenance_tests::read_words(
+            &f.gpu.context,
+            &f.camera.queue.buffer,
+            24 * 4,
+        );
         (words[14], f32::from_bits(words[18 + 3]))
     };
     let visible = |f: &Fixture, corners: u32| {
@@ -760,7 +840,11 @@ fn native_returning_face_reports_the_sun_change_it_missed() {
     };
     // Seen lit: the world cache remembers the face's corners.
     visible(&f, LIT);
-    assert_eq!(f.resident()[32], LIT, "the cache keeps the last visible corner word");
+    assert_eq!(
+        f.resident()[32],
+        LIT,
+        "the cache keeps the last visible corner word"
+    );
     assert_eq!(flips(&f).0, 0, "first sight is not a change");
     // Out of view the sun moved; back in view it is a new receiver whose
     // corners were just traced in shadow. Importing its history is the flip.

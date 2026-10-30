@@ -70,7 +70,6 @@ mod store_tests {
         assert_eq!(store.values().count(), 0);
         assert_eq!(store.keys().count(), 0);
     }
-
 }
 
 impl ProbeStore {

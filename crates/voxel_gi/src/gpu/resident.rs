@@ -27,9 +27,7 @@ const SELECTION_WORDS: usize = 4 * 256 + 4 * 3 + 2;
 pub(super) const MIRROR_RECORD_BYTES: usize = 7 * 16;
 const SEL_MIRRORS: u64 = 1037;
 static SHADER: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    include_retention(include_str!(
-        "../../shaders/voxel_accumulate.wgsl"
-    ))
+    include_retention(include_str!("../../shaders/voxel_accumulate.wgsl"))
 });
 type Key = (IVec3, usize);
 
@@ -315,16 +313,34 @@ impl ResidentAccumulator {
         samples: u32,
     ) -> Result<(), String> {
         let _span = info_span!("gi_prepare_inputs").entered();
-        let changed_scene = self.scene.as_ref().is_none_or(|old| !Arc::ptr_eq(old, scene));
-        if changed_scene || self.shared_view_cache != work.shared_view_cache
-            || !work.ensure.is_empty() || !work.retire_pages.is_empty()
-            || !work.retention_events.is_empty() || !self.events.is_empty()
-            || work.probes.iter().any(|probe| probe.restart || work.faces[probe.faces()].iter().any(|face|
-                self.slots.get(&(face.voxel, face.face)).is_none_or(|slot|
-                    slot.revision != probe.revision || slot.material != face.material)))
+        let changed_scene = self
+            .scene
+            .as_ref()
+            .is_none_or(|old| !Arc::ptr_eq(old, scene));
+        if changed_scene
+            || self.shared_view_cache != work.shared_view_cache
+            || !work.ensure.is_empty()
+            || !work.retire_pages.is_empty()
+            || !work.retention_events.is_empty()
+            || !self.events.is_empty()
+            || work.probes.iter().any(|probe| {
+                probe.restart
+                    || work.faces[probe.faces()].iter().any(|face| {
+                        self.slots.get(&(face.voxel, face.face)).is_none_or(|slot| {
+                            slot.revision != probe.revision || slot.material != face.material
+                        })
+                    })
+            })
         {
-            self.cache_epoch = self.cache_epoch.checked_add(1).ok_or("cache write epoch exhausted")?;
-            self.cache_guard.upload(&context.device, &context.queue, &self.cache_epoch.to_le_bytes())?;
+            self.cache_epoch = self
+                .cache_epoch
+                .checked_add(1)
+                .ok_or("cache write epoch exhausted")?;
+            self.cache_guard.upload(
+                &context.device,
+                &context.queue,
+                &self.cache_epoch.to_le_bytes(),
+            )?;
         }
         self.shared_view_cache = work.shared_view_cache;
         if let Some(previous) = &self.scene {
@@ -587,7 +603,8 @@ impl ResidentAccumulator {
         self.footprint_threads =
             encode_footprints(&mut self.footprint_bytes, &footprints, &self.events);
         if self.footprint_count > 0 {
-            self.footprint_tasks.upload(device, queue, &self.footprint_bytes)?;
+            self.footprint_tasks
+                .upload(device, queue, &self.footprint_bytes)?;
             let mut sums = Vec::with_capacity(footprints.len() * 32);
             for _ in &footprints {
                 for word in [u32::MAX, u32::MAX, u32::MAX, 0, 0, 0, 0, 0] {
@@ -608,8 +625,16 @@ impl ResidentAccumulator {
             }
         }
         self.event_count = encoded.events;
-        self.measure_entries = if self.high_water == 0 { 0 } else { encoded.entries };
-        self.measure_positions = if self.high_water == 0 { 0 } else { encoded.positions };
+        self.measure_entries = if self.high_water == 0 {
+            0
+        } else {
+            encoded.entries
+        };
+        self.measure_positions = if self.high_water == 0 {
+            0
+        } else {
+            encoded.positions
+        };
         if self.event_count > 0 {
             self.events_buffer
                 .upload(device, queue, &self.event_bytes)?;
@@ -1219,7 +1244,10 @@ fn plan_footprints(
         .map(|bounds| {
             events.push(super::super::retention::RetentionEvent {
                 bounds: vec![empty],
-                weights: vec![ChangeWeight { kind: ChangeKind::Light, flux: 0.0 }],
+                weights: vec![ChangeWeight {
+                    kind: ChangeKind::Light,
+                    flux: 0.0,
+                }],
                 union: empty,
                 urgent: vec![false],
                 source_cap: None,
@@ -1260,9 +1288,18 @@ fn encode_footprints(
     let mut threads = 0u32;
     for &(bounds, event) in footprints {
         let (min, max) = (bounds.min, bounds.max);
-        let grid = ((max - min + IVec3::ONE).as_vec3().length().ceil()).clamp(1.0, FOOTPRINT_GRID) as u32;
+        let grid =
+            ((max - min + IVec3::ONE).as_vec3().length().ceil()).clamp(1.0, FOOTPRINT_GRID) as u32;
         push(bytes, [min.x, min.y, min.z, event as i32 * 3]);
-        push(bytes, [max.x, max.y, max.z, (records + first_bound[event] * 2) as i32]);
+        push(
+            bytes,
+            [
+                max.x,
+                max.y,
+                max.z,
+                (records + first_bound[event] * 2) as i32,
+            ],
+        );
         push(bytes, [threads as i32, grid as i32, 0, 0]);
         threads += grid * grid;
     }
@@ -1693,17 +1730,13 @@ mod tests {
         let run = |gpu: &mut GpuTracer, work: &mut TraceWork| {
             work.picks = 64;
             work.mirror_budget = 1024;
-            gpu.trace_compact(
-                scene.clone(),
-                &sources,
-                &materials,
-                work,
-                16,
-                &emitters,
-            )
-            .unwrap();
+            gpu.trace_compact(scene.clone(), &sources, &materials, work, 16, &emitters)
+                .unwrap();
         };
-        let mut first = TraceWork { batch_id: 1, ..Default::default() };
+        let mut first = TraceWork {
+            batch_id: 1,
+            ..Default::default()
+        };
         for probe in &probes {
             first.ensure_slots(probe);
         }
@@ -1807,7 +1840,12 @@ mod tests {
         // At most three batches are in flight, so batch 4 is the last one
         // submitted before job 1 publishes. Batch IDs count submissions only
         // (`start_trace_task`); poll-only frames once expired this window.
-        let mut next = TraceWork { batch_id: 4, picks: 1024, mirror_budget: 1024, ..Default::default() };
+        let mut next = TraceWork {
+            batch_id: 4,
+            picks: 1024,
+            mirror_budget: 1024,
+            ..Default::default()
+        };
         gpu.trace_compact(scene, &sources, &materials, &mut next, 16, &emitters)
             .unwrap();
         assert!(!next.pick_tags.is_empty());
@@ -2165,7 +2203,10 @@ mod tests {
             }],
             ..default()
         };
-        let hole = Bounds { min: IVec3::new(8, 20, 8), max: IVec3::new(10, 20, 10) };
+        let hole = Bounds {
+            min: IVec3::new(8, 20, 8),
+            max: IVec3::new(10, 20, 10),
+        };
         // A floor 16 voxels under a ceiling whose hole is the edit, with or
         // without a roof that shadows the hole anyway.
         let footprint = |roof: bool| {
@@ -2193,39 +2234,83 @@ mod tests {
             let mut gpu = super::super::tests::native_tracer();
             gpu.enable_resident().unwrap();
             let mut work = TraceWork::from_probes(&probes);
-            work.retention_events = vec![crate::retention::RetentionEvent::single(hole, ChangeWeight {
-                kind: ChangeKind::Edit { voxels: 9, measure: false },
-                flux: 0.0,
-            })];
+            work.retention_events = vec![crate::retention::RetentionEvent::single(
+                hole,
+                ChangeWeight {
+                    kind: ChangeKind::Edit {
+                        voxels: 9,
+                        measure: false,
+                    },
+                    flux: 0.0,
+                },
+            )];
             gpu.trace_compact(scene, &sources, &materials, &mut work, 4, &emitters)
                 .unwrap();
             // Two events (the edit, its footprint): six header records, the
             // edit's bound, then the footprint's.
-            let words = read_words(&gpu, &gpu.resident.as_ref().unwrap().events_buffer.buffer, 10 * 16);
-            let ints = |r: usize| IVec3::new(words[r * 4] as i32, words[r * 4 + 1] as i32, words[r * 4 + 2] as i32);
-            (ints(8), ints(9), f32::from_bits(words[8 * 4 + 3]), words[9 * 4 + 3] & 7)
+            let words = read_words(
+                &gpu,
+                &gpu.resident.as_ref().unwrap().events_buffer.buffer,
+                10 * 16,
+            );
+            let ints = |r: usize| {
+                IVec3::new(
+                    words[r * 4] as i32,
+                    words[r * 4 + 1] as i32,
+                    words[r * 4 + 2] as i32,
+                )
+            };
+            (
+                ints(8),
+                ints(9),
+                f32::from_bits(words[8 * 4 + 3]),
+                words[9 * 4 + 3] & 7,
+            )
         };
         let (min, max, flux, kind) = footprint(false);
-        assert_eq!((min, max, kind), (IVec3::new(8, 4, 8), IVec3::new(10, 4, 10), 4));
+        assert_eq!(
+            (min, max, kind),
+            (IVec3::new(8, 4, 8), IVec3::new(10, 4, 10), 4)
+        );
         // Nine voxels of white sunlight reflected by the floor's albedo.
-        let albedo = materials.get(2).diffuse.dot(Vec3::new(0.2126, 0.7152, 0.0722));
-        assert!((flux - 9.0 * albedo).abs() <= 0.25 * 9.0 * albedo, "{flux} vs {}", 9.0 * albedo);
+        let albedo = materials
+            .get(2)
+            .diffuse
+            .dot(Vec3::new(0.2126, 0.7152, 0.0722));
+        assert!(
+            (flux - 9.0 * albedo).abs() <= 0.25 * 9.0 * albedo,
+            "{flux} vs {}",
+            9.0 * albedo
+        );
         let (min, _, _, _) = footprint(true);
-        assert_eq!(min, IVec3::splat(1 << 29), "a hole under a roof changes no sunlight");
+        assert_eq!(
+            min,
+            IVec3::splat(1 << 29),
+            "a hole under a roof changes no sunlight"
+        );
     }
 
     #[test]
     fn loads_and_light_changes_get_no_footprint() {
         use crate::geometry::{Bounds, ChangeKind, ChangeWeight};
         let bounds = Bounds::point(IVec3::ZERO);
-        let event = |kind| crate::retention::RetentionEvent::single(bounds, ChangeWeight { kind, flux: 0.0 });
+        let event = |kind| {
+            crate::retention::RetentionEvent::single(bounds, ChangeWeight { kind, flux: 0.0 })
+        };
         let mut events = vec![
             event(ChangeKind::Load { top: 4 }),
             event(ChangeKind::Light),
-            event(ChangeKind::Edit { voxels: 1, measure: true }),
+            event(ChangeKind::Edit {
+                voxels: 1,
+                measure: true,
+            }),
         ];
         let planned = plan_footprints(&mut events);
-        assert_eq!(planned, vec![(bounds, 3)], "only the edit, with its reserved fourth event");
+        assert_eq!(
+            planned,
+            vec![(bounds, 3)],
+            "only the edit, with its reserved fourth event"
+        );
         assert_eq!(events.len(), 4);
     }
 
@@ -2266,24 +2351,46 @@ mod tests {
         let mut gpu = super::super::tests::native_tracer();
         gpu.enable_resident().unwrap();
         let mut work = TraceWork::from_probes(&probes);
-        let placed = Bounds { min: IVec3::new(8, 5, 8), max: IVec3::new(10, 5, 10) };
-        work.retention_events = vec![crate::retention::RetentionEvent::single(placed, ChangeWeight {
-            kind: ChangeKind::Edit { voxels: 9, measure: false },
-            flux: 0.0,
-        })];
+        let placed = Bounds {
+            min: IVec3::new(8, 5, 8),
+            max: IVec3::new(10, 5, 10),
+        };
+        work.retention_events = vec![crate::retention::RetentionEvent::single(
+            placed,
+            ChangeWeight {
+                kind: ChangeKind::Edit {
+                    voxels: 9,
+                    measure: false,
+                },
+                flux: 0.0,
+            },
+        )];
         let emitters = Arc::new(EmissionDistribution::default());
-        gpu.trace_compact(scene, &sources, &VoxelMaterialTransportTable::default(), &mut work, 4, &emitters)
-            .unwrap();
-        let words = read_words(&gpu, &gpu.resident.as_ref().unwrap().events_buffer.buffer, 10 * 16);
-        assert_eq!(words[8 * 4] as i32, 1 << 29, "the edit's own faces are the edit event's");
+        gpu.trace_compact(
+            scene,
+            &sources,
+            &VoxelMaterialTransportTable::default(),
+            &mut work,
+            4,
+            &emitters,
+        )
+        .unwrap();
+        let words = read_words(
+            &gpu,
+            &gpu.resident.as_ref().unwrap().events_buffer.buffer,
+            10 * 16,
+        );
+        assert_eq!(
+            words[8 * 4] as i32,
+            1 << 29,
+            "the edit's own faces are the edit event's"
+        );
     }
 
     #[test]
     #[ignore = "native GPU edit flux measurement and edit urgency against their CPU statements"]
     fn gpu_measures_edit_flux_and_marks_faces_whose_history_it_binds() {
-        use crate::geometry::{
-            Bounds, ChangeKind, ChangeWeight, GeometryChange, PageChanges,
-        };
+        use crate::geometry::{Bounds, ChangeKind, ChangeWeight, GeometryChange, PageChanges};
         use crate::retention::SpatialHistory;
         let mut gpu = super::super::tests::native_tracer();
         gpu.enable_resident().unwrap();
@@ -2352,10 +2459,8 @@ mod tests {
         for (key, slot) in &resident.slots {
             if (key.0 - edit).abs().max_element() <= 1 {
                 let base = slot.index as usize * (RECORD_BYTES / 4);
-                brightest = brightest.max(
-                    w.dot(material.diffuse) * light(base)
-                        + w.dot(material.emission),
-                );
+                brightest =
+                    brightest.max(w.dot(material.diffuse) * light(base) + w.dot(material.emission));
             }
         }
         assert!(brightest > 0.0);
@@ -2710,9 +2815,7 @@ mod tests {
                     (a.direct, b.direct),
                 ] {
                     let d = x - y;
-                    assert!(
-                        d.abs().max_element() < 1e-5
-                    );
+                    assert!(d.abs().max_element() < 1e-5);
                 }
             }
         }
