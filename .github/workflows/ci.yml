@@ -19,10 +19,12 @@ jobs:
       # deliberately, with rust-version.
       - uses: dtolnay/rust-toolchain@1.95
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Bevy system dependencies
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: Format
+        run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --locked $CRATES --all-targets -- -D warnings
       # GPU tests are #[ignore]d and need a native adapter: run them locally

@@ -7,6 +7,7 @@
 - Keep intermediate commits buildable. If existing changes are inseparable, make an honest integrated checkpoint; do not manufacture untested intermediate states or claim measurements for them.
 - Explain the change and verification performed in the commit message. Mark experimental work and known limitations explicitly. Do not claim tests were rerun when relying on previous verification of unchanged code.
 - Associate performance evidence with the exact commit, any dirty diff, profile, hardware, viewport, and settings. Keep a compact result summary in the commit message or tracked documentation; large captures/logs stay under ignored `target/`.
+- Keep the workspace rustfmt-clean: run `cargo fmt --all` before committing (CI checks it). Record any further formatting-only commit in `.git-blame-ignore-revs`.
 - Preserve user changes; do not sweep unrelated work into commits. Keep commits local unless the user requests publishing. Do not rewrite existing history to conceal failed experiments.
 
 ## Lean, risk-based verification

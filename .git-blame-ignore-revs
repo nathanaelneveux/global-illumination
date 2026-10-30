@@ -1,0 +1,3 @@
+# Formatting-only commits; `git blame` skips them with
+# git config blame.ignoreRevsFile .git-blame-ignore-revs (GitHub does automatically).
+529fefdc36df6362b6bdc2b338cc5fc2ef53a609 # style: cargo fmt the workspace
