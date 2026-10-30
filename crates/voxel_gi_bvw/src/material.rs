@@ -132,6 +132,8 @@ pub fn prepare_texture_array(
         return Err(TextureReinterpretationError::NotEnoughLayers);
     }
     if image.texture_descriptor.size.depth_or_array_layers != layers {
+        // A new layer count re-lays out level 0; the old mip chain is stale.
+        strip_mips(image);
         let old = image.texture_descriptor.size;
         let height = old.height * old.depth_or_array_layers;
         if !height.is_multiple_of(layers) {
@@ -180,6 +182,32 @@ pub fn prepare_texture_array(
         }
     }
     Ok(())
+}
+
+/// Keeps each layer's level 0 of a mip chain this module built.
+fn strip_mips(image: &mut Image) {
+    let levels = image.texture_descriptor.mip_level_count;
+    if levels <= 1 || !mipmapped(image.texture_descriptor.format) {
+        return;
+    }
+    let size = image.texture_descriptor.size;
+    let level_bytes = |level: u32| {
+        (size.width >> level).max(1) as usize * (size.height >> level).max(1) as usize * 4
+    };
+    let layer_bytes: usize = (0..levels).map(level_bytes).sum();
+    let Some(data) = image.data.as_deref() else {
+        return;
+    };
+    if data.len() != layer_bytes * size.depth_or_array_layers as usize {
+        return;
+    }
+    let base = data
+        .chunks_exact(layer_bytes)
+        .flat_map(|layer| &layer[..level_bytes(0)])
+        .copied()
+        .collect();
+    image.data = Some(base);
+    image.texture_descriptor.mip_level_count = 1;
 }
 
 fn mipmapped(format: TextureFormat) -> bool {
@@ -327,6 +355,15 @@ mod tests {
         let prepared = image.clone();
         prepare_texture_array(&mut image, 4).unwrap();
         assert_eq!(image, prepared, "preparing twice changes nothing");
+        // A new layer count starts again from level 0: two 4x8 layers.
+        prepare_texture_array(&mut image, 2).unwrap();
+        assert!(texture_array_ready(&image, 2));
+        assert_eq!(image.texture_descriptor.mip_level_count, 4);
+        let data = image.data.as_ref().unwrap();
+        let stride = (32 + 8 + 2 + 1) * 4;
+        assert_eq!(data.len(), 2 * stride);
+        assert_eq!(&data[..128], &source[..128]);
+        assert_eq!(&data[stride..stride + 128], &source[128..]);
     }
 
     #[test]

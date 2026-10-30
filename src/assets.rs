@@ -205,6 +205,7 @@ mod tests {
             .unwrap();
         assert!(voxel_gi_bvw::texture_array_ready(image, 2));
         assert_eq!(image.texture_descriptor.size.height, 4);
-        assert_eq!(image.data.as_ref().unwrap().len(), 64);
+        // Two 2x4 layers, each with its 2x4, 1x2 and 1x1 levels.
+        assert_eq!(image.data.as_ref().unwrap().len(), 2 * (8 + 2 + 1) * 4);
     }
 }
