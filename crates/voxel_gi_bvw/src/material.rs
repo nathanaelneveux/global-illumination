@@ -346,11 +346,11 @@ mod tests {
                 buffers.clone(),
                 768,
             );
-            {
-                let mut data = app.world_mut().resource_mut::<VoxelGiMaterialData>();
-                data.settings.enabled = (generation & 1) as u32;
-                data.settings.debug_irradiance = ((generation >> 1) & 1) as u32;
-            }
+            voxel_gi::testing::set_display(
+                app.world_mut(),
+                generation & 1 == 1,
+                ((generation >> 1) & 1) as u32,
+            );
             app.update();
             app.update();
             let render_world = app.sub_app(bevy::render::RenderApp).world();
@@ -358,10 +358,9 @@ mod tests {
                 .resource::<bevy::render::render_asset::RenderAssets<bevy::render::storage::GpuShaderBuffer>>();
             let material_assets = app.world().resource::<Assets<VoxelTransportMaterial>>();
             let extension = &material_assets.get(&material).unwrap().base.extension;
-            assert_eq!(extension.traversal.counts.x, 768);
-            for (handle, buffer) in [&extension.directory, &extension.regions, &extension.cells]
-                .into_iter()
-                .zip(&buffers)
+            let (handles, nodes) = voxel_gi::testing::geometry_bindings(extension);
+            assert_eq!(nodes, 768);
+            for (handle, buffer) in handles.iter().zip(&buffers)
             {
                 assert_eq!(prepared.get(handle).unwrap().buffer.id(), buffer.id());
             }

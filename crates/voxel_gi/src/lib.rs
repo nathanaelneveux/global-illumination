@@ -50,11 +50,8 @@ pub use input::{
     PageSample, VOXEL_GI_PAGE_EDGE, VoxelGiInput, VoxelGiSource, VoxelSource, coarse_page, dense_page,
 };
 pub use gpu::view::ViewReceipts;
-#[doc(hidden)]
-pub use gpu::include_traversal;
 pub use render::{
-    GiDebugView, GpuTransportSettings, GpuTraversalParams, PRESENTATION_SHADER, STANDARD_SHADER,
-    STANDARD_SHADER_SOURCE, VoxelGiBindings, VoxelGiDisplay, VoxelGiMaterialData, VoxelGiMaterialPlugin,
+    GiDebugView, PRESENTATION_SHADER, STANDARD_SHADER, VoxelGiBindings, VoxelGiDisplay, VoxelGiMaterialData, VoxelGiMaterialPlugin,
     VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin, VoxelGiStandardShader, presentation_shader_source,
     standard_material,
 };
@@ -162,7 +159,8 @@ pub struct VoxelGiStats {
     pub scheduler: SchedulerStats,
 }
 
-/// World-cache scheduler internals, for diagnostics.
+/// World-cache scheduler internals, for diagnostics. Fields may change in
+/// any release; do not drive game logic from them.
 #[derive(Clone, Debug, Default)]
 pub struct SchedulerStats {
     /// Last app frame's GI system-body times, in telemetry stage order.
@@ -424,5 +422,22 @@ pub mod testing {
         let mut geometry = world.resource_mut::<super::render::GeometryDisplay>();
         geometry.buffers = Some(buffers);
         geometry.params.counts.x = node_count;
+    }
+
+    /// Change the presentation switches materials see (`enabled`, debug view).
+    pub fn set_display(world: &mut World, enabled: bool, debug: u32) {
+        let mut data = world.resource_mut::<super::VoxelGiMaterialData>();
+        data.settings.enabled = enabled as u32;
+        data.settings.debug_irradiance = debug;
+    }
+
+    /// A material's geometry bindings (directory, regions, cells) and node count.
+    pub fn geometry_bindings(
+        bindings: &super::VoxelGiBindings,
+    ) -> ([Handle<bevy::render::storage::ShaderBuffer>; 3], u32) {
+        (
+            [bindings.directory.clone(), bindings.regions.clone(), bindings.cells.clone()],
+            bindings.traversal.counts.x,
+        )
     }
 }

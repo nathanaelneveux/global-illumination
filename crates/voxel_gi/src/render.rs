@@ -120,15 +120,15 @@ impl Default for GpuTransportSettings {
 /// resource changes; each new GPU allocation gets a new handle.
 #[derive(Resource, Clone)]
 pub struct VoxelGiMaterialData {
-    pub directory: Handle<ShaderBuffer>,
-    pub regions: Handle<ShaderBuffer>,
-    pub cells: Handle<ShaderBuffer>,
-    pub traversal: GpuTraversalParams,
-    pub far: Handle<ShaderBuffer>,
+    pub(crate) directory: Handle<ShaderBuffer>,
+    pub(crate) regions: Handle<ShaderBuffer>,
+    pub(crate) cells: Handle<ShaderBuffer>,
+    pub(crate) traversal: GpuTraversalParams,
+    pub(crate) far: Handle<ShaderBuffer>,
     /// The far tier's cells (`FarTierSettings`): a 64-byte header (zero grid
     /// when off), then one packed cell per `cell`x`cell` pixels.
-    pub far_pixels: Handle<ShaderBuffer>,
-    pub settings: GpuTransportSettings,
+    pub(crate) far_pixels: Handle<ShaderBuffer>,
+    pub(crate) settings: GpuTransportSettings,
 }
 
 /// The GI worker's geometry buffers, shared with the terrain material like
@@ -354,23 +354,23 @@ pub fn presentation_shader_source() -> String {
 #[derive(Asset, TypePath, bevy::render::render_resource::AsBindGroup, Debug, Clone, PartialEq)]
 pub struct VoxelGiBindings {
     #[uniform(104)]
-    pub settings: GpuTransportSettings,
+    pub(crate) settings: GpuTransportSettings,
     /// Transport geometry (region directory, headers, cells) and its bounds,
     /// for sun visibility of faces the view tier does not cover.
     #[storage(106, read_only, visibility(fragment))]
-    pub directory: Handle<ShaderBuffer>,
+    pub(crate) directory: Handle<ShaderBuffer>,
     #[storage(107, read_only, visibility(fragment))]
-    pub regions: Handle<ShaderBuffer>,
+    pub(crate) regions: Handle<ShaderBuffer>,
     #[storage(108, read_only, visibility(fragment))]
-    pub cells: Handle<ShaderBuffer>,
+    pub(crate) cells: Handle<ShaderBuffer>,
     #[uniform(109)]
-    pub traversal: GpuTraversalParams,
+    pub(crate) traversal: GpuTraversalParams,
     /// The current view's receiver output (zero header when disabled).
     #[storage(110, read_only, visibility(fragment))]
-    pub far: Handle<ShaderBuffer>,
+    pub(crate) far: Handle<ShaderBuffer>,
     /// The far tier's cells.
     #[storage(111, read_only, visibility(fragment))]
-    pub far_pixels: Handle<ShaderBuffer>,
+    pub(crate) far_pixels: Handle<ShaderBuffer>,
 }
 
 impl bevy::pbr::MaterialExtension for VoxelGiBindings {}

@@ -37,6 +37,15 @@ The crates share one version. The format follows
 - `voxel_gi_debug`: an opt-in HUD, tuning panel, presentation toggles and
   terminal stats.
 
+### API stability
+
+- 0.x releases may break the API. Each release targets one Bevy minor version
+  (0.1: Bevy 0.19); material shaders override Bevy PBR internals that move
+  between Bevy versions.
+- `SchedulerStats` and the `testing` module (hidden) are diagnostics and test
+  hooks, not stable API. GPU uniform layouts are internal; build GI's material
+  bindings with `VoxelGiBindings::from(&VoxelGiMaterialData)`.
+
 ### Known limitations
 
 - Opaque diffuse transport only: no colored transmission, no specular GI.

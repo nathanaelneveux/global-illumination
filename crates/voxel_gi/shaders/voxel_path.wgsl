@@ -173,7 +173,8 @@ fn tree_probability(position: vec3<f32>, normal: vec3<f32>, voxel: vec3<i32>, hi
     return 0.0;
 }
 
-// Hash-based Owen scramble: Nathan Vegdahl, MIT, licenses/sobol_burley-MIT.txt.
+// Hash-based Owen scramble: Nathan Vegdahl (sobol_burley), MIT; notice in
+// licenses/sobol_burley-MIT.txt.
 fn scramble_reverse(input: u32, seed: u32) -> u32 {
     var value = input;
     value ^= value * 0x3d20adeau;
