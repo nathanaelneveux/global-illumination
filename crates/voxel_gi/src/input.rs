@@ -116,6 +116,10 @@ impl PageSample {
         assert!(stride.is_power_of_two() && stride <= PAGE_EDGE, "page stride {stride} must be a power of two up to {PAGE_EDGE}");
         let edge = (PAGE_EDGE / stride) as usize;
         assert_eq!(cells.len(), edge * edge * edge, "a stride-{stride} page has {edge}³ cells");
+        debug_assert!(
+            cells.iter().all(|&material| material <= AIR),
+            "transport materials are 0..=255 or AIR; map host block types with MaterialPalette"
+        );
         Self { stride, cells }
     }
 

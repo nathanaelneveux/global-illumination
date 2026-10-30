@@ -9,6 +9,7 @@
 //! `voxel_gi_debug` is the optional HUD and tuning panel.
 mod input;
 mod pages;
+mod palette;
 mod dispatch;
 mod emission;
 mod field;
@@ -49,7 +50,8 @@ use bevy::tasks::Task;
 use field::ReceiverField;
 pub use settings::{FarTierMeasure, FarTierSettings, TransportSettings, VoxelGiQuality, VoxelGiSettings};
 pub use sources::{VoxelGiEmitter, VoxelGiEnvironment};
-pub use world::{MaterialTransport, VoxelMaterialTransportTable};
+pub use palette::{MaterialPalette, PaletteFull};
+pub use world::{AIR, MaterialTransport, VoxelMaterialTransportTable};
 
 use pages::{ingest_input, start_scene_task};
 pub use input::{
