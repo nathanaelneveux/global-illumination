@@ -316,6 +316,9 @@ pub const STANDARD_SHADER_SOURCE: &str = include_str!("../shaders/voxel_gi_stand
 /// Bevy's `StandardMaterial` lit by voxel GI: indirect light and emission
 /// added, GI's cached voxel sun in place of Bevy's shadowed sun. Build one
 /// with `standard_material`; `VoxelGiStandardMaterialPlugin` registers it.
+/// It renders forward only: GI's presentation is in the forward fragment
+/// shader, and a deferred `StandardMaterial` would run Bevy's own deferred
+/// shader without it.
 pub type VoxelGiStandardMaterial = bevy::pbr::ExtendedMaterial<
     bevy::pbr::ExtendedMaterial<StandardMaterial, VoxelGiBindings>,
     VoxelGiStandardShader,
@@ -331,14 +334,19 @@ impl bevy::pbr::MaterialExtension for VoxelGiStandardShader {
     }
 }
 
-/// A `VoxelGiStandardMaterial` over `base`.
+/// A `VoxelGiStandardMaterial` over `base`, forced to forward rendering
+/// (an `ExtendedMaterial` takes its render method from `base`, and `Auto`
+/// follows a deferred `DefaultOpaqueRendererMethod`).
 pub fn standard_material(
     base: StandardMaterial,
     data: &VoxelGiMaterialData,
 ) -> VoxelGiStandardMaterial {
     bevy::pbr::ExtendedMaterial {
         base: bevy::pbr::ExtendedMaterial {
-            base,
+            base: StandardMaterial {
+                opaque_render_method: bevy::material::OpaqueRendererMethod::Forward,
+                ..base
+            },
             extension: VoxelGiBindings::from(data),
         },
         extension: VoxelGiStandardShader {},
@@ -468,6 +476,32 @@ mod coverage_tests;
 #[cfg(test)]
 mod standard_tests {
     use super::*;
+
+    #[test]
+    fn standard_material_renders_forward_under_a_deferred_default() {
+        // Explicit Forward wins over `DefaultOpaqueRendererMethod`; Auto or
+        // Deferred would select Bevy's deferred shader, which has no GI.
+        let data = VoxelGiMaterialData {
+            directory: default(),
+            regions: default(),
+            cells: default(),
+            traversal: default(),
+            far: default(),
+            far_pixels: default(),
+            settings: default(),
+        };
+        let deferred = StandardMaterial {
+            opaque_render_method: bevy::material::OpaqueRendererMethod::Deferred,
+            ..default()
+        };
+        for base in [StandardMaterial::default(), deferred] {
+            let material = standard_material(base, &data);
+            assert_eq!(
+                Material::opaque_render_method(&material),
+                bevy::material::OpaqueRendererMethod::Forward
+            );
+        }
+    }
 
     #[test]
     fn standard_material_shader_composes_with_bevys_real_pbr_modules() {

@@ -62,7 +62,10 @@ lines. The pieces:
      `VoxelGiMaterialPlugin::<_>::extended()`. Bevy takes the prepass and
      shadow switches of an `ExtendedMaterial` from the extension (both on),
      not your material: add `NotShadowCaster` to entities that must not
-     cast shadows;
+     cast shadows. GI presents in the forward fragment shader, and Bevy
+     takes an `ExtendedMaterial`'s render method from your material: render
+     it forward (`OpaqueRendererMethod::Forward` for a `StandardMaterial`
+     base), since a deferred one runs Bevy's deferred shader without GI;
    - in its fragment shader, `#import voxel_gi::presentation::{indirect_light,
      sunlight, emission}`: multiply `indirect_light(...).light` by albedo,
      add `emission`, and use `sunlight` for the sun (see

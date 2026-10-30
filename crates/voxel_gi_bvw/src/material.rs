@@ -2,6 +2,7 @@
 //! and vertex layout over `StandardMaterial`, with GI's bindings
 //! (`VoxelGiBindings`) and its presentation module (`voxel_gi::presentation`).
 use bevy::image::{ImageAddressMode, ImageSampler, TextureReinterpretationError};
+use bevy::material::OpaqueRendererMethod;
 use bevy::pbr::{
     ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
 };
@@ -80,7 +81,8 @@ pub(crate) fn install(app: &mut App) {
     );
 }
 
-/// A BVW voxel material over `texture` (a 2D array, see `prepare_texture_array`).
+/// A BVW voxel material over `texture` (a 2D array, see `prepare_texture_array`),
+/// rendered forward: GI's presentation is in the forward fragment shader.
 pub fn material_template(
     texture: Handle<Image>,
     data: &VoxelGiMaterialData,
@@ -91,6 +93,7 @@ pub fn material_template(
                 reflectance: 0.05,
                 metallic: 0.05,
                 perceptual_roughness: 0.95,
+                opaque_render_method: OpaqueRendererMethod::Forward,
                 ..default()
             },
             extension: VoxelGiBindings::from(data),
@@ -553,6 +556,12 @@ mod tests {
             .world_mut()
             .resource_mut::<Assets<VoxelTransportMaterial>>()
             .add(material_template(texture, &data));
+        let template = material_template(default(), &data);
+        assert_eq!(
+            Material::opaque_render_method(&template),
+            OpaqueRendererMethod::Forward,
+            "a deferred default must not take GI's presentation away"
+        );
         app.finish();
         app.cleanup();
         let device = app
