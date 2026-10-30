@@ -7,8 +7,8 @@ use bevy::pbr::{
 };
 use bevy::prelude::*;
 use bevy::render::render_resource::{
-    AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError, TextureViewDescriptor,
-    TextureViewDimension,
+    AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError, TextureDataOrder,
+    TextureFormat, TextureUsages, TextureViewDescriptor, TextureViewDimension,
 };
 use bevy::shader::ShaderRef;
 use bevy_voxel_world::rendering::vertex_layout;
@@ -101,8 +101,12 @@ pub fn material_template(
     }
 }
 
+/// Whether `prepare_texture_array` has already prepared `image` for `layers`
+/// (check before mutably borrowing the asset, which would reupload it).
 pub fn texture_array_ready(image: &Image, layers: u32) -> bool {
     image.texture_descriptor.size.depth_or_array_layers == layers
+        && (image.texture_descriptor.mip_level_count > 1
+            || !mipmapped(image.texture_descriptor.format))
         && image
             .texture_view_descriptor
             .as_ref()
@@ -113,6 +117,10 @@ pub fn texture_array_ready(image: &Image, layers: u32) -> bool {
                 && sampler.address_mode_w == ImageAddressMode::Repeat)
 }
 
+/// Reinterprets a vertically stacked image as a `layers`-layer 2D array with
+/// repeat addressing, a full mip chain (8-bit RGBA formats; sRGB averaged in
+/// linear light) and 8x anisotropic filtering, so distant and grazing faces
+/// do not alias.
 pub fn prepare_texture_array(
     image: &mut Image,
     layers: u32,
@@ -142,16 +150,184 @@ pub fn prepare_texture_array(
     descriptor.address_mode_u = ImageAddressMode::Repeat;
     descriptor.address_mode_v = ImageAddressMode::Repeat;
     descriptor.address_mode_w = ImageAddressMode::Repeat;
+    descriptor.set_anisotropic_filter(8);
     image.texture_view_descriptor = Some(TextureViewDescriptor {
         dimension: Some(TextureViewDimension::D2Array),
         ..default()
     });
+    let format = image.texture_descriptor.format;
+    if image.texture_descriptor.mip_level_count == 1 && mipmapped(format) {
+        let size = image.texture_descriptor.size;
+        if let Some((data, levels)) = image.data.as_deref().and_then(|base| {
+            mip_chain(
+                base,
+                size.width,
+                size.height,
+                layers,
+                format == TextureFormat::Rgba8UnormSrgb,
+            )
+        }) {
+            image.data = Some(data);
+            image.data_order = TextureDataOrder::LayerMajor;
+            image.texture_descriptor.mip_level_count = levels;
+            // Bevy 0.19 updates a same-descriptor COPY_DST texture by writing
+            // the whole buffer into mip 0. Without COPY_DST a reload recreates
+            // the texture with every level (wgpu adds COPY_DST for creation).
+            image
+                .texture_descriptor
+                .usage
+                .remove(TextureUsages::COPY_DST);
+        }
+    }
     Ok(())
+}
+
+fn mipmapped(format: TextureFormat) -> bool {
+    matches!(
+        format,
+        TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb
+    )
+}
+
+/// Every layer's full mip chain, layer-major (layer 0's levels, then layer
+/// 1's), box-filtered from level 0; colour in linear light when `srgb`.
+fn mip_chain(
+    base: &[u8],
+    width: u32,
+    height: u32,
+    layers: u32,
+    srgb: bool,
+) -> Option<(Vec<u8>, u32)> {
+    let layer_bytes = width as usize * height as usize * 4;
+    if width == 0 || height == 0 || base.len() != layer_bytes * layers as usize {
+        return None;
+    }
+    let decode: [f32; 256] = std::array::from_fn(|v| {
+        let c = v as f32 / 255.0;
+        if !srgb {
+            c
+        } else if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    });
+    let encode = |c: f32| {
+        let c = c.clamp(0.0, 1.0);
+        let c = if !srgb {
+            c
+        } else if c <= 0.003_130_8 {
+            c * 12.92
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        };
+        (c * 255.0 + 0.5) as u8
+    };
+    let levels = width.max(height).ilog2() + 1;
+    let mut out = Vec::with_capacity(base.len() * 4 / 3 + 4 * layers as usize);
+    for layer in base.chunks_exact(layer_bytes) {
+        out.extend_from_slice(layer);
+        let (mut w, mut h) = (width, height);
+        let mut previous = layer.to_vec();
+        while w > 1 || h > 1 {
+            let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+            let mut next = vec![0u8; nw as usize * nh as usize * 4];
+            for y in 0..nh {
+                for x in 0..nw {
+                    let texels = [
+                        (2 * x, 2 * y),
+                        (2 * x + 1, 2 * y),
+                        (2 * x, 2 * y + 1),
+                        (2 * x + 1, 2 * y + 1),
+                    ]
+                    .map(|(sx, sy)| ((sx.min(w - 1) + sy.min(h - 1) * w) * 4) as usize);
+                    let at = ((x + y * nw) * 4) as usize;
+                    for channel in 0..4 {
+                        // Alpha is linear coverage in either format.
+                        if channel == 3 || !srgb {
+                            let sum: u32 =
+                                texels.iter().map(|t| previous[t + channel] as u32).sum();
+                            next[at + channel] = ((sum + 2) / 4) as u8;
+                        } else {
+                            let sum: f32 = texels
+                                .iter()
+                                .map(|t| decode[previous[t + channel] as usize])
+                                .sum();
+                            next[at + channel] = encode(sum / 4.0);
+                        }
+                    }
+                }
+            }
+            out.extend_from_slice(&next);
+            previous = next;
+            (w, h) = (nw, nh);
+        }
+    }
+    Some((out, levels))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn texture_array_gets_a_linear_light_mip_chain_and_stays_prepared() {
+        use bevy::asset::RenderAssetUsages;
+        // Four 4x4 layers stacked vertically; layer 2 is a black/white checker.
+        let mut image = Image::new_fill(
+            wgpu::Extent3d {
+                width: 4,
+                height: 16,
+                depth_or_array_layers: 1,
+            },
+            wgpu::TextureDimension::D2,
+            &[0, 0, 0, 255],
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::default(),
+        );
+        let source: Vec<u8> = (0..64u32)
+            .flat_map(|texel| {
+                let (layer, x, y) = (texel / 16, texel % 4, texel / 4 % 4);
+                let v = if layer == 2 {
+                    255 * ((x + y) % 2) as u8
+                } else {
+                    layer as u8 * 60
+                };
+                [v, v, v, 255]
+            })
+            .collect();
+        image.data = Some(source.clone());
+        image
+            .texture_descriptor
+            .usage
+            .insert(TextureUsages::COPY_DST);
+        assert!(!texture_array_ready(&image, 4));
+        prepare_texture_array(&mut image, 4).unwrap();
+        assert!(texture_array_ready(&image, 4));
+        assert_eq!(image.texture_descriptor.mip_level_count, 3);
+        assert!(
+            !image
+                .texture_descriptor
+                .usage
+                .contains(TextureUsages::COPY_DST)
+        );
+        let data = image.data.as_ref().unwrap();
+        let stride = (16 + 4 + 1) * 4;
+        assert_eq!(data.len(), 4 * stride);
+        for layer in 0..4 {
+            // Level 0 of every layer is the original tile.
+            assert_eq!(
+                &data[layer * stride..layer * stride + 64],
+                &source[layer * 64..(layer + 1) * 64]
+            );
+        }
+        // Half black, half white is sRGB 188 in linear light (not 128).
+        let checker_1x1 = &data[2 * stride + 80..2 * stride + 84];
+        assert_eq!(checker_1x1, &[188, 188, 188, 255]);
+        let prepared = image.clone();
+        prepare_texture_array(&mut image, 4).unwrap();
+        assert_eq!(image, prepared, "preparing twice changes nothing");
+    }
 
     #[test]
     fn terrain_shader_composes_with_bevys_real_pbr_modules_without_a_window() {

@@ -34,6 +34,8 @@ The crates share one version. The format follows
 - `voxel_gi_bvw`: `bevy_voxel_world` 0.17 connector: chunk events become page
   events, chunks (including LOD chunks at their stride) are the voxel
   source, and `VoxelTransportMaterial` lights the chunk meshes.
+  `prepare_texture_array` builds the block texture array with a full mip
+  chain (sRGB averaged in linear light) and 8x anisotropic filtering.
 - `voxel_gi_debug`: an opt-in HUD, tuning panel, presentation toggles and
   terminal stats.
 
