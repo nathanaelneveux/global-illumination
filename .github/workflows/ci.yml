@@ -31,9 +31,11 @@ jobs:
       # with `cargo test -p voxel_gi --lib -- --include-ignored`.
       - name: CPU tests
         run: cargo test --locked $CRATES --lib --examples
-      # Per crate: the lab's bevy/dynamic_linking must not unify in.
+      # The three crates only: with the lab, its bevy/dynamic_linking unifies
+      # in and doctest binaries cannot load libstd. One command keeps Bevy's
+      # feature set the same as the steps above (per crate rebuilt it thrice).
       - name: Doc tests
-        run: for c in voxel_gi voxel_gi_bvw voxel_gi_debug; do cargo test --locked -p $c --doc; done
+        run: cargo test --locked $CRATES --doc
       - name: Rustdoc
         run: cargo doc --locked --no-deps $CRATES
         env:
