@@ -17,6 +17,16 @@ struct ViewControl {
     pixel_grid: vec4<u32>, // cells x, y, pixels per cell side, enabled (bit 0) and measure (bits 1-2)
     pixel_tune: vec4<f32>, // voxel-size threshold px, max history, trace rate, previous valid
     previous_clip_from_world: mat4x4<f32>,
+    interest_min: vec4<i32>, // host geometry interest in regions, inclusive; w: bounded
+    interest_max: vec4<i32>,
+}
+
+/// Inside the host's declared geometry interest (`pages::Interest`). Outside
+/// it a rendered surface will never get GI geometry: no receiver waits for it.
+fn in_interest(voxel: vec3<i32>) -> bool {
+    if view.interest_min.w == 0 { return true; }
+    let region = vec3<i32>(floor(vec3<f32>(voxel) / 16.0));
+    return all(region >= view.interest_min.xyz) && all(region <= view.interest_max.xyz);
 }
 struct ViewEstimate {
     mean: vec4<f32>, // raw RGB, effective history weight (may include a one-unit topology prior)

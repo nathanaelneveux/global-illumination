@@ -115,7 +115,16 @@ impl Drop for MainThreadScope<'_> {
     }
 }
 
-pub(super) fn finish_frame(mut timings: ResMut<GiWorkTimings>, mut stats: ResMut<VoxelGiStats>) {
+pub(super) fn finish_frame(
+    mut timings: ResMut<GiWorkTimings>,
+    mut stats: ResMut<VoxelGiStats>,
+    runtime: Res<super::VoxelGiRuntime>,
+) {
+    let pending = runtime.scene_task.is_some() || runtime.scene_publication.is_some()
+        || !runtime.dirty_pages.is_empty() || !runtime.removed_pages.is_empty();
+    if stats.geometry_pending != pending {
+        stats.geometry_pending = pending;
+    }
     timings.finish_frame_at(Instant::now(), &mut stats);
 }
 

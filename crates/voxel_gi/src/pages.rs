@@ -102,6 +102,43 @@ impl PageEdits {
     }
 }
 
+/// The bounding box of the pages the host has declared loaded: view
+/// discovery and the far tier only light pixels inside it. Inside, geometry
+/// the host has rendered but GI has not yet published keeps a pending
+/// receiver; outside (a host rendering beyond its GI interest) there is
+/// nothing to wait for. Loads widen it at once; after unloads it is
+/// recomputed at most every `RECOMPUTE_FRAMES` frames (a stale box is only
+/// larger, never wrong).
+#[derive(Default)]
+pub(super) struct Interest {
+    pages: Option<(IVec3, IVec3)>,
+    stale: bool,
+    frames: u32,
+}
+
+impl Interest {
+    const RECOMPUTE_FRAMES: u32 = 30;
+
+    fn load(&mut self, page: IVec3) {
+        self.pages = Some(self.pages.map_or((page, page), |(min, max)| (min.min(page), max.max(page))));
+    }
+
+    /// The interest in 16-voxel regions (inclusive), refreshed if due.
+    pub(super) fn regions(&mut self, loaded: &HashSet<IVec3>) -> Option<(IVec3, IVec3)> {
+        self.frames += 1;
+        if self.stale && self.frames >= Self::RECOMPUTE_FRAMES {
+            self.pages = None;
+            for &page in loaded {
+                self.load(page);
+            }
+            self.stale = false;
+            self.frames = 0;
+        }
+        let per_page = (PAGE_EDGE / 16) as i32;
+        self.pages.map(|(min, max)| (min * per_page, max * per_page + IVec3::splat(per_page - 1)))
+    }
+}
+
 pub(super) fn ingest_input(
     mut runtime: ResMut<VoxelGiRuntime>,
     mut explicit_dirty: ResMut<VoxelGiInput>,
@@ -118,6 +155,7 @@ pub(super) fn ingest_input(
         match event {
             PageEvent::Loaded | PageEvent::Changed => {
                 runtime.loaded_pages.insert(page);
+                runtime.interest.load(page);
                 runtime.removed_pages.remove(&page);
                 runtime.dirty_pages.insert(page);
                 if event == PageEvent::Changed && !tracked {
@@ -127,6 +165,7 @@ pub(super) fn ingest_input(
             }
             PageEvent::Unloaded => {
                 runtime.loaded_pages.remove(&page);
+                runtime.interest.stale = true;
                 runtime.dirty_pages.remove(&page);
                 runtime.full_resample_pages.remove(&page);
                 runtime.removed_pages.insert(page);
@@ -395,6 +434,26 @@ mod tests {
         apply_page_edits(&mut data, page * 32, &runtime.page_edits.0[&page]);
         assert_eq!(data[naadf::linear_index((position - page * 32).as_uvec3(), PAGE_SIZE)], AIR);
         assert_eq!(data.iter().filter(|&&m| m == AIR).count(), 1);
+    }
+
+    #[test]
+    fn interest_widens_on_load_and_shrinks_only_when_recomputed() {
+        let mut interest = Interest::default();
+        let mut loaded = HashSet::new();
+        assert_eq!(interest.regions(&loaded), None, "no declared pages: no bounds");
+        for page in [IVec3::new(-1, 0, 2), IVec3::new(3, 1, 2)] {
+            loaded.insert(page);
+            interest.load(page);
+        }
+        let both = Some((IVec3::new(-2, 0, 4), IVec3::new(7, 3, 5)));
+        assert_eq!(interest.regions(&loaded), both, "two 16-voxel regions per page edge");
+        loaded.remove(&IVec3::new(3, 1, 2));
+        interest.stale = true;
+        assert_eq!(interest.regions(&loaded), both, "a stale box is kept until due");
+        for _ in 0..Interest::RECOMPUTE_FRAMES {
+            interest.regions(&loaded);
+        }
+        assert_eq!(interest.regions(&loaded), Some((IVec3::new(-2, 0, 4), IVec3::new(-1, 1, 5))));
     }
 
     #[test]

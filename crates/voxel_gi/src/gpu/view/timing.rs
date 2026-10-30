@@ -106,6 +106,8 @@ pub(super) struct Budget {
     pub discovery_ms: f32,
     pub discovery_sum_ms: f64,
     pub discovery_count: u32,
+    /// Receipts retired since start.
+    pub receipts: u32,
     pub pool_prepare_ms: f32,
     pub pool_scan_ms: f32,
     pub pool_free: u32,
@@ -191,6 +193,7 @@ impl Budget {
             discovery_ms: 0.0,
             discovery_sum_ms: 0.0,
             discovery_count: 0,
+            receipts: 0,
             pool_prepare_ms: 0.0,
             pool_scan_ms: 0.0,
             pool_free: 0,
@@ -294,6 +297,7 @@ impl Budget {
             self.pool_retained = pool(3);
             self.discovery_sum_ms += f64::from(self.discovery_ms);
             self.discovery_count += 1;
+            self.receipts += 1;
             self.cache_ms = costs[Stage::LoadCache.slot()] + costs[Stage::StoreCache.slot()];
             self.cache_loads += u64::from(counter(queue_words::CACHE_LOADS));
             self.cache_promotions += u64::from(counter(queue_words::CACHE_PROMOTIONS));

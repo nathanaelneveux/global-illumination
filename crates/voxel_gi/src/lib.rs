@@ -138,6 +138,10 @@ impl Plugin for VoxelGiPlugin {
 /// change with the implementation.
 #[derive(Resource, Clone, Debug, Default)]
 pub struct VoxelGiStats {
+    /// Geometry the host declared is not yet published to the GPU (a scene
+    /// build or publication is in flight, or pages are waiting): a host
+    /// readiness gate, e.g. before captures.
+    pub geometry_pending: bool,
     pub loaded_pages: usize,
     pub surface_probes: usize,
     pub bootstrap_coverage: f32,
@@ -192,6 +196,8 @@ struct VoxelGiRuntime {
     materials: Arc<VoxelMaterialTransportTable>,
     transport: TransportSettings,
     loaded_pages: HashSet<IVec3>,
+    /// Bounds of `loaded_pages`: the host's declared geometry interest.
+    interest: pages::Interest,
     dirty_pages: HashSet<IVec3>,
     full_resample_pages: HashSet<IVec3>,
     page_edits: pages::PageEdits,
@@ -253,6 +259,7 @@ impl Default for VoxelGiRuntime {
             materials: Arc::new(VoxelMaterialTransportTable::default()),
             transport: TransportSettings::default(),
             loaded_pages: HashSet::new(),
+            interest: default(),
             dirty_pages: HashSet::new(),
             full_resample_pages: HashSet::new(),
             page_edits: default(),

@@ -28,6 +28,8 @@ struct ViewSettings {
     pixel_output: Handle<ShaderBuffer>,
     pixel: FarTierSettings,
     pixel_cell_allocated: u32,
+    /// The host's declared geometry interest in regions (`pages::Interest`).
+    interest: Option<(IVec3, IVec3)>,
     enabled: bool,
     inner_radius: f32,
     view_first: bool,
@@ -43,12 +45,26 @@ struct ViewSettings {
     sun_flips: std::sync::Arc<std::sync::Mutex<Vec<(IVec3, IVec3, f32)>>>,
 }
 
-/// View-tier GPU time per frame (timestamp queries; zero when unavailable).
+/// The view tier's latest asynchronous receipt: GPU milliseconds per stage
+/// (timestamp queries) and its receiver and far-tier counters. Receipts lag
+/// the frame they describe by a few frames; diagnostics, not a frame bill.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ViewReceipts {
+    /// Timestamp queries are supported and at least one receipt retired.
+    pub available: bool,
+    /// Receipts retired so far.
+    pub receipt: u32,
     pub trace_ms: f32,
+    /// Discovery and presentation, excluding the far tier.
     pub presentation_ms: f32,
     pub discovery_ms: f32,
+    /// The far tier's pass.
+    pub pixel_ms: f32,
+    pub active_receivers: u32,
+    /// Active receivers with no sample yet.
+    pub uncovered: u32,
+    pub pixel_owned: u32,
+    pub pixel_traced: u32,
 }
 
 #[derive(Component)]
@@ -65,6 +81,7 @@ pub(crate) fn install(app: &mut App, output: Handle<ShaderBuffer>, pixel_output:
         pixel_output,
         pixel: FarTierSettings::default(),
         pixel_cell_allocated: 0,
+        interest: None,
         enabled: false,
         inner_radius: 0.0,
         view_first: false,
@@ -124,6 +141,10 @@ fn configure_views(
     let flips = std::mem::take(&mut *view.sun_flips.lock().unwrap());
     if let Some(mut runtime) = runtime {
         let runtime = &mut *runtime;
+        let interest = runtime.interest.regions(&runtime.loaded_pages);
+        if view.interest != interest {
+            view.interest = interest;
+        }
         runtime.sun_changes.add(flips);
         if let Some(change) = runtime.sun_changes.take(&runtime.scene, std::time::Instant::now()) {
             // Events carry no page allocations: retired world pages must not
@@ -211,6 +232,10 @@ struct Control {
     /// ones when none).
     pixel_tune: Vec4,
     previous_clip_from_world: Mat4,
+    /// The host's geometry interest in regions, inclusive (w: 1 when
+    /// bounded); discovery and the far tier skip pixels outside it.
+    interest_min: IVec4,
+    interest_max: IVec4,
 }
 /// Byte offsets of `Control` words that native tests rewrite in place
 /// (`history.w`: view-first; `cache.x`: writable epoch).
@@ -675,10 +700,12 @@ mod tests {
             world_from_clip: m(1), clip_from_world: m(2), camera: f(3), viewport: u(4), grid: u(5),
             history: u(6), display: f(7), cache: u(8), discovery: u(9), pixel_axis: f(10),
             pixel_grid: u(11), pixel_tune: f(12), previous_clip_from_world: m(13),
+            interest_min: IVec4::splat(14), interest_max: IVec4::splat(15),
         };
         crate::gpu::reflect::assert_mirrors(&ShaderBuffer::from(control).data.unwrap(), reflection.layout("ViewControl"), &[
             "world_from_clip", "clip_from_world", "camera", "viewport", "grid", "history", "display",
             "cache", "discovery", "pixel_axis", "pixel_grid", "pixel_tune", "previous_clip_from_world",
+            "interest_min", "interest_max",
         ]);
         let wave = Wave { range: u(1), ticket: u(2) };
         crate::gpu::reflect::assert_mirrors(&ShaderBuffer::from(wave).data.unwrap(), reflection.layout("ViewWave"), &["range", "ticket"]);
@@ -796,9 +823,16 @@ fn render_view(
             .begin_frame(&device, elapsed, settings.share, settings.view_first);
         settings.sun_flips.lock().unwrap().append(&mut renderer.budget.sun_flips);
         *settings.receipts.lock().unwrap() = ViewReceipts {
+            available: renderer.budget.queries.is_some() && renderer.budget.receipts > 0,
+            receipt: renderer.budget.receipts,
             trace_ms: renderer.budget.trace_ms,
             presentation_ms: renderer.budget.presentation_ms,
             discovery_ms: renderer.budget.discovery_ms,
+            pixel_ms: renderer.budget.pixel_ms,
+            active_receivers: renderer.budget.active,
+            uncovered: renderer.budget.uncovered,
+            pixel_owned: renderer.budget.pixel_owned,
+            pixel_traced: renderer.budget.pixel_traced,
         };
         if frame.0.is_multiple_of(120) {
             info!(
@@ -917,6 +951,8 @@ fn render_view(
             f32::from_bits(if camera.previous_clip.is_some() { camera.last_frame } else { u32::MAX }),
         ),
         previous_clip_from_world: camera.previous_clip.unwrap_or(clip),
+        interest_min: settings.interest.map_or(IVec4::ZERO, |(min, _)| min.extend(1)),
+        interest_max: settings.interest.map_or(IVec4::ZERO, |(_, max)| max.extend(1)),
     };
     camera
         .control

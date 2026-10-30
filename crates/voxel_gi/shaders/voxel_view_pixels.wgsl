@@ -157,7 +157,7 @@ fn classify_pixels(@builtin(global_invocation_id) id: vec3<u32>) {
     let normal = face_normal(face);
     surface[face / 2u] = round(surface[face / 2u]);
     let voxel = vec3<i32>(floor(surface - normal * 0.01));
-    if !pixel_owned(voxel, face) { return; }
+    if !in_interest(voxel) || !pixel_owned(voxel, face) { return; }
     atomicAdd(&pixel_stats[PIXEL_OWNED], 1u);
     let found = previous_cell(surface, face, voxel);
     var history = found.mean;

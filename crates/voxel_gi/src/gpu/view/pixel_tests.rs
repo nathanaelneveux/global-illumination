@@ -135,7 +135,16 @@ impl Far {
 
     /// Discovery's receivers for frame 0 with the tier on or off.
     fn receivers(&mut self, enabled: bool) -> usize {
-        let control = self.control(0, view_at(0.), None, enabled);
+        self.receivers_in(enabled, None)
+    }
+
+    /// As `receivers`, with a host interest box in regions.
+    fn receivers_in(&mut self, enabled: bool, interest: Option<(IVec3, IVec3)>) -> usize {
+        let mut control = self.control(0, view_at(0.), None, enabled);
+        if let Some((min, max)) = interest {
+            control.interest_min = min.extend(1);
+            control.interest_max = max.extend(1);
+        }
         let (device, queue) = (&self.gpu.context.device, &self.gpu.context.queue);
         self.camera.control.upload(device, queue, &ShaderBuffer::from(vec![control]).data.unwrap()).unwrap();
         self.rig.run(device, queue, &self.scene, &self.camera, GRID, 0);
@@ -319,4 +328,14 @@ fn native_far_tier_honours_transport_reach() {
     let limited = light_at(Some(16.0));
     assert!(full > 0.01, "the slab lights the floor at full reach: {full}");
     assert_eq!(limited, 0.0, "beyond the reach the slab contributes nothing");
+}
+
+#[test]
+#[ignore = "native per-pixel tier"]
+fn native_discovery_keeps_to_the_host_interest() {
+    // The floor's page is region (0..1, 0, 0..1). A host whose interest is
+    // elsewhere rendering it gets no receivers; one including it does.
+    let mut far = Far::new(2, 1, false);
+    assert!(far.receivers_in(false, Some((IVec3::ZERO, IVec3::splat(1)))) > 0, "inside the interest");
+    assert_eq!(far.receivers_in(false, Some((IVec3::splat(4), IVec3::splat(5)))), 0, "outside the interest");
 }
