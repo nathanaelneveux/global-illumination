@@ -42,7 +42,7 @@ fn native_view_batches_preserve_raw_prefixes_and_pending_tails() {
     let renderer = ViewRenderer::from_world(&mut world);
     let kernel = &renderer.trace[0];
     let run = |visits: u32| {
-        let mut camera = CameraState::new(device, UVec2::new(count, 1));
+        let mut camera = CameraState::new(device, UVec2::new(count, 1)).unwrap();
         let history = &mut camera.history[0];
         history.receivers.upload(device, queue, &ShaderBuffer::from(inputs.clone()).data.unwrap()).unwrap();
         camera.params.upload(device, queue, &ShaderBuffer::from(vec![scene.params]).data.unwrap()).unwrap();

@@ -54,6 +54,34 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "native device without timestamp queries"]
+    fn view_budget_runs_a_fixed_wave_without_timestamp_queries() {
+        use bevy::render::renderer::{RenderDevice, RenderQueue, WgpuWrapper};
+        let instance = wgpu::Instance::default();
+        let adapter = bevy::tasks::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+        let (device, queue) = bevy::tasks::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: wgpu::Features::empty(),
+            ..Default::default()
+        })).unwrap();
+        let device = RenderDevice::from(device);
+        let queue = RenderQueue(std::sync::Arc::new(WgpuWrapper::new(queue)));
+        let mut budget = super::Budget::new(&device, &queue);
+        assert!(budget.queries.is_none());
+        for _ in 0..3 {
+            budget.begin_frame(&device, 1.0 / 60.0, 0.15, true);
+            let (work, ticket) = budget.reserve();
+            assert_eq!(work, super::NO_TIMING_WAVE, "a fixed wave, not a stalled or unbounded one");
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let counters = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None, size: 1 << 16, usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            budget.finish(&mut encoder, &counters, 0, &counters, &counters, ticket.unwrap(), 0b111);
+            queue.submit([encoder.finish()]);
+        }
+    }
+
+    #[test]
     fn view_first_can_spend_its_share_beyond_one_visit_per_owner() {
         let mut size = 8192;
         for _ in 0..16 { size = next_wave(size, size, 1.0, 3.0, 65536); }
@@ -108,6 +136,8 @@ pub(super) struct Budget {
     pub discovery_count: u32,
     /// Receipts retired since start.
     pub receipts: u32,
+    /// View receivers that found no index slot, summed over receipts.
+    pub hash_overflows: u64,
     pub pool_prepare_ms: f32,
     pub pool_scan_ms: f32,
     pub pool_free: u32,
@@ -141,6 +171,9 @@ pub(super) struct Budget {
     pub sun_flips: Vec<(IVec3, IVec3, f32)>,
     period: f64,
 }
+
+/// Paths per frame when timestamps cannot meter the trace.
+const NO_TIMING_WAVE: u32 = 4096;
 
 /// Dispatch stages with a timestamp pair each (`Stage::slot`).
 const STAGES: usize = Stage::COUNT;
@@ -194,6 +227,7 @@ impl Budget {
             discovery_sum_ms: 0.0,
             discovery_count: 0,
             receipts: 0,
+            hash_overflows: 0,
             pool_prepare_ms: 0.0,
             pool_scan_ms: 0.0,
             pool_free: 0,
@@ -225,14 +259,17 @@ impl Budget {
     }
 
     pub fn begin_frame(&mut self, device: &RenderDevice, elapsed: f32, share: f32, view_first: bool) {
-        assert!(
-            self.queries.is_some(),
-            "Far view GI requires TIMESTAMP_QUERY to enforce its transport budget"
-        );
+        if self.queries.is_none() {
+            // Without timestamp queries the trace cannot be metered: a fixed,
+            // conservative wave per frame instead of the time share.
+            warn_once!("Voxel GI: no TIMESTAMP_QUERY; the view tier traces a fixed {NO_TIMING_WAVE} paths per frame");
+            self.wave_size = NO_TIMING_WAVE;
+            self.wave_cost = 1.0;
+        }
         // Poll means service completed callbacks, never wait for GPU progress.
-        device
-            .poll(wgpu::PollType::Poll)
-            .expect("far timing device poll failed");
+        if let Err(error) = device.poll(wgpu::PollType::Poll) {
+            warn_once!("Voxel GI: device poll failed ({error}); receipts wait");
+        }
         let mut index = 0;
         while index < self.pending.len() {
             match self.pending[index].ready.load(Ordering::Acquire) {
@@ -241,7 +278,14 @@ impl Budget {
                     continue;
                 }
                 1 => {}
-                _ => panic!("far GPU timing mapping failed"),
+                _ => {
+                    // A failed receipt mapping loses one frame's diagnostics,
+                    // not the budget: the buffer returns to the pool.
+                    warn_once!("Voxel GI: a timing receipt failed to map");
+                    let ticket = self.pending.swap_remove(index);
+                    self.free.push(ticket.buffer);
+                    continue;
+                }
             }
             let ticket = self.pending.swap_remove(index);
             let bytes = ticket.buffer.slice(..TICKET_BYTES).get_mapped_range();
@@ -265,11 +309,13 @@ impl Budget {
             let pool = |i: u64| word(queue_words::PREFIX + i);
             let pixel = |i: u64| word(queue_words::PREFIX + 4 + i);
             let active = counter(queue_words::OWNERS);
-            assert_eq!(
-                counter(queue_words::OVERFLOW),
-                0,
-                "far receiver hash overflow; no keys may be silently dropped"
-            );
+            let overflow = counter(queue_words::OVERFLOW);
+            if overflow > 0 {
+                // A face that found no index slot in 64 probes is not
+                // owned this frame (not lit, not aliased); counted, not fatal.
+                self.hash_overflows += u64::from(overflow);
+                warn_once!("Voxel GI: {overflow} view receivers found no index slot this frame (see hash_overflows)");
+            }
             self.active = active;
             self.completed = counter(queue_words::COMPLETED);
             self.known = counter(queue_words::KNOWN);
@@ -302,7 +348,7 @@ impl Budget {
             self.cache_loads += u64::from(counter(queue_words::CACHE_LOADS));
             self.cache_promotions += u64::from(counter(queue_words::CACHE_PROMOTIONS));
             let attempted = counter(queue_words::ATTEMPTED);
-            if attempted > 0 {
+            if attempted > 0 && self.queries.is_some() {
                 // View-first owns the primary lighting budget, not just a
                 // distant supplement. Keep the wave bounded while allowing
                 // several sequential visits to a small visible working set.
@@ -350,10 +396,15 @@ impl Budget {
         mut ticket: Ticket,
         stages: u32,
     ) {
-        ticket.stages = stages;
         let stamps = STAMP_BYTES as u64;
-        encoder.resolve_query_set(self.queries.as_ref().unwrap(), 0..STAGES as u32 * 2, &self.resolve, 0);
-        encoder.copy_buffer_to_buffer(&self.resolve, 0, &ticket.buffer, 0, stamps);
+        if let Some(queries) = &self.queries {
+            ticket.stages = stages;
+            encoder.resolve_query_set(queries, 0..STAGES as u32 * 2, &self.resolve, 0);
+            encoder.copy_buffer_to_buffer(&self.resolve, 0, &ticket.buffer, 0, stamps);
+        } else {
+            // No stamps: every stage reads as zero cost.
+            ticket.stages = 0;
+        }
         let counted = queue_words::PREFIX * 4;
         encoder.copy_buffer_to_buffer(counters, 0, &ticket.buffer, stamps, counted);
         encoder.copy_buffer_to_buffer(pool, 0, &ticket.buffer, stamps + counted, 16);

@@ -706,7 +706,7 @@ mod tests {
             settled_coverage: 0.125,
             main_thread_ms_per_frame: Some(1.25),
             gpu_ms_per_frame: Some(0.375),
-            view_gpu: voxel_gi::ViewReceipts { trace_ms: 1.0, presentation_ms: 0.5, discovery_ms: 0.25 },
+            view_gpu: voxel_gi::ViewReceipts { trace_ms: 1.0, presentation_ms: 0.5, discovery_ms: 0.25, ..default() },
             ..default()
         };
         assert_eq!(

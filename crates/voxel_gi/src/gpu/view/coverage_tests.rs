@@ -47,7 +47,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
     let rig = Rig::new(device);
     for grid in [4u32, 3] {
         for (thin, delayed_scene) in [(false, false), (true, false), (false, true), (true, true)] {
-            let mut camera = CameraState::new(device, UVec2::splat(grid));
+            let mut camera = CameraState::new(device, UVec2::splat(grid)).unwrap();
             let count = grid * grid;
             let mask = camera.history[0].hash.capacity as u32 / 4 - 1;
             camera.params.upload(device, queue, &ShaderBuffer::from(vec![scene.params]).data.unwrap()).unwrap();
@@ -185,7 +185,7 @@ fn native_coarse_page_faces_are_one_receiver_per_block() {
     let rig = Rig::new(device);
     let grid = 4u32;
     let count = grid * grid;
-    let mut camera = CameraState::new(device, UVec2::splat(grid));
+    let mut camera = CameraState::new(device, UVec2::splat(grid)).unwrap();
     let mask = camera.history[0].hash.capacity as u32 / 4 - 1;
     camera.params.upload(device, queue, &ShaderBuffer::from(vec![scene.params]).data.unwrap()).unwrap();
     let mut previous = BTreeSet::new();

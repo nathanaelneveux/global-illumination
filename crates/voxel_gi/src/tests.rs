@@ -8,8 +8,9 @@ use super::{
 use bevy::platform::collections::HashMap;
 
 #[test]
-#[should_panic(expected = "Voxel GI requires a GPU transport device")]
 fn transport_failure_missing_device_does_not_select_cpu_implicitly() {
+    // No device: the world cache idles (with a warning). There is no CPU
+    // tracer to fall back to, and the selected work stays queued.
     use bevy::ecs::system::RunSystemOnce;
     let mut world = World::new();
     world.init_resource::<ReceiverField>();
@@ -22,6 +23,8 @@ fn transport_failure_missing_device_does_not_select_cpu_implicitly() {
     world.init_resource::<VoxelGiStats>();
     world.init_resource::<GiWorkTimings>();
     world.run_system_once(start_trace_task).unwrap();
+    assert!(world.resource::<VoxelGiRuntime>().trace_task.is_none(), "no trace started");
+    assert_eq!(world.resource::<ReceiverField>().order, vec![IVec3::ZERO], "work kept for a device");
 }
 
 #[test]

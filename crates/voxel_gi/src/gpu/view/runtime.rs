@@ -65,6 +65,9 @@ pub struct ViewReceipts {
     pub uncovered: u32,
     pub pixel_owned: u32,
     pub pixel_traced: u32,
+    /// View receivers that found no index slot (unlit for that frame),
+    /// summed since start; nonzero means the receiver index is too full.
+    pub hash_overflows: u64,
 }
 
 #[derive(Component)]
@@ -249,16 +252,21 @@ struct Wave {
     ticket: UVec4,
 }
 
-fn storage(device: &RenderDevice, label: &'static str, bytes: usize) -> UploadBuffer {
+/// A view-tier storage buffer, or `None` past the device's limits (the
+/// caller then runs this view without the view tier).
+fn storage(device: &RenderDevice, label: &'static str, bytes: usize) -> Option<UploadBuffer> {
     let mut buffer = UploadBuffer::new(
         device,
         label,
         BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
     );
-    buffer
-        .ensure(device, bytes)
-        .expect("far view storage exceeds device limits");
-    buffer
+    match buffer.ensure(device, bytes) {
+        Ok(_) => Some(buffer),
+        Err(error) => {
+            warn_once!("Voxel GI: {label} ({bytes} bytes) exceeds device limits ({error:?}); this view runs without view GI");
+            None
+        }
+    }
 }
 struct History {
     receivers: UploadBuffer,
@@ -269,19 +277,19 @@ struct History {
     pool: UploadBuffer,
 }
 impl History {
-    fn new(device: &RenderDevice, count: u32) -> Self {
-        Self {
-            receivers: storage(device, "Far receiver identities", count as usize * 32),
-            paths: storage(device, "Far retained path records", count as usize * 128),
-            tails: storage(device, "Far unfinished paths", count as usize * 128),
-            estimates: storage(device, "Far raw estimates", count as usize * 64),
+    fn new(device: &RenderDevice, count: u32) -> Option<Self> {
+        Some(Self {
+            receivers: storage(device, "Far receiver identities", count as usize * 32)?,
+            paths: storage(device, "Far retained path records", count as usize * 128)?,
+            tails: storage(device, "Far unfinished paths", count as usize * 128)?,
+            estimates: storage(device, "Far raw estimates", count as usize * 64)?,
             hash: storage(
                 device,
                 "Far reprojection index",
                 (count * 2).next_power_of_two() as usize * 4,
-            ),
-            pool: storage(device, "Far shared receiver pool and spatial index", POOL_PREFIX_BYTES + count as usize * 16),
-        }
+            )?,
+            pool: storage(device, "Far shared receiver pool and spatial index", POOL_PREFIX_BYTES + count as usize * 16)?,
+        })
     }
 }
 /// Far tier state: ping-pong cell histories (mean RGB and count, surface
@@ -295,20 +303,23 @@ struct PixelState {
     args: Buffer,
 }
 impl PixelState {
-    fn new(device: &RenderDevice, cells: UVec2) -> Self {
+    fn new(device: &RenderDevice, cells: UVec2) -> Option<Self> {
         let bytes = cells.element_product().max(1) as usize * 48;
-        Self {
+        Some(Self {
             cells,
-            history: [0, 1].map(|_| storage(device, "Far per-pixel cell history", bytes)),
-            stats: storage(device, "Far per-pixel counters", pixel_words::COUNT as usize * 4),
-            queue: storage(device, "Far per-pixel trace queue", 4 + cells.element_product().max(1) as usize * 4),
+            history: [
+                storage(device, "Far per-pixel cell history", bytes)?,
+                storage(device, "Far per-pixel cell history", bytes)?,
+            ],
+            stats: storage(device, "Far per-pixel counters", pixel_words::COUNT as usize * 4)?,
+            queue: storage(device, "Far per-pixel trace queue", 4 + cells.element_product().max(1) as usize * 4)?,
             args: device.create_buffer(&BufferDescriptor {
                 label: Some("Far per-pixel trace dispatch"),
                 size: 16,
                 usage: BufferUsages::STORAGE | BufferUsages::INDIRECT,
                 mapped_at_creation: false,
             }),
-        }
+        })
     }
 }
 struct CameraState {
@@ -340,12 +351,12 @@ struct BindingKey {
     limited: bool,
 }
 impl CameraState {
-    fn new(device: &RenderDevice, grid: UVec2) -> Self {
+    fn new(device: &RenderDevice, grid: UVec2) -> Option<Self> {
         let count = grid.element_product();
         let uniform =
             |name| UploadBuffer::new(device, name, BufferUsages::UNIFORM | BufferUsages::COPY_DST);
-        Self {
-            history: [History::new(device, count), History::new(device, count)],
+        Some(Self {
+            history: [History::new(device, count)?, History::new(device, count)?],
             pixel: None,
             previous_clip: None,
             current: 0,
@@ -356,12 +367,12 @@ impl CameraState {
             params: uniform("Far transport parameters"),
             wave: uniform("Far wave allowance"),
             queue: storage(device, "Far visible owner queue and sequence reservations",
-                (count as usize * 2 + queue_words::PREFIX as usize) * 4 + SUN_FLIP_BYTES as usize),
+                (count as usize * 2 + queue_words::PREFIX as usize) * 4 + SUN_FLIP_BYTES as usize)?,
             cursor: 0,
             last_frame: 0,
             binding_keys: [None, None],
             groups: [Vec::new(), Vec::new()],
-        }
+        })
     }
 }
 
@@ -681,6 +692,15 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "native device limits"]
+    fn view_storage_past_device_limits_is_declined_not_fatal() {
+        let context = crate::gpu::tests::native_tracer().context;
+        let too_large = context.device.limits().max_storage_buffer_binding_size as usize + 4;
+        assert!(storage(&context.device, "test", too_large).is_none());
+        assert!(storage(&context.device, "test", 1024).is_some());
+    }
+
+    #[test]
     fn stage_table_is_a_permutation_of_slots_and_kernels() {
         let mut slots: Vec<_> = Stage::ORDER.iter().map(|stage| stage.slot()).collect();
         slots.sort_unstable();
@@ -833,6 +853,7 @@ fn render_view(
             uncovered: renderer.budget.uncovered,
             pixel_owned: renderer.budget.pixel_owned,
             pixel_traced: renderer.budget.pixel_traced,
+            hash_overflows: renderer.budget.hash_overflows,
         };
         if frame.0.is_multiple_of(120) {
             info!(
@@ -885,23 +906,31 @@ fn render_view(
             camera.binding_keys = [None, None];
         }
     }
-    let (work, ticket) = renderer.budget.reserve();
     let grid = grid_size(view.viewport.zw(), settings.receivers);
     let count = grid.x * grid.y;
     let key = view.retained_view_entity;
-    let mut camera = renderer
+    // Allocation failures (past device limits) leave this view without
+    // view GI: the cleared output headers select the material's fallback.
+    let Some(mut camera) = renderer
         .cameras
         .remove(&key)
         .filter(|camera| camera.grid == grid)
-        .unwrap_or_else(|| CameraState::new(&device, grid));
+        .or_else(|| CameraState::new(&device, grid))
+    else {
+        return;
+    };
     let pixel_size = settings.pixel.cell;
     let pixel_cells = view.viewport.zw().map(|v| v.div_ceil(pixel_size));
     let pixel_enabled = settings.pixel.voxel_pixels > 0.0
         && u64::from(pixel_cells.element_product()) * 16 + PIXEL_HEADER_BYTES <= pixel_output.buffer.size();
     if camera.pixel.as_ref().is_none_or(|state| state.cells != pixel_cells) {
-        camera.pixel = Some(PixelState::new(&device, pixel_cells));
+        let Some(state) = PixelState::new(&device, pixel_cells) else {
+            return;
+        };
+        camera.pixel = Some(state);
         camera.previous_clip = None;
     }
+    let (work, ticket) = renderer.budget.reserve();
     let pixel_state = camera.pixel.as_ref().unwrap();
     let current = &camera.history[camera.current];
     let previous = &camera.history[1 - camera.current];

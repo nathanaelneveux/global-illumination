@@ -55,7 +55,10 @@ pub(super) fn start_trace_task(
     if field.order.is_empty() && runtime.gpu_pending.is_empty() && !maintenance {
         return;
     }
-    let gpu_device = gpu_device.expect("Voxel GI requires a GPU transport device");
+    let Some(gpu_device) = gpu_device else {
+        warn_once!("Voxel GI: no GPU transport device; the world cache is idle");
+        return;
+    };
     let selection_started = Instant::now();
     let focus = cameras.iter().find(|(camera, _)| camera.is_active).map_or(IVec3::ZERO, |(_, transform)| {
         transform.translation().floor().as_ivec3()

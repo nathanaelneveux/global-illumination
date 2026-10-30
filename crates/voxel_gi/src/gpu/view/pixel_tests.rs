@@ -103,12 +103,12 @@ impl Far {
             });
             (pipeline, reflection.bindings(name))
         }).collect();
-        let mut camera = CameraState::new(device, UVec2::splat(GRID));
+        let mut camera = CameraState::new(device, UVec2::splat(GRID)).unwrap();
         let mask = camera.history[0].hash.capacity as u32 / 4 - 1;
         camera.params.upload(device, queue, &ShaderBuffer::from(vec![scene.params]).data.unwrap()).unwrap();
         let cells = UVec2::splat(16u32.div_ceil(cell));
-        let pixels = PixelState::new(device, cells);
-        let output = storage(device, "pixel output", PIXEL_HEADER_BYTES as usize + cells.element_product() as usize * 16);
+        let pixels = PixelState::new(device, cells).unwrap();
+        let output = storage(device, "pixel output", PIXEL_HEADER_BYTES as usize + cells.element_product() as usize * 16).unwrap();
         let depths: Vec<u8> = (0..256).flat_map(|_| 0.5f32.to_le_bytes()).collect();
         let normals: Vec<u8> = (0..256).flat_map(|_| [0.5f32, 1., 0.5, 1.]).flat_map(f32::to_le_bytes).collect();
         rig.upload(queue, &depths, &normals);
