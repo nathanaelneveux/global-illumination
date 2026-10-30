@@ -14,8 +14,19 @@ multi-bounce indirect light, traced on the GPU against the voxels themselves.
 - **Your engine, your meshes.** GI reads voxels through a trait and lights
   your materials; it never meshes or owns the world.
 
-Native GPUs only (Metal, Vulkan, DX12). Not WebGPU: the view tier uses more
-storage buffers per stage than WebGPU allows.
+No ray-tracing hardware needed: it is all compute shaders, so it runs on
+Apple Silicon and integrated GPUs. Native GPUs only (Metal, Vulkan, DX12). Not
+WebGPU: the view tier uses more storage buffers per stage than WebGPU allows.
+
+![A cave lit by emissive voxels and a skylight: colored bounce light on every wall](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/cave.jpg)
+![Terraced terrain under the sun, with sky and bounce light in the shadows](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/terrain.jpg)
+
+| Bevy | voxel_gi |
+| --- | --- |
+| 0.19 | 0.1 |
+
+Each release targets one Bevy minor version: host materials override Bevy
+PBR internals that change between Bevy releases.
 
 ## Quick start
 
@@ -40,7 +51,9 @@ lines. The pieces:
 4. **Materials.** `MaterialPalette` maps your block types to transport
    materials by their optics (diffuse albedo, emission); identical optics
    share an ID, and transparent blocks map to `AIR`. Copy
-   `palette.table()` into the `VoxelMaterialTransportTable` resource.
+   `palette.table()` into the `VoxelMaterialTransportTable` resource. With
+   integer block IDs, build a dense table from the palette once, with
+   `optics_id(MaterialTransport::default())` for unregistered blocks.
 5. **Light your meshes.** Either use `VoxelGiStandardMaterial` (Bevy's
    `StandardMaterial` lit by GI; add `VoxelGiStandardMaterialPlugin` and
    build it with `standard_material`), or light your own material:
@@ -74,6 +87,16 @@ lines. The pieces:
 `VoxelGiStats` and `ViewReceipts` report work and GPU time; `geometry_pending`
 tells you when declared pages have reached the GPU.
 
+## Performance
+
+Measured on an Apple M4 (10-core GPU) at 2560×1440. The view tier's fixed
+GPU work per frame (finding visible faces, presentation and the far tier) is
+about 4 ms on open streaming terrain and 1.6 ms in a closed cave. Its tracing
+adapts to fill `gpu_time_share` (20% of the frame by default), about 3.5 ms
+here, and the world cache's work has the same cap. These are GPU stage
+timings, not frame rates. Only this one GPU has been measured; reports from
+other hardware are welcome.
+
 ## Limitations
 
 - Opaque diffuse transport only: transparent blocks are `AIR` to GI (no
@@ -83,4 +106,23 @@ tells you when declared pages have reached the GPU.
 - Each edit or sun change costs some re-convergence near it; lighting
   settles over a few hundred milliseconds.
 
-Licensed under MIT or Apache-2.0.
+## Credits
+
+- [NAADF: Globally Illuminated Voxel Worlds Accelerated with Nested
+  Axis-Aligned Distance Fields](https://www.cg.tuwien.ac.at/research/publications/2026/ulschmid-2026-naadf/)
+  ([code](https://github.com/cg-tuwien/NAADF)): the acceleration structure
+  and the per-pixel lighting of small faces. This is an independent compute
+  implementation, not a port of NAADF's renderer.
+- [vxray](https://github.com/Nelarius/vxray) and its
+  [development log](https://nelari.us/post/voxel-ray-tracing/): voxel
+  traversal.
+- [sobol_burley](https://github.com/cessen/sobol_burley) by Nathan Vegdahl:
+  the hash-based Owen scramble in the path sampler (MIT,
+  `licenses/sobol_burley-MIT.txt`).
+- [PBRT](https://pbr-book.org/4ed/Shapes/Managing_Rounding_Error#SpawnRayTo):
+  ray spawning.
+
+## License
+
+Licensed under MIT or Apache-2.0, at your option. The adapted `sobol_burley`
+code keeps its MIT notice.

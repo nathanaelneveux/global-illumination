@@ -1,8 +1,32 @@
-# Voxel GI Lab
+# Voxel GI
+
+Real-time diffuse global illumination for voxel worlds in
+[Bevy](https://bevyengine.org) 0.19: sunlight, sky, emissive voxels and
+multi-bounce indirect light, traced against the voxels themselves on ordinary
+GPU compute. No ray-tracing hardware is needed, so it runs on Apple Silicon and
+integrated GPUs (native only, not WebGPU).
+
+![A cave lit by emissive voxels and a skylight](docs/images/cave.jpg)
+
+| Crate | What it is |
+| --- | --- |
+| [`voxel_gi`](crates/voxel_gi) | GI itself. Start with its [README](crates/voxel_gi/README.md): host setup, tuning, performance, limitations |
+| [`voxel_gi_bvw`](crates/voxel_gi_bvw) | Connector for [`bevy_voxel_world`](https://github.com/splashdust/bevy_voxel_world): chunk events, voxel source, the lit mesh material |
+| [`voxel_gi_debug`](crates/voxel_gi_debug) | Optional HUD and tuning panel |
+
+```sh
+cargo run -p voxel_gi --example minimal   # a complete host in about 150 lines
+cargo run --locked                        # the lab: a streaming BVW world with GI
+```
+
+Changes are in the [CHANGELOG](CHANGELOG.md). The rest of this README and
+`docs/` describe the lab: the development app, its validation harness, and the
+design history behind the crates.
+
+## The lab
 
 Hybrid near/far diffuse lighting for the complete loaded voxel world,
-forked from `prototype_voxel_template`. Bevy 0.19.1 and ordinary GPU compute;
-hardware ray-query support is not required. BVW supplies terrain and meshes, while
+forked from `prototype_voxel_template`. BVW supplies terrain and meshes, while
 GI owns an independent sparse voxel acceleration structure and energy field.
 
 The preferred look is shared-corner direct sunlight, corner-reconstructed
@@ -11,15 +35,7 @@ at exposed voxel-face centers. Transport and virtual voxel corners do not
 depend on greedy-mesh vertices. Near histories live in world space; far face
 identities and paths live in a bounded view cache, discovered from depth/normals.
 
-The workspace has three crates and this lab app (the root package):
-
-| Crate | What it is |
-| --- | --- |
-| `crates/voxel_gi` | GI itself: page input (`VoxelGiInput`, `VoxelSource`, coarse LOD pages as `PageSample`), transport, view tier, world cache, settings, and `VoxelGiMaterialData` for lit materials |
-| `crates/voxel_gi_bvw` | `bevy_voxel_world` connector: chunk events, voxel source, the lit mesh material |
-| `crates/voxel_gi_debug` | Optional HUD and tuning panel (`VoxelGiDebugPlugin`) |
-
-## Start here
+### Start here
 
 - [Architecture](docs/architecture.md): data model, estimator, ownership,
   invalidation, presentation, simulation separation, and integration limits.
@@ -117,7 +133,7 @@ Bootstrap means progress toward eight samples; Settled means passing a
 revisitable stability heuristic. None means convergence. CPU and GPU work
 overlap, so their displayed costs must not be added.
 
-## Controls
+### Controls
 
 | Input | Action |
 | --- | --- |
@@ -137,7 +153,7 @@ overlap, so their displayed costs must not be added.
 Aim before releasing the cursor to use the emitter button. Movement/look pauses
 while the cursor is released. Display toggles do not invalidate transport.
 
-### Visual quality tuning
+#### Visual quality tuning
 
 Press **Esc**, then **Lighting controls** in the HUD (Bevy UI, feathers widgets).
 
@@ -229,7 +245,7 @@ a file and launch with `VOXEL_GI_SETTINGS=path.ron cargo run --locked`. Omitted
 fields use defaults; unknown fields or malformed files are errors, and numeric
 values are clamped to supported ranges.
 
-## Current behavior
+### Current behavior
 
 Every visible face is traced by the view tier each frame within its GPU share;
 the world cache (radius 64) adds sixteen RGB paths per selected face to
@@ -255,7 +271,7 @@ Terrain configuration is hot-reloaded from
 properties in `VoxelMaterialTransportTable`. Source adaptation and texture assets
 have explicit owners rather than being encoded into the tracer.
 
-## Scope
+### Scope
 
 This is a tested prototype engine split into workspace crates, not yet a
 published crate or an unlimited-world renderer. It supports
@@ -270,5 +286,7 @@ infrared and ionizing bands were removed.
 
 ## License
 
-`CC0-1.0 OR MIT OR Apache-2.0`: [CC0](LICENSE-CC0-1.0.txt),
-[MIT](LICENSE-MIT.txt), [Apache](LICENSE-Apache-2.0.txt).
+The crates are `MIT OR Apache-2.0` ([MIT](LICENSE-MIT.txt),
+[Apache](LICENSE-Apache-2.0.txt)); `voxel_gi` keeps the MIT notice of the
+`sobol_burley` code it adapts. The lab app (the root package) is
+`CC0-1.0 OR MIT OR Apache-2.0` ([CC0](LICENSE-CC0-1.0.txt)).
