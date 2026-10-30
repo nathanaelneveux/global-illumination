@@ -21,8 +21,10 @@ The crates share one version. The format follows
     block types to transport materials, and `VoxelGiEmitter` for lights with
     no Bevy counterpart. Declared pages bound GI's interest.
   - Presentation: the `voxel_gi::presentation` WGSL module and
-    `VoxelGiBindings` for lighting your own material, or the stock
-    `VoxelGiStandardMaterial`.
+    `VoxelGiBindings` for lighting your own material (meshes or a
+    ray-traced primary), or the stock `VoxelGiStandardMaterial`.
+    `face_in_geometry` and GI's sun list (`sun_count`, `sun_direction`,
+    `sun_color`) let hosts light faces GI does not cover.
   - `VoxelGiStats` and `ViewReceipts` for work, GPU time and readiness
     (`geometry_pending`).
   - Degrades instead of panicking: no timestamp queries (fixed path budget),

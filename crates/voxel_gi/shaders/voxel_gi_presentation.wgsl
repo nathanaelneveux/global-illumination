@@ -498,8 +498,26 @@ fn emission(position: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     return far_view.optical[material * 4u + 2u].rgb;
 }
 
-/// Whether this face is an exposed face of GI's geometry (validation: a
-/// rendered face GI cannot light).
+/// GI's suns (the Bevy `DirectionalLight`s it uses, at most four), for
+/// hosts that light faces GI does not cover with their own visibility test.
+/// `sun_direction` points toward the sun; `sun_color` is in transport units,
+/// like `sunlight`.
+fn sun_count() -> u32 {
+    return min(transport_settings.sun_count, 4u);
+}
+
+fn sun_direction(sun: u32) -> vec3<f32> {
+    return transport_settings.sun_direction[sun].xyz;
+}
+
+fn sun_color(sun: u32) -> vec3<f32> {
+    return transport_settings.sun_color[sun].rgb;
+}
+
+/// Whether this face is an exposed face of GI's geometry. GI's light
+/// (`indirect_light`, `sunlight`, `emission`) describes only such faces:
+/// hosts light the others themselves (faces outside the declared pages, or
+/// geometry GI has not received yet).
 fn face_in_geometry(position: vec3<f32>, normal: vec3<f32>) -> bool {
     let voxel = vec3<i32>(floor(position - normal * 0.01));
     let face = face_index_of(normal);

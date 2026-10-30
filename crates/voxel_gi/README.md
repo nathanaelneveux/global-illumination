@@ -46,11 +46,17 @@ lines. The pieces:
    build it with `standard_material`), or light your own material:
    - wrap it as `ExtendedMaterial<YourMaterial, VoxelGiBindings>` (GI binds
      104 and 106-111 of the material bind group; keep them free) and add
-     `VoxelGiMaterialPlugin::<_>::extended()`;
+     `VoxelGiMaterialPlugin::<_>::extended()`. Bevy takes the prepass and
+     shadow switches of an `ExtendedMaterial` from the extension (both on),
+     not your material: add `NotShadowCaster` to entities that must not
+     cast shadows;
    - in its fragment shader, `#import voxel_gi::presentation::{indirect_light,
      sunlight, emission}`: multiply `indirect_light(...).light` by albedo,
      add `emission`, and use `sunlight` for the sun (see
-     `shaders/voxel_gi_standard.wgsl`).
+     `shaders/voxel_gi_standard.wgsl`). The fragment needs no mesh:
+     a ray-traced host can pass any hit's position and normal.
+     `face_in_geometry` says whether GI covers a face; light the others
+     yourself (`sun_count`, `sun_direction` and `sun_color` give GI's suns).
 6. **Sun and sky.** Bevy `DirectionalLight`s become GI's suns (turn their
    shadow maps off: GI traces sun visibility itself); `VoxelGiEnvironment`
    sets the sky. `VoxelGiEmitter` adds lights with no Bevy counterpart.
