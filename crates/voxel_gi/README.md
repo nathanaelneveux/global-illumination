@@ -19,7 +19,7 @@ Apple Silicon and integrated GPUs. Native GPUs only (Metal, Vulkan, DX12). Not
 WebGPU: the view tier uses more storage buffers per stage than WebGPU allows.
 
 ![A cave lit by emissive voxels and a skylight: colored bounce light on every wall](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/cave.jpg)
-![Terraced terrain under the sun, with sky and bounce light in the shadows](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/terrain.jpg)
+![A daylight canyon: sunlit walls bounce warm light into the shaded side, out to long sightlines](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/canyon.jpg)
 
 | Bevy | voxel_gi |
 | --- | --- |

@@ -7,6 +7,7 @@ GPU compute. No ray-tracing hardware is needed, so it runs on Apple Silicon and
 integrated GPUs (native only, not WebGPU).
 
 ![A cave lit by emissive voxels and a skylight](docs/images/cave.jpg)
+![A daylight canyon: sunlit walls bounce warm light into the shaded side](docs/images/canyon.jpg)
 
 | Crate | What it is |
 | --- | --- |
