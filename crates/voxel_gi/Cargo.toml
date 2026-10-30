@@ -11,6 +11,9 @@ wgpu.workspace = true
 serde.workspace = true
 ron.workspace = true
 naga.workspace = true
+# Host materials (and the stock VoxelGiStandardMaterial) override Bevy's
+# directional light and shadow lookup, which are not `virtual`.
+naga_oil = { version = "0.22", default-features = false, features = ["override_any"] }
 
 [lints]
 workspace = true

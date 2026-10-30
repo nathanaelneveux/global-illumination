@@ -6636,6 +6636,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "naga",
+ "naga_oil",
  "ron 0.11.0",
  "serde",
  "wgpu",

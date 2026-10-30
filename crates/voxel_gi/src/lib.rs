@@ -1,12 +1,4 @@
-//! Persistent diffuse global illumination for opaque axis-aligned voxel
-//! surfaces in Bevy.
-//!
-//! A host reports loaded 32³ pages and voxel edits through `VoxelGiInput` and
-//! provides a `VoxelSource` to read them; GI builds immutable scene snapshots
-//! on workers, traces every visible face on the GPU (the view tier) next to a
-//! persistent world cache, and publishes what a lit material binds as
-//! `VoxelGiMaterialData`. `voxel_gi_bvw` connects `bevy_voxel_world`;
-//! `voxel_gi_debug` is the optional HUD and tuning panel.
+#![doc = include_str!("../README.md")]
 mod input;
 mod pages;
 mod palette;
@@ -58,10 +50,13 @@ pub use input::{
     PageSample, VOXEL_GI_PAGE_EDGE, VoxelGiInput, VoxelGiSource, VoxelSource, coarse_page, dense_page,
 };
 pub use gpu::view::ViewReceipts;
+#[doc(hidden)]
 pub use gpu::include_traversal;
 pub use render::{
-    GiDebugView, GpuTransportSettings, GpuTraversalParams, PRESENTATION_SHADER, VoxelGiBindings,
-    VoxelGiDisplay, VoxelGiMaterialData, VoxelGiMaterialPlugin, presentation_shader_source,
+    GiDebugView, GpuTransportSettings, GpuTraversalParams, PRESENTATION_SHADER, STANDARD_SHADER,
+    STANDARD_SHADER_SOURCE, VoxelGiBindings, VoxelGiDisplay, VoxelGiMaterialData, VoxelGiMaterialPlugin,
+    VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin, VoxelGiStandardShader, presentation_shader_source,
+    standard_material,
 };
 pub use telemetry::MAIN_STAGE_NAMES as GI_MAIN_STAGE_NAMES;
 use dispatch::{apply_trace_task, start_trace_task};

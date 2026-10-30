@@ -1,7 +1,4 @@
-//! Opt-in debug tooling on GI's public API: a HUD, the lighting controls
-//! panel (Bevy UI with feathers widgets), keyboard presentation toggles and
-//! periodic terminal stats. Nothing here runs unless `VoxelGiDebugPlugin` is
-//! added.
+#![doc = include_str!("../README.md")]
 use bevy::clipboard::{Clipboard, ClipboardRead};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::feathers::{

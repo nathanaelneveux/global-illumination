@@ -1,8 +1,4 @@
-//! `bevy_voxel_world` connector: forwards chunk spawn/update/despawn as GI page
-//! events and samples pages from BVW chunk data. Any `VoxelWorldConfig` with
-//! `u8` materials works; a BVW chunk is exactly one GI page (32³). LOD chunks
-//! reach GI at their own stride (`PageSample`), read straight from the
-//! chunk's stored samples. The mesh material lit by GI is in `material`.
+#![doc = include_str!("../README.md")]
 mod material;
 
 pub use material::{
