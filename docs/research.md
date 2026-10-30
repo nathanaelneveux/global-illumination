@@ -386,10 +386,27 @@ Experiments after 0.1, each judged against the same scenes on the M4:
   motion vectors, which the BVW material does not produce today.
 - **Separate static and dynamic emissive history.** Long, cheap accumulation
   for static emitters (ore veins, panels) and fast response for moving lights
-  (a suit lamp). This idea comes from an unverified 2026-10-29 report of
-  another wgpu voxel renderer. Measure how quickly a moving `VoxelGiEmitter`
-  responds first, then dig a one-voxel and a 10x10 opening and compare
-  convergence, stale-light removal, memory and GPU time.
+  (a suit lamp). The idea comes from
+  [IgorKonovalov/voxel-engine](https://github.com/IgorKonovalov/voxel-engine),
+  a wgpu ray-marched voxel engine with screen-space reservoir reuse and probes.
+  Its v0.36 work (plan 0047) did three things:
+  - moved emissive accumulation from `rgba16float` to `rgba32float`, because
+    half floats stop accumulating once history grows: the gap from an f64
+    replay went from 13.92% to 0.0001% (lavapipe);
+  - added an emissive-only gradient guard that re-shades last frame's point to
+    raise the blend where light changed;
+  - spread probe updates by a hash, so neighbouring probes no longer update
+    together and pop in patches.
+
+  Its next spike (plan 0051, approved but not started) adds a world-space
+  emissive cache keyed by surface voxel that excludes the moving headlamp:
+  this is our world cache's design, plus the static/dynamic split we lack.
+  Our accumulations are already f32 (`ViewEstimate`, `PixelHistory`, counts
+  to 65,536); only the far tier's display output is half precision, and it is
+  never accumulated. Our edits invalidate history explicitly instead of
+  estimating gradients. To do: measure how quickly a moving `VoxelGiEmitter`
+  responds, then dig a one-voxel and a 10x10 opening and compare convergence,
+  stale-light removal, memory and GPU time.
 - **Stretch: atmosphere transmittance for GI's suns.** GI imports each sun's
   colour from its `DirectionalLight`. Under Bevy's atmosphere, raster lighting
   reddens at sunset while GI's sun would not: the mismatch Solari fixed in
