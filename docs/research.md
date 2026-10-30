@@ -362,3 +362,37 @@ corner look and current temporal filter fixed while investigating speed. Change 
 per checkpoint and retain a failed experiment's evidence if it is rejected.
 Attribute scene, scheduling, tracing, readback and display costs separately;
 faster frames obtained by starving transport are not an improvement.
+
+## After 0.1 (decided 2026-10-30)
+
+0.1 ships on Bevy 0.19 with all three crates (`bevy_voxel_world` 0.17 still
+requires Bevy 0.19). 0.2 targets Bevy 0.20 (released 2026-10-08). When porting,
+confirm that [bevy#26246](https://github.com/bevyengine/bevy/pull/26246) is
+included: 0.20's GPU-allocated mesh uniforms can draw meshes with another
+mesh's material for a frame or two at startup.
+
+Experiments after 0.1, each judged against the same scenes on the M4:
+
+- **MetalFX denoising.** [metalfx_wgpu](https://github.com/mate-h/metalfx_wgpu)
+  wraps MetalFX's temporal denoised scaler (macOS 26, wgpu 30, so Bevy 0.20).
+  Since July, Solari runs on Metal
+  ([bevy#25123](https://github.com/bevyengine/bevy/pull/25123)), and MetalFX
+  support for it is an open PR
+  ([bevy#26306](https://github.com/bevyengine/bevy/pull/26306), tested on an
+  M5, no published quality or performance figures). Two questions: whether
+  MetalFX can denoise and upscale our noisiest signal (the far tier's
+  per-pixel light, whose motion flicker is deferred), and how Solari with
+  MetalFX compares with voxel GI on the same scene and hardware. MetalFX needs
+  motion vectors, which the BVW material does not produce today.
+- **Separate static and dynamic emissive history.** Long, cheap accumulation
+  for static emitters (ore veins, panels) and fast response for moving lights
+  (a suit lamp). This idea comes from an unverified 2026-10-29 report of
+  another wgpu voxel renderer. Measure how quickly a moving `VoxelGiEmitter`
+  responds first, then dig a one-voxel and a 10x10 opening and compare
+  convergence, stale-light removal, memory and GPU time.
+- **Stretch: atmosphere transmittance for GI's suns.** GI imports each sun's
+  colour from its `DirectionalLight`. Under Bevy's atmosphere, raster lighting
+  reddens at sunset while GI's sun would not: the mismatch Solari fixed in
+  [bevy#26127](https://github.com/bevyengine/bevy/pull/26127). Apply the same
+  transmittance when importing suns, and check a sunset sweep against raster
+  lighting.
