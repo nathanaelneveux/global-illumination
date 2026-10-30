@@ -244,9 +244,9 @@ fn native_small_faces_are_lit_per_pixel_without_receivers() {
 #[test]
 #[ignore = "native per-pixel tier"]
 fn native_far_cells_at_default_settings_sample_every_pixel_and_index() {
-    // The defaults: 3-pixel cells, one trace in four frames after warmup.
+    // The 1440p defaults: 3-pixel cells, one trace in four frames after warmup.
     let defaults = FarTierSettings::default();
-    let mut far = Far::new(defaults.cell, defaults.rate, false);
+    let mut far = Far::new(defaults.cell_for(1440), defaults.rate, false);
     let cells = far.cells() as usize;
     let width = far.pixels.cells.x as usize;
     // The 16-pixel view leaves the last row and column partly outside it.
@@ -291,7 +291,7 @@ fn native_far_cells_show_custom_direct_light_outside_their_history() {
     // cells add it at presentation, whether or not they traced this frame,
     // and keep it out of the accumulated indirect mean.
     let defaults = FarTierSettings::default();
-    let mut far = Far::new(defaults.cell, defaults.rate, true);
+    let mut far = Far::new(defaults.cell_for(1440), defaults.rate, true);
     assert_eq!(far.scene.params.transport.y, 1.0);
     let width = far.pixels.cells.x as usize;
     let mut previous = None;

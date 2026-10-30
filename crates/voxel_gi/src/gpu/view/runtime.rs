@@ -27,7 +27,8 @@ struct ViewSettings {
     /// The far tier's cells, read by the material.
     pixel_output: Handle<ShaderBuffer>,
     pixel: FarTierSettings,
-    pixel_cell_allocated: u32,
+    /// Bytes of the far tier's output allocated for the current cameras.
+    pixel_bytes_allocated: u64,
     /// The host's declared geometry interest in regions (`pages::Interest`).
     interest: Option<(IVec3, IVec3)>,
     enabled: bool,
@@ -83,7 +84,7 @@ pub(crate) fn install(app: &mut App, output: Handle<ShaderBuffer>, pixel_output:
         output,
         pixel_output,
         pixel: FarTierSettings::default(),
-        pixel_cell_allocated: 0,
+        pixel_bytes_allocated: 0,
         interest: None,
         enabled: false,
         inner_radius: 0.0,
@@ -132,6 +133,7 @@ fn configure_views(
             Has<DepthPrepass>,
             Has<NormalPrepass>,
             Option<&AddedPrepasses>,
+            &Camera,
         ),
         With<Camera3d>,
     >,
@@ -165,19 +167,27 @@ fn configure_views(
         material_data.far = view.output.clone();
     }
     let pixel = settings.far_tier.normalized();
-    if enabled && view.pixel_cell_allocated != pixel.cell {
+    // Sized for the largest current camera at its cell size; it grows with
+    // the viewport (one shared scratch output, written per camera).
+    let needed = cameras
+        .iter()
+        .filter_map(|(.., camera)| camera.physical_viewport_size())
+        .map(|size| pixel_output_bytes(size, pixel.cell_for(size.y)))
+        .max()
+        .unwrap_or(0);
+    if enabled && needed > view.pixel_bytes_allocated {
         let mut asset = ShaderBuffer::default();
-        asset.buffer_description.size = pixel_output_bytes(pixel.cell);
+        asset.buffer_description.size = needed;
         asset.buffer_description.usage =
             BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
         view.pixel_output = buffers.add(asset);
         material_data.far_pixels = view.pixel_output.clone();
-        view.pixel_cell_allocated = pixel.cell;
+        view.pixel_bytes_allocated = needed;
     }
     if view.pixel != pixel {
         view.pixel = pixel;
     }
-    for (entity, depth, normal, added) in &cameras {
+    for (entity, depth, normal, added, _) in &cameras {
         if enabled && added.is_none() {
             let mut entity = commands.entity(entity);
             entity.insert(AddedPrepasses {
@@ -935,7 +945,7 @@ fn render_view(
     else {
         return;
     };
-    let pixel_size = settings.pixel.cell;
+    let pixel_size = settings.pixel.cell_for(view.viewport.w);
     let pixel_cells = view.viewport.zw().map(|v| v.div_ceil(pixel_size));
     let pixel_enabled = settings.pixel.voxel_pixels > 0.0
         && u64::from(pixel_cells.element_product()) * 16 + PIXEL_HEADER_BYTES <= pixel_output.buffer.size();

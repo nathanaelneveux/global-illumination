@@ -43,8 +43,20 @@ pub(super) struct CaptureEvidence {
     last_capture: Option<Instant>,
 }
 
-const OFFSCREEN_WIDTH: u32 = 2560;
-const OFFSCREEN_HEIGHT: u32 = 1440;
+/// The headless target: 2560x1440, or `VOXEL_GI_VALIDATE_RESOLUTION=WxH`
+/// (cost runs at other sizes; the capture-quality tools assume 1440p).
+fn offscreen_size() -> (u32, u32) {
+    static SIZE: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| {
+        std::env::var("VOXEL_GI_VALIDATE_RESOLUTION")
+            .ok()
+            .and_then(|value| {
+                let (w, h) = value.split_once('x')?;
+                Some((w.parse().ok()?, h.parse().ok()?))
+            })
+            .unwrap_or((2560, 1440))
+    })
+}
 
 pub(super) fn install_frame_timing(app: &mut App) {
     if std::env::var_os("VOXEL_GI_VALIDATE_FRAME_TIMINGS").is_some() {
@@ -97,9 +109,10 @@ pub(super) fn setup_capture_target(
     if !crate::headless_validation() {
         return;
     }
+    let (width, height) = offscreen_size();
     let mut image = Image::new_target_texture(
-        OFFSCREEN_WIDTH,
-        OFFSCREEN_HEIGHT,
+        width,
+        height,
         TextureFormat::Rgba8UnormSrgb,
         None,
     );
@@ -772,12 +785,13 @@ fn check_capture(
     let offscreen = evidence.render_target.is_some();
     let mut target_valid = false;
     if let Some(target) = &evidence.render_target {
-        target_valid = capture.image.texture_descriptor.size.width == OFFSCREEN_WIDTH
-            && capture.image.texture_descriptor.size.height == OFFSCREEN_HEIGHT
+        let (width, height) = offscreen_size();
+        target_valid = capture.image.texture_descriptor.size.width == width
+            && capture.image.texture_descriptor.size.height == height
             && cameras.iter().any(|(camera, _, render_target)| {
                 camera.is_active && render_target.as_image() == Some(target)
             });
-        evidence.windows.push(json!({"capture_mode": "offscreen", "width": OFFSCREEN_WIDTH, "height": OFFSCREEN_HEIGHT,
+        evidence.windows.push(json!({"capture_mode": "offscreen", "width": width, "height": height,
             "present_mode": null, "focused": null, "visible": null, "target_valid": target_valid, "varied": varied}));
         info!(target_valid, varied, "GI offscreen validation capture");
     }

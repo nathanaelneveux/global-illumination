@@ -84,7 +84,10 @@ pub struct FarTierSettings {
     /// far tier.
     pub voxel_pixels: f32,
     pub measure: FarTierMeasure,
-    /// Pixels per side of one traced cell (1-4).
+    /// Pixels per side of one traced cell (1-4), or 0 (default) to follow
+    /// the resolution: about one cell per 480th of the view height (2 at
+    /// 1080p, 3 at 1440p, 4 at 4K), so the far tier's cost stays near
+    /// constant as resolution grows.
     pub cell: u32,
     /// Maximum temporal history in samples.
     pub history: f32,
@@ -105,16 +108,24 @@ pub enum FarTierMeasure {
 
 impl Default for FarTierSettings {
     fn default() -> Self {
-        Self { voxel_pixels: 8.0, measure: FarTierMeasure::VoxelSide, cell: 3, history: 32.0, rate: 4, steps: 128 }
+        Self { voxel_pixels: 8.0, measure: FarTierMeasure::VoxelSide, cell: 0, history: 32.0, rate: 4, steps: 128 }
     }
 }
 
 impl FarTierSettings {
+    /// The cell size for a view `height` pixels tall.
+    pub(crate) fn cell_for(&self, height: u32) -> u32 {
+        if self.cell != 0 {
+            return self.cell;
+        }
+        ((height as f32 / 480.0).round() as u32).clamp(1, 4)
+    }
+
     pub(crate) fn normalized(self) -> Self {
         Self {
             voxel_pixels: if self.voxel_pixels.is_finite() { self.voxel_pixels.clamp(0.0, 4096.0) } else { 0.0 },
             measure: self.measure,
-            cell: self.cell.clamp(1, 4),
+            cell: self.cell.min(4),
             history: if self.history.is_finite() { self.history.clamp(1.0, 1024.0) } else { 32.0 },
             rate: self.rate.clamp(1, 8),
             steps: self.steps.clamp(16, 2048),
@@ -503,5 +514,13 @@ mod tests {
                 .source_revision,
             1
         );
+    }
+
+    #[test]
+    fn far_tier_cells_follow_the_view_height_unless_set() {
+        let auto = FarTierSettings::default();
+        assert_eq!([720, 1080, 1440, 2160, 4320].map(|h| auto.cell_for(h)), [2, 2, 3, 4, 4]);
+        assert_eq!(FarTierSettings { cell: 2, ..auto }.cell_for(2160), 2, "an explicit size wins");
+        assert_eq!(FarTierSettings { cell: 9, ..auto }.normalized().cell, 4);
     }
 }
