@@ -740,7 +740,7 @@ fn native_returning_face_reports_the_sun_change_it_missed() {
     // Corner words: known bit 128 per corner byte, bit 0 lit by the sun.
     const LIT: u32 = 0x8181_8181;
     const SHADOWED: u32 = 0x8080_8080;
-    let mut f = Fixture::new();
+    let f = Fixture::new();
     let material = f.work.faces[0].material as u32;
     let flips = |f: &Fixture| {
         // The flip region follows the owner queue: 12 + 2 * receivers words.

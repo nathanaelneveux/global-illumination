@@ -679,143 +679,6 @@ mod coverage_tests;
 #[path = "pixel_tests.rs"]
 mod pixel_tests;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_view_kernel_binds_only_resources_render_view_provides() {
-        // render_view resolves group 0 from `group0` (0-10), group 1 from
-        // tails and wave (0-1), group 2 from `group2` (0-7) and its explicit
-        // arms (8-24). A kernel using anything else would panic at runtime.
-        let started = std::time::Instant::now();
-        let reflection = crate::gpu::reflect::Reflection::new(&shader(false));
-        eprintln!("view shader reflection: {:?}", started.elapsed());
-        for name in ["prepare_receiver_pool", "discover_receivers", "index_receivers", "reproject_paths",
-            "trace_visible_paths", "retain_view_history", "load_shared_faces", "store_shared_faces",
-            "reconstruct_view", "publish_view", "classify_pixels", "size_pixel_queue", "trace_pixel_queue"] {
-            let [group0, group1, group2] = reflection.bindings(name);
-            assert!(group0.iter().all(|&b| b <= 10), "{name} group 0 {group0:?}");
-            assert!(group1.iter().all(|&b| b <= 1), "{name} group 1 {group1:?}");
-            assert!(group2.iter().all(|&b| b <= 24), "{name} group 2 {group2:?}");
-        }
-    }
-
-    #[test]
-    #[ignore = "native device limits"]
-    fn view_storage_past_device_limits_is_declined_not_fatal() {
-        let context = crate::gpu::tests::native_tracer().context;
-        let too_large = context.device.limits().max_storage_buffer_binding_size as usize + 4;
-        assert!(storage(&context.device, "test", too_large).is_none());
-        assert!(storage(&context.device, "test", 1024).is_some());
-    }
-
-    #[test]
-    fn stage_table_is_a_permutation_of_slots_and_kernels() {
-        let mut slots: Vec<_> = Stage::ORDER.iter().map(|stage| stage.slot()).collect();
-        slots.sort_unstable();
-        assert_eq!(slots, (0..Stage::COUNT).collect::<Vec<_>>(), "one timestamp pair per stage");
-        let mut kernels: Vec<_> = Stage::ORDER.iter().flat_map(|stage| stage.kernels().iter().map(|k| k.0)).collect();
-        kernels.sort_unstable();
-        assert_eq!(kernels, (0..12).collect::<Vec<_>>(), "every listed kernel dispatched once");
-    }
-
-    #[test]
-    fn presentation_module_mirrors_the_view_tier() {
-        // Host materials read buffers the view tier writes through
-        // voxel_gi::presentation; its copies of their structs must keep the
-        // same members at the same offsets.
-        let presentation = crate::gpu::reflect::Reflection::new(
-            &crate::render::presentation_shader_source()
-                .replace("#define_import_path voxel_gi::presentation", "")
-                .replace("#{MATERIAL_BIND_GROUP}", "2"),
-        );
-        let runtime = crate::gpu::reflect::Reflection::new(&shader(false));
-        assert_eq!(presentation.layout("FarOutput"), runtime.layout("FarOutput"));
-        assert_eq!(presentation.layout("FarPixel"), runtime.layout("FarPixel"));
-        assert_eq!(presentation.layout("FarCells"), runtime.layout("PixelOutput"), "the far tier's cells");
-    }
-
-    #[test]
-    fn rust_and_wgsl_view_layouts_agree() {
-        let reflection = crate::gpu::reflect::Reflection::new(&shader(false));
-        let f = |i: u32| Vec4::splat(i as f32);
-        let u = |i: u32| UVec4::splat(i);
-        let m = |i: u32| Mat4::from_cols(f(i), f(i), f(i), f(i));
-        let control = Control {
-            world_from_clip: m(1), clip_from_world: m(2), camera: f(3), viewport: u(4), grid: u(5),
-            history: u(6), display: f(7), cache: u(8), discovery: u(9), pixel_axis: f(10),
-            pixel_grid: u(11), pixel_tune: f(12), previous_clip_from_world: m(13),
-            interest_min: IVec4::splat(14), interest_max: IVec4::splat(15),
-        };
-        crate::gpu::reflect::assert_mirrors(&ShaderBuffer::from(control).data.unwrap(), reflection.layout("ViewControl"), &[
-            "world_from_clip", "clip_from_world", "camera", "viewport", "grid", "history", "display",
-            "cache", "discovery", "pixel_axis", "pixel_grid", "pixel_tune", "previous_clip_from_world",
-            "interest_min", "interest_max",
-        ]);
-        let wave = Wave { range: u(1), ticket: u(2) };
-        crate::gpu::reflect::assert_mirrors(&ShaderBuffer::from(wave).data.unwrap(), reflection.layout("ViewWave"), &["range", "ticket"]);
-        // Far tier: cell histories are allocated at 48 bytes, the output
-        // header is PIXEL_HEADER_BYTES.
-        assert_eq!(reflection.layout("PixelHistory").1, 48);
-        let (output, _) = reflection.layout("PixelOutput");
-        assert_eq!(output.last().unwrap(), &("cells".to_string(), PIXEL_HEADER_BYTES as u32));
-        // Counter words read back by the timing receipt.
-        for (name, word) in [("QUEUE_OWNERS", queue_words::OWNERS), ("QUEUE_OVERFLOW", queue_words::OVERFLOW),
-            ("QUEUE_COMPLETED", queue_words::COMPLETED), ("QUEUE_KNOWN", queue_words::KNOWN),
-            ("QUEUE_HISTORY", queue_words::HISTORY), ("QUEUE_MAX_HISTORY", queue_words::MAX_HISTORY),
-            ("QUEUE_UNCOVERED", queue_words::UNCOVERED), ("QUEUE_DISPLAYED", queue_words::DISPLAYED),
-            ("QUEUE_PAUSED", queue_words::PAUSED), ("QUEUE_ATTEMPTED", queue_words::ATTEMPTED),
-            ("QUEUE_CACHE_LOADS", queue_words::CACHE_LOADS), ("QUEUE_CACHE_PROMOTIONS", queue_words::CACHE_PROMOTIONS),
-            ("QUEUE_PREFIX", queue_words::PREFIX), ("PIXEL_OWNED", pixel_words::OWNED),
-            ("PIXEL_TRACED", pixel_words::TRACED), ("PIXEL_HISTORY", pixel_words::HISTORY),
-            ("PIXEL_REPROJECTED", pixel_words::REPROJECTED), ("PIXEL_SEEDED", pixel_words::SEEDED),
-            ("PIXEL_RECEIVERS_SEEDED", pixel_words::RECEIVERS_SEEDED)] {
-            assert_eq!(u64::from(reflection.constant(name)), word, "{name}");
-        }
-        assert!(pixel_words::RECEIVERS_SEEDED < pixel_words::COUNT);
-    }
-
-    #[test]
-    fn view_runtime_shader_is_valid() {
-        for multisampled in [false, true] {
-            let source = shader(multisampled);
-            let module = naga::front::wgsl::parse_str(&source)
-                .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
-            naga::valid::Validator::new(
-                naga::valid::ValidationFlags::all(),
-                naga::valid::Capabilities::all(),
-            )
-            .validate(&module)
-            .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
-            let layout = &module.types.iter().find(|(_, ty)| ty.name.as_deref() == Some("FarOutput")).unwrap().1.inner;
-            let naga::TypeInner::Struct { members, span } = layout else { panic!("FarOutput must be a struct"); };
-            assert_eq!(members.last().unwrap().offset as u64, OUTPUT_PREFIX_BYTES);
-            assert_eq!(*span as u64, EMPTY_OUTPUT_BYTES);
-            let pool = &module.types.iter().find(|(_, ty)| ty.name.as_deref() == Some("ReceiverPool")).unwrap().1.inner;
-            let naga::TypeInner::Struct { members, .. } = pool else { panic!("ReceiverPool must be a struct"); };
-            assert_eq!(members.last().unwrap().offset as usize, POOL_PREFIX_BYTES);
-        }
-    }
-
-    #[test]
-    #[ignore = "native far-view pipeline qualification"]
-    fn native_view_runtime_pipelines() {
-        let context = crate::gpu::tests::native_tracer().context;
-        let scope = context
-            .device
-            .wgpu_device()
-            .push_error_scope(wgpu::ErrorFilter::Validation);
-        let mut world = World::new();
-        world.insert_resource(context.device.clone());
-        world.insert_resource(context.queue.clone());
-        let _renderer = ViewRenderer::from_world(&mut world);
-        if let Some(error) = bevy::tasks::block_on(scope.pop()) {
-            panic!("far pipeline: {error}");
-        }
-    }
-}
-
 fn render_view(
     view: ViewQuery<(&ExtractedView, Option<&ViewPrepassTextures>, &Msaa)>,
     scene: Res<ViewTransport>,
@@ -1223,4 +1086,141 @@ fn render_view(
     camera.valid = true;
     camera.last_frame = frame.0;
     renderer.cameras.insert(key, camera);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_view_kernel_binds_only_resources_render_view_provides() {
+        // render_view resolves group 0 from `group0` (0-10), group 1 from
+        // tails and wave (0-1), group 2 from `group2` (0-7) and its explicit
+        // arms (8-24). A kernel using anything else would panic at runtime.
+        let started = std::time::Instant::now();
+        let reflection = crate::gpu::reflect::Reflection::new(&shader(false));
+        eprintln!("view shader reflection: {:?}", started.elapsed());
+        for name in ["prepare_receiver_pool", "discover_receivers", "index_receivers", "reproject_paths",
+            "trace_visible_paths", "retain_view_history", "load_shared_faces", "store_shared_faces",
+            "reconstruct_view", "publish_view", "classify_pixels", "size_pixel_queue", "trace_pixel_queue"] {
+            let [group0, group1, group2] = reflection.bindings(name);
+            assert!(group0.iter().all(|&b| b <= 10), "{name} group 0 {group0:?}");
+            assert!(group1.iter().all(|&b| b <= 1), "{name} group 1 {group1:?}");
+            assert!(group2.iter().all(|&b| b <= 24), "{name} group 2 {group2:?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "native device limits"]
+    fn view_storage_past_device_limits_is_declined_not_fatal() {
+        let context = crate::gpu::tests::native_tracer().context;
+        let too_large = context.device.limits().max_storage_buffer_binding_size as usize + 4;
+        assert!(storage(&context.device, "test", too_large).is_none());
+        assert!(storage(&context.device, "test", 1024).is_some());
+    }
+
+    #[test]
+    fn stage_table_is_a_permutation_of_slots_and_kernels() {
+        let mut slots: Vec<_> = Stage::ORDER.iter().map(|stage| stage.slot()).collect();
+        slots.sort_unstable();
+        assert_eq!(slots, (0..Stage::COUNT).collect::<Vec<_>>(), "one timestamp pair per stage");
+        let mut kernels: Vec<_> = Stage::ORDER.iter().flat_map(|stage| stage.kernels().iter().map(|k| k.0)).collect();
+        kernels.sort_unstable();
+        assert_eq!(kernels, (0..12).collect::<Vec<_>>(), "every listed kernel dispatched once");
+    }
+
+    #[test]
+    fn presentation_module_mirrors_the_view_tier() {
+        // Host materials read buffers the view tier writes through
+        // voxel_gi::presentation; its copies of their structs must keep the
+        // same members at the same offsets.
+        let presentation = crate::gpu::reflect::Reflection::new(
+            &crate::render::presentation_shader_source()
+                .replace("#define_import_path voxel_gi::presentation", "")
+                .replace("#{MATERIAL_BIND_GROUP}", "2"),
+        );
+        let runtime = crate::gpu::reflect::Reflection::new(&shader(false));
+        assert_eq!(presentation.layout("FarOutput"), runtime.layout("FarOutput"));
+        assert_eq!(presentation.layout("FarPixel"), runtime.layout("FarPixel"));
+        assert_eq!(presentation.layout("FarCells"), runtime.layout("PixelOutput"), "the far tier's cells");
+    }
+
+    #[test]
+    fn rust_and_wgsl_view_layouts_agree() {
+        let reflection = crate::gpu::reflect::Reflection::new(&shader(false));
+        let f = |i: u32| Vec4::splat(i as f32);
+        let u = |i: u32| UVec4::splat(i);
+        let m = |i: u32| Mat4::from_cols(f(i), f(i), f(i), f(i));
+        let control = Control {
+            world_from_clip: m(1), clip_from_world: m(2), camera: f(3), viewport: u(4), grid: u(5),
+            history: u(6), display: f(7), cache: u(8), discovery: u(9), pixel_axis: f(10),
+            pixel_grid: u(11), pixel_tune: f(12), previous_clip_from_world: m(13),
+            interest_min: IVec4::splat(14), interest_max: IVec4::splat(15),
+        };
+        crate::gpu::reflect::assert_mirrors(&ShaderBuffer::from(control).data.unwrap(), reflection.layout("ViewControl"), &[
+            "world_from_clip", "clip_from_world", "camera", "viewport", "grid", "history", "display",
+            "cache", "discovery", "pixel_axis", "pixel_grid", "pixel_tune", "previous_clip_from_world",
+            "interest_min", "interest_max",
+        ]);
+        let wave = Wave { range: u(1), ticket: u(2) };
+        crate::gpu::reflect::assert_mirrors(&ShaderBuffer::from(wave).data.unwrap(), reflection.layout("ViewWave"), &["range", "ticket"]);
+        // Far tier: cell histories are allocated at 48 bytes, the output
+        // header is PIXEL_HEADER_BYTES.
+        assert_eq!(reflection.layout("PixelHistory").1, 48);
+        let (output, _) = reflection.layout("PixelOutput");
+        assert_eq!(output.last().unwrap(), &("cells".to_string(), PIXEL_HEADER_BYTES as u32));
+        // Counter words read back by the timing receipt.
+        for (name, word) in [("QUEUE_OWNERS", queue_words::OWNERS), ("QUEUE_OVERFLOW", queue_words::OVERFLOW),
+            ("QUEUE_COMPLETED", queue_words::COMPLETED), ("QUEUE_KNOWN", queue_words::KNOWN),
+            ("QUEUE_HISTORY", queue_words::HISTORY), ("QUEUE_MAX_HISTORY", queue_words::MAX_HISTORY),
+            ("QUEUE_UNCOVERED", queue_words::UNCOVERED), ("QUEUE_DISPLAYED", queue_words::DISPLAYED),
+            ("QUEUE_PAUSED", queue_words::PAUSED), ("QUEUE_ATTEMPTED", queue_words::ATTEMPTED),
+            ("QUEUE_CACHE_LOADS", queue_words::CACHE_LOADS), ("QUEUE_CACHE_PROMOTIONS", queue_words::CACHE_PROMOTIONS),
+            ("QUEUE_PREFIX", queue_words::PREFIX), ("PIXEL_OWNED", pixel_words::OWNED),
+            ("PIXEL_TRACED", pixel_words::TRACED), ("PIXEL_HISTORY", pixel_words::HISTORY),
+            ("PIXEL_REPROJECTED", pixel_words::REPROJECTED), ("PIXEL_SEEDED", pixel_words::SEEDED),
+            ("PIXEL_RECEIVERS_SEEDED", pixel_words::RECEIVERS_SEEDED)] {
+            assert_eq!(u64::from(reflection.constant(name)), word, "{name}");
+        }
+        const { assert!(pixel_words::RECEIVERS_SEEDED < pixel_words::COUNT) };
+    }
+
+    #[test]
+    fn view_runtime_shader_is_valid() {
+        for multisampled in [false, true] {
+            let source = shader(multisampled);
+            let module = naga::front::wgsl::parse_str(&source)
+                .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
+            let layout = &module.types.iter().find(|(_, ty)| ty.name.as_deref() == Some("FarOutput")).unwrap().1.inner;
+            let naga::TypeInner::Struct { members, span } = layout else { panic!("FarOutput must be a struct"); };
+            assert_eq!(members.last().unwrap().offset as u64, OUTPUT_PREFIX_BYTES);
+            assert_eq!(*span as u64, EMPTY_OUTPUT_BYTES);
+            let pool = &module.types.iter().find(|(_, ty)| ty.name.as_deref() == Some("ReceiverPool")).unwrap().1.inner;
+            let naga::TypeInner::Struct { members, .. } = pool else { panic!("ReceiverPool must be a struct"); };
+            assert_eq!(members.last().unwrap().offset as usize, POOL_PREFIX_BYTES);
+        }
+    }
+
+    #[test]
+    #[ignore = "native far-view pipeline qualification"]
+    fn native_view_runtime_pipelines() {
+        let context = crate::gpu::tests::native_tracer().context;
+        let scope = context
+            .device
+            .wgpu_device()
+            .push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut world = World::new();
+        world.insert_resource(context.device.clone());
+        world.insert_resource(context.queue.clone());
+        let _renderer = ViewRenderer::from_world(&mut world);
+        if let Some(error) = bevy::tasks::block_on(scope.pop()) {
+            panic!("far pipeline: {error}");
+        }
+    }
 }

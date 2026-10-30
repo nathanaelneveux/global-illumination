@@ -343,7 +343,7 @@ mod tests {
             });
             voxel_gi::testing::publish_geometry(
                 app.world_mut(),
-                buffers.clone().map(|buffer| buffer.into()),
+                buffers.clone(),
                 768,
             );
             {

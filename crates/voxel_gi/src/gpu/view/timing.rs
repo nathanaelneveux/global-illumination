@@ -13,83 +13,6 @@ fn next_wave(current: u32, attempted: u32, milliseconds: f32, target_ms: f32, li
     ).div_ceil(64) as u32 * 64
 }
 
-#[cfg(test)]
-mod tests {
-    use super::next_wave;
-    #[test]
-    fn costly_minimum_wave_cannot_starve_forever() {
-        let mut size = next_wave(128, 128, 8.0, 1.0, 8192);
-        assert_eq!(size, 64);
-        // A 0.7ms fixed dispatch cost must not trap a 64-path wave at 64.
-        for _ in 0..16 {
-            size = next_wave(size, size, 0.7, 1.0, 8192);
-            assert!((64..=8192).contains(&size));
-            assert_eq!(size % 64, 0);
-        }
-        assert!(size >= 2048);
-        assert_eq!(next_wave(4096, 32, 0.5, 1.0, 8192), 4096, "small views do not shrink capacity");
-    }
-
-    #[test]
-    fn flips_past_the_record_limit_arrive_as_one_bounding_box() {
-        use super::super::runtime::{MAX_SUN_FLIPS, SUN_FLIP_BIAS, SUN_FLIP_BYTES};
-        use bevy::prelude::IVec3;
-        let mut region = vec![0u8; SUN_FLIP_BYTES as usize];
-        let mut put = |at: usize, word: u32| region[at..at + 4].copy_from_slice(&word.to_le_bytes());
-        put(0, MAX_SUN_FLIPS as u32 + 5);
-        put(16, -3i32 as u32);
-        put(20, 4);
-        put(24, 5);
-        put(28, 0.5f32.to_bits());
-        let overflow = 16 + MAX_SUN_FLIPS as usize * 16;
-        let bias = SUN_FLIP_BIAS as i32;
-        for (i, word) in [bias + 10, bias - 2, bias, bias + 7, bias + 9, bias + 1, 128].into_iter().enumerate() {
-            put(overflow + i * 4, word as u32);
-        }
-        let mut flips = Vec::new();
-        super::decode_sun_flips(&region, &mut flips);
-        assert_eq!(flips.len(), MAX_SUN_FLIPS as usize + 1);
-        assert_eq!(flips[0], (IVec3::new(-3, 4, 5), IVec3::new(-3, 4, 5), 0.5));
-        assert_eq!(*flips.last().unwrap(), (IVec3::new(-10, 2, 0), IVec3::new(7, 9, 1), 2.0));
-    }
-
-    #[test]
-    #[ignore = "native device without timestamp queries"]
-    fn view_budget_runs_a_fixed_wave_without_timestamp_queries() {
-        use bevy::render::renderer::{RenderDevice, RenderQueue, WgpuWrapper};
-        let instance = wgpu::Instance::default();
-        let adapter = bevy::tasks::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
-        let (device, queue) = bevy::tasks::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: wgpu::Features::empty(),
-            ..Default::default()
-        })).unwrap();
-        let device = RenderDevice::from(device);
-        let queue = RenderQueue(std::sync::Arc::new(WgpuWrapper::new(queue)));
-        let mut budget = super::Budget::new(&device, &queue);
-        assert!(budget.queries.is_none());
-        for _ in 0..3 {
-            budget.begin_frame(&device, 1.0 / 60.0, 0.15, true);
-            let (work, ticket) = budget.reserve();
-            assert_eq!(work, super::NO_TIMING_WAVE, "a fixed wave, not a stalled or unbounded one");
-            let mut encoder = device.create_command_encoder(&Default::default());
-            let counters = device.create_buffer(&wgpu::BufferDescriptor {
-                label: None, size: 1 << 16, usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            budget.finish(&mut encoder, &counters, 0, &counters, &counters, ticket.unwrap(), 0b111);
-            queue.submit([encoder.finish()]);
-        }
-    }
-
-    #[test]
-    fn view_first_can_spend_its_share_beyond_one_visit_per_owner() {
-        let mut size = 8192;
-        for _ in 0..16 { size = next_wave(size, size, 1.0, 3.0, 65536); }
-        assert_eq!(size, 65536);
-        assert!(next_wave(size, size, 9.0, 3.0, 65536) < size);
-    }
-}
-
 /// A receipt's flip region (`report_sun_flips`): a count, records, then the
 /// overflow box, as (min, max, flux) boxes.
 fn decode_sun_flips(region: &[u8], flips: &mut Vec<(IVec3, IVec3, f32)>) {
@@ -419,5 +342,82 @@ impl Budget {
             ready.store(if result.is_ok() { 1 } else { 2 }, Ordering::Release)
         });
         self.pending.push(ticket);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_wave;
+    #[test]
+    fn costly_minimum_wave_cannot_starve_forever() {
+        let mut size = next_wave(128, 128, 8.0, 1.0, 8192);
+        assert_eq!(size, 64);
+        // A 0.7ms fixed dispatch cost must not trap a 64-path wave at 64.
+        for _ in 0..16 {
+            size = next_wave(size, size, 0.7, 1.0, 8192);
+            assert!((64..=8192).contains(&size));
+            assert_eq!(size % 64, 0);
+        }
+        assert!(size >= 2048);
+        assert_eq!(next_wave(4096, 32, 0.5, 1.0, 8192), 4096, "small views do not shrink capacity");
+    }
+
+    #[test]
+    fn flips_past_the_record_limit_arrive_as_one_bounding_box() {
+        use super::super::runtime::{MAX_SUN_FLIPS, SUN_FLIP_BIAS, SUN_FLIP_BYTES};
+        use bevy::prelude::IVec3;
+        let mut region = vec![0u8; SUN_FLIP_BYTES as usize];
+        let mut put = |at: usize, word: u32| region[at..at + 4].copy_from_slice(&word.to_le_bytes());
+        put(0, MAX_SUN_FLIPS as u32 + 5);
+        put(16, -3i32 as u32);
+        put(20, 4);
+        put(24, 5);
+        put(28, 0.5f32.to_bits());
+        let overflow = 16 + MAX_SUN_FLIPS as usize * 16;
+        let bias = SUN_FLIP_BIAS as i32;
+        for (i, word) in [bias + 10, bias - 2, bias, bias + 7, bias + 9, bias + 1, 128].into_iter().enumerate() {
+            put(overflow + i * 4, word as u32);
+        }
+        let mut flips = Vec::new();
+        super::decode_sun_flips(&region, &mut flips);
+        assert_eq!(flips.len(), MAX_SUN_FLIPS as usize + 1);
+        assert_eq!(flips[0], (IVec3::new(-3, 4, 5), IVec3::new(-3, 4, 5), 0.5));
+        assert_eq!(*flips.last().unwrap(), (IVec3::new(-10, 2, 0), IVec3::new(7, 9, 1), 2.0));
+    }
+
+    #[test]
+    #[ignore = "native device without timestamp queries"]
+    fn view_budget_runs_a_fixed_wave_without_timestamp_queries() {
+        use bevy::render::renderer::{RenderDevice, RenderQueue, WgpuWrapper};
+        let instance = wgpu::Instance::default();
+        let adapter = bevy::tasks::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+        let (device, queue) = bevy::tasks::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: wgpu::Features::empty(),
+            ..Default::default()
+        })).unwrap();
+        let device = RenderDevice::from(device);
+        let queue = RenderQueue(std::sync::Arc::new(WgpuWrapper::new(queue)));
+        let mut budget = super::Budget::new(&device, &queue);
+        assert!(budget.queries.is_none());
+        for _ in 0..3 {
+            budget.begin_frame(&device, 1.0 / 60.0, 0.15, true);
+            let (work, ticket) = budget.reserve();
+            assert_eq!(work, super::NO_TIMING_WAVE, "a fixed wave, not a stalled or unbounded one");
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let counters = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None, size: 1 << 16, usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            budget.finish(&mut encoder, &counters, 0, &counters, &counters, ticket.unwrap(), 0b111);
+            queue.submit([encoder.finish()]);
+        }
+    }
+
+    #[test]
+    fn view_first_can_spend_its_share_beyond_one_visit_per_owner() {
+        let mut size = 8192;
+        for _ in 0..16 { size = next_wave(size, size, 1.0, 3.0, 65536); }
+        assert_eq!(size, 65536);
+        assert!(next_wave(size, size, 9.0, 3.0, 65536) < size);
     }
 }

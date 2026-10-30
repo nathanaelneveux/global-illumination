@@ -1703,8 +1703,7 @@ mod tests {
             )
             .unwrap();
         };
-        let mut first = TraceWork::default();
-        first.batch_id = 1;
+        let mut first = TraceWork { batch_id: 1, ..Default::default() };
         for probe in &probes {
             first.ensure_slots(probe);
         }
@@ -1808,10 +1807,7 @@ mod tests {
         // At most three batches are in flight, so batch 4 is the last one
         // submitted before job 1 publishes. Batch IDs count submissions only
         // (`start_trace_task`); poll-only frames once expired this window.
-        let mut next = TraceWork::default();
-        next.batch_id = 4;
-        next.picks = 1024;
-        next.mirror_budget = 1024;
+        let mut next = TraceWork { batch_id: 4, picks: 1024, mirror_budget: 1024, ..Default::default() };
         gpu.trace_compact(scene, &sources, &materials, &mut next, 16, &emitters)
             .unwrap();
         assert!(!next.pick_tags.is_empty());

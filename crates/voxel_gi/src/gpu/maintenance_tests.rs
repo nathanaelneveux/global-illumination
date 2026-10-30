@@ -140,10 +140,12 @@ fn retirements_survive_poll_only_and_empty_receiver_dispatch() {
         .unwrap();
         let address = work.faces[0].resident;
         let retired = gi::page_of(work.faces[0].voxel);
-        let mut runtime = gi::VoxelGiRuntime::default();
-        runtime.scene = scene;
-        runtime.gpu_tracer = Some(gpu);
-        runtime.gpu_allowance_ms = -100.0;
+        let mut runtime = gi::VoxelGiRuntime {
+            scene,
+            gpu_tracer: Some(gpu),
+            gpu_allowance_ms: -100.0,
+            ..Default::default()
+        };
         runtime.slot_retirements.push(retired);
         if pending_poll {
             runtime.gpu_pending.push_back(gi::PendingTransport {
@@ -342,9 +344,11 @@ fn retained_cache_pairs_stay_coherent_when_either_member_grows() {
 fn far_only_scene_initializes_updates_and_then_idles_without_near_receivers() {
     let device = super::tests::native_tracer().context;
     let (scene, _, _) = super::tests::open_floor_fixture();
-    let mut runtime = gi::VoxelGiRuntime::default();
-    runtime.scene = scene.clone();
-    runtime.gpu_allowance_ms = -100.0;
+    let runtime = gi::VoxelGiRuntime {
+        scene: scene.clone(),
+        gpu_allowance_ms: -100.0,
+        ..Default::default()
+    };
     let mut world = world(runtime, default(), device);
     let result = run_worker(&mut world);
     assert!(result.geometry.is_some());

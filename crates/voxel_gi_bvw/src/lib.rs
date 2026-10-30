@@ -315,7 +315,7 @@ mod tests {
             let origin = key * 32;
             for stride in [1, 2, 4, 8, 16, 32] {
                 let stored = coarse_page(key, stride, |p| {
-                    (((p - origin).as_uvec3() / stride).element_sum() % 2 == 0).then_some(2)
+                    ((p - origin).as_uvec3() / stride).element_sum().is_multiple_of(2).then_some(2)
                 });
                 let expected = stored.clone();
                 let sparse = stored.clone();

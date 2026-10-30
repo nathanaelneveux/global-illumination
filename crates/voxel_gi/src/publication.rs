@@ -390,6 +390,52 @@ fn finish_scene_page(
         );
 }
 
+fn luminance(value: Vec3) -> f32 {
+    0.2126 * value.x + 0.7152 * value.y + 0.0722 * value.z
+}
+
+/// GPU scan positions (each a voxel's six faces) per scene update. Edits past
+/// it get unknown flux, so their receivers use the distance curve instead.
+const FLUX_SCAN_BUDGET: usize = 16_384;
+
+/// Flux bounds for measured retention. Edits keep the changed voxels' own
+/// emission (scene worker) and are measured on the GPU (`measure_edits`: the
+/// brightest outgoing luminance within one voxel, from the GPU's statistics)
+/// while their one-voxel scans fit the budget; past it they are unknown (the
+/// distance curve). Loads get the brighter of sky radiance and reflected
+/// sunlight per unit of height above a receiver, times the region's width.
+/// Approximate bounds, not a certified dependency analysis.
+pub(super) fn finalize_change_flux(
+    change: &mut super::geometry::GeometryChange,
+    sources: &super::sources::TransportSources,
+) {
+    use super::geometry::ChangeKind;
+    let sky = luminance(sources.environment).max(
+        sources
+            .directional
+            .iter()
+            .map(|light| 0.5 * luminance(light.radiance))
+            .fold(0.0, f32::max),
+    );
+    let mut budget = FLUX_SCAN_BUDGET as u64;
+    for (bounds, weight) in change.weights.iter_mut() {
+        match &mut weight.kind {
+            ChangeKind::Load { .. } => weight.flux = sky * super::world::REGION_EDGE as f32,
+            ChangeKind::Edit { measure, .. } => {
+                let size = (bounds.max - bounds.min + IVec3::splat(3)).max(IVec3::ONE).as_i64vec3();
+                let positions = (size.x * size.y * size.z) as u64;
+                if positions <= budget {
+                    budget -= positions;
+                    *measure = true;
+                } else {
+                    *weight = super::geometry::ChangeWeight::UNKNOWN;
+                }
+            }
+            ChangeKind::Unknown | ChangeKind::Unload | ChangeKind::Light => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod donor_tests {
     use super::*;
@@ -643,51 +689,5 @@ mod donor_tests {
             counts, times[0][16], times[1][16]
         );
         assert!(counts[1] * 4 < counts[0]);
-    }
-}
-
-fn luminance(value: Vec3) -> f32 {
-    0.2126 * value.x + 0.7152 * value.y + 0.0722 * value.z
-}
-
-/// GPU scan positions (each a voxel's six faces) per scene update. Edits past
-/// it get unknown flux, so their receivers use the distance curve instead.
-const FLUX_SCAN_BUDGET: usize = 16_384;
-
-/// Flux bounds for measured retention. Edits keep the changed voxels' own
-/// emission (scene worker) and are measured on the GPU (`measure_edits`: the
-/// brightest outgoing luminance within one voxel, from the GPU's statistics)
-/// while their one-voxel scans fit the budget; past it they are unknown (the
-/// distance curve). Loads get the brighter of sky radiance and reflected
-/// sunlight per unit of height above a receiver, times the region's width.
-/// Approximate bounds, not a certified dependency analysis.
-pub(super) fn finalize_change_flux(
-    change: &mut super::geometry::GeometryChange,
-    sources: &super::sources::TransportSources,
-) {
-    use super::geometry::ChangeKind;
-    let sky = luminance(sources.environment).max(
-        sources
-            .directional
-            .iter()
-            .map(|light| 0.5 * luminance(light.radiance))
-            .fold(0.0, f32::max),
-    );
-    let mut budget = FLUX_SCAN_BUDGET as u64;
-    for (bounds, weight) in change.weights.iter_mut() {
-        match &mut weight.kind {
-            ChangeKind::Load { .. } => weight.flux = sky * super::world::REGION_EDGE as f32,
-            ChangeKind::Edit { measure, .. } => {
-                let size = (bounds.max - bounds.min + IVec3::splat(3)).max(IVec3::ONE).as_i64vec3();
-                let positions = (size.x * size.y * size.z) as u64;
-                if positions <= budget {
-                    budget -= positions;
-                    *measure = true;
-                } else {
-                    *weight = super::geometry::ChangeWeight::UNKNOWN;
-                }
-            }
-            ChangeKind::Unknown | ChangeKind::Unload | ChangeKind::Light => {}
-        }
     }
 }
