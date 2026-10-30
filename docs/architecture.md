@@ -16,6 +16,25 @@ screen. Geometry stays every loaded page. Native transport contracts are in
 [the ownership comparison](history/option-comparison-2026-10-23.md).
 The numerical model and the presentation policy are deliberately separate.
 
+### Shader plumbing conventions
+
+- **Bindings come from the shader.** The view tier's kernels use automatic
+  layouts, so each bind group must name exactly the bindings its entry point
+  uses. `gpu/reflect.rs` reads them from the composed shader with naga, once
+  at renderer start; `render_view` resolves each binding number to its
+  resource, and a test checks every kernel stays inside that table.
+- **Mirrored layouts are tested, not trusted.** `Control`, `Wave`,
+  `GpuParams` and the far tier's buffers are checked against naga's WGSL
+  offsets (markers serialized like an upload), and the material's copies of
+  the view tier's output structs against the originals. Counter words are
+  named on both sides (`QUEUE_*` / `queue_words`, `PIXEL_*` /
+  `pixel_words`) and tested equal.
+- **Stages are a table.** `Stage` lists the view tier's passes in dispatch
+  order; each has one timestamp pair (`slot`, also its index in the receipt's
+  costs) and its kernels with their dispatch. A new pass is a new variant.
+- **Measurement tools** for settings sweeps, view-tier costs and far-tier
+  flicker are in `tools/` ([validation](validation.md)).
+
 ## Data flow and ownership
 
 ```text
