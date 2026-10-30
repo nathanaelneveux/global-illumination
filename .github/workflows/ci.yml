@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # The published crates only; the lab (root package) is not built in CI.
+  CRATES: -p voxel_gi -p voxel_gi_bvw -p voxel_gi_debug
+
+jobs:
+  crates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Bevy system dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: Clippy
+        run: cargo clippy --locked $CRATES --all-targets -- -D warnings
+      # GPU tests are #[ignore]d and need a native adapter: run them locally
+      # with `cargo test -p voxel_gi --lib -- --include-ignored`.
+      - name: CPU tests
+        run: cargo test --locked $CRATES --lib --examples
+      # Per crate: the lab's bevy/dynamic_linking must not unify in.
+      - name: Doc tests
+        run: for c in voxel_gi voxel_gi_bvw voxel_gi_debug; do cargo test --locked -p $c --doc; done
+      - name: Rustdoc
+        run: cargo doc --locked --no-deps $CRATES
+        env:
+          RUSTDOCFLAGS: -D warnings

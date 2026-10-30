@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "CC0-1.0 OR MIT OR Apache-2.0"
 description = "Voxel GI lab: the BVW prototype world, scenes and validation harness"
+publish = false
 
 [workspace]
 members = ["crates/*"]
@@ -12,13 +13,15 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+repository = "https://github.com/nathanaelneveux/global-illumination"
 
 [workspace.dependencies]
 bevy = "0.19"
 bevy_voxel_world = "0.17"
-voxel_gi = { path = "crates/voxel_gi" }
-voxel_gi_bvw = { path = "crates/voxel_gi_bvw" }
-voxel_gi_debug = { path = "crates/voxel_gi_debug" }
+voxel_gi = { path = "crates/voxel_gi", version = "0.1.0" }
+voxel_gi_bvw = { path = "crates/voxel_gi_bvw", version = "0.1.0" }
+voxel_gi_debug = { path = "crates/voxel_gi_debug", version = "0.1.0" }
 # "std" makes error scopes thread-local. Without it (Bevy disables wgpu's
 # defaults) every thread shares one scope stack, and GI pipeline validation on
 # a worker interleaved with Bevy's pipeline cache: "Mismatched pop_error_scope".

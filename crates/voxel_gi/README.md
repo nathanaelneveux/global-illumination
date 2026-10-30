@@ -23,7 +23,7 @@ storage buffers per stage than WebGPU allows.
 cargo run -p voxel_gi --example minimal
 ```
 
-[`examples/minimal.rs`](examples/minimal.rs) is a complete host in about 150
+[`examples/minimal.rs`](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/voxel_gi/examples/minimal.rs) is a complete host in about 150
 lines. The pieces:
 
 1. **Add `VoxelGiPlugin`.**

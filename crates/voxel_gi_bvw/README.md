@@ -1,7 +1,7 @@
 # voxel_gi_bvw
 
 Connects [`bevy_voxel_world`](https://crates.io/crates/bevy_voxel_world) 0.17
-to [`voxel_gi`](../voxel_gi): chunk events become GI page events, chunk
+to [`voxel_gi`](https://docs.rs/voxel_gi): chunk events become GI page events, chunk
 data (including its stored levels of detail) becomes GI's `VoxelSource`, and
 `VoxelTransportMaterial` is BVW's texture-array terrain material lit by GI.
 

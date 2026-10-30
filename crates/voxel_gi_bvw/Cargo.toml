@@ -4,6 +4,11 @@ description = "bevy_voxel_world connector for voxel_gi: page events, voxel sourc
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["voxel", "global-illumination", "bevy", "bevy_voxel_world", "gamedev"]
+categories = ["game-development", "rendering"]
 
 [dependencies]
 bevy.workspace = true
