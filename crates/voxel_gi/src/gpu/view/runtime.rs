@@ -464,10 +464,9 @@ struct ViewRenderer {
     pixels: [Kernel; 2],
     pixel_args: Kernel,
     pixel_trace: Kernel,
-    /// The step budget and reach policy `pixel_trace` was built with, and
-    /// its bindings for rebuilds.
+    /// The step budget and reach policy `pixels` and `pixel_trace` were
+    /// built with (both draw custom-light visibility, so they share it).
     pixel_steps: (u32, bool),
-    pixel_trace_bindings: [Vec<u32>; 3],
     modules: [bevy::render::render_resource::ShaderModule; 2],
     cameras: HashMap<RetainedViewEntity, CameraState>,
     frame: u32,
@@ -503,7 +502,17 @@ impl FromWorld for ViewRenderer {
             }),
             bindings: reflection.bindings(name),
         };
-        let pixel_trace_bindings = reflection.bindings("trace_pixel_queue");
+        let steps = FarTierSettings::default().steps;
+        let far = |name, msaa: usize| {
+            pixel_kernel(
+                device,
+                &modules[msaa],
+                name,
+                reflection.bindings(name),
+                steps,
+                false,
+            )
+        };
         Self {
             prepare_pool: [0, 1].map(|m| make("prepare_receiver_pool", m)),
             discover: [0, 1].map(|m| make("discover_receivers", m)),
@@ -528,17 +537,10 @@ impl FromWorld for ViewRenderer {
             store_cache: make("store_shared_faces", 0),
             reconstruct: make("reconstruct_view", 0),
             publish: make("publish_view", 0),
-            pixels: [0, 1].map(|m| make("classify_pixels", m)),
+            pixels: [0, 1].map(|m| far("classify_pixels", m)),
             pixel_args: make("size_pixel_queue", 0),
-            pixel_trace: pixel_kernel(
-                device,
-                &modules,
-                &pixel_trace_bindings,
-                FarTierSettings::default().steps,
-                false,
-            ),
-            pixel_trace_bindings,
-            pixel_steps: (FarTierSettings::default().steps, false),
+            pixel_trace: far("trace_pixel_queue", 0),
+            pixel_steps: (steps, false),
             modules,
             cameras: default(),
             frame: 0,
@@ -558,9 +560,12 @@ pub(super) const MAX_SUN_FLIPS: u64 = 2048;
 pub(super) const SUN_FLIP_BYTES: u64 = 16 + MAX_SUN_FLIPS * 16 + 32;
 pub(super) const SUN_FLIP_BIAS: i64 = 1 << 30;
 
-/// The far trace's pipeline constants: its ray budget (`steps` traversal
+/// The far tier's pipeline constants: its ray budget (`steps` traversal
 /// steps per ray, exhaustion a miss: NAADF's rule) and the same transport
-/// reach policy the receiver trace specializes on.
+/// reach policy the receiver trace specializes on. Classify and trace both
+/// take them: each writes cells with custom-light visibility
+/// (`custom_direct`), and a stationary cell must not flicker between two
+/// traversal rules as the trace schedule alternates.
 pub(super) fn pixel_trace_constants(steps: u32, limited: bool) -> [(&'static str, f64); 3] {
     [
         ("PATH_STEPS", f64::from(steps)),
@@ -571,24 +576,25 @@ pub(super) fn pixel_trace_constants(steps: u32, limited: bool) -> [(&'static str
 
 fn pixel_kernel(
     device: &RenderDevice,
-    modules: &[bevy::render::render_resource::ShaderModule; 2],
-    bindings: &[Vec<u32>; 3],
+    module: &bevy::render::render_resource::ShaderModule,
+    name: &'static str,
+    bindings: [Vec<u32>; 3],
     steps: u32,
     limited: bool,
 ) -> Kernel {
     Kernel {
         pipeline: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("trace_pixel_queue"),
+            label: Some(name),
             layout: None,
-            module: &modules[0],
-            entry_point: Some("trace_pixel_queue"),
+            module,
+            entry_point: Some(name),
             compilation_options: wgpu::PipelineCompilationOptions {
                 constants: &pixel_trace_constants(steps, limited),
                 ..default()
             },
             cache: None,
         }),
-        bindings: bindings.clone(),
+        bindings,
     }
 }
 
@@ -853,13 +859,14 @@ fn render_view(
     let limited = scene.params.transport.x < crate::tracer::MAX_PATH_DISTANCE;
     let pixel_policy = (settings.pixel.steps, limited);
     if renderer.pixel_steps != pixel_policy {
-        renderer.pixel_trace = pixel_kernel(
-            &device,
-            &renderer.modules,
-            &renderer.pixel_trace_bindings,
-            pixel_policy.0,
-            limited,
-        );
+        let renderer = &mut *renderer;
+        let rebuild = |kernel: &Kernel, name, msaa: usize| {
+            let (module, bindings) = (&renderer.modules[msaa], kernel.bindings.clone());
+            pixel_kernel(&device, module, name, bindings, pixel_policy.0, limited)
+        };
+        let pixels = [0, 1].map(|m| rebuild(&renderer.pixels[m], "classify_pixels", m));
+        let trace = rebuild(&renderer.pixel_trace, "trace_pixel_queue", 0);
+        (renderer.pixels, renderer.pixel_trace) = (pixels, trace);
         renderer.pixel_steps = pixel_policy;
         for camera in renderer.cameras.values_mut() {
             camera.binding_keys = [None, None];

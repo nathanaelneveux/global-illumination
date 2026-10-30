@@ -63,17 +63,19 @@ impl Far {
                 custom_visible: Vec3::splat(100.),
             });
         }
-        Self::with(cell, rate, sources, None, None)
+        Self::with(cell, rate, sources, None, None, 128)
     }
 
     /// `ceiling`: an emissive slab at y 28-29 over the floor's middle;
-    /// `reach`: the transport reach (the far trace then specializes on it).
+    /// `reach`: the transport reach (the far trace then specializes on it);
+    /// `steps`: the far tier's ray budget.
     fn with(
         cell: u32,
         rate: u32,
         sources: TransportSources,
         ceiling: Option<u16>,
         reach: Option<f32>,
+        steps: u32,
     ) -> Self {
         let mut gpu = crate::gpu::tests::native_tracer();
         let mut page = vec![AIR; volume_len(PAGE_SIZE)];
@@ -125,21 +127,14 @@ impl Far {
             source: ShaderSource::Wgsl(rig.source.clone().into()),
         });
         let reflection = crate::gpu::reflect::Reflection::new(&rig.source);
+        // The renderer's own constructor, so each stage gets the constants
+        // it gets at runtime.
         let kernels = ["classify_pixels", "size_pixel_queue", "trace_pixel_queue"]
             .into_iter()
             .map(|name| {
-                let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some(name),
-                    layout: None,
-                    module: &module,
-                    entry_point: Some(name),
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &pixel_trace_constants(128, limited),
-                        ..default()
-                    },
-                    cache: None,
-                });
-                (pipeline, reflection.bindings(name))
+                let bindings = reflection.bindings(name);
+                let kernel = pixel_kernel(device, &module, name, bindings, steps, limited);
+                (kernel.pipeline, kernel.bindings)
             })
             .collect();
         let mut camera = CameraState::new(device, UVec2::splat(GRID)).unwrap();
@@ -477,6 +472,53 @@ fn native_far_cells_show_custom_direct_light_outside_their_history() {
 
 #[test]
 #[ignore = "native per-pixel tier"]
+fn native_far_cells_keep_custom_light_between_traces() {
+    // A custom light above the emissive slab, which shadows the floor's
+    // middle. A one-step ray budget runs every visibility ray out of steps,
+    // a miss under the far tier's rule, so the shadowed cells are lit. Cells
+    // that trace this frame and cells that only reproject must agree: two
+    // traversal rules would flicker them as the schedule alternates.
+    let sources = TransportSources {
+        environment: Vec3::ZERO,
+        points: vec![crate::sources::PointTransportLight {
+            position: Vec3::new(16., 31., 16.),
+            intensity: Vec3::ZERO,
+            range: 64.,
+            custom_visible: Vec3::splat(100.),
+        }],
+        ..default()
+    };
+    let mut far = Far::with(3, 4, sources, Some(5), None, 1);
+    let width = far.pixels.cells.x as usize;
+    let interior: Vec<usize> = (0..far.cells() as usize)
+        .filter(|i| i % width < width - 1 && i / width < width - 1)
+        .collect();
+    let mut custom = vec![Vec::new(); far.cells() as usize];
+    let mut previous = None;
+    for frame in 0..12 {
+        let (words, history) = far.frame(frame, view_at(0.), previous);
+        // After the four warmup traces, one cell in four traces per frame.
+        if frame >= 4 {
+            for &index in &interior {
+                let shown = f16((words[16 + index * 4] & 0xffff) as u16);
+                custom[index].push(shown - f32::from_bits(history[index * 12]));
+            }
+        }
+        previous = Some(view_at(0.).inverse());
+    }
+    // Each frame samples another pixel of the cell, so the term varies a
+    // little; it must never go dark.
+    for &index in &interior {
+        let terms = &custom[index];
+        assert!(
+            terms.iter().all(|&t| t > 0.03),
+            "cell {index}: custom light {terms:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "native per-pixel tier"]
 fn native_far_tier_honours_transport_reach() {
     // An emissive slab 24 voxels above the floor, no sky: with the reach at
     // 16 the far tier, like receivers, sees none of it; at full reach it does.
@@ -485,7 +527,7 @@ fn native_far_tier_honours_transport_reach() {
         ..default()
     };
     let light_at = |reach| {
-        let mut far = Far::with(3, 1, dark(), Some(5), reach);
+        let mut far = Far::with(3, 1, dark(), Some(5), reach, 128);
         let mut previous = None;
         let mut words = Vec::new();
         for frame in 0..4 {
