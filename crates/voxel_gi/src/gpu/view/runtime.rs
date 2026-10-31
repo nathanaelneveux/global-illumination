@@ -474,11 +474,48 @@ struct ViewRenderer {
     frame_seconds: f32,
     budget: super::timing::Budget,
     changes: Vec<ViewChange>,
+    /// A view-tier pipeline failed to build (e.g. FXC on DX12 rejects the
+    /// kernels). Every view then takes the allocation-failure path: cleared
+    /// outputs, the material's fallback, no view GI.
+    unavailable: bool,
 }
+
+/// Builds view-tier pipelines inside error scopes, so a pipeline the backend's
+/// compiler rejects disables the view tier with one warning instead of
+/// reaching the app's uncaptured-error handler. Shader translation failures
+/// (FXC's) are wgpu *internal* errors, not validation errors: catch both.
+fn build_view_pipelines<T>(device: &RenderDevice, build: impl FnOnce() -> T) -> (T, bool) {
+    let validation = device
+        .wgpu_device()
+        .push_error_scope(wgpu::ErrorFilter::Validation);
+    let internal = device
+        .wgpu_device()
+        .push_error_scope(wgpu::ErrorFilter::Internal);
+    let built = build();
+    let internal = bevy::tasks::block_on(internal.pop());
+    let error = bevy::tasks::block_on(validation.pop()).or(internal);
+    if let Some(error) = &error {
+        warn!(
+            "Voxel GI: view-tier pipelines failed to build; visible faces fall back to the material without view GI. {error}"
+        );
+    }
+    (built, error.is_some())
+}
+
 impl FromWorld for ViewRenderer {
     fn from_world(world: &mut World) -> Self {
         let device = world.resource::<RenderDevice>();
         let queue = world.resource::<RenderQueue>();
+        let (renderer, unavailable) = build_view_pipelines(device, || Self::build(device, queue));
+        Self {
+            unavailable,
+            ..renderer
+        }
+    }
+}
+
+impl ViewRenderer {
+    fn build(device: &RenderDevice, queue: &RenderQueue) -> Self {
         let modules = [false, true].map(|msaa| {
             device.create_and_validate_shader_module(ShaderModuleDescriptor {
                 label: Some("View-owned voxel GI"),
@@ -548,6 +585,7 @@ impl FromWorld for ViewRenderer {
             frame_seconds: 1.0 / 60.0,
             budget: super::timing::Budget::new(device, queue),
             changes: Vec::new(),
+            unavailable: false,
         }
     }
 }
@@ -767,7 +805,7 @@ fn render_view(
         .clear_buffer(&output.buffer, 0, Some(32));
     ctx.command_encoder()
         .clear_buffer(&pixel_output.buffer, 0, Some(PIXEL_HEADER_BYTES));
-    if !settings.enabled {
+    if !settings.enabled || renderer.unavailable {
         renderer.cameras.clear();
         scene.1.lock().unwrap().clear();
         return;
@@ -864,8 +902,17 @@ fn render_view(
             let (module, bindings) = (&renderer.modules[msaa], kernel.bindings.clone());
             pixel_kernel(&device, module, name, bindings, pixel_policy.0, limited)
         };
-        let pixels = [0, 1].map(|m| rebuild(&renderer.pixels[m], "classify_pixels", m));
-        let trace = rebuild(&renderer.pixel_trace, "trace_pixel_queue", 0);
+        let ((pixels, trace), failed) = build_view_pipelines(&device, || {
+            (
+                [0, 1].map(|m| rebuild(&renderer.pixels[m], "classify_pixels", m)),
+                rebuild(&renderer.pixel_trace, "trace_pixel_queue", 0),
+            )
+        });
+        if failed {
+            renderer.unavailable = true;
+            renderer.cameras.clear();
+            return;
+        }
         (renderer.pixels, renderer.pixel_trace) = (pixels, trace);
         renderer.pixel_steps = pixel_policy;
         for camera in renderer.cameras.values_mut() {
@@ -1442,16 +1489,13 @@ mod tests {
     #[ignore = "native far-view pipeline qualification"]
     fn native_view_runtime_pipelines() {
         let context = crate::gpu::tests::native_tracer().context;
-        let scope = context
-            .device
-            .wgpu_device()
-            .push_error_scope(wgpu::ErrorFilter::Validation);
         let mut world = World::new();
         world.insert_resource(context.device.clone());
         world.insert_resource(context.queue.clone());
-        let _renderer = ViewRenderer::from_world(&mut world);
-        if let Some(error) = bevy::tasks::block_on(scope.pop()) {
-            panic!("far pipeline: {error}");
-        }
+        let renderer = ViewRenderer::from_world(&mut world);
+        assert!(
+            !renderer.unavailable,
+            "view-tier pipelines failed (warning logged above)"
+        );
     }
 }
