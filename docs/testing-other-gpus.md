@@ -90,12 +90,26 @@ foreach ($p in "streaming", "cave", "house") {
 }
 ```
 
-On Windows, run the loop once with `$env:WGPU_BACKEND = "dx12"` and once
-with `$env:WGPU_BACKEND = "vulkan"`. Set it explicitly: wgpu's default
-depends on the machine (an RX 7900 XT picked Vulkan,
+On Windows, run the loop once per backend, setting it explicitly: wgpu's
+default depends on the machine (an RX 7900 XT picked Vulkan,
 [windows-first-run](history/windows-first-run.md)). Rename the logs between
-runs so the second doesn't overwrite the first. Steps 2 to 4 use the default;
-the adapter line in their output names the backend.
+runs so the second doesn't overwrite the first.
+
+```powershell
+# DX12 must use DXC: FXC, the default compiler, can't build GI's pipelines
+# (issue #4). DXC must be on PATH or next to the executable (step 1).
+$env:WGPU_BACKEND = "dx12"; $env:WGPU_DX12_COMPILER = "dxc"
+# ...the loop above, then rename its logs to run-*-dx12.log...
+$env:WGPU_BACKEND = "vulkan"; Remove-Item Env:WGPU_DX12_COMPILER
+# ...the loop again...
+```
+
+DXC's first compile of each build can take 20 s or more before GI's first
+frame ([issue #3](https://github.com/nathanaelneveux/global-illumination/issues/3)).
+That is not a GI failure: the profile and its captures wait for GI's first
+view frame, and `report.json` records the wait as `gi_ready_s` (a run fails
+only if GI shows nothing for 120 s). Steps 2 to 4 use the default backend;
+the adapter line in their output names it.
 
 ## 6. Send back
 
