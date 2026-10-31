@@ -90,9 +90,12 @@ foreach ($p in "streaming", "cave", "house") {
 }
 ```
 
-On Windows, run the loop a second time with `$env:WGPU_BACKEND = "vulkan"`
-(DX12 is the default). Rename the logs first so the second run doesn't
-overwrite them.
+On Windows, run the loop once with `$env:WGPU_BACKEND = "dx12"` and once
+with `$env:WGPU_BACKEND = "vulkan"`. Set it explicitly: wgpu's default
+depends on the machine (an RX 7900 XT picked Vulkan,
+[windows-first-run](history/windows-first-run.md)). Rename the logs between
+runs so the second doesn't overwrite the first. Steps 2 to 4 use the default;
+the adapter line in their output names the backend.
 
 ## 6. Send back
 
