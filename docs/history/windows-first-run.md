@@ -67,6 +67,24 @@ checkouts. Everything after that crash ran on an LF checkout.
 The whole suite took 46 s. The full output is in `gpu-tests.txt` in the results
 bundle.
 
+All three are resolved: #2 (f16 rounding in the test), #5 (the deadline timed
+the shared task pool, not publication) and #12 (integer cell centres in
+discovery).
+
+**GPU suites on both backends, at `e30e087`** (after #12; the native test
+adapter honours `WGPU_BACKEND` since `d6993b6`, so the first run's GPU tests
+had only ever exercised Vulkan):
+
+| Backend | `voxel_gi` lib | `voxel_gi_bvw` lib |
+|---|---|---|
+| Vulkan | 184/184 (24.7 s) | 8/8 |
+| DX12 + DXC (`WGPU_DX12_COMPILER=dxc`, Windows SDK DXC 1.8) | 184/184 (116.6 s) | 8/8 (20.6 s) |
+
+The DX12 run's `GI benchmark adapter` line reads `backend: Dx12`. Its longer
+time is most likely pipeline compilation (each test builds its own pipelines,
+and DXC compiles slowly; not measured separately). No test failed or needed a
+DX12-specific change.
+
 ### 3. DX12: FXC rejects the GI compute shaders
 
 All three profiles exit with code 1 about one second after starting. Each logs 87
