@@ -248,6 +248,9 @@ struct VoxelGiRuntime {
     /// and is charged its measured time at completion.
     gpu_allowance_ms: f32,
     gpu_allowance_at: Option<Instant>,
+    /// The transport could not be built on this device (its pipelines failed,
+    /// e.g. FXC on DX12): the world cache idles for good, as with no device.
+    transport_unavailable: bool,
 }
 
 impl Default for VoxelGiRuntime {
@@ -295,6 +298,7 @@ impl Default for VoxelGiRuntime {
             slot_retirements: Vec::new(),
             gpu_allowance_ms: 0.0,
             gpu_allowance_at: None,
+            transport_unavailable: false,
         }
     }
 }
@@ -321,6 +325,9 @@ struct TraceBatchResult {
     gpu_tracer: Option<gpu::GpuTracer>,
     emission_cache: Option<emission::EmissionCache>,
     gpu_error: Option<String>,
+    /// The tracer could not be built (not a failure during a run): the
+    /// transport is unavailable, not fatal.
+    build_error: Option<String>,
     /// Geometry buffers and bounds for the terrain material (far sun).
     geometry: Option<(
         [bevy::render::render_resource::Buffer; 3],

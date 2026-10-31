@@ -35,6 +35,55 @@ fn transport_failure_missing_device_does_not_select_cpu_implicitly() {
 }
 
 #[test]
+fn transport_build_failure_idles_like_a_missing_device() {
+    // A tracer whose pipelines fail to build (FXC on DX12) means this device
+    // cannot run GI: warn once and idle, no panic and no retry every frame.
+    use bevy::ecs::system::RunSystemOnce;
+    let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(1).build();
+    let task = pool.spawn(async {
+        TraceBatchResult {
+            geometry: None,
+            batch: None,
+            pending: default(),
+            bindings: default(),
+            trace_time: Duration::ZERO,
+            gpu_tracer: None,
+            emission_cache: None,
+            gpu_error: None,
+            build_error: Some("injected pipeline build failure".into()),
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !task.is_finished() {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let mut world = World::new();
+    world.init_resource::<ReceiverField>();
+    world
+        .resource_mut::<ReceiverField>()
+        .order
+        .push(IVec3::ZERO);
+    world.init_resource::<VoxelGiRuntime>();
+    world.resource_mut::<VoxelGiRuntime>().trace_task = Some(task);
+    world.init_resource::<VoxelGiSettings>();
+    world.init_resource::<VoxelGiStats>();
+    world.init_resource::<GiWorkTimings>();
+    world.run_system_once(apply_trace_task).unwrap();
+    assert!(world.resource::<VoxelGiRuntime>().transport_unavailable);
+    world.run_system_once(start_trace_task).unwrap();
+    assert!(
+        world.resource::<VoxelGiRuntime>().trace_task.is_none(),
+        "no rebuild attempt"
+    );
+    assert_eq!(
+        world.resource::<ReceiverField>().order,
+        vec![IVec3::ZERO],
+        "work kept, as with no device"
+    );
+}
+
+#[test]
 #[should_panic(expected = "Voxel GI GPU transport failed: injected readback failure")]
 fn transport_failure_worker_error_is_fatal_at_publication() {
     use bevy::ecs::system::RunSystemOnce;
@@ -49,6 +98,7 @@ fn transport_failure_worker_error_is_fatal_at_publication() {
             gpu_tracer: None,
             emission_cache: None,
             gpu_error: Some("injected readback failure".into()),
+            build_error: None,
         }
     });
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -124,6 +174,7 @@ fn settled_counter_follows_accepted_transport_not_untraced_or_rejected_batches()
                 gpu_tracer: None,
                 emission_cache: None,
                 gpu_error: None,
+                build_error: None,
             }
         });
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -460,6 +511,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
                     gpu_tracer: None,
                     emission_cache: None,
                     gpu_error: None,
+                    build_error: None,
                 }
             });
             let deadline = Instant::now() + Duration::from_secs(5);
