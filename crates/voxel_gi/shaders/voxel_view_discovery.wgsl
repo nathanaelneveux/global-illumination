@@ -301,6 +301,12 @@ fn pool_covers(tile: u32, receiver: ViewReceiver) -> bool {
     return owner_of(receiver) != 0xffffffffu;
 }
 
+// The pixel at coarse cell `q`'s centre, floor((q + 0.5) * W / G), in integers:
+// a centre can fall exactly on a pixel edge, where f32 division rounds per backend.
+fn cell_centre_pixel(q: vec2<u32>) -> vec2<i32> {
+    return vec2<i32>(view.viewport.xy + min((2u * q + 1u) * view.viewport.zw / (2u * view.grid.xy), view.viewport.zw - 1u));
+}
+
 fn occupied_cell(tile: u32, cell: vec2<u32>) -> bool {
     var entry = atomicLoad(&pool.tiles[tile].head);
     for (var visited = 0u; entry != 0u && visited < view.grid.z; visited++) {
@@ -352,9 +358,7 @@ fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invoc
             for (var lane = 0u; lane < 4u; lane++) {
                 let q = cell + vec2(lane & 1u, lane >> 1u);
                 if any(q >= view.grid.xy) { continue; }
-                let uv = (vec2<f32>(q) + 0.5) / vec2<f32>(view.grid.xy);
-                let pixel = vec2<i32>(view.viewport.xy + min(vec2<u32>(uv * vec2<f32>(view.viewport.zw)), view.viewport.zw - 1u));
-                if prepass_receiver(pixel).face < 6u { pool_dirty = 1u; break; }
+                if prepass_receiver(cell_centre_pixel(q)).face < 6u { pool_dirty = 1u; break; }
             }
         }
         pool_done = u32(view.history.x != 0u && view.discovery.y != 0u && pool_dirty == 0u && !check);
@@ -399,8 +403,7 @@ fn discover_receivers(@builtin(workgroup_id) id: vec3<u32>, @builtin(local_invoc
         for (var lane = 0u; lane < 4u; lane++) {
             let q = cell + vec2(lane & 1u, lane >> 1u);
             if any(q >= view.grid.xy) || occupied_cell(id.x, q) { continue; }
-            let uv = (vec2<f32>(q) + 0.5) / vec2<f32>(view.grid.xy);
-            let pixel = vec2<i32>(view.viewport.xy + min(vec2<u32>(uv * vec2<f32>(view.viewport.zw)), view.viewport.zw - 1u));
+            let pixel = cell_centre_pixel(q);
             let receiver = prepass_receiver(pixel);
             if receiver.face >= 6u { continue; }
             if owner_of(receiver) != 0xffffffffu { continue; }
