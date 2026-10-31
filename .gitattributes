@@ -1,0 +1,5 @@
+# LF everywhere, on every platform: shader assembly matches "\n"-terminated
+# include lines, and a CRLF checkout (Git for Windows default) breaks them.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
