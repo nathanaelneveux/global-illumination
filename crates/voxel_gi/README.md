@@ -19,8 +19,30 @@ Apple Silicon and integrated GPUs. Native GPUs only (Metal, Vulkan, DX12). Not
 WebGPU: the view tier uses more storage buffers per stage than WebGPU allows.
 On Windows, Vulkan is the recommended backend. DX12 needs the DXC shader
 compiler: FXC, wgpu's fallback when DXC is unavailable, rejects GI's compute
-shaders. Ship `dxcompiler.dll` and `dxil.dll` next to your executable, or
-enable Bevy's `statically-linked-dxc` feature.
+shaders. Either enable Bevy's `statically-linked-dxc` feature, or ship
+`dxcompiler.dll` and `dxil.dll` next to your executable and select them
+explicitly: Bevy's automatic detection looks only in the working directory,
+so a game launched from anywhere else would fall back to FXC.
+
+```rust,no_run
+use bevy::prelude::*;
+use bevy::render::{
+    RenderPlugin,
+    settings::{Dx12Compiler, WgpuSettings},
+};
+
+let dxc = std::env::current_exe().unwrap().with_file_name("dxcompiler.dll");
+App::new().add_plugins(DefaultPlugins.set(RenderPlugin {
+    render_creation: WgpuSettings {
+        dx12_shader_compiler: Dx12Compiler::DynamicDxc {
+            dxc_path: dxc.to_string_lossy().into_owned(),
+        },
+        ..default()
+    }
+    .into(),
+    ..default()
+}));
+```
 
 ![A cave lit by emissive voxels and a skylight: colored bounce light on every wall](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/cave.jpg)
 ![A daylight canyon: sunlit walls bounce warm light into the shaded side, out to long sightlines](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/canyon.jpg)
