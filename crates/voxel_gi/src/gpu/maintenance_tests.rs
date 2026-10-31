@@ -314,7 +314,11 @@ fn scene_edits_reach_view_history_without_world_cache_pages() {
             }
         }));
     }
-    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    // Publication itself takes microseconds, but its task waits for a thread
+    // in the shared async compute pool, which parallel GPU tests can hold
+    // with cold-cache pipeline compiles (about 10 s measured on an RX 7900 XT).
+    // The deadline only catches a publication that never finishes.
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         world
             .run_system_once(gi::publication::apply_scene_task)
