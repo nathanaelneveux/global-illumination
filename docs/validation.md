@@ -359,6 +359,11 @@ No routine toggle stress is needed for tuning.
 Defaults stay shared-corner sunlight, corner-reconstructed indirect, textures on,
 baked AO off. Only `compare` and `stress` deliberately switch display modes.
 Durations start after required assets are ready and exclude process compilation.
+Since `9aa3ccf` the script, phase boundaries and captures count from GI's
+first view frame (`gi_ready_s` in the report, about 1.5 s on the M4), while
+frame and work timelines still count from the assets. Captures from earlier
+baselines land `gi_ready_s` earlier: compare against a baseline worktree at
+`9aa3ccf` or later.
 
 | Profile | Seconds | Intended question |
 | --- | ---: | --- |
