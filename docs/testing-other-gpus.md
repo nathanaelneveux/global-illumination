@@ -11,6 +11,26 @@ hour, most of it the first build. Please send back what step 6 asks for.
   workload, which rustup offers to install. Linux: the
   [Bevy dependencies](https://github.com/bevyengine/bevy/blob/main/docs/linux_dependencies.md).
 - Git, plus about 20 GB of free disk for the first build.
+- Windows, for the DX12 runs: the DXC shader compiler. Without it wgpu falls
+  back to FXC, which rejects GI's compute shaders (and, with them rewritten
+  to compile, took over five minutes on every launch; see the
+  [FXC issue](https://github.com/nathanaelneveux/global-illumination/issues/4)).
+  Vulkan needs nothing extra and is the recommended Windows backend. Bevy
+  uses DXC by any one of these routes:
+
+  | Route | Cost |
+  |---|---|
+  | `dxcompiler.dll` (13.7 MB) and `dxil.dll` (1.4 MB) in the working directory | Two Microsoft-redistributable DLLs to ship with each Windows build; no code change |
+  | Bevy's `statically-linked-dxc` feature (wgpu `static-dxc`) | The host's choice: a prebuilt static library fetched at build time, Windows x86-64 MSVC only, a larger executable |
+  | `$env:WGPU_DX12_COMPILER = "dxc"` with DXC on `PATH` | Per-user setup; fine for testing, not for shipping |
+
+  For this guide the third is simplest: the Windows SDK installed with the
+  Build Tools includes DXC, so put its `bin\<version>\x64` folder on `PATH`.
+
+  DXC compiles slowly the first time (over 20 s for GI's pipelines on an RX
+  7900 XT) and caches the result, so a first DX12 run can show no terrain
+  for a while; later runs reached GI's first frame in about 8 s
+  ([cold-cache issue](https://github.com/nathanaelneveux/global-illumination/issues/3)).
 
 ```powershell
 git clone https://github.com/nathanaelneveux/global-illumination

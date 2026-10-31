@@ -8,7 +8,9 @@ The crates share one version. The format follows
 
 ### Added
 
-- First release, for Bevy 0.19 on native GPUs (Metal, Vulkan, DX12).
+- First release, for Bevy 0.19 on native GPUs (Metal, Vulkan, DX12). On
+  Windows, Vulkan is recommended; DX12 needs the DXC shader compiler (FXC
+  rejects GI's compute shaders).
 - `voxel_gi`: diffuse global illumination for axis-aligned voxel worlds:
   sunlight, sky, emissive voxels and multi-bounce indirect light traced
   against the voxels on the GPU.
