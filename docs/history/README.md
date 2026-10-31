@@ -25,6 +25,8 @@ Notable records:
 - [Streaming performance](streaming-performance.md) and
   [experiments](experiments.md): measured wins that remain in the engine.
 - [Code review, 2026-10-13](CODE_REVIEW_2026-10-13.txt).
+- [Windows first run, 2026-10-30](windows-first-run.md): RX 7900 XT baseline
+  on Vulkan and DX12, the reference for Windows fixes.
 
 Dead experiment branches no document cites are kept as `archive/<branch>`
 tags (2026-10-30: 31 superseded `experiment/*` and `codex/*` branches), so
