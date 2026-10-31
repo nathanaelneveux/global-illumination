@@ -19,7 +19,8 @@ Apple Silicon and integrated GPUs. Native GPUs only (Metal, Vulkan, DX12). Not
 WebGPU: the view tier uses more storage buffers per stage than WebGPU allows.
 On Windows, Vulkan is the recommended backend. DX12 needs the DXC shader
 compiler: FXC, wgpu's fallback when DXC is unavailable, rejects GI's compute
-shaders.
+shaders. Ship `dxcompiler.dll` and `dxil.dll` next to your executable, or
+enable Bevy's `statically-linked-dxc` feature.
 
 ![A cave lit by emissive voxels and a skylight: colored bounce light on every wall](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/cave.jpg)
 ![A daylight canyon: sunlit walls bounce warm light into the shaded side, out to long sightlines](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/canyon.jpg)
