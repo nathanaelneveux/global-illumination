@@ -30,11 +30,11 @@ The crates share one version. The format follows
     `sun_color`) let hosts light faces GI does not cover.
   - `VoxelGiStats` and `ViewReceipts` for work, GPU time and readiness
     (`geometry_pending`).
-  - Degrades instead of panicking: DX12 with the FXC shader compiler (GI's
-    pipelines fail to build; GI idles with one warning per tier), no
-    timestamp queries (fixed path budget),
+  - Degrades instead of panicking: GI pipelines that fail to build (GI idles
+    with one warning per tier), no timestamp queries (fixed path budget),
     receiver hash overflow (counted), failed view allocation (view tier
-    skipped for that view), no device (idles).
+    skipped for that view), no device (idles). A GI-lit material still needs
+    DXC on DX12: Bevy builds it, and FXC's failure there exits the app.
   - `examples/minimal.rs`.
 - `voxel_gi_bvw`: `bevy_voxel_world` 0.17 connector: chunk events become page
   events, chunks (including LOD chunks at their stride) are the voxel
