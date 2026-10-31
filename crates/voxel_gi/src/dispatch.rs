@@ -51,6 +51,9 @@ pub(super) fn start_trace_task(
     if field.order.is_empty() && runtime.gpu_pending.is_empty() && !maintenance {
         return;
     }
+    if runtime.transport_unavailable {
+        return;
+    }
     let Some(gpu_device) = gpu_device else {
         warn_once!("Voxel GI: no GPU transport device; the world cache is idle");
         return;
@@ -184,16 +187,13 @@ pub(super) fn start_trace_task(
             |cache| Arc::clone(&cache.distribution),
         );
         let mut gpu_error = None;
+        let mut build_error = None;
         if gpu_tracer.is_none() {
-            match gpu::GpuTracer::new(gpu_device) {
-                Ok(mut tracer) => {
-                    if let Err(error) = tracer.enable_resident() {
-                        gpu_error = Some(error);
-                    } else {
-                        gpu_tracer = Some(tracer);
-                    }
-                }
-                Err(error) => gpu_error = Some(error),
+            match gpu::GpuTracer::new(gpu_device)
+                .and_then(|mut tracer| tracer.enable_resident().map(|()| tracer))
+            {
+                Ok(tracer) => gpu_tracer = Some(tracer),
+                Err(error) => build_error = Some(error),
             }
         }
         let mut completed = None;
@@ -267,6 +267,7 @@ pub(super) fn start_trace_task(
             gpu_tracer,
             emission_cache,
             gpu_error,
+            build_error,
             geometry,
         }
     }));
@@ -369,6 +370,14 @@ pub(super) fn apply_trace_task(
     };
     let merge_started = Instant::now();
     runtime.trace_task = None;
+    // A transport that cannot be built (its pipelines fail on this backend or
+    // compiler) is like no device: GI idles with one warning. Only failures
+    // during a run, below, are fatal.
+    if let Some(error) = result.build_error {
+        warn!("Voxel GI: the GPU transport could not be built; the world cache is idle. {error}");
+        runtime.transport_unavailable = true;
+        return;
+    }
     // Fail before publishing any partial result or switching execution backend.
     // A slower CPU reference must be an explicit launch choice, never recovery
     // from a GPU validation, submission, or snapshot mapping failure.

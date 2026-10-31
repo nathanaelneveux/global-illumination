@@ -49,6 +49,25 @@ pub fn include_traversal(source: &str) -> String {
     source.replacen(MARKER, include_str!("../shaders/voxel_traversal.wgsl"), 1)
 }
 
+/// Runs `build` inside validation and internal error scopes and returns the
+/// first error. Shader translation failures (FXC's, on DX12) are wgpu
+/// *internal* errors: a validation scope alone lets them through to the
+/// app's uncaptured-error handler.
+pub(crate) fn scoped<T>(device: &RenderDevice, build: impl FnOnce() -> T) -> Result<T, String> {
+    let validation = device
+        .wgpu_device()
+        .push_error_scope(wgpu::ErrorFilter::Validation);
+    let internal = device
+        .wgpu_device()
+        .push_error_scope(wgpu::ErrorFilter::Internal);
+    let built = build();
+    let internal = bevy::tasks::block_on(internal.pop());
+    match bevy::tasks::block_on(validation.pop()).or(internal) {
+        Some(error) => Err(error.to_string()),
+        None => Ok(built),
+    }
+}
+
 fn include_retention(source: &str) -> String {
     source.replace(
         "// #include voxel_retention.wgsl\n",
@@ -442,37 +461,27 @@ impl GpuTracer {
         if device.limits().max_storage_buffers_per_shader_stage < 10 {
             return Err("GPU transport needs ten storage-buffer bindings".into());
         }
-        let error_scope = device
-            .wgpu_device()
-            .push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-            label: Some("World-space voxel transport"),
-            source: ShaderSource::Wgsl(Cow::Borrowed(SHADER.as_str())),
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("World-space voxel face tracing"),
-            layout: None,
-            module: &module,
-            entry_point: Some(entry),
-            compilation_options: default(),
-            cache: None,
-        });
-        let entry_pipeline = |label, entry_point| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(label),
-                layout: None,
-                module: &module,
-                entry_point: Some(entry_point),
-                compilation_options: default(),
-                cache: None,
-            })
-        };
-        let footprint_pipeline = entry_pipeline("GI change footprints", "trace_footprints");
-        let finish_footprint_pipeline =
-            entry_pipeline("GI change footprint events", "finish_footprints");
-        if let Some(error) = bevy::tasks::block_on(error_scope.pop()) {
-            return Err(error.to_string());
-        }
+        let (module, pipeline, footprint_pipeline, finish_footprint_pipeline) =
+            scoped(device, || {
+                let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
+                    label: Some("World-space voxel transport"),
+                    source: ShaderSource::Wgsl(Cow::Borrowed(SHADER.as_str())),
+                });
+                let entry_pipeline = |label, entry_point| {
+                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some(label),
+                        layout: None,
+                        module: &module,
+                        entry_point: Some(entry_point),
+                        compilation_options: default(),
+                        cache: None,
+                    })
+                };
+                let pipeline = entry_pipeline("World-space voxel face tracing", entry);
+                let footprint = entry_pipeline("GI change footprints", "trace_footprints");
+                let finish = entry_pipeline("GI change footprint events", "finish_footprints");
+                (module, pipeline, footprint, finish)
+            })?;
         let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
         let timestamps = device
             .features()
@@ -1194,9 +1203,6 @@ impl GpuTracer {
             pipeline.clone()
         } else {
             let device = &self.context.device;
-            let error_scope = device
-                .wgpu_device()
-                .push_error_scope(wgpu::ErrorFilter::Validation);
             let mut constants = vec![
                 ("DIFFUSE_HITS", key.0 as f64),
                 ("LIMITED_REACH", f64::from(key.1)),
@@ -1204,20 +1210,19 @@ impl GpuTracer {
             if self.adaptive_lanes {
                 constants.push(("PATH_LANES", f64::from(lanes)));
             }
-            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("Voxel transport quality variant"),
-                layout: None,
-                module: &self.module,
-                entry_point: Some(self.entry),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &constants,
-                    ..default()
-                },
-                cache: None,
-            });
-            if let Some(error) = bevy::tasks::block_on(error_scope.pop()) {
-                return Err(error.to_string());
-            }
+            let pipeline = scoped(device, || {
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("Voxel transport quality variant"),
+                    layout: None,
+                    module: &self.module,
+                    entry_point: Some(self.entry),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &constants,
+                        ..default()
+                    },
+                    cache: None,
+                })
+            })?;
             self.quality_pipelines.insert(key, pipeline.clone());
             pipeline
         };

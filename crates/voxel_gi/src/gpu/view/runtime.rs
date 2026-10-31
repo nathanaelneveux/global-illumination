@@ -480,26 +480,18 @@ struct ViewRenderer {
     unavailable: bool,
 }
 
-/// Builds view-tier pipelines inside error scopes, so a pipeline the backend's
-/// compiler rejects disables the view tier with one warning instead of
-/// reaching the app's uncaptured-error handler. Shader translation failures
-/// (FXC's) are wgpu *internal* errors, not validation errors: catch both.
+/// Builds view-tier pipelines inside error scopes (`gpu::scoped`), so a
+/// pipeline the backend's compiler rejects disables the view tier with one
+/// warning instead of reaching the app's uncaptured-error handler.
 fn build_view_pipelines<T>(device: &RenderDevice, build: impl FnOnce() -> T) -> (T, bool) {
-    let validation = device
-        .wgpu_device()
-        .push_error_scope(wgpu::ErrorFilter::Validation);
-    let internal = device
-        .wgpu_device()
-        .push_error_scope(wgpu::ErrorFilter::Internal);
-    let built = build();
-    let internal = bevy::tasks::block_on(internal.pop());
-    let error = bevy::tasks::block_on(validation.pop()).or(internal);
-    if let Some(error) = &error {
+    let mut built = None;
+    let result = crate::gpu::scoped(device, || built = Some(build()));
+    if let Err(error) = &result {
         warn!(
             "Voxel GI: view-tier pipelines failed to build; visible faces fall back to the material without view GI. {error}"
         );
     }
-    (built, error.is_some())
+    (built.unwrap(), result.is_err())
 }
 
 impl FromWorld for ViewRenderer {

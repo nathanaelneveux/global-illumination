@@ -149,38 +149,49 @@ pub(super) struct ResidentAccumulator {
 impl ResidentAccumulator {
     pub(super) fn new(context: &GpuTransportDevice) -> Result<Self, String> {
         let device = &context.device;
-        let scope = device
-            .wgpu_device()
-            .push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-            label: Some("GI persistent measurements"),
-            source: ShaderSource::Wgsl(Cow::Borrowed(&SHADER)),
-        });
-        let pipeline = |entry| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(entry),
-                layout: None,
-                module: &module,
-                entry_point: Some(entry),
-                compilation_options: default(),
-                cache: None,
+        let [
+            prepare,
+            accumulate,
+            scatter,
+            words,
+            apply_events,
+            mark_changed,
+            measure_edits,
+            finish_edits,
+            select_classify,
+            select_threshold,
+            select_emit,
+            select_histogram,
+        ] = super::scoped(device, || {
+            let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
+                label: Some("GI persistent measurements"),
+                source: ShaderSource::Wgsl(Cow::Borrowed(&SHADER)),
+            });
+            [
+                "prepare",
+                "accumulate",
+                "scatter_face_index",
+                "scatter_words",
+                "apply_events",
+                "mark_changed",
+                "measure_edits",
+                "finish_edits",
+                "select_classify",
+                "select_threshold",
+                "select_emit",
+                "select_histogram",
+            ]
+            .map(|entry| {
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(entry),
+                    layout: None,
+                    module: &module,
+                    entry_point: Some(entry),
+                    compilation_options: default(),
+                    cache: None,
+                })
             })
-        };
-        let prepare = pipeline("prepare");
-        let accumulate = pipeline("accumulate");
-        let scatter = pipeline("scatter_face_index");
-        let words = pipeline("scatter_words");
-        let apply_events = pipeline("apply_events");
-        let mark_changed = pipeline("mark_changed");
-        let measure_edits = pipeline("measure_edits");
-        let finish_edits = pipeline("finish_edits");
-        let select_classify = pipeline("select_classify");
-        let select_threshold = pipeline("select_threshold");
-        let select_emit = pipeline("select_emit");
-        let select_histogram = pipeline("select_histogram");
-        if let Some(error) = bevy::tasks::block_on(scope.pop()) {
-            return Err(error.to_string());
-        }
+        })?;
         let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
         Ok(Self {
             bindings: Vec::new(),

@@ -30,7 +30,9 @@ The crates share one version. The format follows
     `sun_color`) let hosts light faces GI does not cover.
   - `VoxelGiStats` and `ViewReceipts` for work, GPU time and readiness
     (`geometry_pending`).
-  - Degrades instead of panicking: no timestamp queries (fixed path budget),
+  - Degrades instead of panicking: DX12 with the FXC shader compiler (GI's
+    pipelines fail to build; GI idles with one warning per tier), no
+    timestamp queries (fixed path budget),
     receiver hash overflow (counted), failed view allocation (view tier
     skipped for that view), no device (idles).
   - `examples/minimal.rs`.
