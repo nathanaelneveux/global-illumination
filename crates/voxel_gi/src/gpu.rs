@@ -1377,13 +1377,23 @@ pub(super) mod tests {
         );
     }
 
-    pub(crate) fn native_tracer() -> GpuTracer {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = bevy::tasks::block_on(
-            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
-        )
-        .expect("native compute adapter");
+    /// The native test adapter. It honours wgpu's environment overrides
+    /// (`WGPU_BACKEND`, `WGPU_DX12_COMPILER`, `WGPU_ADAPTER_NAME`,
+    /// `WGPU_POWER_PREF`), so a run that names a backend tests that backend
+    /// or fails, never silently another.
+    pub(crate) fn native_adapter() -> wgpu::Adapter {
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let adapter = bevy::tasks::block_on(wgpu::util::initialize_adapter_from_env_or_default(
+            &instance, None,
+        ))
+        .expect("native compute adapter for the backends WGPU_BACKEND allows");
         eprintln!("GI benchmark adapter: {:?}", adapter.get_info());
+        adapter
+    }
+
+    pub(crate) fn native_tracer() -> GpuTracer {
+        let adapter = native_adapter();
         let (device, queue) =
             bevy::tasks::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("GI shared corner regression tests"),

@@ -5,8 +5,7 @@ use bevy::tasks::block_on;
 #[test]
 #[ignore = "native MSAA raster/voxel-identity regression"]
 fn native_msaa_voxel_identity_interpolation() {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let adapter = block_on(instance.request_adapter(&Default::default())).unwrap();
+    let adapter = crate::gpu::tests::native_adapter();
     let (device, queue) = block_on(adapter.request_device(&Default::default())).unwrap();
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let mut results = Vec::new();

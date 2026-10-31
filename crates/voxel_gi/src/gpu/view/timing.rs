@@ -447,11 +447,7 @@ mod tests {
     #[ignore = "native device without timestamp queries"]
     fn view_budget_runs_a_fixed_wave_without_timestamp_queries() {
         use bevy::render::renderer::{RenderDevice, RenderQueue, WgpuWrapper};
-        let instance = wgpu::Instance::default();
-        let adapter = bevy::tasks::block_on(
-            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
-        )
-        .unwrap();
+        let adapter = crate::gpu::tests::native_adapter();
         let (device, queue) =
             bevy::tasks::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 required_features: wgpu::Features::empty(),
