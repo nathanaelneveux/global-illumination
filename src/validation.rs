@@ -24,6 +24,8 @@ const FACE_OFFSETS: [IVec3; 6] = [
     IVec3::Z,
     IVec3::NEG_Z,
 ];
+/// How long a run waits for GI's first view frame before failing.
+const GI_READY_TIMEOUT_S: f32 = 120.0;
 use crate::assets::{PrototypeConfig, TemplateAssets};
 use crate::{player::Player, terrain::PrototypeWorld};
 use bevy::camera::{RenderTarget, ShadowLodOrigin};
@@ -156,6 +158,9 @@ impl CaptureEvidence {
 pub(super) struct ValidationRun {
     startup: Option<Instant>,
     started: Option<Instant>,
+    /// Seconds from `started` to GI's first view-tier receipt: the profile's
+    /// schedule and captures start there (`gi_ready_s` in the report).
+    gi_ready_s: Option<f32>,
     profile: Profile,
     motion_diagnostic: u32,
     motion_static: bool,
@@ -337,8 +342,46 @@ pub(super) fn run_validation(
         run.started = Some(Instant::now());
         info!("GI validation terrain assets verified");
     }
-    let elapsed = run.started.unwrap().elapsed().as_secs_f32();
+    // Two clocks. Frame and work measurement keep `started`, so the startup
+    // phase still begins where it always has and any wait for GI stays in the
+    // numbers. The profile's script, phases and captures run from GI's first
+    // view frame: on a cold shader cache (DX12 + DXC's first compile) the
+    // pipelines can take longer than the first capture's schedule.
+    let measured = run.started.unwrap().elapsed().as_secs_f32();
     let profile = run.profile;
+    if run.gi_ready_s.is_none() {
+        if !crate::gi_lab::gi_enabled() || stats.view_gpu.receipt > 0 {
+            run.gi_ready_s = Some(measured);
+            info!(gi_ready_s = measured, "GI validation: first view frame");
+        } else if measured >= GI_READY_TIMEOUT_S {
+            let reason = "GI published no view frame within 120 s of the terrain assets; most likely a cold shader cache (a first DX12 run with DXC, or a shader or driver change).";
+            error!(reason);
+            evidence.fail(reason);
+            commands.write_message(AppExit::error());
+            return;
+        } else {
+            let phase = profile.phase(0.0);
+            let frame_ms = time.delta_secs() * 1000.0;
+            run.metrics
+                .phases
+                .entry(phase)
+                .or_default()
+                .frames_ms
+                .push(frame_ms);
+            run.metrics.record_frame(
+                measured,
+                phase,
+                frame_ms,
+                false,
+                &stats,
+                host_timing.as_ref().map(|timing| timing.completed_ms),
+            );
+            run.metrics.record_work(measured, phase, &stats);
+            run.max_pages = run.max_pages.max(stats.loaded_pages);
+            return;
+        }
+    }
+    let elapsed = measured - run.gi_ready_s.unwrap();
     let player = &mut *player_state;
     if crate::cave_scene::background_terrain_requested() {
         run.background
@@ -575,14 +618,14 @@ pub(super) fn run_validation(
         phase_stats.frames_ms.push(time.delta_secs() * 1000.0);
     }
     run.metrics.record_frame(
-        elapsed,
+        measured,
         phase,
         time.delta_secs() * 1000.0,
         capture_in_flight,
         &stats,
         host_timing.as_ref().map(|timing| timing.completed_ms),
     );
-    run.metrics.record_work(elapsed, phase, &stats);
+    run.metrics.record_work(measured, phase, &stats);
     run.max_pages = run.max_pages.max(stats.loaded_pages);
 
     if profile.sources() && (25.0..65.0).contains(&elapsed) {
@@ -771,6 +814,10 @@ pub(super) fn run_validation(
         "timing_domain": if evidence.render_target.is_some() { "offscreen app cadence; 60Hz ScheduleRunner; no swapchain/vsync" } else { "windowed frame pacing" },
         "performance_baseline": profile == Profile::Gameplay && evidence.render_target.is_none(),
         "build": "development", "backend": stats.backend,
+        // Seconds from terrain assets to GI's first view frame; the profile
+        // schedule and capture times count from there, frame and work
+        // timelines from the assets.
+        "gi_ready_s": run.gi_ready_s,
         "compiled_manifest_dir": env!("CARGO_MANIFEST_DIR"),
         "scene": match crate::scene_presets::ScenePreset::current() {
             crate::scene_presets::ScenePreset::Cave => "many-emitter cave",
