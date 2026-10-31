@@ -365,8 +365,13 @@ fn native_small_faces_are_lit_per_pixel_without_receivers() {
         assert_eq!(&words[8..12], &[8, 8, 2, 1], "header grid");
         assert_eq!(words[15], frame, "header stamp");
         let counts = counts(&words);
+        // The reprojected count is a weighted mean, so it can land an f32 ulp
+        // low, and `pack2x16float` may round toward zero (AMD on Vulkan
+        // does): allow one f16 step.
         assert!(
-            counts.iter().all(|&n| n == frame as f32 + 1.),
+            counts
+                .iter()
+                .all(|&n| (n - (frame as f32 + 1.)).abs() < 0.01),
             "frame {frame}: {counts:?}"
         );
         assert!(
