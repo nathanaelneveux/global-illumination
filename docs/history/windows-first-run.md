@@ -134,6 +134,30 @@ cave. They have not been compared with M4 captures.
 
 DX12 has no measurements: every profile failed before measuring.
 
+## Measurements (Vulkan, windowed, uncapped)
+
+Added after the first run, at `acddc43` (same GI code as `33ac7ed` apart from
+the test and documentation changes since). `gameplay` profile,
+`VOXEL_GI_VALIDATE_NO_VSYNC=1`, `WGPU_BACKEND=vulkan`, `dev` build. The
+window was the lab's default **1280x720**, not the 2560x1440 display, so
+these numbers do not describe full-resolution headroom. All 5 captures were
+focused, visible, varied and presented with `AutoNoVsync`. Windowed frame
+pacing: don't compare these with the headless tables above.
+
+completed, coverage 1.0, 414 max loaded pages, 470.3 M traced paths
+
+| phase | frames | frame p50 | p95 | p99 | max | >33.3 | >50 | worker p50 | worker p95 | transport p95 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| startup | 2924 | 3.19 | 3.87 | 7.12 | 124.5 | 3 | 3 | 0.59 | 0.91 | 0.22 |
+| streaming | 5844 | 3.26 | 4.29 | 5.62 | 11.5 | 0 | 0 | 0.59 | 1.10 | 0.68 |
+| editing | 5811 | 3.33 | 4.28 | 4.89 | 9.9 | 0 | 0 | 0.49 | 0.96 | 0.81 |
+| settled | 4534 | 3.17 | 3.58 | 3.83 | 9.8 | 0 | 0 | 0.59 | 0.88 | 0.16 |
+| recovery | 2108 | 3.13 | 3.83 | 4.37 | 10.4 | 0 | 0 | 0.56 | 1.06 | 0.22 |
+
+Median frame time is 3.1 to 3.3 ms (about 300 to 320 FPS) in every phase,
+and p99 stays under 7.2 ms. The only frames over 33 ms are three at startup.
+No WARN or ERROR lines.
+
 ## What the tester saw
 
 - **`minimal`** (window, Vulkan): it looked correct, with the room, pillar, lamp,
@@ -141,7 +165,7 @@ DX12 has no measurements: every profile failed before measuring.
   offscreen `minimal.png` matches.
 - **Lab** (window, Vulkan, vsync on): it "looked and ran good", at about 180
   FPS. That equals the 180 Hz refresh rate, so it is probably vsync-capped.
-  There is no uncapped (`VOXEL_GI_VALIDATE_NO_VSYNC=1`) windowed number yet.
+  The uncapped run above, at 1280x720, ran at about 300 FPS.
 
 ## Results bundle
 
