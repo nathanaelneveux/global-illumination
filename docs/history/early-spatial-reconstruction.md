@@ -15,7 +15,7 @@ Use `config/gi-display-unfiltered.json` for the no-adaptive-spatial control.
 The following sections record the experiments chronologically: their statements
 that spatial reconstruction was opt-in describe those historical baselines.
 Sampler qualification must remain separate from presentation qualification;
-see [the testing contract](../validation.md#separate-sampling-accuracy-from-presentation).
+see [the testing contract](../validation.md#raw-sampling-and-presentation).
 
 The [1536 follow-up](#uncapped-1536-follow-up--october-16) retains that default:
 1536 improves FLIP fidelity but gives back some mid-prefix wall smoothness.

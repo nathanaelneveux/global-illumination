@@ -74,7 +74,7 @@ struct CustomVertexOutput {
 var<private> fragment_footprint: f32 = 0.0;
 
 // Naga-oil overrides are scoped to this material's shader. Other materials,
-// point lights and the simulation's sources remain untouched. Sum the cached
+// point lights remain untouched. Sum the cached
 // directional sources once, not once per Bevy directional-light loop entry.
 override fn lighting::directional_light(
     light_id: u32,

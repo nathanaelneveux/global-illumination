@@ -1,5 +1,5 @@
 //! CPU oracle for the shader's virtual voxel-corner reconstruction.
-//! Kept independent of simulation estimates and of mesh tessellation.
+//! Kept independent of raw transport estimates and mesh tessellation.
 #[cfg(test)]
 mod tests {
     use bevy::prelude::*;

@@ -402,7 +402,7 @@ pub(super) fn run_validation(
     ) && !run.cave_camera_initialized
     {
         let (eye, target, fov) = if profile == Profile::LiveHallway {
-            // The user's view: beside the lamp, looking down the dark end.
+            // Interior view beside the lamp, looking toward the dark end.
             let eye = crate::structures::hallway::SOURCE.as_vec3() + Vec3::new(2.5, 1.62, 0.5);
             (eye, eye + Vec3::new(64., -1., 0.), 65.)
         } else if profile == Profile::LiveCave {

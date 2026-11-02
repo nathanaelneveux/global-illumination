@@ -59,7 +59,7 @@ struct Energy {
 // accepts quiet faces a couple of samples sooner and noisy emitter-lit ones
 // later, but cannot certify a black face (zero mean, zero variance), which
 // needs this count anyway. That difference was judged not worth a second
-// cache load on the hottest path (2026-10-24 review; not measured).
+// cache load on the hottest path (no performance measurement is implied).
 const CACHE_MIN_SAMPLES: u32 = 16u;
 
 struct CachedEnergy { found: bool, value: vec4<f32> }
@@ -256,7 +256,7 @@ fn sky_corner_visibility(position: vec3<f32>) -> u32 {
         let origin = position + direction * 0.002;
         // Display shadows match rendered loaded geometry. Do not turn gaps in
         // the streaming directory into opaque slabs; continue to real occluders.
-        // Path transport and simulation direct energy still use strict trace().
+        // Path transport's analytic direct energy uses strict trace().
         let visibility = trace_domain(origin, direction, params.extra.y, true).status;
         if visibility == 2u { word = 0u; break; }
         if visibility == 0u { word |= 1u << bit; }

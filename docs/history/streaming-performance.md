@@ -151,7 +151,7 @@ Exact ignored artifacts under `target/gi-validation/`:
 - `cave-1791651580682425000-73424`: prior control `0ddc304` from the BVW comparison.
 
 Logs use `target/{streaming,cave,response}-display-*.log`; focused test/build logs
-use `target/display-*.log`. See [display-cache lifetime](../architecture.md#display-cache-lifetime)
+use `target/display-*.log`. See [display-cache lifetime](../architecture.md#presentation)
 for the maintained ownership and publication contracts.
 
 ## Follow-up experiments

@@ -1,327 +1,95 @@
 # Validation and regression tracking
 
-Use the smallest check that answers the current question. The purpose is faster,
-stable gameplay, not maximizing test minutes. GI owns visual RGB; heat/radiation
-are a separate future simulation, not a GPU lighting delivery contract.
-The full suite is an integration checkpoint, not the default for every tweak.
-
-For resident transport, distinguish `snapshot_latency_ms` (submission to CPU
-delivery) from worker occupancy and GPU timestamps. It is not a blocking wait.
-Validation reports' receiver records describe world-cache receivers, not the
-displayed view-owned faces; use captures for presentation.
-
-Normal runs use nonvisual importance 0 (display-only GI);
-`simulation_sampling_importance: 1` reproduces the historical equal-band control.
-
-The paired image study uses `VOXEL_GI_VALIDATE_REUSE_SWEEP=1` with the existing
-headless cave/reference/sample-sweep flags. It records a resident independent
-control in the same frozen scene. Analyze it with `cave_sample_analysis.py
-RUN --perceptual --control`, and analyze the candidate without `--control`.
-Both require the independent reference's qualification and completed capture
-status; neither relaxes the user-calibrated RGB gates. The
-[resident/path-reuse results](history/resident-path-reuse.md) document exact commits,
-settings and evidence. These opt-in studies are not routine toggle stress.
-
-Current appearance acceptance is the user's [2,048-path cave target](history/cave-sampling.md#user-calibrated-visual-target),
-with 1,536 and 1,024 as visible-failure controls. Use the fixed, versioned profile
-for sampler comparisons; do not turn 2,048 into a history cap, use a raw RGB
-outlier as a universal perceptual threshold, or waive temporal/FPS qualification.
-Keep the original stricter engineering metrics alongside this human-calibrated
-target.
-
-The [whole-range integration](history/whole-range-history.md#runtime-integration) records
-the current policy. The [earlier runtime qualification](history/runtime-retention.md)
-records the preceding calibration, independent references and windowed controls.
-The legacy 16/256 control, the floor summary and the retention audit were
-removed on the surface-cache branch (last present at `8cab848`), as were the
-study harnesses the [historical records](history/README.md) use: near-history
-calibration, model comparison, footprint replay, the retain-all ablation and
-their Python analyses. Check out that commit to reproduce them. Check
-`spatial_retention` and `measured_retention` in the report;
-`config/gi-retention-curve.ron` selects the whole-range curve without measured
-flux. Coverage and retained weight are still not convergence.
-The blocked windowed capture is not a frame-pacing qualification.
-
-For adaptive-history research, the [DDGI/A-SVGF qualification study](history/adaptive-history-qualification.md)
-records the opt-in matched native sample tapes, isolated branches, first-gate
-failures and required runtime gate. Neither detector is a gameplay default;
-do not add those studies to ordinary throughput testing.
+Use the smallest check that answers the question. GI is visual RGB lighting;
+heat and radiation have no simulation query or qualification contract here.
+Sampling accuracy, presentation quality and gameplay cost are separate results.
 
 ## Reproducible setup
 
-Use the checked-in lockfile. On a fresh machine, fetch dependencies normally;
-`--offline` below assumes they are already cached. Record the exact commit, dirty
-diff, compiler/profile, hardware/backend, viewport, settings and workload. The
-validation report does not record every one of those for you.
+Record the commit and dirty diff, compiler/profile, hardware/backend, viewport,
+settings and workload. Build before timing. Do not run another game instance,
+compiler or GPU benchmark during a paired measurement. Keep raw logs and images
+under ignored `target/`, not Git. `--offline` commands assume cached dependencies.
 
-```sh
-git rev-parse HEAD
-git status --short
-rustc --version
-cargo build --locked --offline
-```
-
-Build before timing. Do not run another application instance, compiler or GPU
-benchmark during a paired measurement. A preliminary baseline/candidate pair is
-enough to guide a substantial iteration; repeat pairs when differences are small
-or noisy. Retain logs and captures under ignored `target/`, not Git.
+A baseline/candidate pair can guide a substantial change. Repeat small or noisy
+differences before claiming a gain. Keep shared-corner sunlight, reconstructed
+indirect, textures on and baked AO off unless testing those controls explicitly.
 
 ## Choose the relevant check
 
-### Separate sampling accuracy from presentation
-
-Correctness precedes variance/quality tuning. The
-[independent estimator audit](history/hallway-path-outliers.md#independent-correctness-audit)
-found a bias that CPU/GPU parity and shared-estimator references missed. For changes
-to sampling, MIS or termination, check distribution/PDF agreement and a known-answer
-integral first, then independent cosine-only means by depth at the actual suspect
-receivers. Separate IID statistical uncertainty from QMC prefix variation; do not
-interpret disjoint QMC windows as independent random trials. Only then compare
-time to FLIP acceptance. No display filter participates in an estimator audit.
-
-Focused checks today: `light_selection_frequencies_match_reported_probabilities`
-(emitter tree), the cached furnace (`cached_furnace_converges_to_infinite_bounce_series`,
-`cached_furnace_lag_by_history_policy`) and the native two-way-cache tests,
-including `native_two_way_cache_reserved_paths_match_furnace_energy`. The CPU
-path-tracing oracle and its independent audits (`hallway_estimator_correctness_audit`,
-`transport_field_correctness_gate`, the CPU/GPU parity and grazing-emitter
-tests) were removed with the CPU tracer in `b47f6f8`; their results are in
-[history](history/hallway-path-outliers.md). A sampler change needs a new
-known-answer reference first, not the removed oracle.
-
-The view display pools spatially with MSE-optimal weights from measured
-variance and bias (`spatial_noise_threshold`, 2026-10-24); it replaced the
-uncapped 1024-evidence reconstruction chosen in the frozen surface-cache
-qualification (2,048 remains the historical independent-path visual target,
-not a changed sampler gate).
-Do not let that hide estimator regressions or inflate apparent sample efficiency:
-
-- **Sampler qualification:** compare raw frozen-scene prefixes at matched path
-  counts and native compute budgets against the same qualified reference, over
-  the same disjoint sequence windows, without temporal or adaptive spatial
-  filtering. The former `sample_sweep` prefix renderer no longer exists; a
-  sampler change must first rebuild that harness. Ordinary corner interpolation
-  and materials stay fixed.
-  Reuse variants need their own raw-prefix comparison, including correlation.
-- **Presentation qualification:** apply reconstruction to those identical saved
-  prefixes, then compare noise, FLIP, bias/detail and edit response separately.
-  Borrowed evidence does not increase the physical sample count. A smoother image
-  alone cannot lower the calibrated raw-sampler threshold.
-- **Gameplay cost:** compare full presentation with matched settings and background
-  loading. `config/gi-display-unfiltered.ron` explicitly disables adaptive spatial
-  reconstruction; unlike frozen prefixes it retains normal temporal response.
-  Omitting `VOXEL_GI_SETTINGS` now enables reconstruction and is no longer an off
-  control. Report cadence/freshness separately from fixed-prefix accuracy.
-  `config/gi-far-tier-off.ron` disables the far tier (receivers everywhere);
-  with `VOXEL_GI_VALIDATE_VIEW_COVERAGE=1` far-tier pixels show cyan and
-  receiver pixels green.
-- **Settings A/B and sweeps in one build:** `tools/runs.sh LIST
-  label:profile[:settings.ron|-][:ENV=V,...]...` runs labelled headless
-  profiles (settings relative to the repository, e.g. a control config or a
-  generated `target/gates/*.ron`) and lists `label run log`.
-  `tools/view_costs.py LIST` tabulates frame percentiles, view-tier GPU
-  stages (discovery, presentation, far tier; "fixed" is the part the
-  transport budget does not control), receivers, far cells and histories.
-  `tools/far_flicker.py LIST COVERAGE_LABEL LABEL...` measures frame-to-frame
-  light change inside the far tier's pixels of a `motion` walk
-  (`VOXEL_GI_VALIDATE_MOTION_WALK`), using a `VIEW_COVERAGE` run of the same
-  walk as the mask and the receivers' pixels as the control; use
-  `LIGHT_COMPONENT=indirect` for the indirect signal. Frame times there are
-  offscreen cadence, single runs are noisy.
-
-### Near/far lifecycle checks
-
-Before evaluating far-tier image quality, use the focused native tests
-`geometry_tests` and `maintenance_tests` (`--ignored --test-threads=1`). They
-cover held render generations through growth/bounds changes, sparse edit reuse,
-GPU retirement during poll-only/budget-exhausted dispatch, and zero-near-receiver
-startup/update/idle. `gpu_headless_renderer_prepares_cache_and_material_generations_together`
-checks the material integration. These are lifetime checks, not sampler or
-gameplay performance qualification.
-
-The far consumer's raw gate is `cargo test --locked --offline
-voxel_gi::gpu::view_tests -- --ignored --test-threads=1 --nocapture`.
-It covers matched prefixes against near transport, frozen-cache termination,
-black/unknown/inactive accounting, and analytic multi-bounce tails. The `wave`
-tests compare one/three/eight-hit partitions with unsplit paths, including
-zero-budget pauses, idempotent completion and generation/receiver replacement.
-The uncapped-tail furnace test aggregates only after each cohort finishes;
-partial or early-completed samples must not establish a false convergence claim.
-These test readbacks are intentionally synchronous; gameplay must keep the queue
-and records on the GPU. The record layout is uncompressed qualification data,
-not a compressed reservoir layout. Live integration now has valid offscreen
-cave captures; see [far-view runtime evidence](history/far-view-runtime.md).
-`native_view_runtime_pipelines` and `view_runtime_shader_is_valid` cover the
-runtime entry points and both single/multisample prepasses. Use the same
-`gameplay` profile in a baseline worktree and a positive-radius candidate for
-movement/edit qualification. CPU field diagnostics cover near receivers only;
-they cannot establish far-image stability. Far timing logs report raw owners,
-known completions, history, pending tails and display coverage separately.
-
-`native_view_discovery_keeps_thin_surfaces_without_growing_storage` is the focused
-native coverage gate (`--ignored --nocapture`). Synthetic depth/normal prepasses
-contain six depth planes plus one-pixel side planes in one crowded tile, backed
-by real transport geometry. Empty tiles elsewhere provide spare slots. It checks
-borrowing beyond four local slots, even/odd grid edges, stable stationary face
-identities, cross-tile motion and removal/reappearance in the prepass. A nine-slot
-case exercises bounded global exhaustion. The actual path-reprojection stage
-checks that tagged raw means and QMC indices follow retained faces, while newly
-allocated faces do not inherit a recycled slot's unrelated history. Pool/output
-layout assertions and single/MSAA pipeline tests cover the binding contract.
-This is a coverage/identity test, not rendered quality evidence. Pair it with
-cave/streaming captures and total preparation-plus-discovery cost. The older
-fixed-tile baseline injection fixture remains in its historical branch, not as
-a second runtime implementation.
-
-For the opt-in `view_cache_exchange`, run `native_two_way_cache` with
-`--ignored --test-threads=1 --nocapture`. It checks raw transfers (not summed
-histories), alternating worker/view sequences, unfinished tails, stale-generation
-write rejection, edit retention, and an analytic furnace without reconstruction.
-The furnace also asserts that unused reservations do not skip QMC indices based
-on path length. `native_view_batches_preserve_raw_prefixes_and_pending_tails`
-keeps the exchange-disabled frontend's batching behavior covered.
-
-Rendered exchange checks use background loading and the same +cache settings on
-both commits: `house` for reveal/return, `response` for offscreen emitter edits,
-and `cave` for sustained many-emitter lighting. Set
-`VOXEL_GI_VALIDATE_CACHE_HANDOFF=1` with `hallway` to move an already-visible
-source wall into the resident radius and back while preserving its view identity.
-`tools/view_cache_quality.py PROFILE BASELINE_RUN CANDIDATE_RUN OUTPUT_DIRECTORY`
-compares actual captures, validates offscreen target dimensions/nonblankness, and
-produces paired images. Its early-to-own-later FLIP measures remaining visible
-change, not reference accuracy; final cross-run differences are separate. It
-does not establish interactive FPS. See [two-way results](history/two-way-cache.md).
-
-The shader candidate and sampler benchmarks (`VOXEL_GI_BASELINE_SHADER`) were
-removed with the other one-off studies (`caf04ba`); a shared-kernel refactor
-needs a fresh paired comparison.
-
-Production probes keep no CPU measurements (only test fixtures do).
-`slim_progress_receives_gpu_stability_without_changing_sample_counts` and
-`mirror_record_never_replaces_a_newer_cpu_result` cover HUD progress and
-publication ordering natively.
-
-2026-10-21 lifecycle smoke: `a5edd91` (only documentation changed during the
-run), dev profile, Apple M4/Metal, 2560×1440 offscreen. Command: `RUST_LOG=warn
-VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_HEADLESS=1 VOXEL_GI_VALIDATE_BACKGROUND=1
-VOXEL_GI_VALIDATE_FRAME_TIMINGS=1 VOXEL_GI_VALIDATE_PROFILE=gameplay
-VOXEL_GI_VALIDATE_EXIT=1 VOXEL_GI_VALIDATE_EXPECT_BUILD_ROOT="$PWD"
-VOXEL_GI_SETTINGS=target/near-far-lifecycle-64.json cargo run --locked --offline`.
-The settings file contained `{"receiver_radius":64,"cpu_statistics":false}` (since removed);
-other settings are defaults (corner sun/indirect, 1024 evidence, textures on,
-AO off). Evidence:
-`target/gi-validation/gameplay-1792609609777779000-76370/` and
-`target/near-far-lifecycle-64.log`.
-
-All five captures reported valid targets and nonblank images; preferred and
-recovered captures were also visually inspected. Clean render log, 80 scripted
-edits and five moves completed, slim coverage/bootstrap reported 75.21%/75.20%
-under continued background loading. This establishes runtime/capture integrity,
-not convergence or a frame-pacing improvement. The far indirect contribution
-was still absent at that historical checkpoint, with visibly darker distant
-shaded faces at this small radius. It is present in the subsequent live runtime.
-The full-statistics-only edit-freshness metric is unavailable in this slim run;
-do not interpret its zero observations as instantaneous response. No matched
-baseline or windowed performance claim is attached to this smoke check.
-
-Report average FLIP across windows, worst-window mean FLIP, and worst regional
-tile separately. These answer different questions; an average must not conceal a
-localized regression. The provisional smooth-wall noise envelope complements,
-not replaces, the existing user-calibrated FLIP guard. Change a quality threshold
-only with new matched evidence and visual agreement, not to pass a candidate.
-
-The frozen cache sweep, whole-cave reference image and their FLIP/noise tools
-rendered through the world display and were removed with it on 2026-10-23
-(last present at `3cd98b2`); see [the cave protocol](history/cave-reference.md).
-
 | Change | First useful check |
 | --- | --- |
-| Documentation/workflow | Diff and link review; no renderer run |
-| History, revisions, scheduling | Focused CPU unit tests and response fixtures |
-| Traversal, materials, emitter PDF/MIS | CPU reference tests and native CPU/GPU parity |
-| Geometry packing/uploads | Native incremental scene parity and bounds checks |
-| Display buffer ownership/material extraction | Targeted native generation-lifetime regression |
-| Temporal or spatial presentation | `house-edits`, `response` or `compare`, with valid images |
-| Streaming / main-thread stalls | `streaming` or `gameplay`, plus field freshness |
-| Analytic sources / multi-band transport | Source tests and `sources` |
-| Meaningful integrated checkpoint | Regular suite, strict Clippy and selected native checks |
+| Docs/comments | Diff, links, formatting; doctests for changed examples |
+| Host input / scene construction | Focused page, region and connector tests |
+| Traversal / emitter PDFs / materials | Native path tests and analytic fixtures |
+| Surface-cache transport | Native furnace and view/cache exchange tests |
+| Geometry uploads / buffer lifetime | Native growth and generation tests |
+| History / edit response | Focused retention tests, then `response` or `house-edits` captures |
+| Spatial / temporal presentation | Paired `house`, `cave`, `motion` or `tunnel` captures |
+| Streaming / stalls | `streaming` or windowed `gameplay`, with progress and freshness |
+| Release integration | Crate tests/examples, doctests, Clippy, rustdoc, package verification |
 
-Discover test names rather than maintaining an exhaustive command list here:
+The public crates and lab are separate Cargo packages. The lab is not published.
+For the release crates:
 
 ```sh
-cargo test --locked --offline -- --list
-cargo test --locked --offline missed_source_updates
-cargo test --locked --offline gpu_matches_cpu -- --ignored --nocapture
-cargo test --locked --offline --all-targets
-cargo clippy --locked --offline --all-targets -- -D warnings
-RUSTDOCFLAGS='-D warnings' cargo doc --locked --offline --no-deps --document-private-items
+cargo test --locked -p voxel_gi -p voxel_gi_bvw -p voxel_gi_debug --lib --examples
+cargo test --locked -p voxel_gi -p voxel_gi_bvw -p voxel_gi_debug --doc
+cargo clippy --locked -p voxel_gi -p voxel_gi_bvw -p voxel_gi_debug --all-targets -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps -p voxel_gi -p voxel_gi_bvw -p voxel_gi_debug
+cargo fmt --all --check
 ```
 
-Ignored native tests create real GPU devices or intentionally expensive
-benchmarks. Select by name; do not routinely run all ignored tests. The optional
-`stress` profile remains for relevant buffer/material/cache-generation changes or
-a returning toggle symptom, not ordinary sampling or performance work.
+Discover native test names with `cargo test -p voxel_gi --lib -- --list`.
+Select the affected path rather than running every ignored benchmark:
 
-Execution-only shader experiments use paired gate runs (`tools/gates.sh`) and
-the native GPU tests; sampler changes need a known-answer reference.
+```sh
+cargo test -p voxel_gi --lib native_view_runtime_pipelines -- --ignored
+cargo test -p voxel_gi --lib native_two_way_cache -- --ignored --test-threads=1
+cargo test -p voxel_gi --lib cached_furnace_converges -- --ignored
+```
 
-For scene/source history changes, use `response` with
-`VOXEL_GI_VALIDATE_BACKGROUND=1` (emitter removal and cover), the native
-retention tests (`retention_events_match_the_cpu_rule_on_every_face`,
-`gpu_measures_edit_flux_and_marks_faces_whose_history_it_binds`) and, for
-sunlight changes, the cave skylight variant and `day-cycle`.
-The response recorder observes every Update, including means/moments, display,
-sequence and revisions. Use the [temporal recorder](history/temporal-regressions.md) for
-the house-turn stability gate; keep background-loader and ordinary camera-only
-streaming results separate. A failed gate stays failed, even when a candidate
-improves relative to its control. See the [audit evidence](history/scene-history-audit.md).
+Native adapters honour `WGPU_BACKEND`, `WGPU_DX12_COMPILER`,
+`WGPU_ADAPTER_NAME` and `WGPU_POWER_PREF`. Check the printed adapter backend.
+A requested unavailable backend must fail instead of silently testing another.
+DX12 needs DXC; see [platform setup](testing-other-gpus.md).
 
-The [completed policy controls](history/scene-history-audit.md#policy-closeout) cover
-material-ID null changes, moving analytic lights, rare portal discovery,
-repeated distant updates, and emission-cache rebuild cost. Run the relevant
-`policy_` test with `--ignored --nocapture` only when touching that policy;
-`policy_retention_extinction_bounds` is a regular exact-weight unit test.
-These fixed-work/virtual-cadence studies do not establish gameplay FPS. The
-material-swap cleanup's ordinary publication/late-job tests run without a GPU.
-Keep the accepted history/filter settings fixed for the next throughput A/Bs.
+### Raw sampling and presentation
 
-`many_light_tree_study` uses the old shader supplied by
-`VOXEL_GI_BASELINE_SHADER` and compares mixed/torch/lava cases at matched GPU
-budgets. Warm short batches after a long reference pass before measuring.
-`native_light_tree_selection_pdf_matches_cpu` checks both selection and reverse
-MIS density. Sampler changes cannot pass an identical-path assertion by design;
-use distribution/PDF checks and independent high-sample field references.
-`terminal_mixture_native_study` compares terminal-emission estimators using an
-archived `VOXEL_GI_BASELINE_SHADER`, checks CPU/GPU parity and measures interleaved
-fixed-work GPU time. Pair sampler changes with the ordinary independent area-
-quadrature test and the relevant all-band source response test; do not routinely
-repeat the full study. See the [cave accuracy evidence](history/cave-history-retention.md).
-The edit-difference, resident-ownership and control-variate studies live only on
-their [recorded experiment branches](history/research-2026-10-09.md), not in the default
-test suite. Check out a branch only after stopping the app: shader hot reload
-would otherwise contaminate a running comparison.
+For sampler changes, compare matched raw prefixes without temporal or adaptive
+spatial filtering. Borrowed support and initialization priors are not independent
+samples. For recursive-cache transport, use analytic furnace and native cache
+checks; a finite three-bounce reference has a different fixed point.
 
-For acceleration construction, `aadf_construction_benchmark` compares exact
-bounds and paired CPU timings against the frozen full-sweep builder.
-`scene_topology_reuse_benchmark` compares a one-block edit among 8,192 resident
-regions against rebuilding top-level bounds after any region change. Both are
-opt-in, have no viewport and measure construction, not frame time. Ordinary
-oracle tests cover topology, material changes, residency and immutable snapshots.
+The [cave sampling study](history/cave-sampling.md#user-calibrated-visual-target)
+records a visually accepted 2,048-path prefix and visibly worse 1,536/1,024
+controls for its estimator and scene. This is historical calibration, not a
+universal sample threshold or a reason to cap today's histories at 2,048.
+The original frozen world-display sweep and its analysis tools are no longer
+in the current tree. Reproduce them at their recorded revision, or build a
+new matched-prefix harness when qualifying a new sampler.
 
-`native_box_steps_match_scalar_boundary_policy` checks 210,001 native box steps
-against the scalar XYZ rule, including zero/tiny directions, ties and offsets.
-`sparse_geometry_upload_benchmark` rotates full metadata, sparse metadata and
-sparse metadata plus allocation reuse at identical paths. Its companion
-`sparse_geometry_uploads_survive_growth_and_residency_changes` exercises growing
-buffers, removed/recycled headers and edits. These target the changed paths; they
-do not require the solved toggle stress workload.
+For presentation, compare actual images at matched scene/settings: settling
+and reveal/return with `tools/view_cache_quality.py` on `house`/`cave`, edits
+with that tool on `response`, tunnels with `tools/tunnel_quality.py`, and
+motion with `tools/motion_quality.py`. `tools/gates.sh` bundles these checks;
+it is an integration gate rather than a routine test for every small change.
 
-`task_encoding_matches_shader_layout_and_clears_reused_tails` compares dispatch
-bytes with the generic shader-layout encoder, including signed coordinates,
-large sequences and shrinking/mixed task arrays. The opt-in
-`task_encoding_benchmark` compares preparation and worker time at 17, 1,024 and
-8,192 faces with identical transport outputs. Native partial-dispatch and
-resource-growth tests cover the integration without a toggle-stress run.
+Use `config/gi-display-unfiltered.ron` to disable adaptive reconstruction and
+`config/gi-far-tier-off.ron` for receiver-only lighting. Keep raw-estimator and
+filtered gameplay conclusions separate. World-cache receiver records do not
+describe the final displayed view.
+
+Require valid assets, camera/target dimensions, nonblank captures and clean
+render logs. Windowed evidence must also be focused and visible. Prefer
+`VOXEL_GI_VALIDATE_HEADLESS=1` for unattended image checks, and do not change
+screensaver/security settings. Headless app cadence does not establish
+interactive FPS. Windowed headroom checks use `VOXEL_GI_VALIDATE_NO_VSYNC=1`.
+Compare uncapped runs only against uncapped runs.
+
+The solved toggle/buffer-generation regression has focused coverage. Run the
+optional `stress` profile only for related buffer, material or generation
+changes, renderer upgrades or a returning symptom.
 
 ### Quality-lever comparisons
 
@@ -358,12 +126,10 @@ No routine toggle stress is needed for tuning.
 
 Defaults stay shared-corner sunlight, corner-reconstructed indirect, textures on,
 baked AO off. Only `compare` and `stress` deliberately switch display modes.
-Durations start after required assets are ready and exclude process compilation.
-Since `9aa3ccf` the script, phase boundaries and captures count from GI's
-first view frame (`gi_ready_s` in the report, about 1.5 s on the M4), while
-frame and work timelines still count from the assets. Captures from earlier
-baselines land `gi_ready_s` earlier: compare against a baseline worktree at
-`9aa3ccf` or later.
+Scripts, phase boundaries and captures count from GI's first view receipt.
+`gi_ready_s` records the wait after terrain assets are ready; frame and work
+timelines include that wait. Compare baselines using this same clock contract.
+A run fails if GI publishes no view receipt within 120 seconds.
 
 | Profile | Seconds | Intended question |
 | --- | ---: | --- |
@@ -375,17 +141,23 @@ baselines land `gi_ready_s` earlier: compare against a baseline worktree at
 | `response` | 30 | Underground cavity and emitter on/off response |
 | `edits` | 30 | Early frames after underground and surface edits |
 | `tunnel` | 60 | Dig a one-wide, two-high hillside tunnel for 20 blocks; paired early/later views |
-| `sources` | 72 | Analytic/emissive source changes, multi-band field and streaming |
+| `sources` | 72 | Analytic/emissive RGB source changes and streaming |
 | `cave` | 62 | Fixed view of many-emitter chamber; automatically selects cave geometry/palette |
 | `structures` | 62 | Normal-world house/path, cave entrance, and underground interior |
 | `day-cycle` | 183 | Canyon under a rotating sun: lag behind fixed-sun references and flicker |
 | `compare` | 29 | Controlled display-mode visual comparison |
 | `stress` | 72 | Optional toggle/buffer lifetime stress |
+| `canyon` | 62 | Long daylight paths and high terrain walls |
+| `hallway` | 62 | Fixed single-emitter overview |
+| `live-cave` / `live-hallway` | 182 | Normal-world structures under live scheduling |
+| `lod` | 40 | Coarse geometry and receiver pressure during flight |
+| `overlook` | 70 | Travel, rise above terrain and hold on far-band faces |
 
-Every run records the process physical footprint (`footprint -p`, which
+On macOS, each run records the process physical footprint (`footprint -p`, which
 includes Metal/GPU allocations on Apple silicon) every 2 s on its own thread:
 `report.json` `memory` has the peak, last value and series, and `footprint.txt`
-the final category breakdown (IOAccelerator/graphics vs heap). It is the whole
+the final category breakdown (IOAccelerator/graphics vs heap). Other platforms
+currently report no memory samples. It is the whole
 process, not GI's share. `tools/base_spec_suite.sh <label>` runs the base-spec
 suite on a target machine (windowed gameplay and day-cycle for frame pacing;
 headless response, house-edits and day-cycle with fixed-sun references for
@@ -452,7 +224,7 @@ and repeated-turned-view FLIP need no alignment; coverage colors are rejected as
 lighting evidence. Component runs are diagnostic, not normal-material timings.
 
 For tiny camera-dependent dark specks, use `VOXEL_GI_VALIDATE_LIGHT_COMPONENT=face-validity`
-(mode 6) with a view-first configuration. Red independently marks missing indirect
+(mode 6) with the default view-owned configuration. Red independently marks missing indirect
 support; green marks a material lookup that is not an exposed transport face.
 `tools/view_validity.py RUN...` counts both nonzero pixels and their resolved
 channel sums. The old green/yellow/red coverage palette can hide partially covered
@@ -629,19 +401,13 @@ transition; it must not be mistaken for improved sampler accuracy.
   of smooth adjustment can be preferable to two seconds of objectionable noise;
   report latency and noise separately rather than naming one “convergence.”
 - Never count display priors, filtered colors or interpolated neighbors as new
-  simulation samples.
+  independent path samples.
 
 ## Profiling with Tracy
 
-Offscreen frame interval is pinned near 20 ms by the 60 Hz runner while the
-GPU keeps up (it did not move with resolution, GI display or transport load on
-2026-10-19). Headless runs have no swapchain, so before 2026-10-24 nothing
-throttled the CPU when GPU work exceeded the cadence: at `VOXEL_GI_LAB_FAR=48`
-the GPU sat at 99%, about 950 command buffers were in flight, GPU results
-arrived up to 2 s late and peak memory reached 5.8 GB, while frame times only
-showed the CPU. Headless validation now allows one frame in flight (each render
-frame waits for the previous frame's GPU work, like a window with vsync), so
-frame time includes GPU time once the GPU is the bottleneck;
+Headless validation uses a 60 Hz schedule runner and limits GPU work to one
+frame in flight. This provides backpressure when GPU work exceeds the runner
+period; offscreen app cadence is still not windowed frame pacing.
 `VOXEL_GI_VALIDATE_GPU_PACING=0` disables it. Use Tracy spans for CPU work:
 
 - Bevy 0.19 links Tracy 0.13.1 (protocol 76). Build `capture` and `csvexport`
@@ -667,7 +433,7 @@ artifacts with the checkout-local `tools/rustc-workspace.sh`:
 
 ```toml
 [build]
-build-dir = "/Users/nathanaelneveux/Developer/.cargo-build/bevy-0.19"
+build-dir = "/absolute/path/to/shared/bevy-0.19"
 rustc-workspace-wrapper = "tools/rustc-workspace.sh"
 
 [profile.dev]
@@ -697,37 +463,8 @@ Do not clean the shared cache as a routine test step or delete other prototypes'
 outputs to make a benchmark look clean. Historical worktrees without the tracked
 configuration need their own copy of the wrapper/config before sharing intermediates.
 
-### Release launch regression, October 16
 
-On `906e50e`, `cargo run --release --locked --offline` reused an older executable
-from the shared cache, then loaded the current terrain shader. Pipeline creation
-failed because the old material layout lacked resident-buffer binding 105.
-Cached compiler warnings named `validation_mirror`, absent from the current code;
-Cargo's fingerprint log nevertheless classified the application as fresh. This
-matches the documented [same-name workspace collision](https://github.com/rust-lang/cargo/issues/7740).
-
-A two-checkout, dependency-free release reproduction ran A's code when asked to
-run B. Adding `env!("CARGO_MANIFEST_DIR")` alone **did not prevent** reuse on Cargo
-1.95.0. The checkout-local workspace wrapper passed A/B/A with correct identities.
-The permanent focused regression uses the real config/wrapper:
-
-```sh
-python3 tools/test_shared_build_cache.py
-```
-
-The application also logs its compiled checkout at info level in every profile;
-that is diagnostic provenance, not the isolation mechanism. This fix changes
-neither transport nor presentation. Baseline logs, fingerprint trace and reduced
-reproduction are under `target/startup-crash-*` and
-`target/shared-cache-check.oG1D6B/`. Verification uses this commit's build/config
-diff on the Apple M4 / Metal, macOS 26.6.2, Rust/Cargo 1.95.0. The development
-headless `edits` workload passed on unchanged runtime code before this build-only
-fix; it is not evidence of release frame pacing. With the final wrapper/config,
-`cargo run --release --locked --offline` rebuilt only the application and stayed
-running past startup with the correct build-root log and no render errors. A
-subsequent release build reused that application successfully. The existing egui
-Metal bindless warning remains; no dependency, shader or lighting setting changed.
-
-Keep focused, buildable local commits. Record verification and limitations in
-their messages; do not combine unrelated estimator, storage and presentation
-changes merely because they share one session.
+The [historical validation notes](history/validation-design-notes-2026-10.md)
+retain the removed study commands and older measurement protocols. Use their
+recorded revisions when reproducing those studies; they are not current
+release instructions.

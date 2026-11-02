@@ -1,8 +1,9 @@
 # Surface radiance cache experiment
 
-Branch `gi-surface-cache`, based on `0790c12`. If this approach does not hold up,
-the whole branch is abandoned. Systems that conflict with it are removed here
-instead of being kept side by side.
+> Qualification record for the surface-cache architecture that is now implemented. The branch names, backend comparisons, tools and display targets below describe the recorded experiments; current storage and presentation contracts are in [architecture](architecture.md).
+
+The experiment started on `gi-surface-cache`, based on `0790c12`. Conflicting
+systems were removed on that branch, and the surface-cache design was retained.
 
 The measurements below used `tools/live_site_quality.py`, `tools/response_timing.py`,
 the frozen cache sweep and `tools/cache_flip_gate.py`, all of which read the

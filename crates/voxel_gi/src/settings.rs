@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use std::time::Duration;
 
-/// Quality and work limits. All loaded pages remain eligible.
+/// Quality and work limits for GPU transport and view presentation.
 /// Insert before `VoxelGiPlugin` or change this resource at runtime.
 #[derive(Resource, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -20,16 +20,16 @@ pub struct VoxelGiSettings {
     pub spatial_reconstruction: f32,
     /// Relative standard error below which a face's own estimate is shown
     /// without spatial help (noise there is under this fraction of its
-    /// brightness). Below it the filter pools coplanar neighbours with
-    /// MSE-optimal weights from their measured variance and bias. 0.031 is
-    /// the former 1024-sample target for a relative sigma of one.
+    /// brightness). Above it the filter pools coplanar neighbours with
+    /// MSE-optimal weights from their measured variance and bias. At relative
+    /// sigma one, 0.031 corresponds to about 1,024 independent samples.
     pub spatial_noise_threshold: f32,
     /// The GI budget: the share of GPU time transport batches may use
     /// (0.2 = 20%), independent of frame rate. Batches wait while it is spent;
     /// main-thread work per batch scales with them. Publication keeps its own
     /// per-frame caps.
     pub gpu_time_share: f32,
-    /// Presentation-only temporal response. Does not filter simulation energy.
+    /// Presentation-only temporal response. Does not filter raw transport estimates.
     pub display_response: Duration,
     /// Persistent world cache: receivers (probes, resident slots, sun corners)
     /// for pages within this many voxels of an active camera (page nearest
@@ -168,7 +168,7 @@ pub(crate) struct SchedulerSettings {
     /// Baseline minimum. Dark indirect RGB (peak below 0.02) requires at least
     /// 256 samples before sparse audits, even if early observed variance is zero.
     pub(crate) stable_min_samples: u32,
-    /// Per-band relative-error heuristic, not a certified convergence bound.
+    /// RGB relative-error heuristic, not a certified convergence bound.
     pub(crate) stable_relative_error: f32,
     /// GPU-picked faces whose progress (counts, settled verdict, presentation
     /// seed) the CPU mirrors per batch. The GPU state is the authority; this

@@ -215,12 +215,10 @@ pub(super) fn ingest_input(
 const MAX_DENSE_PAGES: usize = 768;
 /// Pages one scene build samples at most, uniform ones included.
 const MAX_SAMPLED_PAGES: usize = 8 * MAX_DENSE_PAGES;
-/// Sampling time one scene build spends at most (`VoxelGiRuntime::
-/// scene_sample_budget`). Sources differ by orders of magnitude per page
-/// (the BVW lab builds every voxel, air included, at about 150 us a page; a
-/// host's stored uniform sample is one value), so a page count can't bound
-/// how late the nearest pages' build lands. 100 ms is about the lab's former
-/// 768-page batch.
+/// Sampling budget, checked between pages. A slow source call may exceed it;
+/// region construction, scanning and scene-map updates run after sampling.
+/// This bounds sampling work per build without imposing a fixed cost on a
+/// host that can return uniform pages cheaply.
 pub(super) const SCENE_SAMPLE_BUDGET: std::time::Duration = std::time::Duration::from_millis(100);
 
 pub(super) fn start_scene_task(

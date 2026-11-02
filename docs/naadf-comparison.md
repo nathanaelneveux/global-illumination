@@ -1,8 +1,10 @@
 # NAADF comparison for distant geometry
 
-Why NAADF renders an 8256²-voxel world "without using LOD" while our GI
-falls over at 48 streamed chunks. Source: `cg-tuwien/NAADF` at `3ea3bb6`
-(MIT; read-only copy in `~/Developer/reference/NAADF`), compared with this
+> Historical source and performance comparison at the revisions named below. Later far-tier and coarse-page work changes these costs; use [architecture](architecture.md) for the current implementation.
+
+Comparison of NAADF's 8256²-voxel world "without using LOD" with the
+large-world costs measured in this engine before coarse-page and far-tier work. Source: `cg-tuwien/NAADF` at `3ea3bb6`
+(MIT), compared with this
 workspace at `f28df62`. Nothing here is copied code.
 
 ## Where our far-distance cost is

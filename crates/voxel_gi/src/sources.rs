@@ -1,4 +1,4 @@
-//! Analytic source snapshots shared by CPU and GPU transport.
+//! Analytic source snapshots prepared on the CPU for GPU transport.
 //! Bevy light adaptation lives here; estimators depend only on these values.
 use super::color::FiniteColor;
 use super::{
@@ -62,7 +62,7 @@ pub struct TransportSources {
 /// Detect host input changes before rebuilding/canonicalizing a snapshot.
 /// Removal readers must all advance, even if another input already changed.
 /// Raster visibility is deliberately not a source switch: offscreen/hidden
-/// presentation must not implicitly turn off persistent heat or radiation.
+/// presentation must not implicitly turn off an offscreen light's contribution.
 #[derive(SystemParam)]
 pub(super) struct SourceInputs<'w, 's> {
     changed: Query<
@@ -159,9 +159,8 @@ pub(super) fn synchronize_transport_sources(
             custom_visible: emitter.color.bounded(1e12),
         });
     }
-    // Eliminate empty sources before either backend (and the sunlight cache)
-    // sees them. Invisible simulation bands and custom primary visibility
-    // still count: a visually black source is not necessarily inactive.
+    // Keep sources that contribute to either bounce lighting or custom direct
+    // lighting, even when their other contribution is zero.
     next.points.retain(|light| {
         light.position.is_finite()
             && light.range.is_finite()

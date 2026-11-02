@@ -16,7 +16,7 @@ integrated GPUs.
 | [`voxel_gi_debug`](crates/voxel_gi_debug) | Optional HUD and tuning panel |
 
 ```sh
-cargo run -p voxel_gi --example minimal   # a complete host in about 150 lines
+cargo run -p voxel_gi --example minimal   # a small complete host
 cargo run --locked                        # the lab: a streaming BVW world with GI
 ```
 

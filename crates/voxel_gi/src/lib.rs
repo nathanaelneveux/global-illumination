@@ -74,8 +74,8 @@ use world::{PAGE_EDGE, SurfaceProbe, SurfaceProbeDescriptor, TransportScene};
 /// HUD and panel are the opt-in `VoxelGiDebugPlugin`.
 pub struct VoxelGiPlugin;
 
-/// Schedule simulation readers after this set to observe this frame's published
-/// measurements. Workers remain asynchronous; inspect estimate freshness.
+/// Schedule host readers after this set to observe this frame's published
+/// diagnostics. Worker results remain asynchronous.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VoxelGiSystems;
 
@@ -199,7 +199,7 @@ struct VoxelGiRuntime {
     interest: pages::Interest,
     dirty_pages: HashSet<IVec3>,
     full_resample_pages: HashSet<IVec3>,
-    /// Sampling time a scene build spends at most (`pages::SCENE_SAMPLE_BUDGET`).
+    /// Sampling time budget, checked between pages (`pages::SCENE_SAMPLE_BUDGET`).
     scene_sample_budget: Duration,
     page_edits: pages::PageEdits,
     dirty_voxels: HashSet<IVec3>,

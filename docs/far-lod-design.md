@@ -1,5 +1,7 @@
 # Far LOD: coarse GI pages
 
+> Historical design and qualification record from 2026-10-24 onward. The proposal below is followed by implementation updates; it is not a list of current missing features. Current coarse-page and receiver contracts are in [architecture](architecture.md#host-input-contract).
+
 Proposal, 2026-10-24. Evidence from the `lod` profile (modeled on
 `bevy_voxel_world`'s `noise_terrain_lod`: 200 chunks, LOD strides 1-32, a
 drifting and turning high camera), run on the BVW performance fork, M4,

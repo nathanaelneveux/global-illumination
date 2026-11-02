@@ -33,7 +33,7 @@ The implementation draws on [vxray](https://github.com/Nelarius/vxray), its [dev
 - Sparse display uploads preserve stable slots during edits. Topology patches preflight all allocations and hash insertions before publishing anything. Growing the cache keeps updating the previous display, and the replacement merges newer measurements in its installation frame rather than briefly showing the old worker snapshot. Invalidation preserves display blending weights as well as values; replacement weights change with the filtered estimate. No additional edit debounce is used.
 - Display-cache rebuilds publish fresh buffer identities and generation-owned patch queues. In-flight render frames retain their old generation; paired hash/probe uploads are bounds-checked and deferred updates are retained. Sparse geometry edits publish removed/added addresses and changed face values atomically, bypassing the ordinary value-upload timer. Shader bounds use the generation's allocated capacity so old extracted materials already accept new slots.
 
-The core lives in [`src/voxel_gi/`](../../src/voxel_gi):
+The core lives in [`src/voxel_gi/`](../../crates/voxel_gi/src):
 
 ```text
 BVW streamed chunks + edits

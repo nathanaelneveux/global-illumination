@@ -235,8 +235,8 @@ fn resolve_sky_corners(corners: vec4<u32>, axis: vec3<f32>, position: vec2<f32>)
 // Corner c (u = c & 1, v = c >> 1) is shared by the coplanar faces of the up
 // to four voxels around it, which see the sun identically there, so a face
 // the view does not own takes each corner from an owned face sharing it.
-// Borrowing a coplanar face's corners from up to 16 voxels away (as before)
-// gave a face another voxel's shadow at some camera poses. A corner no owned
+// A farther coplanar face can have different visibility and is not a valid
+// corner donor. A corner no owned
 // face shares is traced, per fragment, under NAADF's kind of budget: a
 // bounded step count (its sun rays stop at 80-120) where running out counts as
 // lit, and one ray from the face centre for faces about two pixels or less,

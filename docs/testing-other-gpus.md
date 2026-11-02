@@ -1,8 +1,9 @@
 # Testing on another GPU
 
-Voxel GI has been measured only on an Apple M4 (Metal). This guide is for a
-first run on Windows (DX12 and Vulkan) or Linux (Vulkan). It takes about an
-hour, most of it the first build. Please send back what step 6 asks for.
+Voxel GI has been validated on an Apple M4 (Metal) and an AMD RX 7900 XT
+on Windows (Vulkan and DX12 with DXC). This guide qualifies another GPU or
+driver. Allow about an hour, mostly for the first build; step 6 lists the
+evidence to retain.
 
 ## 1. Set up
 
@@ -97,7 +98,8 @@ runs so the second doesn't overwrite the first.
 
 ```powershell
 # DX12 must use DXC: FXC, the default compiler, can't build GI's pipelines
-# (issue #4). DXC must be on PATH or next to the executable (step 1).
+# (issue #4). With this override, DXC must be available to the DLL loader
+# through PATH or beside the executable (step 1).
 $env:WGPU_BACKEND = "dx12"; $env:WGPU_DX12_COMPILER = "dxc"
 # ...the loop above, then rename its logs to run-*-dx12.log...
 $env:WGPU_BACKEND = "vulkan"; Remove-Item Env:WGPU_DX12_COMPILER

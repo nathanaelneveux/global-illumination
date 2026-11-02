@@ -77,9 +77,8 @@ The isolated cave does not allocate the normal structure plan.
 
 ## Deliberate boundaries
 
-This is a generation/composition experiment, not the finished Starwrought
-structure subsystem. Prior Starwrought structure chats were not retrievable in
-this session, so no claim of matching an earlier undocumented contract is made.
+This is a generation/composition experiment for the lab. It defines only the
+interfaces below, rather than a complete game structure subsystem.
 
 Translation is implemented; rotations, mirrors, authored file assets, procedural
 placement rules, terrain-conforming foundations, entity/socket spawning, live

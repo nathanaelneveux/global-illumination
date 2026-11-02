@@ -78,7 +78,8 @@ impl VoxelGiInput {
 }
 
 /// Reads a page's voxels on a worker thread. Rebuilt by the host whenever its
-/// storage changes (a snapshot), so it never blocks the main world.
+/// storage changes (a snapshot). Calls run off the main thread; a slow source
+/// can still delay publication of its page.
 pub trait VoxelSource: Send + Sync + 'static {
     /// The page's material ids, at full resolution or at the stride the host
     /// stores it at (`PageSample`). `resample` asks for authoritative
@@ -141,7 +142,6 @@ impl PageSample {
         self.cells[((cell.z * edge + cell.y) * edge + cell.x) as usize]
     }
 
-    /// Full-resolution materials, each cell repeated over its block.
     /// One material throughout, or the dense `32³` page.
     pub(super) fn into_voxels(self) -> super::world::PageVoxels {
         if self.cells.iter().all(|cell| *cell == self.cells[0]) {
@@ -151,6 +151,7 @@ impl PageSample {
         }
     }
 
+    /// Full-resolution materials, each coarse cell repeated over its block.
     pub(super) fn into_dense(self) -> Vec<u16> {
         if self.stride == 1 {
             return self.cells;

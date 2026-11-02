@@ -30,7 +30,7 @@ pub const FACE_OFFSETS: [IVec3; 6] = [
     IVec3::NEG_Z,
 ];
 
-/// Opaque diffuse response per band. No transmission, heat capacity or dose
+/// Opaque diffuse RGB response. No transmission, heat capacity or dose
 /// conversion is implied; those belong to the host simulation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MaterialTransport {
@@ -49,7 +49,7 @@ impl Default for MaterialTransport {
     }
 }
 
-/// Band-aware optical properties for every voxel material index. This is a
+/// RGB optical properties for every voxel material index. This is a
 /// resource so games can define emissive and reflective blocks without changing
 /// the tracer. Defaults are neutral; the host assigns its own material IDs.
 #[derive(Resource, Clone, Debug, PartialEq)]
@@ -72,7 +72,7 @@ impl VoxelMaterialTransportTable {
 
     pub fn set(&mut self, material: u8, transport: MaterialTransport) {
         // A diffuse reflector cannot create energy. Bound source magnitudes
-        // as well so malformed simulation input cannot poison GPU moments.
+        // as well so malformed host input cannot poison GPU moments.
         self.entries[material as usize] = MaterialTransport {
             diffuse: transport.diffuse.bounded(1.0),
             emission: transport.emission.bounded(1.0e12),
@@ -606,9 +606,9 @@ pub(crate) struct FaceMeasurement {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProbeStatistics {
     /// Unfiltered indirect transport measurements. Presentation history is
-    /// separate; simulations never receive spatial or temporal display filters.
+    /// separate and never changes these raw moments.
     pub radiance: [Vec3; 6],
-    /// Direct incident energy in every band.
+    /// Direct incident RGB energy.
     pub direct: [Vec3; 6],
     /// Visible analytic contributions not already rendered by Bevy PBR.
     pub custom_direct: [Vec3; 6],
@@ -617,7 +617,7 @@ pub struct ProbeStatistics {
     pub(crate) face_updated_at: [Option<Instant>; 6],
     /// Sampling sequence is independent of history length and invalidation.
     pub sequence: [u32; 6],
-    /// Per-band second raw moment.
+    /// Per-channel second raw moment.
     pub second_moment: [Vec3; 6],
 }
 
@@ -810,7 +810,7 @@ impl SurfaceProbe {
         // transport statistics. Changing only weights would visibly relight
         // unchanged shared corners on every edit.
         // Keep the previous display estimate until replacement samples arrive,
-        // but never advertise it as a valid measurement to a simulation.
+        // but never advertise it as a fresh raw measurement.
         self.updated_at = None;
     }
 }

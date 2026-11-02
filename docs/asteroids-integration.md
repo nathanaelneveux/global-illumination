@@ -1,5 +1,7 @@
 # Asteroids-redux integration experiment
 
+> Historical integration report at `db5c02d`. The failures below belong to that revision. Coarse pages, host-material lighting functions and discovery interest bounds have since landed; large-world scene-build cost remains a current limitation. See [architecture](architecture.md) and [research priorities](research.md#after-01) for current behavior.
+
 Branch `experiment/voxel-gi` in `~/Developer/asteroids-redux` (local, not
 pushed), against GI at `db5c02d`. Goal: drop the crates into a second real BVW
 game unchanged and list what breaks. `ASTEROIDS_GI=0` runs the original

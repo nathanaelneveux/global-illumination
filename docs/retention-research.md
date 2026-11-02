@@ -1,5 +1,7 @@
 # Edit retention: theory, prior work and cache re-derivation
 
+> Derivation and historical qualification of measured retention, which is now the default. Some study tools and comparison backends below have been removed. Current GPU application and source/model policies are in [architecture](architecture.md#revisions-and-history).
+
 October 17, branch `gi-surface-cache`. Question: the whole-range curve
 `H(d) = (d/12)^4` was fitted to the old estimator's settling speed. Can it be
 updated for the faster-settling cache, and is the idea already known?

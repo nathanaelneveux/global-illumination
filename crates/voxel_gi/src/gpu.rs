@@ -1243,7 +1243,7 @@ impl GpuTracer {
     }
 }
 
-/// RGB in a vec4 lane group; the fourth lane (formerly infrared) is zero.
+/// RGB in a vec4 lane group; the fourth lane is unused and zero.
 /// Trace a batch's change footprints into their reserved Light events, before
 /// preparation applies (and the view tier copies) the events.
 fn dispatch_footprints(tracer: &mut GpuTracer, encoder: &mut wgpu::CommandEncoder) {

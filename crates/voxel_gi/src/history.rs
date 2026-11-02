@@ -1,5 +1,5 @@
 //! Presentation history is deliberately separate from transport measurements.
-//! Borrowed values never affect sample counts, moments, or simulation queries.
+//! Borrowed display values never affect raw sample counts or moments.
 use bevy::prelude::*;
 use std::time::Instant;
 
@@ -168,7 +168,7 @@ impl SurfaceProbe {
         // weight floor. That floor must not make a noisy post-edit estimate look
         // reliable enough to replace the retained display in one or two batches.
         // Suppress uncertain innovations, not the measured energy: sustained
-        // changes still reach the target, and simulation statistics are untouched.
+        // changes still reach the target, and raw statistics are untouched.
         // Prefer a longer smooth display transition to following a noisy mean.
         // The matched-ray response sweep checks the resulting brightness tail.
         let noise = relative_error_with_floor(

@@ -81,7 +81,7 @@ Primary indirect corners are not promoted. In the actual house selection,
 adapting the current oriented estimator requires 1,324 connected corner states
 versus 1,019 face states. This does not rule out a different directional corner
 representation; it rules out assuming a free sample-count reduction. See the
-[research decisions](../research.md#why-indirect-corners-are-still-an-experiment).
+[research decisions](../research.md#indirect-corners).
 
 ## Verification
 
@@ -195,7 +195,7 @@ no FPS improvement, faster visual settling or all-residency support is claimed.
 The existing whole-range policy, transport samples, presentation and BVW are
 unchanged. Capacity checks prevent unsupported allocations; they are not general
 physical-memory exhaustion recovery. See the current display contract in
-[architecture](../architecture.md#temporal-and-spatial-display).
+[architecture](../architecture.md#presentation).
 
 Subsequent input/delta work is recorded below. This table records disposition
 at that checkpoint; the [focused follow-up](#october-14-focused-follow-up-review)
@@ -259,7 +259,7 @@ suggestion. Reviewed production ownership and hot paths in input, scene/delta
 construction, sources/materials, retention, scheduling, worker transfer/merge,
 packing, sunlight, display publication, diagnostics and the host integration.
 Checked those contracts against the primary sources recorded in
-[research](../research.md#october-14-focused-source-and-production-comparison).
+[research](research-design-notes-2026-10.md#october-14-focused-source-and-production-comparison).
 No BVW, shader, estimator, history-curve, smoothing or debounce change.
 
 ### Implemented findings

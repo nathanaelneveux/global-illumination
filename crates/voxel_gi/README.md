@@ -4,7 +4,7 @@ Real-time diffuse global illumination for axis-aligned voxel worlds in
 [Bevy](https://bevyengine.org) 0.19: sunlight, sky, emissive voxels and
 multi-bounce indirect light, traced on the GPU against the voxels themselves.
 
-- **Every visible face is lit.** A per-camera view tier finds the faces on
+- **View-driven lighting.** A per-camera view tier finds the faces on
   screen after the depth/normal prepass and traces them; a persistent world
   cache keeps faces around the cameras lit off screen (history survives
   turning away), and faces small on screen are lit per pixel (the far
@@ -60,8 +60,7 @@ PBR internals that change between Bevy releases.
 cargo run -p voxel_gi --example minimal
 ```
 
-[`examples/minimal.rs`](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/voxel_gi/examples/minimal.rs) is a complete host in about 150
-lines. The pieces:
+[`examples/minimal.rs`](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/voxel_gi/examples/minimal.rs) is a complete host with an optional offscreen capture mode. The pieces:
 
 1. **Add `VoxelGiPlugin`.**
 2. **Declare pages.** GI works in 32³ pages. Tell it which are loaded and
@@ -99,7 +98,8 @@ lines. The pieces:
      sunlight, emission}`: multiply `indirect_light(...).light` by albedo,
      add `emission`, and use `sunlight` for the sun (see
      `shaders/voxel_gi_standard.wgsl`). The fragment needs no mesh:
-     a ray-traced host can pass any hit's position and normal.
+     a ray-traced host can pass a hit's position and normal, but must also
+     supply compatible depth and normal prepasses for view discovery.
      `face_in_geometry` says whether GI covers a face; light the others
      yourself (`sun_count`, `sun_direction` and `sun_color` give GI's suns).
 6. **Sun and sky.** Bevy `DirectionalLight`s become GI's suns (turn their
@@ -126,8 +126,9 @@ GPU work per frame (finding visible faces, presentation and the far tier) is
 about 4 ms on open streaming terrain and 1.6 ms in a closed cave. Its tracing
 adapts to fill `gpu_time_share` (20% of the frame by default), about 3.5 ms
 here, and the world cache's work has the same cap. These are GPU stage
-timings, not frame rates. Only this one GPU has been measured; reports from
-other hardware are welcome.
+timings, not frame rates. Windows validation on an AMD RX 7900 XT covers
+Vulkan and DX12 with DXC; its measurements and settings are recorded in the
+[Windows test report](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/docs/history/windows-first-run.md).
 
 ## Limitations
 
@@ -136,7 +137,10 @@ other hardware are welcome.
 - In motion, the far tier's indirect light flickers somewhat more than the
   per-face tiers'.
 - Each edit or sun change costs some re-convergence near it; lighting
-  settles over a few hundred milliseconds.
+  response depends on retained history, scene complexity and available work.
+- Geometry is built asynchronously from all declared pages. Large streaming
+  worlds can take seconds to publish changes; newly meshed or remeshed faces
+  can remain dark until the matching GI geometry arrives.
 
 ## Credits
 

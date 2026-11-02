@@ -31,7 +31,7 @@ reservation. Unstarted reservations are released within the same command buffer.
 An independent, pre-admission tail is cancelled when importing another prefix,
 since it may duplicate a sample already in that history. There is no lighting
 CPU readback/merge or player-thread wait. See the full
-[ownership contract](../architecture.md#experimental-two-way-face-cache).
+[ownership contract](../architecture.md#two-way-face-cache).
 
 ## Qualification
 

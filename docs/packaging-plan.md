@@ -1,5 +1,7 @@
 # Packaging plan: voxel GI crate + BVW connector
 
+> Historical packaging proposal from 2026-10-23. The workspace split and public material API have since landed. Proposed APIs, page sizes, staging and unresolved questions below describe that checkpoint, not the release contract. Use the [crate README](../crates/voxel_gi/README.md) and [architecture](architecture.md) for current integration.
+
 2026-10-23. Base: `voxel-global-illumination` at `36c9cea` (view-owned faces,
 two-way world cache radius 64, shared-corner sun). Reviewed with the user the
 same day; decisions are recorded inline.

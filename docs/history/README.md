@@ -10,6 +10,12 @@ read [architecture](../architecture.md), [validation](../validation.md) and
 
 Notable records:
 
+- [Architecture design notes](architecture-design-notes-2026-10.md),
+  [research notes](research-design-notes-2026-10.md),
+  [direction plan](direction-2026-10-21.md), and
+  [validation notes](validation-design-notes-2026-10.md): detailed October
+  development records, including superseded APIs and removed harnesses.
+
 - [Ownership comparison, 2026-10-23](option-comparison-2026-10-23.md): all-near,
   hybrid, cacheless and +cache 32/48/64, windowed uncapped and visible behavior.
 - [Two-way face cache](two-way-cache.md): shared RGB history between visible
@@ -20,8 +26,8 @@ Notable records:
   paths, roulette and the guiding experiment (removed).
 - [Path reuse](resident-path-reuse.md): fresh spatial path sharing (removed).
 - [Whole-range history](whole-range-history.md): the retention curve still in use.
-- [Early spatial reconstruction](early-spatial-reconstruction.md): evidence
-  reconstruction design; its target is now 1024.
+- [Early spatial reconstruction](early-spatial-reconstruction.md): fixed
+  evidence-target experiments; current presentation uses variance/bias weights.
 - [Streaming performance](streaming-performance.md) and
   [experiments](experiments.md): measured wins that remain in the engine.
 - [Code review, 2026-10-13](CODE_REVIEW_2026-10-13.txt).

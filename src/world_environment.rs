@@ -104,7 +104,7 @@ fn rotate_sun(angle: Option<Res<SunAngle>>, mut suns: Query<&mut Transform, With
 }
 
 /// Corner sunlight does not sample cascaded shadow maps. This is a demo policy,
-/// not a GI-library side effect: only our sun is managed, and any non-voxel mesh
+/// not a GI-library side effect: only the lab sun is managed, and any non-voxel mesh
 /// conservatively restores raster shadows. F7 takes effect before light culling
 /// and render extraction in the same frame. Point-light shadows are untouched.
 fn synchronize_sun_shadows(
