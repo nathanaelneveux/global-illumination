@@ -514,40 +514,6 @@ fn sun_color(sun: u32) -> vec3<f32> {
     return transport_settings.sun_color[sun].rgb;
 }
 
-/// Sunlight for a face GI's geometry does not contain (`face_in_geometry`
-/// false), such as a host face remeshed at another LoD before GI's next
-/// scene build: `sunlight` there would trace from inside GI's solids and
-/// read black. Steps out along the normal to the first voxel GI holds as
-/// air (a coarse block is at most 8 voxels), then traces each sun from it
-/// against GI's geometry, so terrain still occludes (a sun below the
-/// horizon stays dark). None within 8 voxels: dark. Space outside GI's
-/// pages counts as air, as `sunlight`'s rays treat it.
-fn sunlight_outside_geometry(position: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
-    let reach = f32(params.counts.x);
-    if reach == 0.0 { return vec3(0.0); }
-    let axis = vec3<f32>(FACE_NORMALS[face_index_of(normal)]);
-    var origin = vec3(0.0);
-    var found = false;
-    for (var step = 0; step < 9 && !found; step++) {
-        let candidate = position + axis * (f32(step) + 0.5);
-        if voxel_material(vec3<i32>(floor(candidate))) == 256u {
-            origin = candidate;
-            found = true;
-        }
-    }
-    if !found { return vec3(0.0); }
-    var sum = vec3(0.0);
-    for (var light = 0u; light < sun_count(); light += 1u) {
-        let direction = sun_direction(light);
-        let cosine = dot(axis, direction);
-        if cosine <= 0.0 { continue; }
-        if trace_domain_limited(origin, direction, reach, true, FALLBACK_SUN_STEPS).status != 1u {
-            sum += sun_color(light) * cosine;
-        }
-    }
-    return sum;
-}
-
 /// Whether this face is an exposed face of GI's geometry. GI's light
 /// (`indirect_light`, `sunlight`, `emission`) describes only such faces:
 /// hosts light the others themselves (faces outside the declared pages, or
