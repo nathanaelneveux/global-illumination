@@ -383,6 +383,10 @@ Experiments after 0.1, each judged against the same scenes on the M4:
   then make the region map persistent and update the top-level field
   locally. Judge by edit response in a far world (`response`, `tunnel`
   profiles with `VOXEL_GI_LAB_FAR`) and by how quickly far lighting fills in.
+  It also shortens the black flashes along LoD band edges: a remeshed
+  chunk's faces are not GI's until the next build lands. A shader fallback
+  for them cost 1.5 ms or more per frame in every form tried, and was
+  reverted (`7e8c034`).
 
 - **MetalFX denoising.** [metalfx_wgpu](https://github.com/mate-h/metalfx_wgpu)
   wraps MetalFX's temporal denoised scaler (macOS 26, wgpu 30, so Bevy 0.20).
