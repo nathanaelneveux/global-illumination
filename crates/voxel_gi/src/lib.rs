@@ -199,6 +199,8 @@ struct VoxelGiRuntime {
     interest: pages::Interest,
     dirty_pages: HashSet<IVec3>,
     full_resample_pages: HashSet<IVec3>,
+    /// Sampling time a scene build spends at most (`pages::SCENE_SAMPLE_BUDGET`).
+    scene_sample_budget: Duration,
     page_edits: pages::PageEdits,
     dirty_voxels: HashSet<IVec3>,
     removed_pages: HashSet<IVec3>,
@@ -264,6 +266,7 @@ impl Default for VoxelGiRuntime {
             interest: default(),
             dirty_pages: HashSet::new(),
             full_resample_pages: HashSet::new(),
+            scene_sample_budget: pages::SCENE_SAMPLE_BUDGET,
             page_edits: default(),
             dirty_voxels: HashSet::new(),
             removed_pages: HashSet::new(),
@@ -314,6 +317,9 @@ struct SceneBuildResult {
     /// Pages rescanned or retired for the receiver radius alone.
     receivers_changed: bool,
     exact_edits: Vec<IVec3>,
+    /// Dirty pages the build left for the next one (out of dense budget),
+    /// with their full-resample flags.
+    deferred: Vec<(IVec3, bool)>,
     build_time: Duration,
 }
 

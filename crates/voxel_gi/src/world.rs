@@ -229,6 +229,26 @@ impl NaadfRegion {
         Self::build(self.coordinate, materials)
     }
 
+    /// A region of one material (`AIR` for empty), without materializing its
+    /// voxels: what `build` returns for such contents.
+    fn uniform(coordinate: IVec3, material: u16) -> Self {
+        let mut material_mask = [0; 4];
+        if material != AIR {
+            material_mask[material as usize / 64] |= 1 << (material % 64);
+        }
+        Self {
+            coordinate,
+            stride_log2: 0,
+            storage: if material == AIR {
+                RegionStorage::Empty
+            } else {
+                RegionStorage::Uniform(material)
+            },
+            any_solid: material != AIR,
+            material_mask,
+        }
+    }
+
     fn with_stride(mut self, stride_log2: u8) -> Self {
         self.stride_log2 = stride_log2;
         self
@@ -429,9 +449,24 @@ impl TransportScene {
     }
 
     /// `with_page_delta` with each page's stride (log2, `PageSample`).
+    #[cfg(test)]
     pub fn with_strided_page_delta(
         previous: &Self,
         changed_pages: Vec<(IVec3, Vec<u16>, u8)>,
+        removed_pages: &[IVec3],
+    ) -> Self {
+        let pages = changed_pages
+            .into_iter()
+            .map(|(page, materials, stride)| (page, PageVoxels::Dense(materials), stride))
+            .collect();
+        Self::with_page_contents(previous, pages, removed_pages)
+    }
+
+    /// `with_strided_page_delta` where a page may be one material throughout
+    /// (`PageVoxels::Uniform`), built without expanding it to 32³ voxels.
+    pub fn with_page_contents(
+        previous: &Self,
+        changed_pages: Vec<(IVec3, PageVoxels, u8)>,
         removed_pages: &[IVec3],
     ) -> Self {
         let mut regions = previous.regions.clone();
@@ -880,12 +915,41 @@ pub fn rebuild_surface_probes(
     (probes, order)
 }
 
+/// A changed page's voxels for a scene build.
+pub enum PageVoxels {
+    /// One material throughout (`AIR` for an empty page).
+    Uniform(u16),
+    /// `32³` materials, x fastest.
+    Dense(Vec<u16>),
+}
+
 fn build_page_regions(
     page: IVec3,
-    page_materials: &[u16],
+    voxels: &PageVoxels,
     stride_log2: u8,
     previous: &TransportScene,
 ) -> Vec<Arc<NaadfRegion>> {
+    let page_materials = match voxels {
+        PageVoxels::Dense(materials) => materials,
+        &PageVoxels::Uniform(material) => {
+            return page_region_offsets()
+                .map(|offset| {
+                    let coordinate = page * 2 + offset;
+                    match previous.regions.get(&coordinate) {
+                        Some(region)
+                            if region.stride_log2 == stride_log2
+                                && region.uniform_material() == Some(material) =>
+                        {
+                            Arc::clone(region)
+                        }
+                        _ => Arc::new(
+                            NaadfRegion::uniform(coordinate, material).with_stride(stride_log2),
+                        ),
+                    }
+                })
+                .collect();
+        }
+    };
     assert_eq!(page_materials.len(), volume_len(PAGE_SIZE));
     let mut regions = Vec::with_capacity(8);
     for offset in page_region_offsets() {
@@ -925,8 +989,63 @@ fn page_region_offsets() -> impl Iterator<Item = IVec3> {
 mod construction_tests;
 
 #[cfg(test)]
+mod stream_bench;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uniform_pages_build_the_regions_dense_expansion_would() {
+        for (material, stride) in [(AIR, 5), (7, 5), (7, 2), (AIR, 0)] {
+            let page = IVec3::new(1, -2, 3);
+            let dense = TransportScene::with_strided_page_delta(
+                &TransportScene::default(),
+                vec![(page, vec![material; volume_len(PAGE_SIZE)], stride)],
+                &[],
+            );
+            let uniform = TransportScene::with_page_contents(
+                &TransportScene::default(),
+                vec![(page, PageVoxels::Uniform(material), stride)],
+                &[],
+            );
+            assert_eq!(dense.regions.len(), 8);
+            for (key, region) in &dense.regions {
+                let other = &uniform.regions[key];
+                assert_eq!(region.uniform_material(), other.uniform_material());
+                assert_eq!(region.stride_log2, other.stride_log2);
+                assert_eq!(region.any_solid, other.any_solid);
+                assert_eq!(region.material_mask, other.material_mask);
+            }
+            // Resending it reuses every region; a different material does not.
+            let again = TransportScene::with_page_contents(
+                &uniform,
+                vec![(page, PageVoxels::Uniform(material), stride)],
+                &[],
+            );
+            assert!(
+                uniform
+                    .regions
+                    .iter()
+                    .all(|(key, r)| Arc::ptr_eq(r, &again.regions[key]))
+            );
+            let other = TransportScene::with_page_contents(
+                &uniform,
+                vec![(
+                    page,
+                    PageVoxels::Uniform(if material == AIR { 7 } else { AIR }),
+                    stride,
+                )],
+                &[],
+            );
+            assert!(
+                other
+                    .regions
+                    .iter()
+                    .all(|(key, r)| !Arc::ptr_eq(r, &uniform.regions[key]))
+            );
+        }
+    }
 
     #[test]
     fn unchanged_page_notifications_reuse_acceleration_regions() {

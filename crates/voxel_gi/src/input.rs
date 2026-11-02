@@ -142,6 +142,15 @@ impl PageSample {
     }
 
     /// Full-resolution materials, each cell repeated over its block.
+    /// One material throughout, or the dense `32³` page.
+    pub(super) fn into_voxels(self) -> super::world::PageVoxels {
+        if self.cells.iter().all(|cell| *cell == self.cells[0]) {
+            super::world::PageVoxels::Uniform(self.cells[0])
+        } else {
+            super::world::PageVoxels::Dense(self.into_dense())
+        }
+    }
+
     pub(super) fn into_dense(self) -> Vec<u16> {
         if self.stride == 1 {
             return self.cells;

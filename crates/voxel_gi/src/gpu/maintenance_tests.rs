@@ -310,6 +310,7 @@ fn scene_edits_reach_view_history_without_world_cache_pages() {
                 pages: default(),
                 receivers_changed: false,
                 exact_edits: vec![bounds.min],
+                deferred: Vec::new(),
                 build_time: std::time::Duration::ZERO,
             }
         }));

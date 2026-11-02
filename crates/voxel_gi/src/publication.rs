@@ -71,6 +71,15 @@ pub(super) fn apply_scene_task(
         && let Some(mut result) = block_on(poll_once(task))
     {
         runtime.scene_task = None;
+        for (page, resample) in std::mem::take(&mut result.deferred) {
+            // Pages unloaded meanwhile stay out.
+            if runtime.loaded_pages.contains(&page) {
+                runtime.dirty_pages.insert(page);
+                if resample {
+                    runtime.full_resample_pages.insert(page);
+                }
+            }
+        }
         if !result.changed && !result.receivers_changed {
             stats.loaded_pages = runtime.loaded_pages.len();
             stats.scheduler.last_scene_build_ms = result.build_time.as_secs_f32() * 1000.0;
@@ -527,6 +536,7 @@ mod donor_tests {
             pages: default(),
             receivers_changed: false,
             exact_edits: Vec::new(),
+            deferred: Vec::new(),
             build_time: Duration::ZERO,
         }
     }

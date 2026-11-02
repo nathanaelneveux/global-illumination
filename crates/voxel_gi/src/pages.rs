@@ -4,7 +4,8 @@
 use super::input::{PageEvent, VoxelGiInput, VoxelGiSource};
 use super::telemetry::GiWorkTimings;
 use super::world::{
-    PAGE_EDGE, PAGE_SIZE, TransportScene, affected_probe_pages, scan_surface_probe_pages,
+    PAGE_EDGE, PAGE_SIZE, PageVoxels, TransportScene, affected_probe_pages,
+    scan_surface_probe_pages,
 };
 use super::{SceneBuildResult, VoxelGiRuntime, naadf, page_of};
 use bevy::platform::collections::{HashMap, HashSet};
@@ -209,8 +210,18 @@ pub(super) fn ingest_input(
     }
 }
 
-/// Dirty pages one scene build samples at most (about 48 MB of dense samples).
-const MAX_SCENE_PAGES: usize = 768;
+/// Dense pages one scene build expands at most (64 KB each, about 48 MB).
+/// Uniform pages (all air, all stone) stay one value and don't count.
+const MAX_DENSE_PAGES: usize = 768;
+/// Pages one scene build samples at most, uniform ones included.
+const MAX_SAMPLED_PAGES: usize = 8 * MAX_DENSE_PAGES;
+/// Sampling time one scene build spends at most (`VoxelGiRuntime::
+/// scene_sample_budget`). Sources differ by orders of magnitude per page
+/// (the BVW lab builds every voxel, air included, at about 150 us a page; a
+/// host's stored uniform sample is one value), so a page count can't bound
+/// how late the nearest pages' build lands. 100 ms is about the lab's former
+/// 768-page batch.
+pub(super) const SCENE_SAMPLE_BUDGET: std::time::Duration = std::time::Duration::from_millis(100);
 
 pub(super) fn start_scene_task(
     mut runtime: ResMut<VoxelGiRuntime>,
@@ -238,11 +249,11 @@ pub(super) fn start_scene_task(
     };
 
     let mut dirty_pages: Vec<_> = runtime.dirty_pages.drain().collect();
-    if dirty_pages.len() > MAX_SCENE_PAGES {
-        // Each dirty page is sampled densely (64 KB) in one build. Streaming a
-        // far world queued tens of thousands at once: gigabytes of transient
-        // samples and one very late build. Take edited pages, then the nearest;
-        // the rest wait for the next build.
+    if dirty_pages.len() > MAX_DENSE_PAGES {
+        // A dense page costs 64 KB in a build. Streaming a far world queued
+        // tens of thousands at once: gigabytes of transient samples and one
+        // very late build. Sample edited pages, then the nearest, until the
+        // dense budget runs out (the worker hands the rest back).
         let focus = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
             page_of(camera.translation().floor().as_ivec3())
         });
@@ -257,10 +268,11 @@ pub(super) fn start_scene_task(
                 (page.as_i64vec3() - focus.as_i64vec3()).length_squared(),
             )
         });
-        let deferred = dirty_pages.split_off(MAX_SCENE_PAGES);
-        runtime.dirty_pages.extend(deferred);
+        if dirty_pages.len() > MAX_SAMPLED_PAGES {
+            let deferred = dirty_pages.split_off(MAX_SAMPLED_PAGES);
+            runtime.dirty_pages.extend(deferred);
+        }
     }
-    dirty_pages.sort_unstable_by_key(|p| (p.z, p.y, p.x));
     let full_resample: HashSet<IVec3> = dirty_pages
         .iter()
         .copied()
@@ -281,14 +293,12 @@ pub(super) fn start_scene_task(
     removed_pages.sort_unstable_by_key(|p| (p.z, p.y, p.x));
     runtime.urgent_edit = false;
 
-    let mut affected_pages = affected_probe_pages(&dirty_pages, &removed_pages);
     // Receiver radius: pages entering it are rescanned and pages leaving it
     // publish no receivers, without a geometry change. Scanning is limited to
     // allowed pages; every other affected page publishes none.
     let mut receiver_pages = std::mem::take(&mut runtime.receiver_dirty);
     receiver_pages.extend(runtime.receiver_retired.drain());
     let receivers_changed = !receiver_pages.is_empty();
-    affected_pages.extend(receiver_pages);
     let allowed = runtime.receiver_pages.clone();
     let previous_scene = Arc::clone(&runtime.scene);
     let retention_radius = super::retention::INFLUENCE_RADIUS;
@@ -297,24 +307,58 @@ pub(super) fn start_scene_task(
     let focus_page = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
         page_of(camera.translation().floor().as_ivec3())
     });
+    let sample_budget = runtime.scene_sample_budget;
     runtime.scene_task = Some(AsyncComputeTaskPool::get().spawn(async move {
         let _span = info_span!("gi_scene_build").entered();
         let started = Instant::now();
-        let changed_pages: Vec<_> = dirty_pages
-            .into_iter()
-            .map(|page| {
-                let origin = page * PAGE_EDGE as i32;
-                let sample = source.sample_page(page, full_resample.contains(&page));
-                let mut stride = sample.stride().trailing_zeros() as u8;
-                let mut materials = sample.into_dense();
-                if let Some(edits) = edits.get(&page) {
-                    apply_page_edits(&mut materials, origin, edits);
-                    stride = edited_stride(&materials, origin, edits, stride);
+        let mut changed_pages = Vec::with_capacity(dirty_pages.len());
+        let mut deferred = Vec::new();
+        let mut dense_left = MAX_DENSE_PAGES;
+        let mut pending = dirty_pages.into_iter();
+        while let Some(page) = pending.next() {
+            let resample = full_resample.contains(&page);
+            if !changed_pages.is_empty() && started.elapsed() >= sample_budget {
+                // Out of sampling time: this page and the rest wait.
+                deferred.push((page, resample));
+                deferred.extend(pending.map(|page| (page, full_resample.contains(&page))));
+                break;
+            }
+            let origin = page * PAGE_EDGE as i32;
+            let sample = source.sample_page(page, resample);
+            let mut stride = sample.stride().trailing_zeros() as u8;
+            let page_edits = edits.get(&page);
+            let voxels = match sample.into_voxels() {
+                PageVoxels::Uniform(material) if page_edits.is_none() => {
+                    PageVoxels::Uniform(material)
                 }
-                (page, materials, stride)
-            })
-            .collect();
-        let scene = Arc::new(TransportScene::with_strided_page_delta(
+                _ if dense_left == 0 => {
+                    // Out of dense budget: this page and the rest wait.
+                    deferred.push((page, resample));
+                    deferred.extend(pending.map(|page| (page, full_resample.contains(&page))));
+                    break;
+                }
+                voxels => {
+                    dense_left -= 1;
+                    let mut materials = match voxels {
+                        PageVoxels::Uniform(material) => {
+                            vec![material; naadf::volume_len(PAGE_SIZE)]
+                        }
+                        PageVoxels::Dense(materials) => materials,
+                    };
+                    if let Some(edits) = page_edits {
+                        apply_page_edits(&mut materials, origin, edits);
+                        stride = edited_stride(&materials, origin, edits, stride);
+                    }
+                    PageVoxels::Dense(materials)
+                }
+            };
+            changed_pages.push((page, voxels, stride));
+        }
+        changed_pages.sort_unstable_by_key(|(p, _, _)| (p.z, p.y, p.x));
+        let built: Vec<_> = changed_pages.iter().map(|(page, _, _)| *page).collect();
+        let mut affected_pages = affected_probe_pages(&built, &removed_pages);
+        affected_pages.extend(receiver_pages);
+        let scene = Arc::new(TransportScene::with_page_contents(
             &previous_scene,
             changed_pages,
             &removed_pages,
@@ -365,6 +409,7 @@ pub(super) fn start_scene_task(
             pages: pages.into(),
             receivers_changed,
             exact_edits,
+            deferred,
             build_time: started.elapsed(),
         }
     }));
@@ -554,6 +599,160 @@ mod tests {
             .collect();
         assert_eq!(edited(&whole), 3, "removing a whole block keeps the stride");
         assert_eq!(edited_stride(&page, IVec3::ZERO, &HashMap::new(), 0), 0);
+    }
+
+    #[test]
+    fn scene_builds_spend_their_budget_on_dense_pages_and_hand_back_the_rest() {
+        use super::super::input::{PageSample, VoxelSource};
+        use bevy::ecs::system::RunSystemOnce;
+        // Air above y = 0, a dense floor at y = 0: uniform pages cost no
+        // budget; dense ones past it go back to the dirty set with their
+        // resample flags, unless unloaded meanwhile.
+        struct Source;
+        impl VoxelSource for Source {
+            fn sample_page(&self, page: IVec3, _: bool) -> PageSample {
+                if page.y > 0 {
+                    return PageSample::air();
+                }
+                dense_page(page, |voxel| (voxel.y < 3 + (voxel.x & 1)).then_some(1))
+            }
+        }
+        let dense: Vec<_> = (0..MAX_DENSE_PAGES as i32 + 40)
+            .map(|i| IVec3::new(i % 40, 0, i / 40))
+            .collect();
+        let air: Vec<_> = (0..2000)
+            .map(|i| IVec3::new(i % 40, 1 + i / 1000, i / 40 % 25))
+            .collect();
+        let mut app = app(true);
+        app.insert_resource(VoxelGiSource(Some(Arc::new(Source))));
+        {
+            let mut runtime = app.world_mut().resource_mut::<VoxelGiRuntime>();
+            // The dense budget alone, whatever this machine's sampling speed.
+            runtime.scene_sample_budget = std::time::Duration::MAX;
+            for &page in dense.iter().chain(&air) {
+                runtime.loaded_pages.insert(page);
+                runtime.dirty_pages.insert(page);
+            }
+            runtime.full_resample_pages.extend(dense.iter().copied());
+        }
+        app.world_mut().run_system_once(start_scene_task).unwrap();
+        let task = app
+            .world_mut()
+            .resource_mut::<VoxelGiRuntime>()
+            .scene_task
+            .take()
+            .unwrap();
+        let result = bevy::tasks::block_on(task);
+        let deferred: HashSet<_> = result.deferred.iter().map(|(page, _)| *page).collect();
+        assert!(
+            result
+                .deferred
+                .iter()
+                .all(|(page, resample)| *resample == dense.contains(page)),
+            "resample flags travel with deferred pages"
+        );
+        let built = |page: &IVec3| {
+            (0..8).any(|i| {
+                result
+                    .scene
+                    .regions
+                    .contains_key(&(*page * 2 + IVec3::new(i & 1, i >> 1 & 1, i >> 2)))
+            })
+        };
+        for page in dense.iter().chain(&air) {
+            assert!(
+                built(page) != deferred.contains(page),
+                "{page} built or deferred"
+            );
+        }
+        let built_dense = dense.iter().filter(|page| built(page)).count();
+        assert_eq!(built_dense, MAX_DENSE_PAGES, "the dense budget is spent");
+        let built_air: Vec<_> = air.iter().filter(|page| built(page)).collect();
+        assert!(
+            built_air.len() > 500,
+            "uniform pages ride along: {}",
+            built_air.len()
+        );
+        let uniform = result.scene.regions[&(*built_air[0] * 2)].uniform_material();
+        assert_eq!(uniform, Some(AIR), "an air page stays one value");
+
+        let unloaded = *deferred.iter().next().unwrap();
+        {
+            let mut runtime = app.world_mut().resource_mut::<VoxelGiRuntime>();
+            runtime.loaded_pages.remove(&unloaded);
+            runtime.full_resample_pages.clear();
+            runtime.scene_task = Some(AsyncComputeTaskPool::get().spawn(async move { result }));
+        }
+        app.init_resource::<super::super::field::ReceiverField>()
+            .init_resource::<super::super::VoxelGiStats>()
+            .init_resource::<super::super::VoxelGiSettings>();
+        while app
+            .world()
+            .resource::<VoxelGiRuntime>()
+            .scene_task
+            .as_ref()
+            .is_some_and(|task| !task.is_finished())
+        {
+            std::thread::yield_now();
+        }
+        app.world_mut()
+            .run_system_once(super::super::publication::apply_scene_task)
+            .unwrap();
+        let runtime = app.world().resource::<VoxelGiRuntime>();
+        assert_eq!(runtime.dirty_pages.len(), deferred.len() - 1);
+        assert!(!runtime.dirty_pages.contains(&unloaded));
+        assert!(
+            runtime
+                .dirty_pages
+                .iter()
+                .all(|page| runtime.full_resample_pages.contains(page) == dense.contains(page))
+        );
+    }
+
+    #[test]
+    fn a_slow_source_gets_a_small_scene_build_nearest_first() {
+        use super::super::input::{PageSample, VoxelSource};
+        use bevy::ecs::system::RunSystemOnce;
+        struct Slow;
+        impl VoxelSource for Slow {
+            fn sample_page(&self, _: IVec3, _: bool) -> PageSample {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                PageSample::air()
+            }
+        }
+        let pages: Vec<_> = (0..MAX_DENSE_PAGES as i32 * 2)
+            .map(|i| IVec3::new(i, 0, 0))
+            .collect();
+        let mut app = app(true);
+        app.insert_resource(VoxelGiSource(Some(Arc::new(Slow))));
+        {
+            let mut runtime = app.world_mut().resource_mut::<VoxelGiRuntime>();
+            runtime.scene_sample_budget = std::time::Duration::from_millis(20);
+            for &page in &pages {
+                runtime.loaded_pages.insert(page);
+                runtime.dirty_pages.insert(page);
+            }
+        }
+        app.world_mut().run_system_once(start_scene_task).unwrap();
+        let task = app
+            .world_mut()
+            .resource_mut::<VoxelGiRuntime>()
+            .scene_task
+            .take()
+            .unwrap();
+        let result = bevy::tasks::block_on(task);
+        let built: Vec<_> = pages
+            .iter()
+            .filter(|page| result.scene.regions.contains_key(&(**page * 2)))
+            .collect();
+        assert!(
+            !built.is_empty() && built.len() < 100,
+            "{} pages built",
+            built.len()
+        );
+        assert_eq!(built.len() + result.deferred.len(), pages.len());
+        // The camera-less focus is the origin: the nearest pages went first.
+        assert!(built.iter().all(|page| page.x < built.len() as i32));
     }
 
     #[test]

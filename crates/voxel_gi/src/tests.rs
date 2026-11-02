@@ -244,6 +244,7 @@ fn settled_counter_tracks_global_revisions_and_page_removal() {
         pages: VecDeque::new(),
         receivers_changed: false,
         exact_edits: vec![],
+        deferred: Vec::new(),
         build_time: Duration::ZERO,
     };
     // Removing old-revision terrain must not subtract freshly settled faces
@@ -322,6 +323,7 @@ fn scene_publication_preserves_other_pages_and_publishes_one_page_per_tick() {
         ]),
         receivers_changed: false,
         exact_edits: vec![],
+        deferred: Vec::new(),
         build_time: Duration::ZERO,
     };
     let mut world = World::new();
@@ -382,6 +384,7 @@ fn new_receiver_display_clock_does_not_depend_on_material_id() {
             pages: default(),
             receivers_changed: false,
             exact_edits: vec![],
+            deferred: Vec::new(),
             build_time: Duration::ZERO,
         };
         publish_scene_page(
@@ -463,6 +466,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
                 pages: default(),
                 receivers_changed: false,
                 exact_edits: vec![],
+                deferred: Vec::new(),
                 build_time: Duration::ZERO,
             };
             publish_scene_page(
@@ -577,6 +581,7 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
             pages: default(),
             receivers_changed: false,
             exact_edits: vec![],
+            deferred: Vec::new(),
             build_time: Duration::ZERO,
         };
         let task = pool.spawn(async move { result });
@@ -680,6 +685,7 @@ fn publication_batches_cheap_pages_without_unbounded_display_work() {
             pages,
             receivers_changed: false,
             exact_edits: vec![],
+            deferred: Vec::new(),
             build_time: Duration::ZERO,
         }),
         ..default()

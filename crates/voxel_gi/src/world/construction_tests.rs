@@ -182,7 +182,9 @@ fn rebuild_on_any_change(
     }
     let built: Vec<_> = changed_pages
         .into_iter()
-        .flat_map(|(page, materials)| build_page_regions(page, &materials, 0, previous))
+        .flat_map(|(page, materials)| {
+            build_page_regions(page, &PageVoxels::Dense(materials), 0, previous)
+        })
         .collect();
     for region in built {
         regions.insert(region.coordinate, region);
