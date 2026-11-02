@@ -33,20 +33,20 @@ The public crates and lab are separate Cargo packages. The lab is not published.
 For the release crates:
 
 ```sh
-cargo test --locked -p voxel_gi -p voxel_gi_bvw -p voxel_gi_debug --lib --examples
-cargo test --locked -p voxel_gi -p voxel_gi_bvw -p voxel_gi_debug --doc
-cargo clippy --locked -p voxel_gi -p voxel_gi_bvw -p voxel_gi_debug --all-targets -- -D warnings
-RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps -p voxel_gi -p voxel_gi_bvw -p voxel_gi_debug
+cargo test --locked -p bevy_voxel_gi -p bevy_voxel_gi_bvw -p bevy_voxel_gi_debug --lib --examples
+cargo test --locked -p bevy_voxel_gi -p bevy_voxel_gi_bvw -p bevy_voxel_gi_debug --doc
+cargo clippy --locked -p bevy_voxel_gi -p bevy_voxel_gi_bvw -p bevy_voxel_gi_debug --all-targets -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps -p bevy_voxel_gi -p bevy_voxel_gi_bvw -p bevy_voxel_gi_debug
 cargo fmt --all --check
 ```
 
-Discover native test names with `cargo test -p voxel_gi --lib -- --list`.
+Discover native test names with `cargo test -p bevy_voxel_gi --lib -- --list`.
 Select the affected path rather than running every ignored benchmark:
 
 ```sh
-cargo test -p voxel_gi --lib native_view_runtime_pipelines -- --ignored
-cargo test -p voxel_gi --lib native_two_way_cache -- --ignored --test-threads=1
-cargo test -p voxel_gi --lib cached_furnace_converges -- --ignored
+cargo test -p bevy_voxel_gi --lib native_view_runtime_pipelines -- --ignored
+cargo test -p bevy_voxel_gi --lib native_two_way_cache -- --ignored --test-threads=1
+cargo test -p bevy_voxel_gi --lib cached_furnace_converges -- --ignored
 ```
 
 Native adapters honour `WGPU_BACKEND`, `WGPU_DX12_COMPILER`,
@@ -115,7 +115,7 @@ Budget, batch samples, stability thresholds and temporal response answer separat
 questions; do not change them together in the first reach comparison.
 
 Focused checks are `tuning_` (CPU configuration/widget/preset contracts),
-`voxel_gi::gpu::tuning_tests -- --ignored --nocapture` (native variable-model parity,
+`bevy_voxel_gi::gpu::tuning_tests -- --ignored --nocapture` (native variable-model parity,
 sealed-roof and empty-streaming-frontier checks), and optional
 `tuning_panel_offscreen_capture -- --ignored --nocapture`. The latter saves
 `target/gi-tuning-panel.png` using production widgets and Bevy's image capture,
@@ -381,7 +381,7 @@ transition; it must not be mistaken for improved sampler accuracy.
   option to the display rate, hiding headroom; on macOS `AutoNoVsync` alone
   still blocks most frames on the two-drawable default. Reports record the
   actual `present_mode`. Compare uncapped intervals only with other uncapped
-  runs. Add `RUST_LOG=warn,voxel_gi=info` for the
+  runs. Add `RUST_LOG=warn,bevy_voxel_gi=info` for the
   view tier's GPU receipts (`GI view transport`: trace, presentation,
   discovery, pool), logged every 120 frames.
 - Coverage is at least one path sample per exposed face. Bootstrap targets eight.

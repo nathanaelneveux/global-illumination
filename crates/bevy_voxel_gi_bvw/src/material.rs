@@ -1,6 +1,6 @@
 //! The `bevy_voxel_world` mesh material lit by voxel GI: BVW's texture array
 //! and vertex layout over `StandardMaterial`, with GI's bindings
-//! (`VoxelGiBindings`) and its presentation module (`voxel_gi::presentation`).
+//! (`VoxelGiBindings`) and its presentation module (`bevy_voxel_gi::presentation`).
 use bevy::image::{ImageAddressMode, ImageSampler, TextureReinterpretationError};
 use bevy::material::OpaqueRendererMethod;
 use bevy::pbr::{
@@ -12,8 +12,8 @@ use bevy::render::render_resource::{
     TextureFormat, TextureUsages, TextureViewDescriptor, TextureViewDimension,
 };
 use bevy::shader::ShaderRef;
+use bevy_voxel_gi::{VoxelGiBindings, VoxelGiMaterialData, VoxelGiMaterialPlugin};
 use bevy_voxel_world::rendering::vertex_layout;
-use voxel_gi::{VoxelGiBindings, VoxelGiMaterialData, VoxelGiMaterialPlugin};
 
 pub const VOXEL_TRANSPORT_SHADER: &str = "shaders/voxel_transport.wgsl";
 /// The terrain material shader (inserted by `install`).
@@ -415,13 +415,13 @@ mod tests {
                 Ok(module)
             },
         );
-        // The material imports `voxel_gi::presentation` (VoxelGiPlugin
+        // The material imports `bevy_voxel_gi::presentation` (VoxelGiPlugin
         // registers it in an app; here, by hand).
         let _ = app.world_mut().resource_mut::<Assets<Shader>>().insert(
-            voxel_gi::PRESENTATION_SHADER.id(),
+            bevy_voxel_gi::PRESENTATION_SHADER.id(),
             Shader::from_wgsl(
-                voxel_gi::presentation_shader_source(),
-                "voxel_gi/presentation.wgsl",
+                bevy_voxel_gi::presentation_shader_source(),
+                "bevy_voxel_gi/presentation.wgsl",
             ),
         );
         let handle = app
@@ -533,7 +533,7 @@ mod tests {
                     ..default()
                 }),
         );
-        voxel_gi::testing::install_render(&mut app);
+        bevy_voxel_gi::testing::install_render(&mut app);
         // A host that registers (and may configure) the material plugin
         // itself still gets the connector's shader and binding sync.
         app.add_plugins(MaterialPlugin::<VoxelTransportMaterial>::default());
@@ -586,8 +586,8 @@ mod tests {
                     mapped_at_creation: false,
                 })
             });
-            voxel_gi::testing::publish_geometry(app.world_mut(), buffers.clone(), 768);
-            voxel_gi::testing::set_display(
+            bevy_voxel_gi::testing::publish_geometry(app.world_mut(), buffers.clone(), 768);
+            bevy_voxel_gi::testing::set_display(
                 app.world_mut(),
                 generation & 1 == 1,
                 ((generation >> 1) & 1) as u32,
@@ -601,7 +601,7 @@ mod tests {
                 >>();
             let material_assets = app.world().resource::<Assets<VoxelTransportMaterial>>();
             let extension = &material_assets.get(&material).unwrap().base.extension;
-            let (handles, nodes) = voxel_gi::testing::geometry_bindings(extension);
+            let (handles, nodes) = bevy_voxel_gi::testing::geometry_bindings(extension);
             assert_eq!(nodes, 768);
             for (handle, buffer) in handles.iter().zip(&buffers) {
                 assert_eq!(prepared.get(handle).unwrap().buffer.id(), buffer.id());

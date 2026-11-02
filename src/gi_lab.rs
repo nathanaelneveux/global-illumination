@@ -4,10 +4,10 @@ use crate::player::{BombAtAim, PlaceEmissiveBlock};
 use bevy::feathers::controls::FeathersButton;
 use bevy::prelude::*;
 use bevy::ui_widgets::Activate;
-use voxel_gi::VoxelGiSettings;
+use bevy_voxel_gi::VoxelGiSettings;
 #[cfg(debug_assertions)]
-use voxel_gi::VoxelGiSystems;
-use voxel_gi_debug::VoxelGiDebugPlugin;
+use bevy_voxel_gi::VoxelGiSystems;
+use bevy_voxel_gi_debug::VoxelGiDebugPlugin;
 
 /// Add before `VoxelGiPlugin`: launch settings must be in place first.
 pub struct GiLabPlugin;
@@ -57,7 +57,7 @@ fn load_launch_settings(app: &mut App) {
     };
     let settings = std::fs::read_to_string(&path)
         .map_err(|error| error.to_string())
-        .and_then(|text| voxel_gi::VoxelGiSettings::from_ron(&text))
+        .and_then(|text| bevy_voxel_gi::VoxelGiSettings::from_ron(&text))
         .unwrap_or_else(|error| panic!("Cannot load VOXEL_GI_SETTINGS={path:?}: {error}"));
     // Fail visibly on invalid files rather than benchmarking a silent fallback.
     app.insert_resource(settings);
@@ -117,16 +117,16 @@ pub fn gi_enabled() -> bool {
 /// The GI resources the lab and validation read, left at their defaults so
 /// the control runs the same harness. Nothing updates them.
 pub fn init_gi_off_resources(app: &mut App) {
-    app.init_resource::<voxel_gi::VoxelGiStats>()
-        .init_resource::<voxel_gi::VoxelGiDisplay>()
-        .init_resource::<voxel_gi::VoxelGiEnvironment>()
-        .init_resource::<voxel_gi::VoxelMaterialTransportTable>()
+    app.init_resource::<bevy_voxel_gi::VoxelGiStats>()
+        .init_resource::<bevy_voxel_gi::VoxelGiDisplay>()
+        .init_resource::<bevy_voxel_gi::VoxelGiEnvironment>()
+        .init_resource::<bevy_voxel_gi::VoxelMaterialTransportTable>()
         .init_resource::<VoxelGiSettings>();
 }
 
 #[cfg(test)]
 mod tests {
-    use voxel_gi::VoxelGiSettings;
+    use bevy_voxel_gi::VoxelGiSettings;
 
     fn config(text: &str) -> VoxelGiSettings {
         VoxelGiSettings::from_ron(text).unwrap()

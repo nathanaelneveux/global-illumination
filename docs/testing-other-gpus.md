@@ -44,7 +44,7 @@ instead of `$env:VAR = "value"`.
 ## 2. The example
 
 ```powershell
-cargo run -p voxel_gi --example minimal
+cargo run -p bevy_voxel_gi --example minimal
 ```
 
 A small stone room should appear, open on two sides, with a pillar and a
@@ -55,15 +55,15 @@ opens):
 
 ```powershell
 $env:VOXEL_GI_EXAMPLE_SCREENSHOT = "minimal.png"; $env:VOXEL_GI_EXAMPLE_FRAMES = "600"
-cargo run -p voxel_gi --example minimal
+cargo run -p bevy_voxel_gi --example minimal
 Remove-Item Env:VOXEL_GI_EXAMPLE_SCREENSHOT, Env:VOXEL_GI_EXAMPLE_FRAMES
 ```
 
 ## 3. GPU tests
 
 ```powershell
-cargo test -p voxel_gi --lib -- --include-ignored 2>&1 | Tee-Object gpu-tests.txt
-cargo test -p voxel_gi_bvw --lib -- --include-ignored 2>&1 | Tee-Object -Append gpu-tests.txt
+cargo test -p bevy_voxel_gi --lib -- --include-ignored 2>&1 | Tee-Object gpu-tests.txt
+cargo test -p bevy_voxel_gi_bvw --lib -- --include-ignored 2>&1 | Tee-Object -Append gpu-tests.txt
 ```
 
 ## 4. Play the lab
@@ -82,7 +82,7 @@ dynamic linking.
 These runs need no window. Each writes a folder under `target/gi-validation/`.
 
 ```powershell
-$env:RUST_LOG = "warn,voxel_gi=info"; $env:VOXEL_GI_VALIDATE = "1"
+$env:RUST_LOG = "warn,bevy_voxel_gi=info"; $env:VOXEL_GI_VALIDATE = "1"
 $env:VOXEL_GI_VALIDATE_HEADLESS = "1"; $env:VOXEL_GI_VALIDATE_EXIT = "1"
 $env:VOXEL_GI_VALIDATE_FRAME_TIMINGS = "1"
 foreach ($p in "streaming", "cave", "house") {

@@ -2,7 +2,7 @@
 //! Inspect fixed world-space receivers even while offscreen. Sources, normal
 //! terrain streaming and adaptive scheduling remain enabled and unchanged.
 use super::*;
-use voxel_gi_bvw::BvwVoxelEdits;
+use bevy_voxel_gi_bvw::BvwVoxelEdits;
 
 const OPENINGS: &[(f32, &str, &[IVec3])] = &[
     (90.0, "skylight", &[IVec3::new(0, 17, -18)]),

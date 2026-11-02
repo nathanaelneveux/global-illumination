@@ -7,7 +7,7 @@
 #import bevy_pbr::pbr_bindings
 #import bevy_pbr::{lighting, shadows, mesh_view_bindings}
 #import bevy_render::instance_index::get_instance_index
-#import voxel_gi::presentation::{
+#import bevy_voxel_gi::presentation::{
     indirect_light, sunlight, sunlight_reference, emission, face_in_geometry, voxel_sky, debug_mode,
 }
 

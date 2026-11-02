@@ -7,7 +7,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   # The published crates only; the lab (root package) is not built in CI.
-  CRATES: -p voxel_gi -p voxel_gi_bvw -p voxel_gi_debug
+  CRATES: -p bevy_voxel_gi -p bevy_voxel_gi_bvw -p bevy_voxel_gi_debug
 
 jobs:
   crates:
@@ -28,7 +28,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked $CRATES --all-targets -- -D warnings
       # GPU tests are #[ignore]d and need a native adapter: run them locally
-      # with `cargo test -p voxel_gi --lib -- --include-ignored`.
+      # with `cargo test -p bevy_voxel_gi --lib -- --include-ignored`.
       - name: CPU tests
         run: cargo test --locked $CRATES --lib --examples
       # The three crates only: with the lab, its bevy/dynamic_linking unifies

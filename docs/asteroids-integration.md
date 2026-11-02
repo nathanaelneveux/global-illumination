@@ -15,7 +15,7 @@ material for comparison.
 - `VoxelGiPlugin` and `VoxelGiBvwPlugin::<AsteroidWorld>` before the world
   plugin (it reads `VoxelGiMaterialData` to build the material), and
   `impl GiFallbackVoxel for AsteroidWorld {}`.
-- The world's material swapped for `voxel_gi_bvw::material_template`.
+- The world's material swapped for `bevy_voxel_gi_bvw::material_template`.
 
 It compiled first time with no GI source changes.
 

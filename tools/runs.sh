@@ -4,7 +4,7 @@
 #   settings: a path relative to the repository (config/gi-far-tier-off.ron,
 #   target/gates/x.ron), or - for the defaults. Each finished run appends
 #   "<label> <run directory> <log>" to <list> (absolute paths), and "done" at
-#   the end. Logs are target/gates/run-<label>.log at RUST_LOG=voxel_gi=info,
+#   the end. Logs are target/gates/run-<label>.log at RUST_LOG=bevy_voxel_gi=info,
 #   so tools/view_costs.py can read the view-tier receipts.
 # In zsh, brace parameters before a colon when building specs ("${v}:"):
 # "$v:s..." is read as a history modifier.
@@ -22,7 +22,7 @@ for spec in "$@"; do
   [[ -n $settings && $settings != - ]] && envs+=(VOXEL_GI_SETTINGS=$root/$settings)
   [[ -n $rest ]] && envs+=(${(s:,:)rest})
   before=$(ls -1d target/gi-validation/$profile-* 2>/dev/null | wc -l)
-  env "${envs[@]}" RUST_LOG=warn,voxel_gi=info VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_HEADLESS=1 \
+  env "${envs[@]}" RUST_LOG=warn,bevy_voxel_gi=info VOXEL_GI_VALIDATE=1 VOXEL_GI_VALIDATE_HEADLESS=1 \
     VOXEL_GI_VALIDATE_FRAME_TIMINGS=1 VOXEL_GI_VALIDATE_PROFILE=$profile VOXEL_GI_VALIDATE_EXIT=1 \
     VOXEL_GI_VALIDATE_EXPECT_BUILD_ROOT="$root" cargo run --locked --offline > target/gates/run-$label.log 2>&1
   code=$?

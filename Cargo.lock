@@ -313,9 +313,9 @@ dependencies = [
 
 [[package]]
 name = "async-executor"
-version = "1.14.0"
+version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c96bf972d85afc50bf5ab8fe2d54d1586b4e0b46c97c50a0c9e71e2f7bcd812a"
+checksum = "f426a31126c735126297bc5ea7a521263c9faff4f63ca415267ee625651c4f37"
 dependencies = [
  "async-task",
  "concurrent-queue",
@@ -2056,6 +2056,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_voxel_gi"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "naga",
+ "naga_oil",
+ "ron 0.11.0",
+ "serde",
+ "wgpu",
+]
+
+[[package]]
+name = "bevy_voxel_gi_bvw"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_voxel_gi",
+ "bevy_voxel_world",
+ "naga",
+ "naga_oil",
+ "wgpu",
+]
+
+[[package]]
+name = "bevy_voxel_gi_debug"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_voxel_gi",
+]
+
+[[package]]
 name = "bevy_voxel_world"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2396,9 +2428,9 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "chacha20"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures",
@@ -2468,9 +2500,9 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "clipboard-win"
-version = "5.4.1"
+version = "5.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
+checksum = "052af7878466feccda12ba7a6a67d019d712f296809559b47c12c8cc196d3a9a"
 dependencies = [
  "error-code",
 ]
@@ -5371,6 +5403,9 @@ dependencies = [
  "bevy_asset_loader",
  "bevy_common_assets",
  "bevy_enhanced_input",
+ "bevy_voxel_gi",
+ "bevy_voxel_gi_bvw",
+ "bevy_voxel_gi_debug",
  "bevy_voxel_world",
  "block-mesh",
  "block-mesh-bgm",
@@ -5382,9 +5417,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
- "voxel_gi",
- "voxel_gi_bvw",
- "voxel_gi_debug",
 ]
 
 [[package]]
@@ -6628,38 +6660,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "446e7ffcb6c27a71d05af7e51ef2ee5b71c48424b122a832f2439651e1914899"
 dependencies = [
  "rayon",
-]
-
-[[package]]
-name = "voxel_gi"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "naga",
- "naga_oil",
- "ron 0.11.0",
- "serde",
- "wgpu",
-]
-
-[[package]]
-name = "voxel_gi_bvw"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "bevy_voxel_world",
- "naga",
- "naga_oil",
- "voxel_gi",
- "wgpu",
-]
-
-[[package]]
-name = "voxel_gi_debug"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "voxel_gi",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-# voxel_gi
+# bevy_voxel_gi
 
 Real-time diffuse global illumination for axis-aligned voxel worlds in
 [Bevy](https://bevyengine.org) 0.19: sunlight, sky, emissive voxels and
@@ -47,7 +47,7 @@ App::new().add_plugins(DefaultPlugins.set(RenderPlugin {
 ![A cave lit by emissive voxels and a skylight: colored bounce light on every wall](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/cave.jpg)
 ![A daylight canyon: sunlit walls bounce warm light into the shaded side, out to long sightlines](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/canyon.jpg)
 
-| Bevy | voxel_gi |
+| Bevy | bevy_voxel_gi |
 | --- | --- |
 | 0.19 | 0.1 |
 
@@ -56,11 +56,25 @@ PBR internals that change between Bevy releases.
 
 ## Quick start
 
-```sh
-cargo run -p voxel_gi --example minimal
+Add the core crate to a Bevy 0.19 application:
+
+```toml
+[dependencies]
+bevy = "0.19"
+bevy_voxel_gi = "0.1"
 ```
 
-[`examples/minimal.rs`](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/voxel_gi/examples/minimal.rs) is a complete host with an optional offscreen capture mode. The pieces:
+`bevy_voxel_gi_bvw` provides the optional `bevy_voxel_world` connector;
+`bevy_voxel_gi_debug` provides the optional HUD and tuning panel. Both use
+the same release version as the core.
+
+To run the example from a checkout of this repository:
+
+```sh
+cargo run -p bevy_voxel_gi --example minimal
+```
+
+[`examples/minimal.rs`](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/examples/minimal.rs) is a complete host with an optional offscreen capture mode. The pieces:
 
 1. **Add `VoxelGiPlugin`.**
 2. **Declare pages.** GI works in 32³ pages. Tell it which are loaded and
@@ -80,7 +94,7 @@ cargo run -p voxel_gi --example minimal
    integer block IDs, build a dense table from the palette once, with
    `optics_id(MaterialTransport::default())` for unregistered blocks, and
    have your `VoxelSource` report palette IDs. A source that reports your
-   own IDs unchanged (as `voxel_gi_bvw` does) needs the table set at those
+   own IDs unchanged (as `bevy_voxel_gi_bvw` does) needs the table set at those
    IDs instead.
 5. **Light your meshes.** Either use `VoxelGiStandardMaterial` (Bevy's
    `StandardMaterial` lit by GI; add `VoxelGiStandardMaterialPlugin` and
@@ -94,7 +108,7 @@ cargo run -p voxel_gi --example minimal
      takes an `ExtendedMaterial`'s render method from your material: render
      it forward (`OpaqueRendererMethod::Forward` for a `StandardMaterial`
      base), since a deferred one runs Bevy's deferred shader without GI;
-   - in its fragment shader, `#import voxel_gi::presentation::{indirect_light,
+   - in its fragment shader, `#import bevy_voxel_gi::presentation::{indirect_light,
      sunlight, emission}`: multiply `indirect_light(...).light` by albedo,
      add `emission`, and use `sunlight` for the sun (see
      `shaders/voxel_gi_standard.wgsl`). The fragment needs no mesh:

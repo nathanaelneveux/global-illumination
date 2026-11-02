@@ -14,7 +14,7 @@ mod skylight;
 mod structures;
 mod tunnel;
 
-use voxel_gi_bvw::VoxelTransportMaterial;
+use bevy_voxel_gi_bvw::VoxelTransportMaterial;
 /// Face normals in the lab's face order (+X, -X, +Y, -Y, +Z, -Z).
 const FACE_OFFSETS: [IVec3; 6] = [
     IVec3::X,
@@ -32,6 +32,11 @@ use bevy::camera::{RenderTarget, ShadowLodOrigin};
 use bevy::prelude::*;
 use bevy::render::render_resource::{TextureFormat, TextureUsages};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
+use bevy_voxel_gi::{
+    MaterialTransport, VoxelGiEmitter, VoxelGiInput, VoxelGiSettings, VoxelGiStats,
+    VoxelMaterialTransportTable,
+};
+use bevy_voxel_gi_bvw::BvwVoxelEdits;
 use bevy_voxel_world::prelude::*;
 use bevy_voxel_world::rendering::VoxelWorldMaterialHandle;
 use metrics::Metrics;
@@ -39,11 +44,6 @@ use profiles::Profile;
 use serde_json::json;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use voxel_gi::{
-    MaterialTransport, VoxelGiEmitter, VoxelGiInput, VoxelGiSettings, VoxelGiStats,
-    VoxelMaterialTransportTable,
-};
-use voxel_gi_bvw::BvwVoxelEdits;
 
 #[derive(Resource, Default)]
 pub(super) struct CaptureEvidence {
@@ -205,7 +205,7 @@ pub(super) fn run_validation(
     cameras: Query<Entity, With<Camera3d>>,
     mut commands: Commands,
     handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
-    mut display: ResMut<voxel_gi::VoxelGiDisplay>,
+    mut display: ResMut<bevy_voxel_gi::VoxelGiDisplay>,
     mut transport_materials: ResMut<VoxelMaterialTransportTable>,
     asset_context: (
         Res<TemplateAssets>,
@@ -597,7 +597,7 @@ pub(super) fn run_validation(
         Profile::Motion | Profile::Tunnel | Profile::Streaming | Profile::Overlook
     ) || (profile == Profile::Cave && skylight::mode().is_some())
     {
-        next.debug_view = voxel_gi::GiDebugView::from_index(run.motion_diagnostic);
+        next.debug_view = bevy_voxel_gi::GiDebugView::from_index(run.motion_diagnostic);
     }
     if next != *display {
         *display = next;

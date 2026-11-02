@@ -1,4 +1,4 @@
-# Voxel GI
+# bevy_voxel_gi
 
 Real-time diffuse global illumination for voxel worlds in
 [Bevy](https://bevyengine.org) 0.19: sunlight, sky, emissive voxels and
@@ -11,16 +11,17 @@ integrated GPUs.
 
 | Crate | What it is |
 | --- | --- |
-| [`voxel_gi`](crates/voxel_gi) | GI itself. Start with its [README](crates/voxel_gi/README.md): host setup, tuning, performance, limitations |
-| [`voxel_gi_bvw`](crates/voxel_gi_bvw) | Connector for [`bevy_voxel_world`](https://github.com/splashdust/bevy_voxel_world): chunk events, voxel source, the lit mesh material |
-| [`voxel_gi_debug`](crates/voxel_gi_debug) | Optional HUD and tuning panel |
+| [`bevy_voxel_gi`](crates/bevy_voxel_gi) | GI itself. Start with its [README](crates/bevy_voxel_gi/README.md): host setup, tuning, performance, limitations |
+| [`bevy_voxel_gi_bvw`](crates/bevy_voxel_gi_bvw) | Connector for [`bevy_voxel_world`](https://github.com/splashdust/bevy_voxel_world): chunk events, voxel source, the lit mesh material |
+| [`bevy_voxel_gi_debug`](crates/bevy_voxel_gi_debug) | Optional HUD and tuning panel |
 
 ```sh
-cargo run -p voxel_gi --example minimal   # a small complete host
-cargo run --locked                        # the lab: a streaming BVW world with GI
+cargo run -p bevy_voxel_gi --example minimal   # a small complete host
+cargo run --locked                         # the lab: a streaming BVW world with GI
 ```
 
 Changes are in the [CHANGELOG](CHANGELOG.md).
+Release preparation and publication order are in [the release guide](docs/releasing.md).
 
 ## Platforms
 
@@ -30,7 +31,7 @@ Native GPUs only; WebGPU allows too few storage buffers per stage.
 - **Vulkan and DX12:** tested on an AMD RX 7900 XT under Windows 11
   ([first run](docs/history/windows-first-run.md)). Vulkan is the recommended
   Windows backend. DX12 needs the DXC shader compiler (see the
-  [`voxel_gi` README](crates/voxel_gi/README.md)).
+  [`bevy_voxel_gi` README](crates/bevy_voxel_gi/README.md)).
 
 [Testing on another GPU](docs/testing-other-gpus.md) explains how to try it on
 yours and what to send back.
@@ -111,6 +112,6 @@ converged. CPU and GPU work overlap, so don't add their times.
 ## License
 
 The crates are `MIT OR Apache-2.0` ([MIT](LICENSE-MIT.txt),
-[Apache](LICENSE-Apache-2.0.txt)); `voxel_gi` keeps the MIT notice of the
+[Apache](LICENSE-Apache-2.0.txt)); `bevy_voxel_gi` keeps the MIT notice of the
 `sobol_burley` code it adapts. The lab app (the root package) is
 `CC0-1.0 OR MIT OR Apache-2.0` ([CC0](LICENSE-CC0-1.0.txt)).

@@ -7,7 +7,7 @@
     pbr_functions::alpha_discard,
 }
 #import bevy_pbr::{lighting, shadows, mesh_view_bindings}
-#import voxel_gi::presentation::{indirect_light, sunlight, emission, voxel_sky, debug_mode}
+#import bevy_voxel_gi::presentation::{indirect_light, sunlight, emission, voxel_sky, debug_mode}
 
 #ifdef PREPASS_PIPELINE
 #import bevy_pbr::{

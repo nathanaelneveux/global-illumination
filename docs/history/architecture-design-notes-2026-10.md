@@ -64,7 +64,7 @@ statistics.
 | Plugin wiring and runtime state | `lib.rs` |
 | Host input: pages, edits, voxel source, interest envelope | `input.rs`, `pages.rs` |
 | Host block types to transport materials | `palette.rs` (`MaterialPalette`) |
-| BVW events, edits and source (connector crate) | `voxel_gi_bvw/src/lib.rs` |
+| BVW events, edits and source (connector crate) | `bevy_voxel_gi_bvw/src/lib.rs` |
 | Scene/receiver representation | `world.rs`, `field.rs` |
 | Acceleration, packing and shared GPU transactions | `naadf.rs`, `gpu_scene.rs`, `gpu/geometry.rs` |
 | Change metadata and retention | `world/delta.rs`, `geometry.rs`, `retention.rs`, `sources.rs`, `sun_changes.rs` |
@@ -82,14 +82,14 @@ statistics.
 | Direct-sun corner words and change footprints | `sky.rs`, `voxel_path.wgsl`, `voxel_trace.wgsl` (`trace_footprints`) |
 | Temporal display and initialization | `history.rs` |
 | Material data and shared buffers; GI material bindings; stock material | `render.rs` (`VoxelGiBindings`, `VoxelGiStandardMaterial`), `voxel_gi_standard.wgsl` |
-| Presentation for host materials (`voxel_gi::presentation`) | `voxel_gi_presentation.wgsl` |
-| BVW mesh material (connector crate) | `voxel_gi_bvw/src/material.rs`, `voxel_gi_bvw/shaders/voxel_transport.wgsl` |
+| Presentation for host materials (`bevy_voxel_gi::presentation`) | `voxel_gi_presentation.wgsl` |
+| BVW mesh material (connector crate) | `bevy_voxel_gi_bvw/src/material.rs`, `bevy_voxel_gi_bvw/shaders/voxel_transport.wgsl` |
 | Accounting; test fixtures | `telemetry.rs`; `research.rs` (tests only) |
-| HUD and tuning panel (debug crate) | `voxel_gi_debug/src/lib.rs` |
+| HUD and tuning panel (debug crate) | `bevy_voxel_gi_debug/src/lib.rs` |
 | Validation harness (lab) | `src/validation.rs`, `src/validation/` |
 
-Unqualified paths are in the core crate: Rust under `crates/voxel_gi/src/`,
-shaders under `crates/voxel_gi/shaders/` (embedded with `include_str!`). `reconstruction.rs` is an independent CPU test oracle for shader
+Unqualified paths are in the core crate: Rust under `crates/bevy_voxel_gi/src/`,
+shaders under `crates/bevy_voxel_gi/shaders/` (embedded with `include_str!`). `reconstruction.rs` is an independent CPU test oracle for shader
 interpolation, not a second production reconstruction path.
 
 ### View-owned lighting
@@ -1081,7 +1081,7 @@ time constant subject to the existing evidence/uncertainty filter, not a promise
 to settle in that many milliseconds. Display gain/toggles do not change energy
 returned to simulation readers.
 
-The `voxel_gi_debug` crate is the opt-in `VoxelGiDebugPlugin` (Bevy UI, feathers widgets):
+The `bevy_voxel_gi_debug` crate is the opt-in `VoxelGiDebugPlugin` (Bevy UI, feathers widgets):
 a HUD, quality presets (`VoxelGiQuality`, performance knobs only), performance
 and look sliders, a staged light model, display switches and RON clipboard
 import/export. Widgets bind to `VoxelGiSettings` and `VoxelGiDisplay` through
@@ -1096,7 +1096,7 @@ positions. There is no floating origin, world-ID key, deformation metric or
 cross-world ray routing yet. Core publishes what a lit material binds as
 `VoxelGiMaterialData` (shared geometry, traversal parameters, the visible-face
 output and the presentation uniform) and touches no material asset. The BVW
-connector crate (`voxel_gi_bvw`) owns page forwarding and the mesh
+connector crate (`bevy_voxel_gi_bvw`) owns page forwarding and the mesh
 material: BVW's vertex layout, the host's texture array (`material_template`,
 `prepare_texture_array`) and a copy of `VoxelGiMaterialData` on change.
 `VoxelGiDebugPlugin` is optional HUD/panel, not core input.

@@ -33,7 +33,7 @@ The implementation draws on [vxray](https://github.com/Nelarius/vxray), its [dev
 - Sparse display uploads preserve stable slots during edits. Topology patches preflight all allocations and hash insertions before publishing anything. Growing the cache keeps updating the previous display, and the replacement merges newer measurements in its installation frame rather than briefly showing the old worker snapshot. Invalidation preserves display blending weights as well as values; replacement weights change with the filtered estimate. No additional edit debounce is used.
 - Display-cache rebuilds publish fresh buffer identities and generation-owned patch queues. In-flight render frames retain their old generation; paired hash/probe uploads are bounds-checked and deferred updates are retained. Sparse geometry edits publish removed/added addresses and changed face values atomically, bypassing the ordinary value-upload timer. Shader bounds use the generation's allocated capacity so old extracted materials already accept new slots.
 
-The core lives in [`src/voxel_gi/`](../../crates/voxel_gi/src):
+The core lives in [`src/bevy_voxel_gi/`](../../crates/bevy_voxel_gi/src):
 
 ```text
 BVW streamed chunks + edits
@@ -266,7 +266,7 @@ is still a prototype integration, not a published storage-independent library.
 
 | Boundary | Responsibility / constraint |
 | --- | --- |
-| `voxel_gi/bvw.rs` | BVW events and generator snapshots become immutable 32³ pages. This is the host-specific storage adapter. |
+| `bevy_voxel_gi/bvw.rs` | BVW events and generator snapshots become immutable 32³ pages. This is the host-specific storage adapter. |
 | `world`, `naadf`, `gpu_scene`, `emission` | Immutable acceleration, persistent GPU geometry, and exact emissive-source discovery. No player or screen-space dependencies. |
 | `geometry` | Shared spatial history-retention plans for edits and streaming; bounded revision tracking, independent of camera and presentation. |
 | `tracer`, `gpu`, `sampling`, `sky_cache` | Multi-band face transport and shared-corner direct sun; bounded asynchronous work, with an independent CPU reference. |

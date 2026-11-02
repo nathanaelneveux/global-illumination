@@ -2,17 +2,17 @@
 //! room with a lamp and an open side), drawn as one cube per exposed voxel
 //! with `VoxelGiStandardMaterial`.
 //!
-//! `cargo run -p voxel_gi --example minimal`
+//! `cargo run -p bevy_voxel_gi --example minimal`
 //! (`VOXEL_GI_EXAMPLE_FRAMES=n` exits after n frames; with
 //! `VOXEL_GI_EXAMPLE_SCREENSHOT=path` the camera renders offscreen and the
 //! image is saved first, so the check works with the screen asleep.)
 use bevy::prelude::*;
-use std::sync::Arc;
-use voxel_gi::{
+use bevy_voxel_gi::{
     MaterialPalette, MaterialTransport, PageSample, VoxelGiInput, VoxelGiMaterialData,
     VoxelGiPlugin, VoxelGiSource, VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin,
     VoxelMaterialTransportTable, VoxelSource, dense_page, standard_material,
 };
+use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Block {

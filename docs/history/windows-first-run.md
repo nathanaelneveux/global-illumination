@@ -31,8 +31,8 @@ default. The DX12 runs below set `WGPU_BACKEND=dx12` explicitly.
 | Build: example, lab, both test crates | pass | (same build) |
 | 2. `minimal` window | pass (tester: looked correct) | not run |
 | 2. `minimal.png`, 600 frames offscreen | pass, no WARN/ERROR | not run |
-| 3. `voxel_gi` lib tests (`--include-ignored`) | **181 pass, 3 fail** | not run |
-| 3. `voxel_gi_bvw` lib tests | 8 pass | not run |
+| 3. `bevy_voxel_gi` lib tests (`--include-ignored`) | **181 pass, 3 fail** | not run |
+| 3. `bevy_voxel_gi_bvw` lib tests | 8 pass | not run |
 | 4. Lab window | pass (tester: "looked and ran good", about 180 FPS) | not run |
 | 5. Headless streaming, cave, house | all completed | **all fail at startup** (FXC) |
 
@@ -44,14 +44,14 @@ here. The GPU tests always ran on Vulkan (the test adapter line says so).
 On `0b06e67`, with Git for Windows' default `core.autocrlf=true`, `minimal`
 panicked before opening a window:
 
-    thread 'main' panicked at crates\voxel_gi\src\gpu.rs:45:5:
+    thread 'main' panicked at crates\bevy_voxel_gi\src\gpu.rs:45:5:
     shader lacks the traversal include marker
 
 The call chain was `VoxelGiPlugin::build` → `install_render_assets` →
 `presentation_shader_source` → `include_traversal`. `33ac7ed` forces LF
 checkouts. Everything after that crash ran on an LF checkout.
 
-### 2. Three `voxel_gi` GPU test failures (Vulkan)
+### 2. Three `bevy_voxel_gi` GPU test failures (Vulkan)
 
 - `gpu::view::runtime::coverage_tests::native_view_discovery_keeps_thin_surfaces_without_growing_storage`
   fails at `coverage_tests.rs:229`, "all six crowded planes need support". Grid 4
@@ -75,7 +75,7 @@ discovery).
 adapter honours `WGPU_BACKEND` since `d6993b6`, so the first run's GPU tests
 had only ever exercised Vulkan):
 
-| Backend | `voxel_gi` lib | `voxel_gi_bvw` lib |
+| Backend | `bevy_voxel_gi` lib | `bevy_voxel_gi_bvw` lib |
 |---|---|---|
 | Vulkan | 184/184 (24.7 s) | 8/8 |
 | DX12 + DXC (`WGPU_DX12_COMPILER=dxc`, Windows SDK DXC 1.8) | 184/184 (116.6 s) | 8/8 (20.6 s) |
@@ -106,7 +106,7 @@ trace_pixel_queue and trace_visible_paths. The only WARN line is Bevy's
 `PATH`. No shader errors appear, but the run fails its capture check:
 "Offscreen capture is uniform/black, has unexpected dimensions, or has no active
 camera targeting its image." `settled.png` is entirely black. Nothing logs at
-WARN with `RUST_LOG=warn,voxel_gi=info,wgpu_hal=info`.
+WARN with `RUST_LOG=warn,bevy_voxel_gi=info,wgpu_hal=info`.
 
 ### 4. Memory is not sampled on Windows
 

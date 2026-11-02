@@ -24,7 +24,7 @@ impl std::error::Error for PaletteFull {}
 /// Host keys to transport material IDs, and the matching transport table.
 ///
 /// ```
-/// # use voxel_gi::{AIR, MaterialPalette, MaterialTransport};
+/// # use bevy_voxel_gi::{AIR, MaterialPalette, MaterialTransport};
 /// # use bevy::math::Vec3;
 /// let mut palette = MaterialPalette::new();
 /// let stone = MaterialTransport { diffuse: Vec3::splat(0.5), emission: Vec3::ZERO };
@@ -41,7 +41,7 @@ impl std::error::Error for PaletteFull {}
 /// blocks you never registered a fallback:
 ///
 /// ```
-/// # use voxel_gi::{MaterialPalette, MaterialTransport};
+/// # use bevy_voxel_gi::{MaterialPalette, MaterialTransport};
 /// # use bevy::math::Vec3;
 /// let mut palette = MaterialPalette::<u16>::new();
 /// palette.insert(7, MaterialTransport { diffuse: Vec3::splat(0.2), emission: Vec3::ZERO }).unwrap();

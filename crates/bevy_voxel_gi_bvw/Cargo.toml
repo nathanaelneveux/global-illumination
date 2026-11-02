@@ -1,19 +1,20 @@
 [package]
-name = "voxel_gi_bvw"
-description = "bevy_voxel_world connector for voxel_gi: page events, voxel source and the lit mesh material"
+name = "bevy_voxel_gi_bvw"
+description = "bevy_voxel_world connector for bevy_voxel_gi: page events, voxel source and the lit mesh material"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 readme = "README.md"
+documentation = "https://docs.rs/bevy_voxel_gi_bvw"
 keywords = ["voxel", "global-illumination", "bevy", "bevy_voxel_world", "gamedev"]
 categories = ["game-development", "rendering"]
 
 [dependencies]
 bevy.workspace = true
 bevy_voxel_world.workspace = true
-voxel_gi.workspace = true
+bevy_voxel_gi.workspace = true
 wgpu.workspace = true
 # Material-scoped PBR hooks (`override fn`); keeps Bevy's lighting intact.
 naga_oil = { version = "0.22", default-features = false, features = ["override_any"] }

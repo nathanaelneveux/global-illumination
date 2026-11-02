@@ -1,13 +1,14 @@
 [package]
-name = "voxel_gi"
-description = "Persistent diffuse global illumination for axis-aligned voxel worlds in Bevy"
+name = "bevy_voxel_gi"
+description = "GPU path-traced diffuse global illumination for voxel worlds in Bevy: sun, sky, emissive blocks and multi-bounce light"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 readme = "README.md"
-keywords = ["voxel", "global-illumination", "bevy", "lighting", "gamedev"]
+documentation = "https://docs.rs/bevy_voxel_gi"
+keywords = ["bevy", "voxel", "global-illumination", "path-tracing", "lighting"]
 categories = ["game-development", "rendering"]
 
 [dependencies]

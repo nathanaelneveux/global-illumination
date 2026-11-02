@@ -4,7 +4,7 @@
 //! the floor's and the far wall's history: only sunlight-change detection
 //! cuts it. `pre` opens the hole at startup and is the settled reference.
 use super::*;
-use voxel_gi_bvw::BvwVoxelEdits;
+use bevy_voxel_gi_bvw::BvwVoxelEdits;
 
 /// 7x7 ceiling opening, clear of the hanging crystals (x % 11 == 7,
 /// z % 13 == 8); the cave sun lands about (+7.6, -38, +5.7) from it.

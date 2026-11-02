@@ -1,7 +1,7 @@
 //! Focused visual fixture for cavity initialization and voxel-emitter removal.
 //! Opt-in only; never changes ordinary terrain, settings, or materials on disk.
 use super::*;
-use voxel_gi_bvw::BvwVoxelEdits;
+use bevy_voxel_gi_bvw::BvwVoxelEdits;
 
 const HOLE: IVec3 = IVec3::new(8, 38, -9);
 const EMITTER: IVec3 = IVec3::new(10, 41, -9);

@@ -19,9 +19,9 @@ repository = "https://github.com/nathanaelneveux/global-illumination"
 [workspace.dependencies]
 bevy = "0.19"
 bevy_voxel_world = "0.17"
-voxel_gi = { path = "crates/voxel_gi", version = "0.1.0" }
-voxel_gi_bvw = { path = "crates/voxel_gi_bvw", version = "0.1.0" }
-voxel_gi_debug = { path = "crates/voxel_gi_debug", version = "0.1.0" }
+bevy_voxel_gi = { path = "crates/bevy_voxel_gi", version = "0.1.0" }
+bevy_voxel_gi_bvw = { path = "crates/bevy_voxel_gi_bvw", version = "0.1.0" }
+bevy_voxel_gi_debug = { path = "crates/bevy_voxel_gi_debug", version = "0.1.0" }
 # "std" makes error scopes thread-local. Without it (Bevy disables wgpu's
 # defaults) every thread shares one scope stack, and GI pipeline validation on
 # a worker interleaved with Bevy's pipeline cache: "Mismatched pop_error_scope".
@@ -52,9 +52,9 @@ tracy = ["bevy/trace_tracy", "bevy/debug"]
 [dependencies]
 avian3d = { version = "0.7", default-features = false, features = ["3d", "f32", "parry-f32", "debug-plugin"] }
 bevy = { workspace = true, features = ["bevy_feathers", "system_clipboard"] }
-voxel_gi.workspace = true
-voxel_gi_bvw.workspace = true
-voxel_gi_debug.workspace = true
+bevy_voxel_gi.workspace = true
+bevy_voxel_gi_bvw.workspace = true
+bevy_voxel_gi_debug.workspace = true
 bevy_ahoy = "0.2"
 bevy_asset_loader = "0.27"
 bevy_common_assets = { version = "0.17", features = ["ron"] }

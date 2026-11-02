@@ -1,11 +1,11 @@
 // Voxel GI presentation for host materials: what turns the view tier's
 // output into light at a fragment. Import it from a material shader
-// (`#import voxel_gi::presentation::{indirect_light, sunlight, ...}`); its
+// (`#import bevy_voxel_gi::presentation::{indirect_light, sunlight, ...}`); its
 // globals are namespaced by the import, so they cannot collide with the
 // host's. It binds the GI resources at 104 and 106-111 of the material bind
 // group: hosts add them with `VoxelGiBindings` (an `ExtendedMaterial`
 // extension) and keep those numbers free.
-#define_import_path voxel_gi::presentation
+#define_import_path bevy_voxel_gi::presentation
 
 struct GpuTransportSettings {
     enabled: u32,

@@ -12,7 +12,7 @@ use bevy::ui::Checked;
 use bevy::ui_widgets::{Activate, SliderPrecision, SliderStep, SliderValue, ValueChange};
 use std::time::{Duration, Instant};
 
-use voxel_gi::{
+use bevy_voxel_gi::{
     GiDebugView, VoxelGiDisplay, VoxelGiQuality, VoxelGiSettings, VoxelGiStats, VoxelGiSystems,
 };
 
@@ -204,7 +204,7 @@ struct PanelOpen(bool);
 #[derive(Resource, Default)]
 struct PanelState {
     /// Staged light model (reach, bounces), applied explicitly.
-    draft: Option<voxel_gi::TransportSettings>,
+    draft: Option<bevy_voxel_gi::TransportSettings>,
     paste: Option<ClipboardRead>,
 }
 
@@ -525,7 +525,7 @@ fn hud_cost_text(stats: &VoxelGiStats) -> String {
             .map_or_else(|| "n/a".into(), |value| format!("{value:.2} ms/frame"))
     };
     let view = stats.view_gpu;
-    let view_text = if view == voxel_gi::ViewReceipts::default() {
+    let view_text = if view == bevy_voxel_gi::ViewReceipts::default() {
         "n/a".into()
     } else {
         format!(
@@ -546,7 +546,7 @@ fn hud_cost_text(stats: &VoxelGiStats) -> String {
 
 fn toggle_voxel_gi(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut gi: ResMut<voxel_gi::VoxelGiDisplay>,
+    mut gi: ResMut<bevy_voxel_gi::VoxelGiDisplay>,
     mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>,
 ) {
     if keyboard.just_pressed(KeyCode::F7) {
@@ -560,7 +560,7 @@ fn toggle_voxel_gi(
         // Every diagnostic view in turn (`GiDebugView::from_index` wraps to
         // None past the last). Coverage: cyan far tier, green receiver,
         // yellow hole fill, red none.
-        let next = voxel_gi::GiDebugView::from_index(gi.debug_view.index() + 1);
+        let next = bevy_voxel_gi::GiDebugView::from_index(gi.debug_view.index() + 1);
         gi.debug_view = next;
         info!(view = ?next, "voxel GI diagnostic view changed");
         for mut window in &mut windows {
@@ -735,7 +735,7 @@ mod tests {
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
         // An external caller, not the keyboard or panel, changed presentation.
-        world.insert_resource(voxel_gi::VoxelGiDisplay {
+        world.insert_resource(bevy_voxel_gi::VoxelGiDisplay {
             enabled: false,
             ..default()
         });
@@ -745,7 +745,7 @@ mod tests {
         for expected in [true, false] {
             world.run_system_once(toggle_voxel_gi).unwrap();
             assert_eq!(
-                world.resource::<voxel_gi::VoxelGiDisplay>().enabled,
+                world.resource::<bevy_voxel_gi::VoxelGiDisplay>().enabled,
                 expected
             );
         }
@@ -794,7 +794,7 @@ mod tests {
             settled_coverage: 0.125,
             main_thread_ms_per_frame: Some(1.25),
             gpu_ms_per_frame: Some(0.375),
-            view_gpu: voxel_gi::ViewReceipts {
+            view_gpu: bevy_voxel_gi::ViewReceipts {
                 trace_ms: 1.0,
                 presentation_ms: 0.5,
                 discovery_ms: 0.25,

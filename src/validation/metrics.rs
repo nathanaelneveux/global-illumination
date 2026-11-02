@@ -1,11 +1,11 @@
 //! Frame timing and transport work observations from public GI stats.
 //! Deliberately separate from visual ground truth: captures judge lighting.
 use bevy::prelude::*;
+#[cfg(test)]
+use bevy_voxel_gi::SchedulerStats;
+use bevy_voxel_gi::{GI_MAIN_STAGE_NAMES, VoxelGiStats};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-#[cfg(test)]
-use voxel_gi::SchedulerStats;
-use voxel_gi::{GI_MAIN_STAGE_NAMES, VoxelGiStats};
 
 pub(super) fn distribution(values: &[f32]) -> Value {
     if values.is_empty() {

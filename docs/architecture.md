@@ -3,7 +3,7 @@
 Voxel GI estimates diffuse RGB lighting for one axis-aligned voxel world.
 The host owns storage, meshing, edits, lights and cameras. The core owns an
 immutable transport scene, GPU tracing, history and presentation. The
-[crate README](../crates/voxel_gi/README.md) describes the public setup API;
+[crate README](../crates/bevy_voxel_gi/README.md) describes the public setup API;
 [validation](validation.md) describes how to qualify changes.
 
 ## Data flow and ownership
@@ -30,7 +30,7 @@ that every frame or source call has a fixed maximum cost.
 | Plugin wiring and runtime state | `lib.rs` |
 | Host input: pages, edits, voxel source, interest envelope | `input.rs`, `pages.rs` |
 | Host block types to transport materials | `palette.rs` (`MaterialPalette`) |
-| BVW events, edits and source (connector crate) | `voxel_gi_bvw/src/lib.rs` |
+| BVW events, edits and source (connector crate) | `bevy_voxel_gi_bvw/src/lib.rs` |
 | Scene/receiver representation | `world.rs`, `field.rs` |
 | Acceleration, packing and shared GPU transactions | `naadf.rs`, `gpu_scene.rs`, `gpu/geometry.rs` |
 | Change metadata and retention | `world/delta.rs`, `geometry.rs`, `retention.rs`, `sources.rs`, `sun_changes.rs` |
@@ -48,14 +48,14 @@ that every frame or source call has a fixed maximum cost.
 | Direct-sun corner words and change footprints | `sky.rs`, `voxel_path.wgsl`, `voxel_trace.wgsl` (`trace_footprints`) |
 | Temporal display and initialization | `history.rs` |
 | Material data and shared buffers; GI material bindings; stock material | `render.rs` (`VoxelGiBindings`, `VoxelGiStandardMaterial`), `voxel_gi_standard.wgsl` |
-| Presentation for host materials (`voxel_gi::presentation`) | `voxel_gi_presentation.wgsl` |
-| BVW mesh material (connector crate) | `voxel_gi_bvw/src/material.rs`, `voxel_gi_bvw/shaders/voxel_transport.wgsl` |
+| Presentation for host materials (`bevy_voxel_gi::presentation`) | `voxel_gi_presentation.wgsl` |
+| BVW mesh material (connector crate) | `bevy_voxel_gi_bvw/src/material.rs`, `bevy_voxel_gi_bvw/shaders/voxel_transport.wgsl` |
 | Accounting; test fixtures | `telemetry.rs`; `research.rs` (tests only) |
-| HUD and tuning panel (debug crate) | `voxel_gi_debug/src/lib.rs` |
+| HUD and tuning panel (debug crate) | `bevy_voxel_gi_debug/src/lib.rs` |
 | Validation harness (lab) | `src/validation.rs`, `src/validation/` |
 
-Unqualified paths are in the core crate: Rust under `crates/voxel_gi/src/`,
-shaders under `crates/voxel_gi/shaders/` (embedded with `include_str!`). `reconstruction.rs` is an independent CPU test oracle for shader
+Unqualified paths are in the core crate: Rust under `crates/bevy_voxel_gi/src/`,
+shaders under `crates/bevy_voxel_gi/shaders/` (embedded with `include_str!`). `reconstruction.rs` is an independent CPU test oracle for shader
 interpolation, not a second production reconstruction path.
 
 ## Host input contract
@@ -281,7 +281,7 @@ Filtered donor support is not an increase in independent samples.
 
 The material reads per-camera scratch output in encoder order. Validity headers
 are cleared before each camera. Host materials bind `VoxelGiBindings` and call
-`voxel_gi::presentation`; stock and BVW materials use forward rendering.
+`bevy_voxel_gi::presentation`; stock and BVW materials use forward rendering.
 Directional lighting, emission and indirect terms must each be applied once.
 
 ## Quality controls and model changes

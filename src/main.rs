@@ -29,10 +29,10 @@ use bevy::winit::WinitPlugin;
 use bevy_ahoy::prelude::AhoyPlugins;
 use bevy_enhanced_input::prelude::EnhancedInputPlugin;
 
+use bevy_voxel_gi::VoxelGiPlugin;
 use chunk_colliders::ChunkColliderPlugin;
 use player::PlayerPlugin;
 use terrain::TerrainPlugin;
-use voxel_gi::VoxelGiPlugin;
 use world_environment::WorldEnvironmentPlugin;
 
 // Keep launch provenance available in release builds too; validation-only
@@ -113,12 +113,12 @@ fn main() -> AppExit {
     }
     // All prototype writes use BvwVoxelEdits::set_voxel; coarse external changes
     // explicitly request resampling. BVW remains the terrain/mesh host.
-    app.insert_resource(voxel_gi::VoxelGiInput::tracked());
+    app.insert_resource(bevy_voxel_gi::VoxelGiInput::tracked());
     app.add_plugins(gi_lab::GiLabPlugin);
     if gi_lab::gi_enabled() {
         app.add_plugins((
             VoxelGiPlugin,
-            voxel_gi_bvw::VoxelGiBvwPlugin::<terrain::PrototypeWorld>::default(),
+            bevy_voxel_gi_bvw::VoxelGiBvwPlugin::<terrain::PrototypeWorld>::default(),
         ));
     } else {
         gi_lab::init_gi_off_resources(&mut app);

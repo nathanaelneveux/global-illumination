@@ -199,8 +199,8 @@ simulation accuracy is solved.
 
 ### Reproducible controls
 
-Tests are in `src/voxel_gi/history_audit.rs`, registered under
-`voxel_gi::gpu::refinement`. All five numerical bands use identical retention
+Tests are in `src/bevy_voxel_gi/history_audit.rs`, registered under
+`bevy_voxel_gi::gpu::refinement`. All five numerical bands use identical retention
 weights. These are opt-in controls, not additions to routine gameplay testing:
 
 ```sh

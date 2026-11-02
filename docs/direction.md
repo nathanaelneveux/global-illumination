@@ -2,7 +2,7 @@
 
 Voxel GI is a client-side RGB lighting system. The current implementation is
 in [architecture](architecture.md); the release integration API is in the
-[core crate README](../crates/voxel_gi/README.md).
+[core crate README](../crates/bevy_voxel_gi/README.md).
 
 ## Current lighting design
 

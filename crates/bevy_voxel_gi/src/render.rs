@@ -299,11 +299,14 @@ pub fn install_render_assets(app: &mut App) {
     if let Some(mut shaders) = app.world_mut().get_resource_mut::<Assets<Shader>>() {
         let _ = shaders.insert(
             PRESENTATION_SHADER.id(),
-            Shader::from_wgsl(presentation_shader_source(), "voxel_gi/presentation.wgsl"),
+            Shader::from_wgsl(
+                presentation_shader_source(),
+                "bevy_voxel_gi/presentation.wgsl",
+            ),
         );
         let _ = shaders.insert(
             STANDARD_SHADER.id(),
-            Shader::from_wgsl(STANDARD_SHADER_SOURCE, "voxel_gi/standard.wgsl"),
+            Shader::from_wgsl(STANDARD_SHADER_SOURCE, "bevy_voxel_gi/standard.wgsl"),
         );
     }
 }
@@ -367,20 +370,20 @@ impl Plugin for VoxelGiStandardMaterialPlugin {
     }
 }
 
-/// The `voxel_gi::presentation` WGSL import module (registered by
+/// The `bevy_voxel_gi::presentation` WGSL import module (registered by
 /// `VoxelGiPlugin`): indirect light, sunlight and emission at a fragment for
 /// host materials, over the bindings `VoxelGiBindings` supplies.
 pub const PRESENTATION_SHADER: Handle<Shader> =
     bevy::asset::uuid_handle!("6b7a1c2e-7d43-4f0e-9a51-2c8e5b9d0f14");
 
-/// The `voxel_gi::presentation` module's source, for hosts composing
+/// The `bevy_voxel_gi::presentation` module's source, for hosts composing
 /// shaders outside Bevy's asset pipeline (e.g. composition tests).
 pub fn presentation_shader_source() -> String {
     super::gpu::include_traversal(include_str!("../shaders/voxel_gi_presentation.wgsl"))
 }
 
 /// GI's bindings for a host material (104 and 106-111 of the material bind
-/// group, where `voxel_gi::presentation` reads them). Wrap the host material
+/// group, where `bevy_voxel_gi::presentation` reads them). Wrap the host material
 /// as `ExtendedMaterial<HostMaterial, VoxelGiBindings>`: the host keeps its
 /// own shaders and bindings, which must leave those numbers free. Build it
 /// with `VoxelGiBindings::from(&VoxelGiMaterialData)` and add
@@ -507,7 +510,7 @@ mod standard_tests {
     fn standard_material_shader_composes_with_bevys_real_pbr_modules() {
         use bevy::render::{RenderPlugin, settings::WgpuSettings};
         use bevy::shader::{ShaderCache, ShaderCacheSource, ShaderDefVal};
-        // Bevy's own registered PBR libraries plus voxel_gi::presentation; no
+        // Bevy's own registered PBR libraries plus bevy_voxel_gi::presentation; no
         // window or GPU.
         let mut app = App::new();
         app.add_plugins(
@@ -536,11 +539,14 @@ mod standard_tests {
             let mut shaders = app.world_mut().resource_mut::<Assets<Shader>>();
             let _ = shaders.insert(
                 PRESENTATION_SHADER.id(),
-                Shader::from_wgsl(presentation_shader_source(), "voxel_gi/presentation.wgsl"),
+                Shader::from_wgsl(
+                    presentation_shader_source(),
+                    "bevy_voxel_gi/presentation.wgsl",
+                ),
             );
             let _ = shaders.insert(
                 STANDARD_SHADER.id(),
-                Shader::from_wgsl(STANDARD_SHADER_SOURCE, "voxel_gi/standard.wgsl"),
+                Shader::from_wgsl(STANDARD_SHADER_SOURCE, "bevy_voxel_gi/standard.wgsl"),
             );
         }
         let mut cache = ShaderCache::new(

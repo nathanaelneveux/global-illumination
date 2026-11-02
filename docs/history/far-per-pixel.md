@@ -279,7 +279,7 @@ Regression check against 4c9e065 (M4, headless 1440p, one run each):
 - **House:** settling turned/return 400 ms 0.0097/0.0052 -> 0.0102/0.0027,
   cross-run final 0.013-0.014, cadence equal.
 - **Stress:** completed, clean log.
-- **Tests and clippy:** voxel_gi lib with --include-ignored, 164 passed;
+- **Tests and clippy:** bevy_voxel_gi lib with --include-ignored, 164 passed;
   connector 6; lab 34 (the config test covers the control); clippy
   all-targets clean.
 

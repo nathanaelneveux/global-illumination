@@ -7,12 +7,12 @@ pub use material::{
 };
 
 use bevy::prelude::*;
+use bevy_voxel_gi::{
+    PageSample, VoxelGiInput, VoxelGiSource, VoxelGiSystems, VoxelSource, coarse_page, dense_page,
+};
 use bevy_voxel_world::prelude::*;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use voxel_gi::{
-    PageSample, VoxelGiInput, VoxelGiSource, VoxelGiSystems, VoxelSource, coarse_page, dense_page,
-};
 
 /// Positions with no loaded page (or gaps in unsupported sampling shapes)
 /// come from the world's own generator when it has one. The default treats
@@ -40,7 +40,7 @@ where
     fn build(&self, app: &mut App) {
         assert_eq!(
             bevy_voxel_world::custom_meshing::CHUNK_SIZE_U,
-            voxel_gi::VOXEL_GI_PAGE_EDGE,
+            bevy_voxel_gi::VOXEL_GI_PAGE_EDGE,
             "a BVW chunk must be one GI page"
         );
         material::install(app);
@@ -146,7 +146,7 @@ where
     }
 }
 
-const CHUNK: u32 = voxel_gi::VOXEL_GI_PAGE_EDGE;
+const CHUNK: u32 = bevy_voxel_gi::VOXEL_GI_PAGE_EDGE;
 
 /// The stride a chunk's padded data shape stores (`samples + 2` per axis):
 /// cubic, with a power-of-two sample count dividing the chunk. Other shapes

@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 use bevy_voxel_world::prelude::WorldVoxel;
 
-use voxel_gi::{MaterialTransport, VoxelMaterialTransportTable};
+use bevy_voxel_gi::{MaterialTransport, VoxelMaterialTransportTable};
 
 pub fn enabled() -> bool {
     if background_terrain_requested() {

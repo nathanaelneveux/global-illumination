@@ -60,7 +60,7 @@ did not compact live paths or separate shadow queues.
 The implementation follows the shuffled, padded, hash-scrambled Sobol approach
 described by [Sobol-Burley](https://github.com/cessen/sobol_burley), based on
 [Burley 2020](https://jcgt.org/published/0009/04/01/). Its reverse-bit scramble is
-adapted under the included `crates/voxel_gi/licenses/sobol_burley-MIT.txt`. No external direction
+adapted under the included `crates/bevy_voxel_gi/licenses/sobol_burley-MIT.txt`. No external direction
 tables or dependency were added. The first two Sobol dimensions are computed
 arithmetically; separate dimension pairs have separate seeds. Existing light
 PDFs, power weighting, visibility and five-band MIS remain unchanged.

@@ -142,7 +142,7 @@ checks the material integration. These are lifetime checks, not sampler or
 gameplay performance qualification.
 
 The far consumer's raw gate is `cargo test --locked --offline
-voxel_gi::gpu::view_tests -- --ignored --test-threads=1 --nocapture`.
+bevy_voxel_gi::gpu::view_tests -- --ignored --test-threads=1 --nocapture`.
 It covers matched prefixes against near transport, frozen-cache termination,
 black/unknown/inactive accounting, and analytic multi-bounce tails. The `wave`
 tests compare one/three/eight-hit partitions with unsplit paths, including
@@ -349,7 +349,7 @@ Budget, batch samples, stability thresholds and temporal response answer separat
 questions; do not change them together in the first reach comparison.
 
 Focused checks are `tuning_` (CPU configuration/widget/preset contracts),
-`voxel_gi::gpu::tuning_tests -- --ignored --nocapture` (native variable-model parity,
+`bevy_voxel_gi::gpu::tuning_tests -- --ignored --nocapture` (native variable-model parity,
 sealed-roof and empty-streaming-frontier checks), and optional
 `tuning_panel_offscreen_capture -- --ignored --nocapture`. The latter saves
 `target/gi-tuning-panel.png` using production widgets and Bevy's image capture,
@@ -611,7 +611,7 @@ transition; it must not be mistaken for improved sampler accuracy.
   option to the display rate, hiding headroom; on macOS `AutoNoVsync` alone
   still blocks most frames on the two-drawable default. Reports record the
   actual `present_mode`. Compare uncapped intervals only with other uncapped
-  runs. Add `RUST_LOG=warn,voxel_gi=info` for the
+  runs. Add `RUST_LOG=warn,bevy_voxel_gi=info` for the
   view tier's GPU receipts (`GI view transport`: trace, presentation,
   discovery, pool), logged every 120 frames.
 - Coverage is at least one path sample per exposed face. Bootstrap targets eight.

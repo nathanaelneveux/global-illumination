@@ -1331,11 +1331,11 @@ mod tests {
     #[test]
     fn presentation_module_mirrors_the_view_tier() {
         // Host materials read buffers the view tier writes through
-        // voxel_gi::presentation; its copies of their structs must keep the
+        // bevy_voxel_gi::presentation; its copies of their structs must keep the
         // same members at the same offsets.
         let presentation = crate::gpu::reflect::Reflection::new(
             &crate::render::presentation_shader_source()
-                .replace("#define_import_path voxel_gi::presentation", "")
+                .replace("#define_import_path bevy_voxel_gi::presentation", "")
                 .replace("#{MATERIAL_BIND_GROUP}", "2"),
         );
         let runtime = crate::gpu::reflect::Reflection::new(&shader(false));

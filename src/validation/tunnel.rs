@@ -1,7 +1,7 @@
 //! Repeated one-wide, two-high digging from daylight into a hillside. The
 //! renderer and asynchronous mesh/transport publication remain unmodified.
 use super::*;
-use voxel_gi_bvw::BvwVoxelEdits;
+use bevy_voxel_gi_bvw::BvwVoxelEdits;
 
 #[derive(Default)]
 pub(super) struct TunnelRun {

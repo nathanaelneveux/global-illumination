@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `voxel_gi`, `voxel_gi_bvw` and `voxel_gi_debug`.
+All notable changes to `bevy_voxel_gi`, `bevy_voxel_gi_bvw` and `bevy_voxel_gi_debug`.
 The crates share one version. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
@@ -11,7 +11,7 @@ The crates share one version. The format follows
 - First release, for Bevy 0.19 on native GPUs (Metal, Vulkan, DX12). On
   Windows, Vulkan is recommended; DX12 needs the DXC shader compiler (FXC
   rejects GI's compute shaders).
-- `voxel_gi`: diffuse global illumination for axis-aligned voxel worlds:
+- `bevy_voxel_gi`: diffuse global illumination for axis-aligned voxel worlds:
   sunlight, sky, emissive voxels and multi-bounce indirect light traced
   against the voxels on the GPU.
   - Three lighting tiers: per-camera view receivers for visible faces, a
@@ -22,7 +22,7 @@ The crates share one version. The format follows
     `VoxelSource` at full or coarse stride, `MaterialPalette` for mapping
     block types to transport materials (with keyless fallback optics), and `VoxelGiEmitter` for lights with
     no Bevy counterpart. Declared pages bound GI's interest.
-  - Presentation: the `voxel_gi::presentation` WGSL module and
+  - Presentation: the `bevy_voxel_gi::presentation` WGSL module and
     `VoxelGiBindings` for lighting your own material (meshes or a
     ray-traced primary), or the stock `VoxelGiStandardMaterial`. GI lights
     forward-rendered materials only; the stock materials force forward.
@@ -36,14 +36,14 @@ The crates share one version. The format follows
     skipped for that view), no device (idles). A GI-lit material still needs
     DXC on DX12: Bevy builds it, and FXC's failure there exits the app.
   - `examples/minimal.rs`.
-- `voxel_gi_bvw`: `bevy_voxel_world` 0.17 connector: chunk events become page
+- `bevy_voxel_gi_bvw`: `bevy_voxel_world` 0.17 connector: chunk events become page
   events, chunks (including LOD chunks at their stride) are the voxel
   source, and `VoxelTransportMaterial` lights the chunk meshes. BVW's
   material indices reach GI unchanged: set block optics in
   `VoxelMaterialTransportTable` at those indices.
   `prepare_texture_array` builds the block texture array with a full mip
   chain (sRGB averaged in linear light) and 8x anisotropic filtering.
-- `voxel_gi_debug`: an opt-in HUD, tuning panel, presentation toggles and
+- `bevy_voxel_gi_debug`: an opt-in HUD, tuning panel, presentation toggles and
   terminal stats.
 
 ### API stability
@@ -66,5 +66,10 @@ The crates share one version. The format follows
   second or more at 100,000 pages (`VOXEL_GI_LAB_FAR=64` in the lab). Far
   geometry fills in over seconds there, and faces a host just remeshed (a
   chunk changing LoD) can show dark until GI's next build lands.
+- Authoritative BVW resampling can reintroduce retained fine geometry into a
+  downgraded chunk's coarse GI page. Normal strided ingestion follows the mesh;
+  the authoritative-resampling path still needs the same consistency fix.
+- The scene sampling time budget can defer a nearby edit behind streaming in
+  queues of 768 pages or fewer, which do not currently receive priority sorting.
 - Measured on an Apple M4 (Metal) and an AMD RX 7900 XT (Vulkan, DX12 with
   DXC) only.

@@ -111,10 +111,10 @@ fn refresh_voxel_texture_on_change(
     let layers = world.voxel_texture_layers().max(1);
     // Read through AssetMut first. Mutably dereferencing an already prepared
     // image would emit Modified again and reupload the texture every frame.
-    if voxel_gi_bvw::texture_array_ready(&image, layers) {
+    if bevy_voxel_gi_bvw::texture_array_ready(&image, layers) {
         return;
     }
-    if let Err(error) = voxel_gi_bvw::prepare_texture_array(&mut image, layers) {
+    if let Err(error) = bevy_voxel_gi_bvw::prepare_texture_array(&mut image, layers) {
         error!(%error, "failed to prepare terrain texture array");
     }
 }
@@ -171,7 +171,7 @@ mod tests {
             modified, 1,
             "preparation must modify the image exactly once"
         );
-        assert!(voxel_gi_bvw::texture_array_ready(
+        assert!(bevy_voxel_gi_bvw::texture_array_ready(
             app.world()
                 .resource::<Assets<Image>>()
                 .get(&texture)
@@ -203,7 +203,7 @@ mod tests {
             .resource::<Assets<Image>>()
             .get(&texture)
             .unwrap();
-        assert!(voxel_gi_bvw::texture_array_ready(image, 2));
+        assert!(bevy_voxel_gi_bvw::texture_array_ready(image, 2));
         assert_eq!(image.texture_descriptor.size.height, 4);
         // Two 2x4 layers, each with its 2x4, 1x2 and 1x1 levels.
         assert_eq!(image.data.as_ref().unwrap().len(), 2 * (8 + 2 + 1) * 4);

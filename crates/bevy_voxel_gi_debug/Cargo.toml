@@ -1,18 +1,19 @@
 [package]
-name = "voxel_gi_debug"
-description = "Optional HUD and tuning panel for voxel_gi"
+name = "bevy_voxel_gi_debug"
+description = "Optional HUD and tuning panel for bevy_voxel_gi"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 readme = "README.md"
+documentation = "https://docs.rs/bevy_voxel_gi_debug"
 keywords = ["voxel", "global-illumination", "bevy", "debug", "gamedev"]
 categories = ["game-development", "rendering", "development-tools"]
 
 [dependencies]
 bevy = { workspace = true, features = ["bevy_feathers", "system_clipboard"] }
-voxel_gi.workspace = true
+bevy_voxel_gi.workspace = true
 
 [lints]
 workspace = true

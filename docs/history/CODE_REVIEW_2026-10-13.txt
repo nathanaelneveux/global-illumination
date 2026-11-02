@@ -62,10 +62,10 @@ F1. P2 — GI input adaptation and runtime initialization need a clearer boundar
 Confidence: high. Category: architecture/API.
 
 Evidence:
-  src/voxel_gi/mod.rs:84-111;
-  src/voxel_gi/bvw.rs:10,26-28,77-81;
-  src/voxel_gi/display.rs:195-209;
-  src/voxel_gi/render.rs:22-51.
+  src/bevy_voxel_gi/mod.rs:84-111;
+  src/bevy_voxel_gi/bvw.rs:10,26-28,77-81;
+  src/bevy_voxel_gi/display.rs:195-209;
+  src/bevy_voxel_gi/render.rs:22-51.
 
 The GI plugin unconditionally installs systems using PrototypeWorld, its concrete
 chunk messages, generator, and VoxelWorld resources. Display publication obtains
@@ -102,9 +102,9 @@ Confidence: high for the missing checks; failure requires sufficient residency.
 Category: robustness/capacity.
 
 Evidence:
-  src/voxel_gi/render.rs:28,696-741,748-800;
-  src/voxel_gi/render.rs:37-40;
-  compare src/voxel_gi/gpu.rs:170-179.
+  src/bevy_voxel_gi/render.rs:28,696-741,748-800;
+  src/bevy_voxel_gi/render.rs:37-40;
+  compare src/bevy_voxel_gi/gpu.rs:170-179.
 
 Display capacity is resident_count + max(resident_count / 2, 16,384). Each slot
 uses 208 bytes. CPU mirrors are allocated first; prepare_buffers then allocates
@@ -137,8 +137,8 @@ F3. P2 — A small topology edit can drain the entire value backlog synchronousl
 Confidence: high. Category: frame-budget enforcement.
 
 Evidence:
-  src/voxel_gi/display.rs:271-287;
-  src/voxel_gi/render.rs:999-1028,1045-1087.
+  src/bevy_voxel_gi/display.rs:271-287;
+  src/bevy_voxel_gi/render.rs:999-1028,1045-1087.
 
 The regular value path uses try_lock and a time budget, leaving unconsumed
 dirty keys queued. The topology path passes all runtime.gpu_value_dirty.keys()
@@ -167,7 +167,7 @@ Confidence: high for cost; mixed-time snapshot consequence is a risk to test.
 Category: ingestion performance and snapshot contract.
 
 Evidence:
-  src/voxel_gi/bvw.rs:39-43,60-65,119-152,200-213;
+  src/bevy_voxel_gi/bvw.rs:39-43,60-65,119-152,200-213;
   dependency bevy_voxel_world 0.17.0, src/voxel_world.rs:159-190.
 
 Chunk updates and explicit individual edits both request full page resampling.
@@ -204,11 +204,11 @@ Confidence: high for scaling structure; prioritize using measured stage cost.
 Category: duplicated work and architecture.
 
 Evidence:
-  src/voxel_gi/world.rs:356-388;
-  src/voxel_gi/geometry.rs:30-104,180-214;
-  src/voxel_gi/gpu_scene.rs:54-98;
-  src/voxel_gi/sky_cache.rs:250-307;
-  src/voxel_gi/emission.rs:61-103.
+  src/bevy_voxel_gi/world.rs:356-388;
+  src/bevy_voxel_gi/geometry.rs:30-104,180-214;
+  src/bevy_voxel_gi/gpu_scene.rs:54-98;
+  src/bevy_voxel_gi/sky_cache.rs:250-307;
+  src/bevy_voxel_gi/emission.rs:61-103.
 
 The scene builder already knows changed/removed pages, but downstream consumers
 repeatedly compare old/new region maps. SceneChanges scans both residency maps;
@@ -243,7 +243,7 @@ F6. P2 — Bevy light visibility does not participate in the transport source st
 Confidence: high for behavior; desired source policy needs a deliberate choice.
 Category: host-integration correctness.
 
-Evidence: src/voxel_gi/sources.rs:83-150.
+Evidence: src/bevy_voxel_gi/sources.rs:83-150.
 Dependency comparison: bevy_pbr 0.19.1, src/render/light.rs, extract_lights.
 
 The adapter queries light, GlobalTransform, and optional EnergyEmitter only.
@@ -269,11 +269,11 @@ F7. P2 — Core behavior is configured through process-global diagnostic state
 Confidence: high. Category: library configuration/testability.
 
 Evidence:
-  src/voxel_gi/mod.rs:36-37,113-131;
-  src/voxel_gi/work.rs:147;
-  src/voxel_gi/dispatch.rs:407-408;
-  src/voxel_gi/world.rs:511;
-  src/voxel_gi/validation.rs and validation/retention_audit.rs.
+  src/bevy_voxel_gi/mod.rs:36-37,113-131;
+  src/bevy_voxel_gi/work.rs:147;
+  src/bevy_voxel_gi/dispatch.rs:407-408;
+  src/bevy_voxel_gi/world.rs:511;
+  src/bevy_voxel_gi/validation.rs and validation/retention_audit.rs.
 
 The main plugin reads environment variables for continuous mode, retention,
 summary policy, and backend choice. Invalid retention launch values can panic
@@ -305,8 +305,8 @@ Confidence: high for work performed; importance depends on source count.
 Category: straightforward performance cleanup.
 
 Evidence:
-  src/voxel_gi/sources.rs:98-141,153-160;
-  src/voxel_gi/tracer.rs:651-688;
+  src/bevy_voxel_gi/sources.rs:98-141,153-160;
+  src/bevy_voxel_gi/tracer.rs:651-688;
   assets/shaders/voxel_trace.wgsl:377-399.
 
 Source filtering checks positions, directions, and range, but retains sources
@@ -429,7 +429,7 @@ VERIFICATION PERFORMED
    Passed with six unused-item warnings: four GI items listed in C1 and two
    prototype-host items excluded from this review's recommendations.
 
-4. cargo test --no-default-features voxel_gi::work::tests -- --nocapture
+4. cargo test --no-default-features bevy_voxel_gi::work::tests -- --nocapture
    Passed: 6 tests. Covers compact publication/reference equivalence and
    retention/freshness behavior among the focused checks; 276 filtered out.
 

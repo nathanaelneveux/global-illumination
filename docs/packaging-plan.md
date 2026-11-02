@@ -1,6 +1,6 @@
 # Packaging plan: voxel GI crate + BVW connector
 
-> Historical packaging proposal from 2026-10-23. The workspace split and public material API have since landed. Proposed APIs, page sizes, staging and unresolved questions below describe that checkpoint, not the release contract. Use the [crate README](../crates/voxel_gi/README.md) and [architecture](architecture.md) for current integration.
+> Historical packaging proposal from 2026-10-23. The workspace split and public material API have since landed. Proposed APIs, page sizes, staging and unresolved questions below describe that checkpoint, not the release contract. Use the [crate README](../crates/bevy_voxel_gi/README.md) and [architecture](architecture.md) for current integration.
 
 2026-10-23. Base: `voxel-global-illumination` at `36c9cea` (view-owned faces,
 two-way world cache radius 64, shared-corner sun). Reviewed with the user the
@@ -33,9 +33,9 @@ One Cargo workspace in this repository:
 
 | Crate | Contents | Depends on |
 | --- | --- | --- |
-| `voxel_gi` | Transport scene (16³ pages), GPU path tracer and world cache, view tier (prepass discovery, shared receiver pool, two-way cache, presentation), shared-corner sun, settings, WGSL shading functions | `bevy` |
-| `voxel_gi_bvw` | `bevy_voxel_world` adapter: chunk spawn/despawn/edit events to pages and dirty voxels, voxel source, the lit BVW mesh material (copies core's `VoxelGiMaterialData`) | `voxel_gi`, `bevy_voxel_world` |
-| `voxel_gi_debug` | HUD overlay, tuning panel (Bevy UI, feathers), keyboard toggles, terminal stats logging; later debug shading modes behind a shader def. Reads `voxel_gi`'s public resources; core never depends on it | `voxel_gi`, `bevy` (`bevy_feathers`) |
+| `bevy_voxel_gi` | Transport scene (16³ pages), GPU path tracer and world cache, view tier (prepass discovery, shared receiver pool, two-way cache, presentation), shared-corner sun, settings, WGSL shading functions | `bevy` |
+| `bevy_voxel_gi_bvw` | `bevy_voxel_world` adapter: chunk spawn/despawn/edit events to pages and dirty voxels, voxel source, the lit BVW mesh material (copies core's `VoxelGiMaterialData`) | `bevy_voxel_gi`, `bevy_voxel_world` |
+| `bevy_voxel_gi_debug` | HUD overlay, tuning panel (Bevy UI, feathers), keyboard toggles, terminal stats logging; later debug shading modes behind a shader def. Reads `bevy_voxel_gi`'s public resources; core never depends on it | `bevy_voxel_gi`, `bevy` (`bevy_feathers`) |
 | `gi_lab` (this app) | Terrain scenes, player, crosshair, validation profiles, `tools/`, `config/` | all three |
 
 The debug split keeps production lean: core exposes counters and GPU timing
@@ -256,7 +256,7 @@ research, 1.2k diagnostics) and 3.3k of WGSL.
 | CPU field | `field.rs` | per decision 2 | |
 | CPU oracle | `tracer.rs`, `sampling.rs`, `emission/tree.rs`, `reconstruction.rs`, `gpu/correctness_audit*`, `research.rs` | lab tests or delete | Dead in release |
 | BVW adapter | `bvw.rs` | connector | Includes residency (`update_receiver_residency`), which belongs in core |
-| Diagnostics | `diagnostics*.rs` | `voxel_gi_debug` | HUD, tuning UI |
+| Diagnostics | `diagnostics*.rs` | `bevy_voxel_gi_debug` | HUD, tuning UI |
 | Validation | `validation*.rs`, `tools/`, `config/` | lab | |
 
 ## Staging
@@ -265,8 +265,8 @@ research, 1.2k diagnostics) and 3.3k of WGSL.
    removal, each with its gate evidence and the performance comparison. The app
    keeps working throughout.
 2. **Band removal and CPU field removal**, measured like any other change.
-3. **Workspace split** (done 2026-10-24). `crates/voxel_gi`, `crates/voxel_gi_bvw`,
-   `crates/voxel_gi_debug`; the lab stays the root package. Core publishes
+3. **Workspace split** (done 2026-10-24). `crates/bevy_voxel_gi`, `crates/bevy_voxel_gi_bvw`,
+   `crates/bevy_voxel_gi_debug`; the lab stays the root package. Core publishes
    `VoxelGiMaterialData` and touches no material; the connector owns the BVW
    material. Connector tests reach core only through `#[doc(hidden)] testing`.
    Cost check (M4, headless 1440p streaming, baseline worktree at `37e5117`
