@@ -4,7 +4,7 @@ All notable changes to `voxel_gi`, `voxel_gi_bvw` and `voxel_gi_debug`.
 The crates share one version. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.1.0] - 2026-11-02
 
 ### Added
 
@@ -62,3 +62,9 @@ The crates share one version. The format follows
   per-face tiers'.
 - Not WebGPU: the view tier needs more storage buffers per stage than
   WebGPU allows.
+- Scene builds cost time in proportion to the whole loaded world: about a
+  second or more at 100,000 pages (`VOXEL_GI_LAB_FAR=64` in the lab). Far
+  geometry fills in over seconds there, and faces a host just remeshed (a
+  chunk changing LoD) can show dark until GI's next build lands.
+- Measured on an Apple M4 (Metal) and an AMD RX 7900 XT (Vulkan, DX12 with
+  DXC) only.
