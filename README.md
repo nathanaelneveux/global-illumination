@@ -76,13 +76,14 @@ the house. The cave descends to a lava rim.
 | --- | --- |
 | WASD / mouse | Move / look |
 | Space / Ctrl / Shift | Jump / crouch / sprint |
+| Space twice | Toggle creative flight: WASD, Space up, Ctrl down, Shift 3× faster |
 | Left / right click | Remove / place a voxel |
 | E | Place a warm emitting voxel at the aimed-at face |
 | B | Remove a radius-5 sphere at the aimed-at voxel |
 | F3 | Mesh debug overlay |
 | F4 | Toggle indirect GI |
 | F5 | Flat faces / corner interpolation |
-| F6 | Irradiance diagnostic view |
+| F6 | Cycle diagnostic views (irradiance, tier coverage, indirect, sun, exact sun, face validity) |
 | F7 | GI's corner sun / Bevy's per-pixel sun |
 | Esc | Release the cursor and open the inspector and HUD buttons |
 

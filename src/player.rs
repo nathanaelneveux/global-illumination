@@ -30,6 +30,19 @@ const PLAYER_MAX_SPEED: f32 = 80.0;
 const PLAYER_AIR_ACCELERATION_HZ: f32 = 8.0;
 const PLAYER_MAX_AIR_WISH_SPEED: f32 = 0.35;
 const BOMB_RADIUS: i32 = 5;
+/// Creative flight (double-tap Space): voxels per second, and Shift's factor.
+const FLY_SPEED: f32 = 20.0;
+const FLY_SPRINT_FACTOR: f32 = 3.0;
+const DOUBLE_TAP_SECONDS: f32 = 0.3;
+
+/// Creative flight, Minecraft style: double-tap Space to toggle. WASD moves
+/// along the view's heading, Space rises, Ctrl descends, Shift is faster.
+/// Gravity is off while flying; collision stays on.
+#[derive(Component, Default)]
+struct Flight {
+    flying: bool,
+    last_space: Option<f32>,
+}
 
 pub struct PlayerPlugin;
 
@@ -45,13 +58,14 @@ impl Plugin for PlayerPlugin {
                     .chain()
                     .before(AhoySystems::MoveCharacters),
             )
-            .add_systems(Update, reset_player_to_world_spawn);
+            .add_systems(Update, reset_player_to_world_spawn)
+            .add_systems(FixedPostUpdate, fly.after(AhoySystems::MoveCharacters));
         if !crate::headless_validation() {
             app.add_systems(
                 PreUpdate,
                 sync_player_input.before(EnhancedInputSystems::Prepare),
             )
-            .add_systems(Update, edit_voxels);
+            .add_systems(Update, (edit_voxels, toggle_flight));
             // Validation captures stay free of HUD overlays.
             if std::env::var_os("VOXEL_GI_VALIDATE").is_none() {
                 app.add_systems(Startup, spawn_crosshair)
@@ -171,6 +185,7 @@ fn spawn_player(mut commands: Commands, world: Res<PrototypeWorld>) {
             Player,
             PlayerInput,
             HeldJumpFilter::default(),
+            Flight::default(),
             player_controller(),
             Collider::cylinder(PLAYER_RADIUS, PLAYER_HEIGHT),
             Transform::from_translation(world.player_spawn_position()),
@@ -356,6 +371,83 @@ fn filter_held_jump(
     }
 
     filter.was_grounded = true;
+}
+
+fn toggle_flight(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    cursor: Single<&CursorOptions, With<PrimaryWindow>>,
+    time: Res<Time>,
+    mut player: Single<
+        (
+            &mut Flight,
+            &mut CharacterController,
+            Option<&mut LinearVelocity>,
+        ),
+        With<Player>,
+    >,
+) {
+    if cursor.visible || !keyboard.just_pressed(KeyCode::Space) {
+        return;
+    }
+    let now = time.elapsed_secs();
+    let (flight, controller, velocity) = &mut *player;
+    if !flight
+        .last_space
+        .is_some_and(|last| now - last < DOUBLE_TAP_SECONDS)
+    {
+        flight.last_space = Some(now);
+        return;
+    }
+    flight.last_space = None;
+    flight.flying = !flight.flying;
+    controller.gravity = if flight.flying { 0.0 } else { PLAYER_GRAVITY };
+    if let Some(velocity) = velocity.as_mut() {
+        ***velocity = Vec3::ZERO;
+    }
+    info!(flying = flight.flying, "creative flight");
+}
+
+/// Moves a flying player after the controller's own step, which then sees
+/// no momentum to carry (gravity is off).
+fn fly(
+    time: Res<Time>,
+    movement: Single<&Action<Movement>>,
+    jump: Single<&Action<Jump>>,
+    crouch: Single<&Action<Crouch>>,
+    sprint: Single<&Action<Sprint>>,
+    mut player: Single<
+        (
+            &Flight,
+            Option<&bevy_ahoy::CharacterLook>,
+            &mut Transform,
+            Option<&mut LinearVelocity>,
+        ),
+        With<Player>,
+    >,
+) {
+    let (flight, look, transform, velocity) = &mut *player;
+    if !flight.flying {
+        return;
+    }
+    let heading = Quat::from_rotation_y(look.map_or(0.0, |look| look.yaw));
+    let movement = **movement.into_inner();
+    let mut direction = heading * Vec3::X * movement.x + heading * Vec3::NEG_Z * movement.y;
+    if **jump.into_inner() {
+        direction += Vec3::Y;
+    }
+    if **crouch.into_inner() {
+        direction -= Vec3::Y;
+    }
+    let speed = FLY_SPEED
+        * if **sprint.into_inner() {
+            FLY_SPRINT_FACTOR
+        } else {
+            1.0
+        };
+    transform.translation += direction.normalize_or_zero() * speed * time.delta_secs();
+    if let Some(velocity) = velocity.as_mut() {
+        ***velocity = Vec3::ZERO;
+    }
 }
 
 fn reset_player_to_world_spawn(

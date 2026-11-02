@@ -20,7 +20,7 @@ use voxel_gi::{
 pub struct VoxelGiDebugPlugin {
     /// The HUD and the "Lighting controls" panel.
     pub ui: bool,
-    /// F4 GI on/off, F5 corner reconstruction, F6 irradiance view, F7 sun mode.
+    /// F4 GI on/off, F5 corner reconstruction, F6 cycles diagnostic views, F7 sun mode.
     pub keyboard_toggles: bool,
     /// An `info!` status line every five seconds.
     pub terminal_stats: bool,
@@ -557,15 +557,15 @@ fn toggle_voxel_gi(
         );
     }
     if keyboard.just_pressed(KeyCode::F6) {
-        gi.debug_view = if gi.debug_view == voxel_gi::GiDebugView::None {
-            voxel_gi::GiDebugView::Irradiance
-        } else {
-            voxel_gi::GiDebugView::None
-        };
-        info!(
-            irradiance_only = gi.debug_view != voxel_gi::GiDebugView::None,
-            "voxel GI diagnostic view changed"
-        );
+        // Every diagnostic view in turn (`GiDebugView::from_index` wraps to
+        // None past the last). Coverage: cyan far tier, green receiver,
+        // yellow hole fill, red none.
+        let next = voxel_gi::GiDebugView::from_index(gi.debug_view.index() + 1);
+        gi.debug_view = next;
+        info!(view = ?next, "voxel GI diagnostic view changed");
+        for mut window in &mut windows {
+            window.title = format!("Voxel GI Lab | Diagnostic: {next:?} (F6)");
+        }
     }
     if keyboard.just_pressed(KeyCode::F5) {
         gi.corner_reconstruction = !gi.corner_reconstruction;
