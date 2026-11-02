@@ -373,6 +373,17 @@ mesh's material for a frame or two at startup.
 
 Experiments after 0.1, each judged against the same scenes on the M4:
 
+- **Scene builds that cost the change, not the world (decided 2026-11-02).**
+  Every scene build rebuilds the top-level empty-space field and copies the
+  region map for the whole loaded world, and probably repeats more
+  whole-world work. With `VOXEL_GI_LAB_FAR=64` (about 98,000 pages), builds
+  take over a second at 283k regions and 3 to 5 s at 566k. That bounds far
+  streaming and edit latency for every host with a large world (`3b4b5f6`
+  commit message; `world::stream_bench`). Profile a far-world build first,
+  then make the region map persistent and update the top-level field
+  locally. Judge by edit response in a far world (`response`, `tunnel`
+  profiles with `VOXEL_GI_LAB_FAR`) and by how quickly far lighting fills in.
+
 - **MetalFX denoising.** [metalfx_wgpu](https://github.com/mate-h/metalfx_wgpu)
   wraps MetalFX's temporal denoised scaler (macOS 26, wgpu 30, so Bevy 0.20).
   Since July, Solari runs on Metal
