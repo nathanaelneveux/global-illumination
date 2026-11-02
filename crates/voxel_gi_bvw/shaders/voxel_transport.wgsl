@@ -8,7 +8,8 @@
 #import bevy_pbr::{lighting, shadows, mesh_view_bindings}
 #import bevy_render::instance_index::get_instance_index
 #import voxel_gi::presentation::{
-    indirect_light, sunlight, sunlight_reference, emission, face_in_geometry, voxel_sky, debug_mode,
+    indirect_light, sunlight, sunlight_reference, sunlight_outside_geometry, emission, face_in_geometry,
+    voxel_sky, debug_mode,
 }
 
 #ifdef PREPASS_PIPELINE
@@ -85,7 +86,15 @@ override fn lighting::directional_light(
         return lighting::directional_light(light_id, input, enable_diffuse);
     }
     if light_id != 0u || !enable_diffuse { return vec3(0.0); }
-    let sky = sunlight((*input).P, (*input).layers[lighting::LAYER_BASE].N, fragment_footprint);
+    let position = (*input).P;
+    let normal = (*input).layers[lighting::LAYER_BASE].N;
+    // A face GI's geometry lacks (its chunk was remeshed at another LoD and
+    // GI's next scene build hasn't landed) traces from the first air along
+    // its normal, not from inside GI's solids, which would read as black.
+    var sky = sunlight_outside_geometry(position, normal);
+    if face_in_geometry(position, normal) {
+        sky = sunlight(position, normal, fragment_footprint);
+    }
     // Transport imports sun illuminance / 10,000. Restore photometric scale
     // for a Lambertian response here; Bevy applies camera exposure afterwards.
     // This comparison intentionally has no view-dependent sun specular lobe.
