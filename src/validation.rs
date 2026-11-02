@@ -265,7 +265,7 @@ pub(super) fn run_validation(
         run.profile = profile;
         if matches!(
             profile,
-            Profile::Motion | Profile::Tunnel | Profile::Streaming
+            Profile::Motion | Profile::Tunnel | Profile::Streaming | Profile::Overlook
         ) || (profile == Profile::Cave && skylight::mode().is_some())
         {
             run.motion_static = std::env::var_os("VOXEL_GI_VALIDATE_MOTION_STATIC").is_some();
@@ -531,6 +531,36 @@ pub(super) fn run_validation(
             run.moves += 1;
         }
     }
+    if profile == Profile::Overlook {
+        // Out 100 voxels along the view and back (10 s each way), then up.
+        let walked = if profiles::overlook_direct() {
+            0.0
+        } else {
+            let t = elapsed - 10.0;
+            10.0 * if t < 10.0 {
+                t.max(0.0)
+            } else {
+                (20.0 - t).max(0.0)
+            }
+        };
+        let rise = profiles::overlook_height() * ((elapsed - 30.0) / 2.0).clamp(0.0, 1.0);
+        let eye =
+            generator.player_spawn_position() + Vec3::Y * (1.62 + rise) + Vec3::NEG_Z * walked;
+        let pitch = if elapsed >= 30.0 { -0.2 } else { 0.0 };
+        let yaw = if elapsed >= 30.0 && profiles::overlook_turn() {
+            std::f32::consts::PI
+        } else {
+            0.0
+        };
+        let transform = Transform::from_translation(eye)
+            .with_rotation(Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch));
+        for camera in &cameras {
+            commands
+                .entity(camera)
+                .remove::<bevy_ahoy::prelude::CharacterControllerCameraOf>()
+                .insert(transform);
+        }
+    }
     if profile == Profile::Motion {
         // Same eye and two repeatable orientations, separated by 0.15 degrees.
         // Exact returns distinguish selection flicker from camera parallax.
@@ -564,7 +594,7 @@ pub(super) fn run_validation(
     profile.configure(elapsed, &mut next);
     if matches!(
         profile,
-        Profile::Motion | Profile::Tunnel | Profile::Streaming
+        Profile::Motion | Profile::Tunnel | Profile::Streaming | Profile::Overlook
     ) || (profile == Profile::Cave && skylight::mode().is_some())
     {
         next.debug_view = voxel_gi::GiDebugView::from_index(run.motion_diagnostic);

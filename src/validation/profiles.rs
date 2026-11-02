@@ -24,7 +24,44 @@ pub(super) enum Profile {
     Compare,
     Stress,
     Lod,
+    Overlook,
 }
+
+/// `overlook` repeats a playtest that left far-band faces shimmering: walk
+/// 100 voxels from spawn and back, rise `VOXEL_GI_VALIDATE_OVERLOOK_HEIGHT`
+/// (default 40) above it, and hold still looking out. With
+/// `VOXEL_GI_VALIDATE_OVERLOOK_DIRECT=1` it rises without the walk (the
+/// control that did not shimmer).
+pub(super) fn overlook_height() -> f32 {
+    std::env::var("VOXEL_GI_VALIDATE_OVERLOOK_HEIGHT")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+        .unwrap_or(40.0)
+}
+
+/// `VOXEL_GI_VALIDATE_OVERLOOK_TURN=1`: hold facing back toward spawn.
+pub(super) fn overlook_turn() -> bool {
+    std::env::var_os("VOXEL_GI_VALIDATE_OVERLOOK_TURN").is_some()
+}
+
+pub(super) fn overlook_direct() -> bool {
+    std::env::var_os("VOXEL_GI_VALIDATE_OVERLOOK_DIRECT").is_some()
+}
+
+/// One capture on rising, a 24-frame burst while holding still, and one late.
+static OVERLOOK_CAPTURES: std::sync::LazyLock<Vec<(f32, &'static str)>> =
+    std::sync::LazyLock::new(|| {
+        let mut captures = vec![(34.0, "risen"), (40.0, "hold-40s")];
+        for frame in 0..24 {
+            captures.push((
+                50.0,
+                &*Box::leak(format!("hold-{frame:02}").into_boxed_str()),
+            ));
+        }
+        captures.extend([(60.0, "hold-60s"), (68.0, "hold-late")]);
+        captures
+    });
 
 /// `motion` walk mode (VOXEL_GI_VALIDATE_MOTION_WALK=<voxels per second>).
 pub(super) fn motion_walk() -> Option<f32> {
@@ -114,8 +151,9 @@ impl Profile {
             "compare" => Ok(Self::Compare),
             "stress" => Ok(Self::Stress),
             "lod" => Ok(Self::Lod),
+            "overlook" => Ok(Self::Overlook),
             _ => Err(format!(
-                "unknown validation profile {value:?}; choose gameplay, streaming, motion, house, house-edits, response, edits, tunnel, sources, cave, canyon, day-cycle, structures, hallway, live-cave, live-hallway, compare, stress, or lod"
+                "unknown validation profile {value:?}; choose gameplay, streaming, motion, house, house-edits, response, edits, tunnel, sources, cave, canyon, day-cycle, structures, hallway, live-cave, live-hallway, compare, stress, lod, or overlook"
             )),
         }
     }
@@ -141,6 +179,7 @@ impl Profile {
             Self::Compare => "compare",
             Self::Stress => "stress",
             Self::Lod => "lod",
+            Self::Overlook => "overlook",
         }
     }
 
@@ -154,6 +193,7 @@ impl Profile {
         match self {
             Self::Compare => 29.0,
             Self::Lod => 40.0,
+            Self::Overlook => 70.0,
             Self::Streaming => 35.0,
             Self::Motion => 32.0,
             Self::House => 90.0,
@@ -176,6 +216,9 @@ impl Profile {
     }
 
     pub fn captures(self) -> &'static [(f32, &'static str)] {
+        if self == Self::Overlook {
+            return &OVERLOOK_CAPTURES;
+        }
         if self == Self::Tunnel {
             return &[
                 (14.5, "entrance"),
@@ -390,6 +433,13 @@ impl Profile {
         }
         if self == Self::Lod {
             return if elapsed < 10.0 { "startup" } else { "flight" };
+        }
+        if self == Self::Overlook {
+            return match elapsed {
+                t if t < 10.0 => "startup",
+                t if t < 30.0 => "walk",
+                _ => "hold",
+            };
         }
         if self == Self::Structures {
             if elapsed < 12.0 {
