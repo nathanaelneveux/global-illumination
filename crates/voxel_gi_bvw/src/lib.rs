@@ -160,6 +160,61 @@ fn chunk_stride(shape: UVec3) -> Option<u32> {
     .then_some(CHUNK / samples)
 }
 
+/// GI's page for a loaded chunk: what BVW draws, not what it stores. A
+/// chunk moved to a coarser LoD keeps its finer data
+/// (`ChunkRegenerateStrategy::Reuse`, BVW's default) and meshes a copy
+/// resampled to its LoD's meshing shape, so GI samples the same voxels the
+/// mesh shows (`mesh_voxel`). Tracing the retained full-resolution data
+/// instead left faces lit from geometry they are not on.
+/// `voxel` reads the chunk's padded data index; `at` a world position (with
+/// the world's fallback).
+fn sample_chunk(
+    page: IVec3,
+    data: UVec3,
+    mesh: UVec3,
+    voxel: impl Fn(UVec3) -> WorldVoxel<u8>,
+    at: impl Fn(IVec3) -> WorldVoxel<u8>,
+) -> PageSample {
+    // An unset meshing shape meshes the data as stored (BVW's delegate).
+    let mesh = Some(mesh).filter(|shape| *shape != UVec3::ZERO);
+    if let Some(stride) = chunk_stride(mesh.unwrap_or(data))
+        && chunk_stride(data).is_some()
+    {
+        let mesh = mesh.unwrap_or(data);
+        return coarse_page(page, stride, |position| {
+            // One mesh sample per cell, past the one-sample padding.
+            let cell = (position - page * CHUNK as i32).as_uvec3() / stride + UVec3::ONE;
+            solid(voxel(UVec3::new(
+                mesh_voxel(cell.x, mesh.x, data.x),
+                mesh_voxel(cell.y, mesh.y, data.y),
+                mesh_voxel(cell.z, mesh.z, data.z),
+            )))
+        });
+    }
+    dense_page(page, |position| solid(at(position)))
+}
+
+/// The padded data index BVW meshes for padded mesh index `mesh_i` when the
+/// meshing shape is coarser than the data (`resample_voxels_nearest` in
+/// `bevy_voxel_world::meshing`, which the lab's mesher copies): nearest by
+/// the inner extents' ratio, padding kept at the bounds. Identity when the
+/// shapes match.
+fn mesh_voxel(mesh_i: u32, mesh_dim: u32, data_dim: u32) -> u32 {
+    let mesh_inner = mesh_dim.saturating_sub(2).max(1);
+    let data_inner = data_dim.saturating_sub(2).max(1);
+    if mesh_inner == data_inner {
+        return mesh_i;
+    }
+    if mesh_i == 0 {
+        return 0;
+    }
+    if mesh_i >= mesh_dim - 1 {
+        return data_dim - 1;
+    }
+    let ratio = (data_inner - 1).max(1) as f32 / (mesh_inner - 1).max(1) as f32;
+    (((mesh_i - 1) as f32 * ratio).round() as u32 + 1).min(data_dim - 1)
+}
+
 /// A new source snapshot whenever GI input changed (chunk events, edits).
 fn refresh_source<C>(
     input: Res<VoxelGiInput>,
@@ -178,20 +233,17 @@ fn refresh_source<C>(
         if chunk.is_empty() {
             return Some(PageSample::air());
         }
-        if let Some(stride) = chunk_stride(chunk.data_shape()) {
-            // One stored sample per cell, past the one-sample padding.
-            return Some(coarse_page(page, stride, |position| {
-                let cell = (position - page * CHUNK as i32).as_uvec3() / stride;
-                solid(chunk.get_voxel(cell + UVec3::ONE))
-            }));
-        }
-        Some(dense_page(page, |position| {
-            solid(
+        Some(sample_chunk(
+            page,
+            chunk.data_shape(),
+            chunk.mesh_shape(),
+            |index| chunk.get_voxel(index),
+            |position| {
                 chunk
                     .get_voxel_at_world_position(position)
-                    .unwrap_or_else(|| fallback(position)),
-            )
-        }))
+                    .unwrap_or_else(|| fallback(position))
+            },
+        ))
     });
     source.0 = Some(Arc::new(BvwSource {
         chunk_page,
@@ -228,6 +280,60 @@ mod tests {
             );
         app.update();
         app
+    }
+
+    #[test]
+    fn a_downgraded_chunk_is_traced_as_its_coarse_mesh_not_its_retained_data() {
+        // BVW keeps a downgraded chunk's full-resolution data (34 padded
+        // samples) and meshes it resampled to its LoD's shape (18: 2-voxel
+        // blocks). Material = the voxel's local x, so each GI cell shows
+        // which data voxel it took.
+        let page = IVec3::new(2, -1, 3);
+        let material = |index: UVec3| WorldVoxel::Solid(index.x.saturating_sub(1) as u8);
+        let downgraded = sample_chunk(
+            page,
+            UVec3::splat(34),
+            UVec3::splat(18),
+            material,
+            |_| unreachable!(),
+        );
+        assert_eq!(downgraded.stride(), 2, "traced at the mesh's stride");
+        let cell_x = |k: u32| downgraded.material(UVec3::new(2 * k, 5, 9));
+        // Nearest by 31/15, as the mesher resamples: not simply 2k.
+        assert_eq!(
+            (cell_x(0), cell_x(7), cell_x(8), cell_x(15)),
+            (0, 14, 17, 31)
+        );
+        // Matching shapes keep sampling as stored, at either resolution.
+        let full = sample_chunk(
+            page,
+            UVec3::splat(34),
+            UVec3::splat(34),
+            material,
+            |_| unreachable!(),
+        );
+        assert_eq!(
+            (full.stride(), full.material(UVec3::new(17, 0, 0))),
+            (1, 17)
+        );
+        let coarse = sample_chunk(
+            page,
+            UVec3::splat(18),
+            UVec3::splat(18),
+            material,
+            |_| unreachable!(),
+        );
+        assert_eq!(
+            (coarse.stride(), coarse.material(UVec3::new(16, 0, 0))),
+            (2, 8)
+        );
+        // Mesh indices map like bevy_voxel_world's resample_voxels_nearest.
+        assert_eq!(
+            (0..18).map(|i| mesh_voxel(i, 18, 34)).collect::<Vec<_>>(),
+            [
+                0, 1, 3, 5, 7, 9, 11, 13, 15, 18, 20, 22, 24, 26, 28, 30, 32, 33
+            ]
+        );
     }
 
     #[test]
