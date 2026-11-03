@@ -99,6 +99,29 @@ Experiments after 0.1, each judged against the same scenes on the M4:
   for them cost 1.5 ms or more per frame in every form tried, and was
   reverted (`7e8c034`).
 
+- **Selective GI geometry coverage (proposed 2026-11-03; untested).**
+  The BVW connector declares every loaded chunk, and GI retains that geometry
+  beyond the 64-voxel world-cache radius. Visible receiver identities and
+  far-tier surface positions already come from raster depth and normals;
+  the broader geometry serves lighting rays. Hypothesis: offscreen geometry
+  farther behind the camera than the cache radius often contributes little
+  to mid-tier indirect light, and the far tier may tolerate still less detail
+  or a smaller transport neighborhood. The cache radius has not been qualified
+  as a geometry cutoff.
+
+  Measure page ingestion, scene-build, upload and memory costs alongside where
+  lighting rays travel. Experiment with GI geometry admission independent of
+  host residency, retaining visible surfaces and varying offscreen coverage
+  or detail by tier. Consider bounded detailed bounce geometry with cheaper
+  long-range occlusion and important-source coverage. Distant sunlight blockers,
+  bright emitters and the combined influence of large surfaces need explicit
+  checks; omitted geometry must not silently become known empty space.
+  Compare against full host coverage with the preferred corner look fixed:
+  settling and reveal/return in house/cave, response/tunnel edits, motion and
+  frame-time tails, including far-world builds and distant blockers/emitters.
+  Record any visible bias and boundary popping alongside savings. This is a
+  future experiment, with no geometry policy or default changed.
+
 - **MetalFX denoising.** [metalfx_wgpu](https://github.com/mate-h/metalfx_wgpu)
   wraps MetalFX's temporal denoised scaler (macOS 26, wgpu 30, so Bevy 0.20).
   Since July, Solari runs on Metal
