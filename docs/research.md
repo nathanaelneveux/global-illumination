@@ -109,6 +109,14 @@ Experiments after 0.1, each judged against the same scenes on the M4:
   or a smaller transport neighborhood. The cache radius has not been qualified
   as a geometry cutoff.
 
+  Target an explicit quality/performance knob for lower-end hardware, separate
+  from `cache_radius`, controlling transport geometry coverage and detail.
+  Reduced settings may accept lighting bias in exchange for lower CPU, GPU
+  and memory costs. A more aggressive experiment could use screen-space
+  tracing and retained face history with little or no voxel geometry; qualify
+  missing offscreen light/occlusion, camera dependence and stale edit response
+  explicitly. Raster receiver discovery alone does not supply fresh GI.
+
   Measure page ingestion, scene-build, upload and memory costs alongside where
   lighting rays travel. Experiment with GI geometry admission independent of
   host residency, retaining visible surfaces and varying offscreen coverage
