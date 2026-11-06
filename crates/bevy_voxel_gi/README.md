@@ -165,7 +165,8 @@ Run `cargo run` in your app. You should see a grey plane lit from above.
 When a chunk unloads, call `page_unloaded`. For an edit with a known
 material, use `edit_voxel` and update the mesh to match. If the source has
 changed and you only know which page changed, use `page_changed` with
-default input tracking. See the [input API](https://docs.rs/bevy_voxel_gi/latest/bevy_voxel_gi/struct.VoxelGiInput.html)
+default input tracking. Resampling uses the source as the authority for
+the page, so include any edits that should persist. See the [input API](https://docs.rs/bevy_voxel_gi/latest/bevy_voxel_gi/struct.VoxelGiInput.html)
 for exact edits and explicit resampling.
 
 You can return a coarse `PageSample` for a lower level of detail. For
@@ -189,55 +190,53 @@ terrain with a cost tied to the view.
 
 ## Lighting your own material
 
-Wrap your material as `ExtendedMaterial<YourMaterial, VoxelGiBindings>` and
-add `VoxelGiMaterialPlugin::<_>::extended()`, which keeps GI's bindings
-current. GI uses bindings 104 and 106-111 of the material bind group; keep
-them free. Two Bevy details apply to every `ExtendedMaterial`:
+Wrap your material in `ExtendedMaterial<YourMaterial, VoxelGiBindings>`.
+Add `VoxelGiMaterialPlugin::<_>::extended()` so the bindings follow GI's
+buffer updates. Reserve binding 104 and bindings 106–111 in the material
+bind group for GI.
 
-- It takes its prepass and shadow switches from the extension (both on),
-  not from your material: add `NotShadowCaster` to entities that must not
-  cast shadows.
-- It takes its render method from your material. GI presents in the forward
-  fragment shader, so render forward (`OpaqueRendererMethod::Forward` for a
-  `StandardMaterial` base); a deferred material runs Bevy's deferred shader
-  without GI.
+Choose forward rendering on the base material. For `StandardMaterial`, set
+`opaque_render_method` to `OpaqueRendererMethod::Forward`. The extension
+enables the prepass and shadow passes. Add `NotShadowCaster` to any entity
+that should skip Bevy's shadow pass.
 
-In its fragment shader, import GI's presentation functions:
+Import the presentation functions in your forward fragment shader. Multiply
+the indirect light by the surface albedo and add the material's emission.
 
 ```wgsl
-#import bevy_voxel_gi::presentation::{indirect_light, sunlight, emission}
+#import bevy_voxel_gi::presentation::{indirect_light, emission}
 
-// Indirect light reflects off the surface's albedo; emission adds as is.
 let gi = indirect_light(in.position.xy, in.world_position.xyz, normal);
 color += albedo * gi.light + emission(in.world_position.xyz, normal);
-// `sunlight` replaces Bevy's sun: GI's traced visibility, in transport
-// units (multiply by albedo * 10,000 / pi).
 ```
 
-`shaders/voxel_gi_standard.wgsl` is the complete version. A ray-traced host
-can pass any hit's position and normal, but must also write compatible depth
-and normal prepasses, which GI reads to find visible faces.
-`face_in_geometry` says whether GI covers a face; light the others yourself
-(`sun_count`, `sun_direction` and `sun_color` give GI's suns).
+Use `sunlight` for GI's traced sun visibility and direct light. The stock
+shader shows the conversion from transport units and the fallback for
+surfaces outside GI's voxel data.
+[Stock WGSL material](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/shaders/voxel_gi_standard.wgsl)
+
+A ray-traced primary renderer can pass the position and normal of its hit
+to the same functions. Supply compatible depth and normal prepasses for
+face discovery. Use `face_in_geometry` to identify faces that need lighting
+from your renderer. The `sun_count`, `sun_direction` and `sun_color` helpers
+let you use the same suns.
 
 ## Platforms
 
-Native GPUs only (Metal, Vulkan, DX12). Not WebGPU: the view tier uses more
-storage buffers per stage than WebGPU allows.
+Use a native Metal, Vulkan or DX12 backend. The view tier needs more storage
+buffers per shader stage than WebGPU allows. GI uses compute shaders, so it
+can run on devices without dedicated ray-tracing hardware.
 
-On Windows both backends work: all GPU tests pass on an AMD RX 7900 XT.
-Vulkan needs no setup, and wgpu picked it by default there. DX12 needs the
-DXC shader compiler, because FXC, wgpu's fallback when DXC is unavailable,
-rejects GI's compute shaders. On that machine DX12 also reached GI's first
-frame in 6.4 s with a warm shader cache, against 0.3 s on Vulkan; frame
-times haven't been compared.
+Vulkan is the simplest starting point on Windows. On the tested AMD RX 7900
+XT, wgpu selected Vulkan by default. DX12 needs the DXC shader compiler to
+build the compute pipelines.
+[Windows test report](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/docs/history/windows-first-run.md)
 
 ### DX12
 
-Either enable Bevy's `statically-linked-dxc` feature, or ship
-`dxcompiler.dll` and `dxil.dll` next to your executable and select them
-explicitly. Bevy's automatic detection looks only in the working directory,
-so a game launched from anywhere else would fall back to FXC.
+Enable Bevy's `statically-linked-dxc` feature, or ship `dxcompiler.dll` and
+`dxil.dll` beside your executable. Select that path explicitly as shown
+below so the app finds DXC from any working directory.
 
 ```rust,no_run
 use bevy::prelude::*;
@@ -261,39 +260,73 @@ App::new().add_plugins(DefaultPlugins.set(RenderPlugin {
 
 ## Tuning
 
-`VoxelGiSettings` (RON-loadable, `VoxelGiQuality` presets):
+Start with `VoxelGiSettings::quality(VoxelGiQuality::Low)` if GI needs a
+smaller budget. Insert the settings resource before adding `VoxelGiPlugin`,
+or change it while the app runs. Use `VoxelGiSettings::from_ron` to load
+settings saved by the optional
+[debug panel](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi_debug/README.md).
 
-- `gpu_time_share`: the GPU time GI's tracing may use.
-- `cache_radius`: the world cache's radius in voxels (64; 0 disables it).
-- `far_tier.voxel_pixels`: below this projected voxel size (8 px, about 220
-  voxels at 1440p) faces are lit per pixel; 0 disables the far tier.
-- `view_receivers`: the cap on lit faces per camera.
+| If you want to | Adjust | What you trade |
+| --- | --- | --- |
+| Spend less GPU time tracing | Lower `gpu_time_share` | Lighting takes longer to update. The default budget is 20%, shared by visible faces and the world cache. |
+| Keep fewer faces lit off screen | Lower `cache_radius` | Less light history when you turn back. The default is 64 voxels. Set 0 to disable the cache. |
+| Reduce discovery and presentation cost | Lower `view_receivers` | The camera tracks fewer faces independently. |
+| Use screen-space lighting farther away | Lower `far_tier.voxel_pixels` | More faces use the per-face path. The default is 8 pixels across a full-resolution voxel. Set 0 to disable this tier. |
 
-`VoxelGiStats` and `ViewReceipts` report work and GPU time; `geometry_pending`
-tells you when declared pages have reached the GPU.
+`VoxelGiStats` reports progress and costs. Its `view_gpu` receipt separates
+tracing from the cost of finding and presenting visible faces. Use
+`geometry_pending` to tell whether GI is still preparing the scene.
 
 ## Performance
 
-Measured on an Apple M4 (10-core GPU) at 2560×1440. The view tier's fixed
-GPU work per frame (finding visible faces, presentation and the far tier) is
-about 4 ms on open streaming terrain and 1.6 ms in a closed cave. Its tracing
-adapts to fill `gpu_time_share` (20% of the frame by default), about 3.5 ms
-here, and the world cache's work has the same cap. These are GPU stage
-timings, not frame rates. Windows validation on an AMD RX 7900 XT covers
-Vulkan and DX12 with DXC; its measurements and settings are recorded in the
-[Windows test report](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/docs/history/windows-first-run.md).
+In an offscreen streaming run at 2560×1440 on an Apple M4, the fixed view
+passes took 3.89 ms per frame with the far tier enabled. Their cost sits
+outside the shared tracing budget. The comparison includes a run with the
+far tier disabled.
+[Measurement and settings](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/docs/history/far-per-pixel.md#update-distance-cheaper-classify-handoffs-flicker)
+
+## Troubleshooting
+
+### Why are some faces dark or unlit?
+
+Check `VoxelGiStats::geometry_pending` first. The CPU builds and publishes
+geometry asynchronously. In a large streaming world that can take seconds.
+Once geometry is ready, check that you declared the page and that the mesh
+lies on the same voxel boundaries as the source. A just-remeshed face can
+appear before the matching geometry reaches the GPU.
+
+### Why does my custom material miss the lighting?
+
+Use the forward pass, leave binding 104 and bindings 106–111 free, and add
+`VoxelGiMaterialPlugin` to keep the buffers current.
+[Material setup](#lighting-your-own-material)
+
+### Why do I see two sets of sun shadows?
+
+The stock GI material traces its own direct sun. Set
+`shadow_maps_enabled: false` on the directional light if your scene uses GI
+for its sun shadows. If other materials still use Bevy shadows, keep the
+light's shadow maps and use `NotShadowCaster` on entities you want to
+exclude from that pass.
+
+### Why does DX12 fail to start?
+
+Use DXC or select Vulkan. When DXC is missing, wgpu can fall back to FXC,
+which cannot compile GI's compute shaders. The first DXC run may spend
+several seconds compiling shaders.
+[DX12 setup](#dx12)
 
 ## Limitations
 
-- Opaque diffuse transport only: transparent blocks are `AIR` to GI (no
-  colored transmission), and there is no specular GI.
-- In motion, the far tier's indirect light flickers somewhat more than the
-  per-face tiers'.
-- Each edit or sun change costs some re-convergence near it; lighting
-  response depends on retained history, scene complexity and available work.
-- Geometry is built asynchronously from all declared pages. Large streaming
-  worlds can take seconds to publish changes; newly meshed or remeshed faces
-  can remain dark until the matching GI geometry arrives.
+- GI computes diffuse reflection from opaque blocks. It treats transparent
+  blocks as air. Specular GI and colored transmission are outside this model.
+- Distant indirect light can flicker more in motion than nearby lighting.
+- When you edit a block or move a light, the affected lighting takes time
+  to settle. The rate depends on scene complexity, retained history and
+  the tracing budget.
+- Scene builds scale with the number of declared pages. Give GI the pages
+  you want rays to traverse, including nearby off-screen occluders and
+  emitters.
 
 ## Credits
 

@@ -12,7 +12,7 @@ BVW resampling and small scene-queue edit-priority findings).
 ## Prepare a version
 
 Update the workspace version and the versions of all three path dependencies
-in `[workspace.dependencies]`. Keep the compatibility table in the core README
+in `[workspace.dependencies]`. Keep the compatibility notes in the core README
 and the dated entry in `CHANGELOG.md` consistent with that version. Review the
 documented platform requirements and known limitations.
 

@@ -6,8 +6,12 @@ use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use std::sync::Arc;
 
-/// Page residency and voxel edits for the next scene build. A page is the
-/// 32³ block containing `voxel.div_euclid(32)`.
+/// Queues page events and voxel edits for the next scene build.
+///
+/// A page spans 32 voxels on each axis. Page coordinates are the world voxel
+/// coordinates divided by 32, rounded down on each axis. For example, voxel
+/// `(-1, 0, 32)` belongs to page `(-1, 0, 1)`. Pass page coordinates to
+/// [`Self::page_loaded`] and world voxel coordinates to [`Self::edit_voxel`].
 #[derive(Resource, Default, Debug, PartialEq)]
 pub struct VoxelGiInput {
     pub(super) pages: Vec<(IVec3, PageEvent)>,
@@ -31,9 +35,12 @@ pub(super) enum PageEvent {
 }
 
 impl VoxelGiInput {
-    /// Opt in only when every host write is reported with `set_voxel`, or
-    /// explicitly marked unknown with `mark_voxel`/`mark_all_loaded`. Without
-    /// it, every `page_changed` resamples the whole page from the source.
+    /// Opt in when the host reports every write.
+    ///
+    /// Use [`Self::edit_voxel`] for an exact value. Use [`Self::mark_voxel`]
+    /// or [`Self::mark_all_loaded`] to request fresh samples. With default
+    /// tracking, [`Self::page_changed`] resamples the page from the source.
+    /// With tracked input, the edit notifications carry the changes.
     pub fn tracked() -> Self {
         Self {
             complete_edit_tracking: true,
@@ -77,9 +84,12 @@ impl VoxelGiInput {
     }
 }
 
-/// Reads a page's voxels on a worker thread. Rebuilt by the host whenever its
-/// storage changes (a snapshot). Calls run off the main thread; a slow source
-/// can still delay publication of its page.
+/// Reads a page's voxels on a worker thread.
+///
+/// Put a snapshot in [`VoxelGiSource`] and replace it when the underlying
+/// data changes. GI applies exact edits reported through [`VoxelGiInput`]
+/// on top of that snapshot. The page can reach the GPU after sampling and
+/// scene construction finish.
 pub trait VoxelSource: Send + Sync + 'static {
     /// The page's material ids, at full resolution or at the stride the host
     /// stores it at (`PageSample`). `resample` asks for authoritative

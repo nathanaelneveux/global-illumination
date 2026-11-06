@@ -5,31 +5,53 @@
 [![CI](https://github.com/nathanaelneveux/global-illumination/actions/workflows/ci.yml/badge.svg?branch=voxel-global-illumination)](https://github.com/nathanaelneveux/global-illumination/actions/workflows/ci.yml)
 ![License: MIT or Apache-2.0](https://img.shields.io/crates/l/bevy_voxel_gi_bvw.svg)
 
-Connects [`bevy_voxel_world`](https://crates.io/crates/bevy_voxel_world) 0.17
-to [`bevy_voxel_gi`](https://docs.rs/bevy_voxel_gi): chunk events become GI page events, chunk
-data (including its stored levels of detail) becomes GI's `VoxelSource`, and
-`VoxelTransportMaterial` is BVW's texture-array terrain material lit by GI.
+Add bounced light to a `bevy_voxel_world` terrain. The connector reads your
+chunks, forwards their changes to GI and supplies a material for your
+textured meshes. A glowing block uses the same material index for its
+texture and its lighting properties.
+
+## Quick start
+
+Use Bevy 0.19, `bevy_voxel_world` 0.17 and matching versions of the two GI
+crates.
 
 ```toml
 [dependencies]
+bevy = "0.19"
 bevy_voxel_gi = "0.1"
 bevy_voxel_gi_bvw = "0.1"
 bevy_voxel_world = "0.17"
 ```
 
-Any `VoxelWorldConfig` with `u8` materials works; a BVW chunk is exactly one
-GI page (32³), and chunk spawn, update and despawn become page events.
+If you already have a world, keep its `VoxelWorldConfig` and voxel generator.
+Implement `GiFallbackVoxel` for the config, then add `VoxelGiPlugin` and
+`VoxelGiBvwPlugin` **before** the world plugin. The connector registers the
+material type that BVW needs when it starts. Pass a prepared texture array
+to `material_template` and give the result to `with_material`.
 
-## Quick start
+Starting from an empty app? Copy this example into `src/main.rs` and run
+`cargo run`. It creates a stone platform with a warm lamp and makes its own
+texture.
+
+<details>
+<summary>Copy the complete main.rs for a lit BVW platform</summary>
 
 ```rust,no_run
-use bevy::prelude::*;
-use bevy_voxel_gi::{VoxelGiMaterialData, VoxelGiPlugin};
+use bevy::{
+    asset::RenderAssetUsages,
+    prelude::*,
+    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+};
+use bevy_voxel_gi::{
+    MaterialTransport, VoxelGiMaterialData, VoxelGiPlugin, VoxelMaterialTransportTable,
+};
 use bevy_voxel_gi_bvw::{
     GiFallbackVoxel, VoxelGiBvwPlugin, material_template, prepare_texture_array,
-    texture_array_ready,
 };
 use bevy_voxel_world::prelude::*;
+
+const STONE: u8 = 0;
+const LAMP: u8 = 1;
 
 #[derive(Resource, Clone, Default)]
 struct MyWorld;
@@ -37,93 +59,110 @@ struct MyWorld;
 impl VoxelWorldConfig for MyWorld {
     type MaterialIndex = u8;
     type ChunkUserBundle = ();
+
+    fn voxel_lookup_delegate(&self) -> VoxelLookupDelegate<u8> {
+        Box::new(|_, _, _| {
+            Box::new(|p, _| {
+                if p == IVec3::new(7, 0, 7) {
+                    WorldVoxel::Solid(LAMP)
+                } else if p.y == -1 && (0..16).contains(&p.x) && (0..16).contains(&p.z) {
+                    WorldVoxel::Solid(STONE)
+                } else {
+                    WorldVoxel::Air
+                }
+            })
+        })
+    }
 }
 
-// Where no chunk is loaded, GI asks your world for voxels; by default
-// that space is air. Return your generator's voxel here if you have one.
+// Loaded chunks supply the platform. Treat positions outside them as air.
 impl GiFallbackVoxel for MyWorld {}
-
-/// Block textures stacked vertically in one image, one layer per block.
-#[derive(Resource)]
-struct Blocks(Handle<Image>);
-const LAYERS: u32 = 4;
 
 fn main() {
     let mut app = App::new();
-    app.add_plugins((DefaultPlugins, VoxelGiPlugin));
-    // BVW's GI-lit material needs GI's binding data, so build it after
-    // VoxelGiPlugin is added.
-    let blocks = app.world().resource::<AssetServer>().load("blocks.png");
-    let gi_bindings = app.world().resource::<VoxelGiMaterialData>().clone();
     app.add_plugins((
-        VoxelWorldPlugin::with_config(MyWorld)
-            .with_material(material_template(blocks.clone(), &gi_bindings)),
-        // Chunk events become GI page events; chunks become GI's voxels.
+        DefaultPlugins,
+        VoxelGiPlugin,
         VoxelGiBvwPlugin::<MyWorld>::default(),
-    ))
-    .insert_resource(Blocks(blocks))
-    .add_systems(Startup, setup)
-    .add_systems(Update, prepare_blocks)
-    .run();
-}
-
-fn setup(mut commands: Commands) {
-    // BVW streams chunks around this camera; GI lights what it sees.
-    commands.spawn((
-        Camera3d::default(),
-        VoxelWorldCamera::<MyWorld>::default(),
-        Transform::from_xyz(0.0, 40.0, 60.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-    // GI traces the sun's visibility itself: no shadow maps.
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 8_000.0,
-            shadow_maps_enabled: false,
-            ..default()
-        },
-        Transform::default().looking_to(Vec3::new(-0.4, -0.8, -0.5), Vec3::Y),
-    ));
-}
 
-/// Turns the loaded strip into a mipmapped texture array, once.
-fn prepare_blocks(blocks: Res<Blocks>, mut images: ResMut<Assets<Image>>) {
-    let Some(mut image) = images.get_mut(&blocks.0) else {
-        return;
-    };
-    // Check before writing: a mutable write re-uploads the texture.
-    if !texture_array_ready(&image, LAYERS) {
-        prepare_texture_array(&mut image, LAYERS).expect("a vertical strip of layers");
-    }
-}
-```
+    let mut image = Image::new_fill(
+        Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        &[156, 156, 156, 255],
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    prepare_texture_array(&mut image, 1).unwrap();
+    let texture = app.world_mut().resource_mut::<Assets<Image>>().add(image);
+    let material = material_template(texture, app.world().resource::<VoxelGiMaterialData>());
 
-Edit voxels with `BvwVoxelEdits::set_voxel` (on `VoxelGiInput`), which
-writes BVW and tells GI the exact change in one call.
-
-## Block optics
-
-GI receives BVW's `u8` material indices unchanged, so set each block's
-optics in `VoxelMaterialTransportTable` at its BVW index. Don't use
-`bevy_voxel_gi::MaterialPalette` here: it assigns its own sequential IDs and
-merges blocks with identical optics, so its IDs need not match BVW's, and a
-block could take another block's emission. GI treats every solid BVW voxel
-as opaque.
-
-```rust
-use bevy::prelude::*;
-use bevy_voxel_gi::{MaterialTransport, VoxelMaterialTransportTable};
-
-const STONE: u8 = 0;
-const LAMP: u8 = 3;
-
-fn block_optics(mut table: ResMut<VoxelMaterialTransportTable>) {
-    table.set(STONE, MaterialTransport { diffuse: Vec3::splat(0.4), ..default() });
-    table.set(
+    let mut optics = app.world_mut().resource_mut::<VoxelMaterialTransportTable>();
+    optics.set(STONE, MaterialTransport { diffuse: Vec3::splat(0.5), ..default() });
+    optics.set(
         LAMP,
         MaterialTransport { diffuse: Vec3::splat(0.8), emission: Vec3::new(4.0, 2.4, 1.0) },
     );
+
+    app.add_plugins(VoxelWorldPlugin::with_config(MyWorld).with_material(material))
+        .add_systems(Startup, setup)
+        .run();
+}
+
+fn setup(mut commands: Commands) {
+    commands.spawn((
+        Camera3d::default(),
+        VoxelWorldCamera::<MyWorld>::default(),
+        Transform::from_xyz(13.0, 7.0, 17.0).looking_at(Vec3::new(7.5, 0.0, 7.5), Vec3::Y),
+    ));
 }
 ```
 
-LoD chunks are read at their stored stride; colliders and full resolution
-belong to your near LoD bands, as in BVW. Licensed under MIT or Apache-2.0.
+</details>
+
+## Textures and light
+
+BVW's texture mapper selects the top, side and bottom texture layers for
+a block. For a texture file, stack equally sized tiles vertically in one
+image. Call `prepare_texture_array` once after it loads. Give
+`material_template` the handle to that image. When checking asynchronously,
+read the image with `Assets::get` and `texture_array_ready` before borrowing
+it mutably. A mutable borrow can trigger a GPU re-upload.
+
+Set each block's optical properties in `VoxelMaterialTransportTable` at
+its original BVW material index. For example, if BVW calls your lamp
+material `1`, set `emission` on slot `1`. `MaterialPalette` assigns its own
+IDs, so use the table directly in a BVW world. Solid BVW voxels are opaque
+to GI.
+
+## Edits and levels of detail
+
+Call `BvwVoxelEdits::set_voxel` on `VoxelGiInput` to write a voxel to BVW and
+report the exact change to GI together. For example, dig a block by passing
+`WorldVoxel::Air`.
+
+```rust
+use bevy::prelude::*;
+use bevy_voxel_gi::VoxelGiInput;
+use bevy_voxel_gi_bvw::BvwVoxelEdits;
+use bevy_voxel_world::prelude::*;
+
+fn dig<C: VoxelWorldConfig<MaterialIndex = u8>>(
+    gi: &mut VoxelGiInput,
+    world: &mut VoxelWorld<C>,
+    position: IVec3,
+) {
+    gi.set_voxel(world, position, WorldVoxel::Air);
+}
+```
+
+A BVW chunk covers one 32³ GI page. The connector samples the level of
+detail used by the chunk mesh. It asks `GiFallbackVoxel` for data where
+loaded chunks cannot provide it. The default returns air for lighting.
+
+See the [core guide](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/README.md)
+for platform setup, budgets and troubleshooting.
+
+## License
+
+MIT or Apache-2.0, at your option.

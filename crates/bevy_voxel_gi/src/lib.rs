@@ -1,91 +1,54 @@
+//! [Quick start](#quick-start) · [API map](#api-map) · [Troubleshooting](#troubleshooting)
 #![doc = include_str!("../README.md")]
 //!
 //! ## API map
 //!
-//! **Set up**
-//! - [`VoxelGiPlugin`] is GI itself. [`VoxelGiSettings`] holds cost and look
-//!   (start from a [`VoxelGiQuality`] preset); [`VoxelGiDisplay`] switches
-//!   presentation and diagnostic views ([`GiDebugView`]) without touching
-//!   transport.
+//! ### Send voxels and edits
 //!
-//! **Describe your world**
-//! - [`VoxelGiInput`] declares pages ([`page_loaded`](VoxelGiInput::page_loaded),
-//!   [`page_changed`](VoxelGiInput::page_changed),
-//!   [`page_unloaded`](VoxelGiInput::page_unloaded)) and reports edits
-//!   ([`edit_voxel`](VoxelGiInput::edit_voxel) with a known value,
-//!   [`mark_voxel`](VoxelGiInput::mark_voxel) without one). Use
-//!   [`VoxelGiInput::tracked`] when you report every edit exactly.
-//! - A [`VoxelSource`] in [`VoxelGiSource`] answers GI's page requests with a
-//!   [`PageSample`], built by [`dense_page`] or [`coarse_page`]. A page is
-//!   [`VOXEL_GI_PAGE_EDGE`] voxels on a side.
-//! - [`MaterialPalette`] turns block types into transport IDs and fills the
-//!   [`VoxelMaterialTransportTable`] of [`MaterialTransport`] optics. [`AIR`]
-//!   is transparent.
+//! Install [`VoxelGiPlugin`] and put a [`VoxelSource`] snapshot in
+//! [`VoxelGiSource`]. Use [`dense_page`] for one material per voxel or
+//! [`coarse_page`] for a level of detail. Tell [`VoxelGiInput`] which 32³
+//! pages are [loaded](VoxelGiInput::page_loaded) and
+//! [unloaded](VoxelGiInput::page_unloaded).
 //!
-//! **Lights**
-//! - Bevy's [`DirectionalLight`]s become
-//!   GI's suns and [`PointLight`]s its point
-//!   lights. [`VoxelGiEmitter`] adds to a light or stands alone;
-//!   [`VoxelGiEnvironment`] is the sky. Emissive materials light their
-//!   surroundings with no extra setup.
+//! Report a known edit with [`VoxelGiInput::edit_voxel`]. Request a fresh
+//! sample with [`VoxelGiInput::mark_voxel`] if you know the position but
+//! lack the new material. Use [`VoxelGiInput::page_changed`] with default
+//! tracking to refresh a whole page.
 //!
-//! **Light your meshes**
-//! - The stock path: [`standard_material`] builds a [`VoxelGiStandardMaterial`],
-//!   registered by [`VoxelGiStandardMaterialPlugin`].
-//! - Your own material: add [`VoxelGiBindings`] (from [`VoxelGiMaterialData`]),
-//!   keep them current with [`VoxelGiMaterialPlugin`], and import the
-//!   `bevy_voxel_gi::presentation` WGSL module ([`PRESENTATION_SHADER`]).
+//! ### Describe materials and lights
 //!
-//! **Watch it**
-//! - [`VoxelGiStats`] reports coverage, cost and readiness
-//!   ([`geometry_pending`](VoxelGiStats::geometry_pending)); [`ViewReceipts`]
-//!   the view tier's GPU time. Order readers after [`VoxelGiSystems`].
-//!   [`SchedulerStats`] is diagnostics only.
+//! [`MaterialTransport`] holds diffuse reflectance and emission. If you
+//! already assign voxel material IDs, set their properties directly in
+//! [`VoxelMaterialTransportTable`]. To let GI assign IDs, build a
+//! [`MaterialPalette`] and copy its table. [`AIR`] represents empty space.
 //!
-//! ## FAQ
+//! Bevy's [directional lights](DirectionalLight) and [point lights](PointLight)
+//! contribute to GI. Set the sky with [`VoxelGiEnvironment`] and add analytic
+//! lights with [`VoxelGiEmitter`]. A voxel with
+//! [material emission](MaterialTransport::emission) lights its surroundings
+//! through its material alone.
 //!
-//! **Some faces are black or unlit.** GI lights only the pages you declared,
-//! once their geometry has reached the GPU
-//! ([`VoxelGiStats::geometry_pending`]). Meshes must lie on voxel faces: GI
-//! looks up the face under each fragment. A face drawn where GI's geometry
-//! has none (a chunk you just remeshed, before GI's next scene build) has no
-//! GI light yet; the shader's `face_in_geometry` tells you, so you can light
-//! it yourself.
+//! ### Light your surfaces
 //!
-//! **The sun looks wrong: double shadows, or none.** GI traces sun visibility
-//! itself and replaces Bevy's shadowed sun in GI-lit materials. Turn
-//! `shadow_maps_enabled` off on your directional lights, and add
-//! `NotShadowCaster` to GI-lit entities that shouldn't cast Bevy shadows.
+//! Register [`VoxelGiStandardMaterialPlugin`] and use [`standard_material`]
+//! to create a [`VoxelGiStandardMaterial`].
 //!
-//! **My own material isn't lit.** It must render forward: Bevy takes an
-//! `ExtendedMaterial`'s render method from the base material, and a deferred
-//! one runs Bevy's deferred shader without GI. Also check bindings 104 and
-//! 106-111 are free and [`VoxelGiMaterialPlugin`] is added.
+//! For your own shader, build [`VoxelGiBindings`] from [`VoxelGiMaterialData`].
+//! [`VoxelGiMaterialPlugin`] keeps those bindings current. Import
+//! `bevy_voxel_gi::presentation` from the embedded [`PRESENTATION_SHADER`].
 //!
-//! **DX12 exits or shows nothing.** DX12 needs the DXC shader compiler; FXC
-//! can't build GI's shaders. See Platforms above, or use Vulkan.
+//! ### Tune and diagnose
 //!
-//! **What units are light in?** Transport units: a sun contributes its
-//! illuminance / 10,000, and [`MaterialTransport::emission`] uses the same
-//! scale (the minimal example's lamp emits about 40). Materials convert back
-//! for display.
+//! Use [`VoxelGiSettings::quality`] for a [`VoxelGiQuality`] preset, or
+//! set the fields on [`VoxelGiSettings`]. [`VoxelGiDisplay`] controls
+//! presentation and [`GiDebugView`] selects diagnostic views.
 //!
-//! **How do I make it cheaper?** Lower [`VoxelGiSettings::gpu_time_share`]
-//! (tracing time), `view_receivers` (fixed per-camera work) or
-//! `cache_radius` (off-screen faces), or start from [`VoxelGiQuality::Low`].
-//! Declare only the pages lighting needs: every scene build costs time in
-//! proportion to the declared world.
+//! Read [`VoxelGiStats`] after [`VoxelGiSystems`] to see the latest published
+//! diagnostics. [`VoxelGiStats::geometry_pending`] tracks scene readiness,
+//! and [`ViewReceipts`] breaks down view GPU time. [`SchedulerStats`] exposes
+//! implementation details for diagnostics.
 //!
-//! **Far terrain fills in slowly, or edits lag in a huge world.** Scene builds
-//! currently scale with the whole declared world (a known limitation): in a
-//! world of 100,000 pages they take seconds.
-//!
-//! **Can I use it without meshes?** Yes. The presentation functions need only
-//! a position and normal, so a ray-traced renderer can call them, provided it
-//! writes depth and normal prepasses for GI to find visible faces.
-//!
-//! **WebGPU?** No: the view tier needs more storage buffers per shader stage
-//! than WebGPU allows.
 #![warn(missing_docs)]
 mod color;
 mod dispatch;
