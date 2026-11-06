@@ -1,41 +1,52 @@
 # Historical studies
 
-These records preserve experiment evidence and rejected alternatives. Many
-older studies measured the explicit three-bounce estimator before the
-[surface cache](../surface-cache.md); newer records qualify the current transport
-and view/cache architecture. A study's defaults apply to its recorded commit,
-not necessarily today's runtime. For the current design
-read [architecture](../architecture.md), [validation](../validation.md) and
-[research decisions](../research.md).
+These records explain how the renderer reached its current design. Read
+measurements in the context of the revision and settings in the study.
+Use [architecture](../architecture.md) for current behavior and
+[validation](../validation.md) to choose a check for a new change.
 
-Notable records:
+## How we light a view
 
-- [Architecture design notes](architecture-design-notes-2026-10.md),
-  [research notes](research-design-notes-2026-10.md),
-  [direction plan](direction-2026-10-21.md), and
-  [validation notes](validation-design-notes-2026-10.md): detailed October
-  development records, including superseded APIs and removed harnesses.
+- [Lighting ownership comparison](option-comparison-2026-10-23.md) compares
+  world, hybrid and view-driven lighting while moving and turning.
+- [Two-way face cache](two-way-cache.md) shows how visible faces share
+  history with the persistent cache. For the earlier candidates, see
+  [view-first transport](view-first-transport.md).
+- [Far tier](far-per-pixel.md) measures the cost of lighting small faces in
+  screen space and the motion flicker tradeoff.
 
-- [Ownership comparison, 2026-10-23](option-comparison-2026-10-23.md): all-near,
-  hybrid, cacheless and +cache 32/48/64, windowed uncapped and visible behavior.
-- [Two-way face cache](two-way-cache.md): shared RGB history between visible
-  sampling and a small persistent cache, with rendered and analytic gates.
-- [View-first transport](view-first-transport.md): hybrid, +cache and cacheless
-  comparison before two-way history exchange.
-- [Hallway outliers](hallway-path-outliers.md): heavy-tailed sparse-hallway
-  paths, roulette and the guiding experiment (removed).
-- [Path reuse](resident-path-reuse.md): fresh spatial path sharing (removed).
-- [Whole-range history](whole-range-history.md): the retention curve still in use.
-- [Early spatial reconstruction](early-spatial-reconstruction.md): fixed
-  evidence-target experiments; current presentation uses variance/bias weights.
-- [Streaming performance](streaming-performance.md) and
-  [experiments](experiments.md): measured wins that remain in the engine.
-- [Code review, 2026-10-13](CODE_REVIEW_2026-10-13.txt).
-- [Windows first run, 2026-10-30](windows-first-run.md): RX 7900 XT baseline
-  on Vulkan and DX12, the reference for Windows fixes.
+## How we tested the light
 
-Dead experiment branches no document cites are kept as `archive/<branch>`
-tags (2026-10-30: 31 superseded `experiment/*` and `codex/*` branches), so
-their commits stay reachable without crowding the branch list; `git branch
-<name> archive/<name>` restores one. Branches the documents cite by name,
-and those checked out in worktrees, remain branches.
+- [Cave reference and sample sweep](cave-sampling.md) calibrates image
+  error against a visually accepted reference for that estimator.
+- [Hallway outliers](hallway-path-outliers.md) investigates rare, bright
+  paths in a dark hallway and records the roulette and guiding experiments.
+- [Path reuse](resident-path-reuse.md) tests sharing fresh paths between
+  faces.
+- [Whole-range history](whole-range-history.md) measures how much history
+  to keep after an edit at different distances.
+- [Early spatial reconstruction](early-spatial-reconstruction.md) explores
+  how neighboring faces can help when each face has few samples.
+
+## How we measured cost
+
+- [Streaming performance](streaming-performance.md) traces frame stalls and
+  the changes that reduced them.
+- [Experiment results](experiments.md) covers tracing, scheduling and
+  presentation.
+- [Windows first run](windows-first-run.md) records the RX 7900 XT
+  validation on Vulkan and DX12.
+
+## Design and review archives
+
+- [Architecture design notes](architecture-design-notes-2026-10.md)
+- [Research notes](research-design-notes-2026-10.md)
+- [Direction plan](direction-2026-10-21.md)
+- [Validation notes](validation-design-notes-2026-10.md)
+- [Code review from 2026-10-13](CODE_REVIEW_2026-10-13.txt)
+
+## Recover an experiment branch
+
+Superseded experiments may have an `archive/<branch>` tag. Use
+`git branch <name> archive/<name>` to restore one. Use the branch name
+directly when a study points to an active branch.

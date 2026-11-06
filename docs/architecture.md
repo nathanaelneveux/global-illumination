@@ -1,10 +1,36 @@
 # Architecture
 
-Voxel GI estimates diffuse RGB lighting for one axis-aligned voxel world.
-The host owns storage, meshing, edits, lights and cameras. The core owns an
-immutable transport scene, GPU tracing, history and presentation. The
-[crate README](../crates/bevy_voxel_gi/README.md) describes the public setup API;
-[validation](validation.md) describes how to qualify changes.
+The host owns voxel storage, meshes, edits, lights and cameras. GI builds
+a scene from the declared voxel pages, traces diffuse light on the GPU and
+supplies the result to the host's material.
+
+Start with the [host input contract](#host-input-contract) to connect a
+world, or [view-owned lighting](#view-owned-lighting) to understand what a
+camera sees. The [source map](#source-map) links each stage to the code.
+For app setup and testing, see the [core guide](../crates/bevy_voxel_gi/README.md)
+and [validation guide](validation.md).
+
+## Follow a voxel edit
+
+Suppose the player opens a skylight in a stone roof.
+
+1. **The host edits and remeshes the roof.** It reports the removed voxels
+   through `VoxelGiInput::edit_voxel`. Each edit carries the world voxel
+   position and the new value, which is air for the opening.
+2. **A worker builds the scene update.** It applies those edits to the page,
+   updates the region's traversal data and records the changed bounds.
+   The main world publishes the new geometry generation to the GPU.
+3. **The GPU updates lighting around the opening.** Geometry and direct-sun
+   changes lower the weight of old samples where lighting may have changed.
+   The view and world cache can then spend work on fresh samples while
+   other faces keep their history.
+4. **The material shows the result.** The view tier finds faces using the
+   camera's depth and normals. The material reads reconstructed indirect
+   light and the current sun visibility for each fragment.
+
+The mesh and the GI scene reach the renderer on separate paths. The opening
+can appear in the mesh while `VoxelGiStats::geometry_pending` is true.
+Once the new geometry arrives, tracing can see through the opening.
 
 ## Data flow and ownership
 
@@ -24,39 +50,6 @@ not rendering inputs or authoritative simulation measurements. Geometry workers
 and GPU readbacks do not block the player's main thread; scene publication has
 its own per-frame work bounds. This is bounded scheduling, not a guarantee
 that every frame or source call has a fixed maximum cost.
-
-| Responsibility | Owner / source |
-| --- | --- |
-| Plugin wiring and runtime state | `lib.rs` |
-| Host input: pages, edits, voxel source, interest envelope | `input.rs`, `pages.rs` |
-| Host block types to transport materials | `palette.rs` (`MaterialPalette`) |
-| BVW events, edits and source (connector crate) | `bevy_voxel_gi_bvw/src/lib.rs` |
-| Scene/receiver representation | `world.rs`, `field.rs` |
-| Acceleration, packing and shared GPU transactions | `naadf.rs`, `gpu_scene.rs`, `gpu/geometry.rs` |
-| Change metadata and retention | `world/delta.rs`, `geometry.rs`, `retention.rs`, `sources.rs`, `sun_changes.rs` |
-| Receiver page publication | `publication.rs` |
-| Eligibility, priority and dispatch | `scheduling.rs`, `dispatch.rs` |
-| Model/work configuration and revision synchronization | `settings.rs` |
-| Thread-transfer payload and result merge | `work.rs` |
-| Source model and Bevy light adaptation | `sources.rs` |
-| Sample streams, emitters, transport limits and the GPU tracer | `sampling.rs` (hashes), `emission.rs`, `tracer.rs` (limits), `gpu.rs`, shared `voxel_path.wgsl`, face consumer `voxel_trace.wgsl` |
-| Surface-cache face lookup | `gpu/face_index.rs` |
-| View-owned far receivers, scheduling and asynchronous timing | `gpu/view/runtime.rs`, `gpu/view/timing.rs`, `voxel_view_runtime.wgsl` |
-| Bidirectional RGB face ownership (two-way cache) | `voxel_view_cache.wgsl`, `gpu/view/cache_tests.rs` |
-| Stable GPU ownership, accumulation and bounded snapshots | `gpu/resident.rs`, `gpu/readback.rs`, `voxel_accumulate.wgsl` |
-| Uncertainty heuristic statement (tests) | `statistics.rs` |
-| Direct-sun corner words and change footprints | `sky.rs`, `voxel_path.wgsl`, `voxel_trace.wgsl` (`trace_footprints`) |
-| Temporal display and initialization | `history.rs` |
-| Material data and shared buffers; GI material bindings; stock material | `render.rs` (`VoxelGiBindings`, `VoxelGiStandardMaterial`), `voxel_gi_standard.wgsl` |
-| Presentation for host materials (`bevy_voxel_gi::presentation`) | `voxel_gi_presentation.wgsl` |
-| BVW mesh material (connector crate) | `bevy_voxel_gi_bvw/src/material.rs`, `bevy_voxel_gi_bvw/shaders/voxel_transport.wgsl` |
-| Accounting; test fixtures | `telemetry.rs`; `research.rs` (tests only) |
-| HUD and tuning panel (debug crate) | `bevy_voxel_gi_debug/src/lib.rs` |
-| Validation harness (lab) | `src/validation.rs`, `src/validation/` |
-
-Unqualified paths are in the core crate: Rust under `crates/bevy_voxel_gi/src/`,
-shaders under `crates/bevy_voxel_gi/shaders/` (embedded with `include_str!`). `reconstruction.rs` is an independent CPU test oracle for shader
-interpolation, not a second production reconstruction path.
 
 ## Host input contract
 
@@ -80,11 +73,13 @@ and request authoritative resampling; later exact edits can override again.
 Overlays survive unload/reload and grow with distinct edited positions.
 There is no save-game persistence or host acknowledgement for retiring them.
 
-The BVW connector samples the geometry its chunk mesh uses. A downgraded chunk
-may retain finer voxel data; sampling follows its meshing shape and nearest
-resampling rule. Authoritative resampling preserves coarse-cell coverage where
-BVW returns `Unset`, then applies known live values and edits. Nonstandard
-chunk shapes use the full-resolution lookup and optional `GiFallbackVoxel`.
+The BVW connector samples the geometry its chunk mesh uses. A downgraded
+chunk may retain finer data. GI follows its meshing shape and nearest
+resampling rule, including during a resample. When data and mesh
+resolution agree, authoritative resampling can apply known live values at
+individual voxels. Where BVW returns `Unset`, GI uses the stored coarse
+cell. Nonstandard chunk shapes use the full-resolution lookup and optional
+`GiFallbackVoxel`.
 
 ## Geometry and traversal
 
@@ -298,7 +293,9 @@ not a Minecraft-style radius for the entire light path.
 There is one integer-coordinate, axis-aligned world with f32 ray positions.
 There is no world-ID key, floating origin, nonlinear warp or cross-world routing.
 A host's prepass, material positions and transport voxels must use the same
-coordinates and surface shape. A planet adapter needs a correct ray metric and
+coordinates and surface shape. Give GI every page that rays should traverse.
+The world-cache radius controls where GI keeps off-screen lighting history.
+Page declarations control geometry coverage. A planet adapter needs a correct ray metric and
 normal/source conversion; warping raster vertices alone is insufficient.
 
 Missing devices and GI pipeline construction failures idle the affected work
@@ -318,3 +315,38 @@ and receiver-pool exhaustion still bound usable scene and view sizes.
 
 Detailed development notes and superseded layouts are preserved in
 [architecture history](history/architecture-design-notes-2026-10.md).
+
+## Source map
+
+| Responsibility | Owner / source |
+| --- | --- |
+| Plugin wiring and runtime state | [`lib.rs`](../crates/bevy_voxel_gi/src/lib.rs) |
+| Host input: pages, edits, voxel source, interest envelope | [`input.rs`](../crates/bevy_voxel_gi/src/input.rs), [`pages.rs`](../crates/bevy_voxel_gi/src/pages.rs) |
+| Host block types to transport materials | [`palette.rs`](../crates/bevy_voxel_gi/src/palette.rs) (`MaterialPalette`) |
+| BVW events, edits and source (connector crate) | [`bevy_voxel_gi_bvw/src/lib.rs`](../crates/bevy_voxel_gi_bvw/src/lib.rs) |
+| Scene/receiver representation | [`world.rs`](../crates/bevy_voxel_gi/src/world.rs), [`field.rs`](../crates/bevy_voxel_gi/src/field.rs) |
+| Acceleration, packing and shared GPU transactions | [`naadf.rs`](../crates/bevy_voxel_gi/src/naadf.rs), [`gpu_scene.rs`](../crates/bevy_voxel_gi/src/gpu_scene.rs), [`gpu/geometry.rs`](../crates/bevy_voxel_gi/src/gpu/geometry.rs) |
+| Change metadata and retention | [`world/delta.rs`](../crates/bevy_voxel_gi/src/world/delta.rs), [`geometry.rs`](../crates/bevy_voxel_gi/src/geometry.rs), [`retention.rs`](../crates/bevy_voxel_gi/src/retention.rs), [`sources.rs`](../crates/bevy_voxel_gi/src/sources.rs), [`sun_changes.rs`](../crates/bevy_voxel_gi/src/sun_changes.rs) |
+| Receiver page publication | [`publication.rs`](../crates/bevy_voxel_gi/src/publication.rs) |
+| Eligibility, priority and dispatch | [`scheduling.rs`](../crates/bevy_voxel_gi/src/scheduling.rs), [`dispatch.rs`](../crates/bevy_voxel_gi/src/dispatch.rs) |
+| Model/work configuration and revision synchronization | [`settings.rs`](../crates/bevy_voxel_gi/src/settings.rs) |
+| Thread-transfer payload and result merge | [`work.rs`](../crates/bevy_voxel_gi/src/work.rs) |
+| Source model and Bevy light adaptation | [`sources.rs`](../crates/bevy_voxel_gi/src/sources.rs) |
+| Sample streams, emitters, transport limits and the GPU tracer | [`sampling.rs`](../crates/bevy_voxel_gi/src/sampling.rs) (hashes), [`emission.rs`](../crates/bevy_voxel_gi/src/emission.rs), [`tracer.rs`](../crates/bevy_voxel_gi/src/tracer.rs) (limits), [`gpu.rs`](../crates/bevy_voxel_gi/src/gpu.rs), shared [`voxel_path.wgsl`](../crates/bevy_voxel_gi/shaders/voxel_path.wgsl), face consumer [`voxel_trace.wgsl`](../crates/bevy_voxel_gi/shaders/voxel_trace.wgsl) |
+| Surface-cache face lookup | [`gpu/face_index.rs`](../crates/bevy_voxel_gi/src/gpu/face_index.rs) |
+| View-owned far receivers, scheduling and asynchronous timing | [`gpu/view/runtime.rs`](../crates/bevy_voxel_gi/src/gpu/view/runtime.rs), [`gpu/view/timing.rs`](../crates/bevy_voxel_gi/src/gpu/view/timing.rs), [`voxel_view_runtime.wgsl`](../crates/bevy_voxel_gi/shaders/voxel_view_runtime.wgsl) |
+| Bidirectional RGB face ownership (two-way cache) | [`voxel_view_cache.wgsl`](../crates/bevy_voxel_gi/shaders/voxel_view_cache.wgsl), [`gpu/view/cache_tests.rs`](../crates/bevy_voxel_gi/src/gpu/view/cache_tests.rs) |
+| Stable GPU ownership, accumulation and bounded snapshots | [`gpu/resident.rs`](../crates/bevy_voxel_gi/src/gpu/resident.rs), [`gpu/readback.rs`](../crates/bevy_voxel_gi/src/gpu/readback.rs), [`voxel_accumulate.wgsl`](../crates/bevy_voxel_gi/shaders/voxel_accumulate.wgsl) |
+| Uncertainty heuristic statement (tests) | [`statistics.rs`](../crates/bevy_voxel_gi/src/statistics.rs) |
+| Direct-sun corner words and change footprints | [`sky.rs`](../crates/bevy_voxel_gi/src/sky.rs), [`voxel_path.wgsl`](../crates/bevy_voxel_gi/shaders/voxel_path.wgsl), [`voxel_trace.wgsl`](../crates/bevy_voxel_gi/shaders/voxel_trace.wgsl) (`trace_footprints`) |
+| Temporal display and initialization | [`history.rs`](../crates/bevy_voxel_gi/src/history.rs) |
+| Material data and shared buffers; GI material bindings; stock material | [`render.rs`](../crates/bevy_voxel_gi/src/render.rs) (`VoxelGiBindings`, `VoxelGiStandardMaterial`), [`voxel_gi_standard.wgsl`](../crates/bevy_voxel_gi/shaders/voxel_gi_standard.wgsl) |
+| Presentation for host materials (`bevy_voxel_gi::presentation`) | [`voxel_gi_presentation.wgsl`](../crates/bevy_voxel_gi/shaders/voxel_gi_presentation.wgsl) |
+| BVW mesh material (connector crate) | [`bevy_voxel_gi_bvw/src/material.rs`](../crates/bevy_voxel_gi_bvw/src/material.rs), [`bevy_voxel_gi_bvw/shaders/voxel_transport.wgsl`](../crates/bevy_voxel_gi_bvw/shaders/voxel_transport.wgsl) |
+| Accounting; test fixtures | [`telemetry.rs`](../crates/bevy_voxel_gi/src/telemetry.rs); [`research.rs`](../crates/bevy_voxel_gi/src/research.rs) (tests only) |
+| HUD and tuning panel (debug crate) | [`bevy_voxel_gi_debug/src/lib.rs`](../crates/bevy_voxel_gi_debug/src/lib.rs) |
+| Validation harness (lab) | [`src/validation.rs`](../src/validation.rs), [`src/validation/`](../src/validation/) |
+
+The core embeds its shaders from `crates/bevy_voxel_gi/shaders/`. The
+[`reconstruction.rs`](../crates/bevy_voxel_gi/src/reconstruction.rs)
+CPU oracle checks the shader's interpolation in tests.

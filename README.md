@@ -129,7 +129,7 @@ overlap, so read their timings separately.
 - **Integrate and tune** with the [core guide](crates/bevy_voxel_gi/README.md)
   and [API reference](https://docs.rs/bevy_voxel_gi).
 - **Understand the renderer** in the [architecture](docs/architecture.md) and
-  [surface cache](docs/surface-cache.md) guides. See
+  [surface cache study](docs/surface-cache.md). See
   [research and decisions](docs/research.md) for the papers and tradeoffs.
 - **Measure a change** using the [validation guide](docs/validation.md).
   The [historical studies](docs/history/README.md) record the measurements

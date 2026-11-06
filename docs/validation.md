@@ -1,8 +1,18 @@
 # Validation and regression tracking
 
-Use the smallest check that answers the question. GI is visual RGB lighting;
-heat and radiation have no simulation query or qualification contract here.
-Sampling accuracy, presentation quality and gameplay cost are separate results.
+Pick a check that matches the change. A sampler, a display filter and a
+streaming scheduler can all affect the same picture, but each needs its
+own evidence.
+
+- **I changed an API or scene input.** Start with the
+  [smallest relevant check](#choose-the-relevant-check) for that path.
+- **I changed what the player sees.** Pick a
+  [workload](#end-to-end-workloads) that shows it. Use `response` for
+  emitter edits, `tunnel` for newly exposed faces or `motion` for flicker.
+  Compare the before and after captures.
+- **I changed how much work GI does.** Compare frame times, lighting
+  freshness and visible stability together. See
+  [how to read the measurements](#interpret-the-measurements).
 
 ## Reproducible setup
 
