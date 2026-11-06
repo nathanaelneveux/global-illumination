@@ -122,18 +122,19 @@ fn setup(mut commands: Commands) {
 
 ## Textures and light
 
-BVW's texture mapper selects the top, side and bottom texture layers for
-a block. For a texture file, stack equally sized tiles vertically in one
-image. Call `prepare_texture_array` once after it loads. Give
-`material_template` the handle to that image. When checking asynchronously,
-read the image with `Assets::get` and `texture_array_ready` before borrowing
-it mutably. A mutable borrow can trigger a GPU re-upload.
+BVW's texture mapper picks each block's top, side and bottom layers. To
+build the texture array:
+
+1. Stack equally sized tiles vertically in one image.
+2. Give `material_template` that image's handle.
+3. Once the image loads, call `prepare_texture_array` on it, once. Check
+   `texture_array_ready` first, reading the image with `Assets::get`: a
+   mutable borrow re-uploads it to the GPU.
 
 Set each block's optical properties in `VoxelMaterialTransportTable` at
-its original BVW material index. For example, if BVW calls your lamp
-material `1`, set `emission` on slot `1`. `MaterialPalette` assigns its own
-IDs, so use the table directly in a BVW world. Solid BVW voxels are opaque
-to GI.
+its BVW material index. If BVW calls your lamp material `1`, set `emission`
+on slot `1`. Skip `MaterialPalette` here: it assigns its own IDs. Every
+solid BVW voxel is opaque to GI.
 
 ## Edits and levels of detail
 

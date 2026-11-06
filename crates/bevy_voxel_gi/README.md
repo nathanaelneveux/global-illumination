@@ -153,21 +153,29 @@ fn setup(
 
 </details>
 
-Run `cargo run` in your app. You should see a grey plane lit from above.
+Run `cargo run` in your app. You should see a gray plane lit from above.
 
 ### Reporting edits
 
-When a chunk unloads, call `page_unloaded`. For an edit with a known
-material, use `edit_voxel` and update the mesh to match. If the source has
-changed and you only know which page changed, use `page_changed` with
-default input tracking. Resampling uses the source as the authority for
-the page, so include any edits that should persist. See the [input API](https://docs.rs/bevy_voxel_gi/latest/bevy_voxel_gi/struct.VoxelGiInput.html)
-for exact edits and explicit resampling.
+Tell GI whenever the world changes:
 
-For a lower level of detail, return a coarse `PageSample` and mesh the
-same blocks. A stride of 4 uses one material per 4³ block.
-To see an edit change the light, watch the window open and close in the
-[`edits` example](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/examples/edits.rs).
+- **You know the block's new material.** Call `edit_voxel`, and update your
+  mesh to match.
+- **A page changed and you don't know exactly how.** Call `page_changed`.
+  GI resamples the page from your source, so the source must already hold
+  the change.
+- **A chunk unloaded.** Call `page_unloaded`.
+
+To watch an edit change the light, run the
+[`edits` example](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/examples/edits.rs):
+a window opens and closes every two seconds. The
+[input API](https://docs.rs/bevy_voxel_gi/latest/bevy_voxel_gi/struct.VoxelGiInput.html)
+covers exact edit tracking and explicit resampling.
+
+### Levels of detail
+
+For a distant chunk, return a coarse `PageSample` and mesh the same blocks.
+With a stride of 4, each 4³ block has one material.
 
 ## How lighting follows the camera
 
@@ -282,11 +290,10 @@ tracing from the cost of finding and presenting visible faces. Use
 
 ## Performance
 
-In an offscreen streaming run at 2560×1440 on an Apple M4, the fixed view
-passes took 3.89 ms per frame with the far tier enabled. Their cost sits
-outside the shared tracing budget. The comparison includes a run with the
-far tier disabled.
-[Measurement and settings](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/docs/history/far-per-pixel.md#update-distance-cheaper-classify-handoffs-flicker)
+On an Apple M4 at 2560×1440, finding and presenting visible faces takes
+3.89 ms a frame with the far tier on (an offscreen streaming run). Tracing
+comes on top, within the GPU budget you set.
+[Measurements, with a far-tier-off comparison](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/docs/history/far-per-pixel.md#update-distance-cheaper-classify-handoffs-flicker)
 
 ## Troubleshooting
 

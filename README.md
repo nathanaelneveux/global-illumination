@@ -10,7 +10,8 @@ takes on its color. Open a window and sunlight spills across the floor.
 The light follows your edits as you build and dig.
 
 `bevy_voxel_gi` adds real-time diffuse global illumination to axis-aligned
-voxel worlds in Bevy 0.19. It runs on native GPU compute.
+voxel worlds in Bevy 0.19. It traces light with ordinary GPU compute, so it
+needs no ray-tracing hardware.
 
 ## Getting started
 
@@ -44,8 +45,9 @@ cargo run --locked -p bevy_voxel_gi --example edits
 
 The camera tells GI which voxel faces it can see. GI traces those faces,
 keeps nearby lighting in a world cache when you look away, and lights
-small distant faces in screen space. An edit gives affected faces a
-reason to take fresh samples. [Architecture](docs/architecture.md)
+small distant faces in screen space. When you edit a block, the faces it
+affects drop their old light and sample again.
+[Architecture](docs/architecture.md)
 
 ![Three views of the same room, with dim walls, warm walls, then dim walls again](docs/images/response.jpg)
 
@@ -55,12 +57,12 @@ and 0.3 seconds after removing it. Captured with the lab's offscreen
 
 ## Platforms
 
-Voxel GI uses native Metal, Vulkan or DX12 and needs GPU compute with more
-storage buffers than WebGPU allows. It was tested on Apple M4 with Metal
-and on an AMD RX 7900 XT with Vulkan and DX12. On Windows, start with
-Vulkan. DX12 requires the DXC shader compiler. See
-[platform setup](crates/bevy_voxel_gi/README.md#platforms) and the
-[GPU testing guide](docs/testing-other-gpus.md).
+Voxel GI runs on native Metal, Vulkan and DX12. It can't run on WebGPU,
+which allows too few storage buffers. We've tested it on an Apple M4
+(Metal) and an AMD RX 7900 XT (Vulkan and DX12). On Windows, start with
+Vulkan: DX12 needs the DXC shader compiler. See
+[platform setup](crates/bevy_voxel_gi/README.md#platforms), and if you
+have another GPU, the [GPU testing guide](docs/testing-other-gpus.md).
 
 ## Try the lab
 
@@ -74,14 +76,14 @@ stays bright while its light on the stone comes and goes. Remove it with
 
 ![Green ceiling lights and orange lava light tint the walls of a cave. Sunlight enters through a hole above the spire.](docs/images/cave.jpg)
 
-To go straight to a test scene, use one of these commands on macOS or Linux.
-In PowerShell set `$env:VOXEL_GI_SCENE = "cave"` or `"canyon"` before running
-`cargo run --locked`.
+To jump straight to a test scene:
 
 ```sh
 VOXEL_GI_SCENE=cave cargo run --locked
 VOXEL_GI_SCENE=canyon cargo run --locked
 ```
+
+In PowerShell, set `$env:VOXEL_GI_SCENE = "cave"` first instead.
 
 In the [daylight canyon](docs/images/canyon.jpg), look for warm light
 bouncing off the sunlit rim into the shade.
@@ -121,13 +123,14 @@ settings using `VOXEL_GI_SETTINGS=path.ron cargo run --locked`. See
 
 ## Contributing
 
-Open a GitHub issue for bugs and GPU reports. The
+Bug reports and GPU reports are welcome as GitHub issues. The
 [GPU testing guide](docs/testing-other-gpus.md) lists what to include.
-For a pull request, explain the problem and the change, run formatting,
-Clippy and the checks relevant to the diff. Use the
-[validation guide](docs/validation.md#choose-the-relevant-check) to pick
-tests and collect paired evidence for performance or lighting changes.
-[AGENTS.md](AGENTS.md) records the development workflow, and the
+
+For a pull request, explain the problem and your change. Run formatting,
+Clippy and the checks that fit the diff; the
+[validation guide](docs/validation.md#choose-the-relevant-check) says which.
+Performance and lighting changes need before-and-after evidence.
+[AGENTS.md](AGENTS.md) records our workflow, and the
 [release guide](docs/releasing.md) covers publishing.
 
 ## License
