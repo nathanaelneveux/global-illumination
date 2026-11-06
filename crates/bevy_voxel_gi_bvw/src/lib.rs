@@ -96,8 +96,10 @@ fn forward_chunk_events<C: VoxelWorldConfig>(
     }
 }
 
+/// A loaded chunk's page, and whether BVW retains finer data than it draws
+/// (a downgraded chunk under `ChunkRegenerateStrategy::Reuse`).
 type ChunkPage =
-    dyn Fn(IVec3, &dyn Fn(IVec3) -> WorldVoxel<u8>) -> Option<PageSample> + Send + Sync;
+    dyn Fn(IVec3, &dyn Fn(IVec3) -> WorldVoxel<u8>) -> Option<(PageSample, bool)> + Send + Sync;
 
 struct BvwSource<C: VoxelWorldConfig<MaterialIndex = u8>> {
     /// A loaded chunk's page, including the volume covered by coarse cells.
@@ -118,10 +120,14 @@ where
     C: VoxelWorldConfig<MaterialIndex = u8> + GiFallbackVoxel + Send + Sync + 'static,
 {
     fn sample_page(&self, page: IVec3, resample: bool) -> PageSample {
-        if let Some(materials) =
+        if let Some((materials, retained_finer)) =
             (self.chunk_page)(page, &|position| self.config.fallback_voxel(position))
         {
-            if !resample {
+            // A downgraded chunk stays at its drawn resolution on resample
+            // too: BVW's authoritative lookup answers from the retained
+            // full-resolution data, which GI must not trace under a coarse
+            // mesh (`sample_chunk`). BVW resamples it again when it remeshes.
+            if !resample || retained_finer {
                 return materials;
             }
             let origin = page * CHUNK as i32;
@@ -231,19 +237,22 @@ fn refresh_source<C>(
     let chunk_page: Arc<ChunkPage> = Arc::new(move |page, fallback| {
         let chunk = chunks(page)?;
         if chunk.is_empty() {
-            return Some(PageSample::air());
+            return Some((PageSample::air(), false));
         }
-        Some(sample_chunk(
+        let (data, mesh) = (chunk.data_shape(), chunk.mesh_shape());
+        let retained_finer = mesh != UVec3::ZERO && data.x > mesh.x;
+        let sample = sample_chunk(
             page,
-            chunk.data_shape(),
-            chunk.mesh_shape(),
+            data,
+            mesh,
             |index| chunk.get_voxel(index),
             |position| {
                 chunk
                     .get_voxel_at_world_position(position)
                     .unwrap_or_else(|| fallback(position))
             },
-        ))
+        );
+        Some((sample, retained_finer))
     });
     source.0 = Some(Arc::new(BvwSource {
         chunk_page,
@@ -280,6 +289,28 @@ mod tests {
             );
         app.update();
         app
+    }
+
+    #[test]
+    fn a_resample_of_a_downgraded_chunk_keeps_its_mesh_resolution() {
+        // Drawn as stride-2 blocks while BVW's authoritative lookup answers
+        // from the retained full-resolution data (material 9 everywhere).
+        let coarse = PageSample::coarse(2, vec![3; 16 * 16 * 16]);
+        let source = |retained_finer: bool| BvwSource::<TestWorld> {
+            chunk_page: Arc::new({
+                let coarse = coarse.clone();
+                move |_, _| Some((coarse.clone(), retained_finer))
+            }),
+            voxels: Arc::new(|_| WorldVoxel::Solid(9)),
+            config: TestWorld,
+        };
+        let downgraded = source(true).sample_page(IVec3::ZERO, true);
+        assert_eq!(downgraded.stride(), 2, "follows the coarse mesh");
+        assert_eq!(downgraded.material(UVec3::new(5, 6, 7)), 3);
+        // Data that is itself coarse keeps the authoritative overlay.
+        let native = source(false).sample_page(IVec3::ZERO, true);
+        assert_eq!(native.stride(), 1);
+        assert_eq!(native.material(UVec3::new(5, 6, 7)), 9);
     }
 
     #[test]
@@ -429,7 +460,7 @@ mod tests {
                 let expected = stored.clone();
                 let sparse = stored.clone();
                 let source = BvwSource {
-                    chunk_page: Arc::new(move |_, _| Some(stored.clone())),
+                    chunk_page: Arc::new(move |_, _| Some((stored.clone(), false))),
                     // BVW exposes exact stored sample positions; other
                     // positions are Unset, not holes in the coarse cell.
                     voxels: Arc::new(move |p| {
@@ -480,7 +511,7 @@ mod tests {
         let stored = coarse_page(key, 8, |p| (p.x - origin.x < 8).then_some(2));
         let expected = stored.clone();
         let mut source = BvwSource {
-            chunk_page: Arc::new(move |_, _| Some(stored.clone())),
+            chunk_page: Arc::new(move |_, _| Some((stored.clone(), false))),
             voxels,
             config: TestWorld,
         };
