@@ -20,12 +20,6 @@ integrated GPUs.
 | [`bevy_voxel_gi_bvw`](crates/bevy_voxel_gi_bvw) | Connector for [`bevy_voxel_world`](https://github.com/splashdust/bevy_voxel_world): chunk events, voxel source, the lit mesh material |
 | [`bevy_voxel_gi_debug`](crates/bevy_voxel_gi_debug) | Optional HUD and tuning panel |
 
-```sh
-cargo run -p bevy_voxel_gi --example minimal   # a small complete host
-cargo run -p bevy_voxel_gi --example edits     # a window opening and closing
-cargo run --locked                             # the lab: a streaming BVW world with GI
-```
-
 ## How it works
 
 - **No ray-tracing hardware.** Compute shaders trace the voxels themselves,
@@ -55,8 +49,35 @@ cargo run --locked                             # the lab: a streaming BVW world 
   materials. It never meshes or owns the world, accepts coarse level-of-detail
   pages, and works under ray-traced renderers as well as meshes.
 
-Changes are in the [CHANGELOG](CHANGELOG.md).
-Release preparation and publication order are in [the release guide](docs/releasing.md).
+## Getting started
+
+```sh
+cargo add bevy_voxel_gi
+```
+
+```rust,ignore
+App::new()
+    .add_plugins((DefaultPlugins, VoxelGiPlugin, VoxelGiStandardMaterialPlugin))
+    .run();
+```
+
+Then describe how your blocks reflect and emit light, hand GI a read-only
+view of your voxels, say which 32³ pages exist, and draw with a GI-lit
+material. The [quick start](crates/bevy_voxel_gi/README.md#quick-start) does
+all four in one file. Using `bevy_voxel_world`?
+[`bevy_voxel_gi_bvw`](crates/bevy_voxel_gi_bvw) does the wiring for you.
+
+| Bevy | bevy_voxel_gi |
+| --- | --- |
+| 0.19 | 0.1 |
+
+From a checkout, three things to run:
+
+```sh
+cargo run -p bevy_voxel_gi --example minimal   # a small complete host
+cargo run -p bevy_voxel_gi --example edits     # a window opening and closing
+cargo run --locked                             # the lab: a streaming world to explore
+```
 
 ## Platforms
 
@@ -71,13 +92,17 @@ Native GPUs only; WebGPU allows too few storage buffers per stage.
 [Testing on another GPU](docs/testing-other-gpus.md) explains how to try it on
 yours and what to send back.
 
-## Scope
+## Limitations
 
-GI produces visible RGB light only. Heat and radiation belong to a separate
-simulation ([direction](docs/direction.md)). [Architecture](docs/architecture.md)
-covers the data model, invalidation and integration limits.
+- Opaque, diffuse light only: transparent blocks are air to GI, and there's
+  no specular or coloured transmission.
+- Native GPUs only, not WebGPU.
+- In motion, distant lighting flickers a little more than nearby lighting.
+- In very large worlds, new geometry and edits take longer to reach GI.
 
-## The lab
+The [changelog](CHANGELOG.md#known-limitations) has the details.
+
+## Try the lab
 
 The root package is the development app: a streaming
 [`bevy_voxel_world`](https://github.com/splashdust/bevy_voxel_world) world
@@ -122,6 +147,8 @@ converged. CPU and GPU work overlap, so don't add their times.
 
 ## Documentation
 
+- [API reference](https://docs.rs/bevy_voxel_gi) and the
+  [changelog](CHANGELOG.md).
 - [Architecture](docs/architecture.md): how GI is built and its limits.
 - [Research and decisions](docs/research.md): what was adopted from NAADF,
   vxray, DDGI and Solari, what differs, and what's planned after 0.1.
@@ -143,7 +170,8 @@ GPU](docs/testing-other-gpus.md) says what to send. For pull requests:
   same profile, as [validation](docs/validation.md) describes. Faster frames
   that show staler or noisier lighting aren't an improvement.
 - [`AGENTS.md`](AGENTS.md) is the project's working agreement, for people and
-  coding agents alike.
+  coding agents alike; [the release guide](docs/releasing.md) covers
+  versions and publishing.
 
 ## License
 

@@ -41,50 +41,6 @@ multi-bounce indirect light, traced on the GPU against the voxels themselves.
   materials. It never meshes or owns the world, accepts coarse level-of-detail
   pages, and works under ray-traced renderers as well as meshes.
 
-## Platforms
-
-Native GPUs only (Metal, Vulkan, DX12). Not WebGPU: the view tier uses more
-storage buffers per stage than WebGPU allows.
-
-On Windows both backends work: all GPU tests pass on an AMD RX 7900 XT.
-Vulkan needs no setup, and wgpu picked it by default there. DX12 needs the
-DXC shader compiler, because FXC, wgpu's fallback when DXC is unavailable,
-rejects GI's compute shaders. On that machine DX12 also reached GI's first
-frame in 6.4 s with a warm shader cache, against 0.3 s on Vulkan; frame
-times haven't been compared.
-
-For DX12, either enable Bevy's `statically-linked-dxc` feature, or ship
-`dxcompiler.dll` and `dxil.dll` next to your executable and select them
-explicitly. Bevy's automatic detection looks only in the working directory,
-so a game launched from anywhere else would fall back to FXC.
-
-```rust,no_run
-use bevy::prelude::*;
-use bevy::render::{
-    RenderPlugin,
-    settings::{Dx12Compiler, WgpuSettings},
-};
-
-let dxc = std::env::current_exe().unwrap().with_file_name("dxcompiler.dll");
-App::new().add_plugins(DefaultPlugins.set(RenderPlugin {
-    render_creation: WgpuSettings {
-        dx12_shader_compiler: Dx12Compiler::DynamicDxc {
-            dxc_path: dxc.to_string_lossy().into_owned(),
-        },
-        ..default()
-    }
-    .into(),
-    ..default()
-}));
-```
-
-| Bevy | bevy_voxel_gi |
-| --- | --- |
-| 0.19 | 0.1 |
-
-Each release targets one Bevy minor version: host materials override Bevy
-PBR internals that change between Bevy releases.
-
 ## Quick start
 
 Add the core crate to a Bevy 0.19 application:
@@ -94,6 +50,13 @@ Add the core crate to a Bevy 0.19 application:
 bevy = "0.19"
 bevy_voxel_gi = "0.1"
 ```
+
+| Bevy | bevy_voxel_gi |
+| --- | --- |
+| 0.19 | 0.1 |
+
+Each release targets one Bevy minor version: host materials override Bevy
+PBR internals that change between Bevy releases.
 
 `bevy_voxel_gi_bvw` connects `bevy_voxel_world` for you; `bevy_voxel_gi_debug`
 adds a HUD and tuning panel. Both share the core's version.
@@ -256,6 +219,45 @@ can pass any hit's position and normal, but must also write compatible depth
 and normal prepasses, which GI reads to find visible faces.
 `face_in_geometry` says whether GI covers a face; light the others yourself
 (`sun_count`, `sun_direction` and `sun_color` give GI's suns).
+
+## Platforms
+
+Native GPUs only (Metal, Vulkan, DX12). Not WebGPU: the view tier uses more
+storage buffers per stage than WebGPU allows.
+
+On Windows both backends work: all GPU tests pass on an AMD RX 7900 XT.
+Vulkan needs no setup, and wgpu picked it by default there. DX12 needs the
+DXC shader compiler, because FXC, wgpu's fallback when DXC is unavailable,
+rejects GI's compute shaders. On that machine DX12 also reached GI's first
+frame in 6.4 s with a warm shader cache, against 0.3 s on Vulkan; frame
+times haven't been compared.
+
+### DX12
+
+Either enable Bevy's `statically-linked-dxc` feature, or ship
+`dxcompiler.dll` and `dxil.dll` next to your executable and select them
+explicitly. Bevy's automatic detection looks only in the working directory,
+so a game launched from anywhere else would fall back to FXC.
+
+```rust,no_run
+use bevy::prelude::*;
+use bevy::render::{
+    RenderPlugin,
+    settings::{Dx12Compiler, WgpuSettings},
+};
+
+let dxc = std::env::current_exe().unwrap().with_file_name("dxcompiler.dll");
+App::new().add_plugins(DefaultPlugins.set(RenderPlugin {
+    render_creation: WgpuSettings {
+        dx12_shader_compiler: Dx12Compiler::DynamicDxc {
+            dxc_path: dxc.to_string_lossy().into_owned(),
+        },
+        ..default()
+    }
+    .into(),
+    ..default()
+}));
+```
 
 ## Tuning
 
