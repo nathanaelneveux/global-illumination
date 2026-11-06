@@ -3,51 +3,37 @@
 //!
 //! ## API map
 //!
-//! ### Send voxels and edits
+//! ### Geometry and edits
 //!
-//! Install [`VoxelGiPlugin`] and put a [`VoxelSource`] snapshot in
-//! [`VoxelGiSource`]. Use [`dense_page`] for one material per voxel or
-//! [`coarse_page`] for a level of detail. Tell [`VoxelGiInput`] which 32³
-//! pages are [loaded](VoxelGiInput::page_loaded) and
-//! [unloaded](VoxelGiInput::page_unloaded).
+//! | Task | API |
+//! | --- | --- |
+//! | Install GI and provide a snapshot | [`VoxelGiPlugin`], [`VoxelGiSource`], [`VoxelSource::sample_page`] |
+//! | Build a page at the mesh's resolution | [`PageSample`], [`dense_page`], [`coarse_page`], [page edge](VOXEL_GI_PAGE_EDGE) |
+//! | Declare page residency | [`page_loaded`](VoxelGiInput::page_loaded), [`page_unloaded`](VoxelGiInput::page_unloaded) |
+//! | Send a known edit | [`edit_voxel`](VoxelGiInput::edit_voxel), [tracked input](VoxelGiInput::tracked) |
+//! | Refresh from the source | [`page_changed`](VoxelGiInput::page_changed), [`mark_voxel`](VoxelGiInput::mark_voxel), [`mark_all_loaded`](VoxelGiInput::mark_all_loaded) |
 //!
-//! Report a known edit with [`VoxelGiInput::edit_voxel`]. Request a fresh
-//! sample with [`VoxelGiInput::mark_voxel`] if you know the position but
-//! lack the new material. Use [`VoxelGiInput::page_changed`] with default
-//! tracking to refresh a whole page.
+//! ### Materials and lights
 //!
-//! ### Describe materials and lights
+//! | Task | API |
+//! | --- | --- |
+//! | Assign material IDs and optical properties | [`MaterialPalette`], [`VoxelMaterialTransportTable::set`], [`MaterialTransport`], [`AIR`] |
+//! | Make a glowing block | [`MaterialTransport::emission`] |
+//! | Light a scene with the sun, a point light or a sky | [Bevy directional light](DirectionalLight), [Bevy point light](PointLight), [`VoxelGiEnvironment`] |
+//! | Add a light for GI | [`VoxelGiEmitter`] |
+//! | Light a Bevy mesh | [`VoxelGiStandardMaterialPlugin`], [`standard_material`] |
+//! | Light a custom material | [`VoxelGiBindings`], [`VoxelGiMaterialData`], [`VoxelGiMaterialPlugin`], [`PRESENTATION_SHADER`], [shader reference](#shader-reference) |
+//! | Compose the shader outside Bevy's asset pipeline | [`presentation_shader_source`] |
 //!
-//! [`MaterialTransport`] holds diffuse reflectance and emission. If you
-//! already assign voxel material IDs, set their properties directly in
-//! [`VoxelMaterialTransportTable`]. To let GI assign IDs, build a
-//! [`MaterialPalette`] and copy its table. [`AIR`] represents empty space.
+//! ### Quality and diagnostics
 //!
-//! Bevy's [directional lights](DirectionalLight) and [point lights](PointLight)
-//! contribute to GI. Set the sky with [`VoxelGiEnvironment`] and add analytic
-//! lights with [`VoxelGiEmitter`]. A voxel with
-//! [material emission](MaterialTransport::emission) lights its surroundings
-//! through its material alone.
-//!
-//! ### Light your surfaces
-//!
-//! Register [`VoxelGiStandardMaterialPlugin`] and use [`standard_material`]
-//! to create a [`VoxelGiStandardMaterial`].
-//!
-//! For your own shader, build [`VoxelGiBindings`] from [`VoxelGiMaterialData`].
-//! [`VoxelGiMaterialPlugin`] keeps those bindings current. Import
-//! `bevy_voxel_gi::presentation` from the embedded [`PRESENTATION_SHADER`].
-//!
-//! ### Tune and diagnose
-//!
-//! Use [`VoxelGiSettings::quality`] for a [`VoxelGiQuality`] preset, or
-//! set the fields on [`VoxelGiSettings`]. [`VoxelGiDisplay`] controls
-//! presentation and [`GiDebugView`] selects diagnostic views.
-//!
-//! Read [`VoxelGiStats`] after [`VoxelGiSystems`] to see the latest published
-//! diagnostics. [`VoxelGiStats::geometry_pending`] tracks scene readiness,
-//! and [`ViewReceipts`] breaks down view GPU time. [`SchedulerStats`] exposes
-//! implementation details for diagnostics.
+//! | Task | API |
+//! | --- | --- |
+//! | Start from a preset or saved settings | [`VoxelGiSettings::quality`], [`VoxelGiQuality`], [`VoxelGiSettings::from_ron`] |
+//! | Set ray reach or bounce depth | [`TransportSettings`] |
+//! | Set the distance tier | [`FarTierSettings`], [`FarTierMeasure`] |
+//! | Compare the look or inspect coverage | [`VoxelGiDisplay`], [`GiDebugView`] |
+//! | Wait for geometry or read GPU cost | [`VoxelGiStats::geometry_pending`], [`ViewReceipts`], [system ordering](VoxelGiSystems) |
 //!
 #![warn(missing_docs)]
 mod color;

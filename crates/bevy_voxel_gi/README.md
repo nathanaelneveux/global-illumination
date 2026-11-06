@@ -155,6 +155,8 @@ fn setup(
 
 Run `cargo run` in your app. You should see a grey plane lit from above.
 
+### Reporting edits
+
 When a chunk unloads, call `page_unloaded`. For an edit with a known
 material, use `edit_voxel` and update the mesh to match. If the source has
 changed and you only know which page changed, use `page_changed` with
@@ -174,9 +176,8 @@ voxel faces to light. GI keeps each face's history as the camera moves and
 blends nearby samples while a face is still noisy.
 
 **Off-screen faces.** The world cache keeps light on faces within 64 voxels
-of a camera by default. A ray that hits a cached face can reuse its stored
-light, so bounced light builds up over time and stays available when you
-turn back.
+of a camera by default. A ray can reuse that light to build
+up multiple bounces. The cache also keeps it available when you turn back.
 
 **Distant faces.** When a voxel projects to less than 8 pixels across by
 default, GI switches to a screen-space estimate. This lets it light distant
@@ -194,8 +195,7 @@ Choose forward rendering on the base material. For `StandardMaterial`, set
 enables the prepass and shadow passes. Add `NotShadowCaster` to any entity
 that should skip Bevy's shadow pass.
 
-Import the presentation functions in your forward fragment shader. Multiply
-the indirect light by the surface albedo and add the material's emission.
+Add the indirect and emissive terms in your forward fragment shader.
 
 ```wgsl
 #import bevy_voxel_gi::presentation::{indirect_light, emission}
@@ -204,16 +204,25 @@ let gi = indirect_light(in.position.xy, in.world_position.xyz, normal);
 color += albedo * gi.light + emission(in.world_position.xyz, normal);
 ```
 
-Use `sunlight` for GI's traced sun visibility and direct light. The stock
-shader shows the conversion from transport units and the fallback for
-surfaces outside GI's voxel data.
-[Stock WGSL material](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/shaders/voxel_gi_standard.wgsl)
+### Shader reference
 
-A ray-traced primary renderer can pass the position and normal of its hit
-to the same functions. Supply compatible depth and normal prepasses for
-face discovery. Use `face_in_geometry` to identify faces that need lighting
-from your renderer. The `sun_count`, `sun_direction` and `sun_color` helpers
-let you use the same suns.
+Pass the world position on the voxel face and its axis-aligned normal.
+`pixel` is `@builtin(position).xy` in framebuffer pixels. For a ray-traced
+primary renderer, use the hit position and normal and supply compatible
+depth and normal prepasses.
+
+| Function | Result and use |
+| --- | --- |
+| `indirect_light(pixel, position, normal)` | Multiply `.light` by diffuse albedo. `.found` reports sample support. `.coverage` identifies the source of that support. |
+| `sunlight(position, normal, footprint)` | Direct sun in transport units. Multiply by diffuse albedo × 10,000 / π and apply it in place of Bevy's directional term. The footprint is the largest component of `fwidth(position)` in world voxels. |
+| `emission(position, normal)` | Add the voxel's emitted RGB once. |
+| `face_in_geometry(position, normal)` | True for an exposed face in the published scene. Provide host lighting for other surfaces. |
+| `sun_count()`, `sun_direction(i)`, `sun_color(i)` | Read the same suns for your own visibility test. Index from 0 to count − 1. Direction points toward the sun. Color is in transport units. |
+| `enabled()`, `voxel_sky()`, `debug_mode()` | Read the indirect toggle, the GI sunlight toggle and the diagnostic mode. |
+| `sunlight_reference(position, normal)` | Trace the face's own four sun corners for a diagnostic comparison. |
+
+The stock shader shows how to combine these terms with Bevy's PBR.
+[Stock WGSL material](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/shaders/voxel_gi_standard.wgsl)
 
 ## Platforms
 
@@ -281,34 +290,25 @@ far tier disabled.
 
 ## Troubleshooting
 
-### Why are some faces dark or unlit?
+For a blank scene, check the render log and run the
+[room example](#quick-start) on the same backend. In your app, confirm an
+active 3D camera, declared pages and a GI-lit material.
 
-Check `VoxelGiStats::geometry_pending` first. The CPU builds and publishes
-geometry asynchronously. In a large streaming world that can take seconds.
-Once geometry is ready, check that you declared the page and that the mesh
-lies on the same voxel boundaries as the source. A just-remeshed face can
-appear before the matching geometry reaches the GPU.
+| What you see | What to check |
+| --- | --- |
+| A chunk is dark as it appears | Check `VoxelGiStats::geometry_pending`. The mesh can arrive before its GI geometry. Once ready, check that the page is declared and its mesh matches the voxel source. |
+| Lighting ignores an edit | Send the voxel edit along with the remesh. For resampling, make sure the current source contains the change. [Reporting edits](#reporting-edits) |
+| A glowing texture casts no light | Set the block's `MaterialTransport::emission` and check the source's material ID. For BVW, use the original block index in the transport table. [Block optics](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi_bvw/README.md#textures-and-light) |
+| A custom material misses GI | Check the forward pass, reserved bindings and binding update plugin. [Material setup](#lighting-your-own-material) |
+| Sun shadows look wrong | Check `VoxelGiDisplay::voxel_sun`. With GI sunlight, apply the GI sun once. With Bevy sunlight, enable the directional light's shadow maps to get shadows. |
+| Distant faces flicker as you move | Compare the same view with `far_tier.voxel_pixels = 0` to isolate the far tier. [Tuning](#tuning) |
+| GPU cost is high | Read the discovery, presentation and trace timings separately. Lower the receiver cap for discovery and presentation or the GPU share for tracing. [Tuning](#tuning) |
+| DX12 fails to start | Use DXC or Vulkan. A first DXC run can spend several seconds compiling shaders. [DX12 setup](#dx12) |
 
-### Why does my custom material miss the lighting?
-
-Use the forward pass, leave binding 104 and bindings 106–111 free, and add
-`VoxelGiMaterialPlugin` to keep the buffers current.
-[Material setup](#lighting-your-own-material)
-
-### Why do I see two sets of sun shadows?
-
-The stock GI material traces its own direct sun. Set
-`shadow_maps_enabled: false` on the directional light if your scene uses GI
-for its sun shadows. If other materials still use Bevy shadows, keep the
-light's shadow maps and use `NotShadowCaster` on entities you want to
-exclude from that pass.
-
-### Why does DX12 fail to start?
-
-Use DXC or select Vulkan. When DXC is missing, wgpu can fall back to FXC,
-which cannot compile GI's compute shaders. The first DXC run may spend
-several seconds compiling shaders.
-[DX12 setup](#dx12)
+The **Coverage** debug view distinguishes support from brightness. Green is
+a face receiver, cyan is the far tier, yellow is reconstructed support
+for a missing sample, and red means no indirect support.
+[Debug plugin](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi_debug/README.md)
 
 ## Limitations
 

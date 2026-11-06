@@ -29,7 +29,9 @@ impl Default for GpuTraversalParams {
 /// transport data or history.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct VoxelGiDisplay {
-    /// Apply GI lighting at all.
+    /// Apply the indirect-light term in GI's presentation shader.
+    ///
+    /// [`Self::voxel_sun`] controls the directional term separately.
     pub enabled: bool,
     /// Interpolate lighting across voxel corners (false: flat per face).
     pub corner_reconstruction: bool,

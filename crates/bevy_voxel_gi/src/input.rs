@@ -54,6 +54,9 @@ impl VoxelGiInput {
     }
 
     /// The host changed a loaded page's contents.
+    ///
+    /// Default tracking replaces the page's previous edit overlay with data
+    /// from the source. With [`Self::tracked`], report the writes separately.
     pub fn page_changed(&mut self, page: IVec3) {
         self.pages.push((page, PageEvent::Changed));
     }
@@ -69,7 +72,10 @@ impl VoxelGiInput {
         self.edits.insert(voxel, material.map_or(AIR, u16::from));
     }
 
-    /// A change of unknown value: its page is resampled from the source.
+    /// Requests an authoritative resample of the voxel's page.
+    ///
+    /// This discards the previous edit overlay for the page. Include earlier
+    /// edits in the source if they should survive the resample.
     pub fn mark_voxel(&mut self, voxel: IVec3) {
         // A later untracked write supersedes an earlier exact value, including
         // when both notifications arrive before GI drains this frame.
@@ -77,7 +83,9 @@ impl VoxelGiInput {
         self.voxels.insert(voxel);
     }
 
-    /// Everything loaded may have changed (e.g. a regenerated world).
+    /// Resamples all loaded pages from the source and clears old edit overlays.
+    ///
+    /// Use this after replacing the source with a regenerated world.
     pub fn mark_all_loaded(&mut self) {
         self.edits.clear();
         self.all_loaded = true;
@@ -117,12 +125,22 @@ impl PageSample {
     }
 
     /// A full-resolution page (`32³` materials, x fastest).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the input length differs from `32³`.
     pub fn full(materials: Vec<u16>) -> Self {
         Self::coarse(1, materials)
     }
 
     /// A page at `stride` (a power of two from 1 to 32) with `(32 / stride)³`
-    /// cell materials, x fastest.
+    /// cell materials, x fastest. Use IDs 0–255 for solids and [`AIR`] for
+    /// empty cells.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stride or cell count is invalid. Debug builds also check
+    /// material IDs.
     pub fn coarse(stride: u32, cells: Vec<u16>) -> Self {
         assert!(
             stride.is_power_of_two() && stride <= PAGE_EDGE,
@@ -187,13 +205,18 @@ impl PageSample {
 #[derive(Resource, Default, Clone)]
 pub struct VoxelGiSource(pub Option<Arc<dyn VoxelSource>>);
 
-/// Build a full-resolution page from a per-voxel lookup (`None` is air).
+/// Build a full-resolution page by calling the lookup at each world voxel.
+/// The lookup receives world coordinates. Return `None` for air.
 pub fn dense_page(page: IVec3, voxel: impl Fn(IVec3) -> Option<u8>) -> PageSample {
     coarse_page(page, 1, voxel)
 }
 
-/// Build a page at `stride` from a lookup sampled once per cell, at the
-/// cell's minimum voxel (`None` is air).
+/// Build a page by sampling the minimum world voxel of each coarse cell.
+/// Return `None` for air.
+///
+/// # Panics
+///
+/// Panics unless `stride` is a power of two from 1 to 32.
 pub fn coarse_page(page: IVec3, stride: u32, voxel: impl Fn(IVec3) -> Option<u8>) -> PageSample {
     let origin = page * PAGE_EDGE as i32;
     let edge = PAGE_EDGE / stride.max(1);
