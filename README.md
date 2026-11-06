@@ -20,6 +20,35 @@ cargo run -p bevy_voxel_gi --example minimal   # a small complete host
 cargo run --locked                         # the lab: a streaming BVW world with GI
 ```
 
+## How it works
+
+- **No ray-tracing hardware.** Compute shaders trace the voxels themselves,
+  so it runs on Apple Silicon and integrated GPUs. On an Apple M4 at 1440p,
+  finding and presenting visible faces costs about 4 ms a frame, and tracing
+  fills a GPU time share you set (20% of the frame by default).
+- **Visible faces** are discovered from each camera's depth and normal prepass
+  and traced every frame within that share, with histories that follow each
+  face as the camera moves.
+- **A world cache** keeps faces within 64 voxels of the cameras lit off screen
+  and trades history with visible faces, so turning around, revisiting and
+  editing out of view stay warm. A ray that reaches a cached face ends there
+  with its stored light, so bounces add up over time
+  ([surface cache](docs/surface-cache.md)).
+- **Faces small on screen** (a voxel under 8 pixels across) are lit per pixel
+  instead, so distant terrain costs follow the screen, not the world.
+- **Edits** tell GI which voxels changed, and it drops history near each
+  change in proportion to its measured effect: digging a tunnel relights the
+  tunnel without resetting the rest of the scene, and nothing is guessed from
+  frame-to-frame differences.
+- **Emissive blocks are lights.** A light tree chooses which of many emitters
+  to sample.
+- **Presentation** pools coplanar neighbours by their measured noise until each
+  face has enough samples of its own, then blends over time. Sunlight is
+  sampled at shared voxel corners.
+- **Your engine, your meshes.** GI reads voxels through a trait and lights your
+  materials. It never meshes or owns the world, accepts coarse level-of-detail
+  pages, and works under ray-traced renderers as well as meshes.
+
 Changes are in the [CHANGELOG](CHANGELOG.md).
 Release preparation and publication order are in [the release guide](docs/releasing.md).
 
@@ -29,28 +58,14 @@ Native GPUs only; WebGPU allows too few storage buffers per stage.
 
 - **Metal:** developed and measured on an Apple M4.
 - **Vulkan and DX12:** tested on an AMD RX 7900 XT under Windows 11
-  ([first run](docs/history/windows-first-run.md)). Vulkan is the recommended
-  Windows backend. DX12 needs the DXC shader compiler (see the
+  ([first run](docs/history/windows-first-run.md)). Vulkan needs no setup;
+  DX12 needs the DXC shader compiler and started slower there (see the
   [`bevy_voxel_gi` README](crates/bevy_voxel_gi/README.md)).
 
 [Testing on another GPU](docs/testing-other-gpus.md) explains how to try it on
 yours and what to send back.
 
-## How it works
-
-- **Visible faces** are discovered from each camera's depth and normal prepass
-  and traced every frame within a GPU time share, with histories that follow
-  each face as the camera moves.
-- **A world cache** keeps faces within 64 voxels of the cameras lit off screen
-  and trades history with visible faces, so turning around, revisiting and
-  editing out of view stay warm. A ray that reaches a cached face ends there
-  with its stored light, so bounces add up over time
-  ([surface cache](docs/surface-cache.md)).
-- **Faces small on screen** (a voxel under 8 pixels across) are lit per pixel
-  instead, so distant terrain costs follow the screen, not the world.
-- **Presentation** pools coplanar neighbours by their measured noise until each
-  face has enough samples of its own, then blends over time. Sunlight is
-  sampled at shared voxel corners.
+## Scope
 
 GI produces visible RGB light only. Heat and radiation belong to a separate
 simulation ([direction](docs/direction.md)). [Architecture](docs/architecture.md)

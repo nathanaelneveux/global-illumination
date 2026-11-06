@@ -16,8 +16,7 @@ evidence to retain.
   back to FXC, which rejects GI's compute shaders (and, with them rewritten
   to compile, took over five minutes on every launch; see the
   [FXC issue](https://github.com/nathanaelneveux/global-illumination/issues/4)).
-  Vulkan needs nothing extra and is the recommended Windows backend. Bevy
-  uses DXC by any one of these routes:
+  Vulkan needs nothing extra. Bevy uses DXC by any one of these routes:
 
   | Route | Cost |
   |---|---|
