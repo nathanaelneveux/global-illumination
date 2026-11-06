@@ -247,29 +247,27 @@ pub(super) fn start_scene_task(
     };
 
     let mut dirty_pages: Vec<_> = runtime.dirty_pages.drain().collect();
-    if dirty_pages.len() > MAX_DENSE_PAGES {
-        // A dense page costs 64 KB in a build. Streaming a far world queued
-        // tens of thousands at once: gigabytes of transient samples and one
-        // very late build. Sample edited pages, then the nearest, until the
-        // dense budget runs out (the worker hands the rest back).
-        let focus = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
-            page_of(camera.translation().floor().as_ivec3())
-        });
-        let edited: HashSet<IVec3> = runtime
-            .dirty_voxels
-            .iter()
-            .map(|voxel| page_of(*voxel))
-            .collect();
-        dirty_pages.sort_unstable_by_key(|page| {
-            (
-                !edited.contains(page),
-                (page.as_i64vec3() - focus.as_i64vec3()).length_squared(),
-            )
-        });
-        if dirty_pages.len() > MAX_SAMPLED_PAGES {
-            let deferred = dirty_pages.split_off(MAX_SAMPLED_PAGES);
-            runtime.dirty_pages.extend(deferred);
-        }
+    // Sample edited pages, then the nearest: the dense budget (a dense page
+    // costs 64 KB; streaming a far world queues tens of thousands) and the
+    // sampling time budget can each stop a build early, and the worker hands
+    // the rest back. Any queue can hit the time budget, so always sort.
+    let focus = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
+        page_of(camera.translation().floor().as_ivec3())
+    });
+    let edited: HashSet<IVec3> = runtime
+        .dirty_voxels
+        .iter()
+        .map(|voxel| page_of(*voxel))
+        .collect();
+    dirty_pages.sort_unstable_by_key(|page| {
+        (
+            !edited.contains(page),
+            (page.as_i64vec3() - focus.as_i64vec3()).length_squared(),
+        )
+    });
+    if dirty_pages.len() > MAX_SAMPLED_PAGES {
+        let deferred = dirty_pages.split_off(MAX_SAMPLED_PAGES);
+        runtime.dirty_pages.extend(deferred);
     }
     let full_resample: HashSet<IVec3> = dirty_pages
         .iter()
@@ -751,6 +749,51 @@ mod tests {
         assert_eq!(built.len() + result.deferred.len(), pages.len());
         // The camera-less focus is the origin: the nearest pages went first.
         assert!(built.iter().all(|page| page.x < built.len() as i32));
+    }
+
+    #[test]
+    fn an_edit_in_a_small_queue_is_sampled_before_the_time_budget_runs_out() {
+        use super::super::input::{PageSample, VoxelSource};
+        use bevy::ecs::system::RunSystemOnce;
+        // 40 pages, well under the dense budget, but a slow source runs out
+        // of sampling time after a few. The edited page is the farthest from
+        // the focus, so only edit-first ordering gets it into this build.
+        struct Slow;
+        impl VoxelSource for Slow {
+            fn sample_page(&self, _: IVec3, _: bool) -> PageSample {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                PageSample::air()
+            }
+        }
+        let pages: Vec<_> = (0..40).map(|i| IVec3::new(i, 0, 0)).collect();
+        let edited = IVec3::new(39, 0, 0);
+        let mut app = app(true);
+        app.insert_resource(VoxelGiSource(Some(Arc::new(Slow))));
+        {
+            let mut runtime = app.world_mut().resource_mut::<VoxelGiRuntime>();
+            runtime.scene_sample_budget = std::time::Duration::from_millis(10);
+            for &page in &pages {
+                runtime.loaded_pages.insert(page);
+                runtime.dirty_pages.insert(page);
+            }
+            runtime.dirty_voxels.insert(edited * PAGE_EDGE as i32);
+        }
+        app.world_mut().run_system_once(start_scene_task).unwrap();
+        let task = app
+            .world_mut()
+            .resource_mut::<VoxelGiRuntime>()
+            .scene_task
+            .take()
+            .unwrap();
+        let result = bevy::tasks::block_on(task);
+        assert!(
+            !result.deferred.is_empty(),
+            "the time budget deferred pages"
+        );
+        assert!(
+            result.scene.regions.contains_key(&(edited * 2)),
+            "the edited page was built, not deferred"
+        );
     }
 
     #[test]
