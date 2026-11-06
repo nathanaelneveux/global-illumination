@@ -5,9 +5,9 @@ The published family is `bevy_voxel_gi`, `bevy_voxel_gi_bvw` and
 The root `prototype_voxel_template` package is the unpublished lab.
 
 The [changelog](../CHANGELOG.md#known-limitations) records the known runtime
-limitations, including the outstanding authoritative BVW resampling and small
-scene-queue edit-priority findings. Passing the rename and packaging checks
-does not close those findings.
+limitations. Review them for each release: passing the packaging checks does
+not close a finding, and a fix should say so in the changelog (0.1.1 closed the
+BVW resampling and small scene-queue edit-priority findings).
 
 ## Prepare a version
 
