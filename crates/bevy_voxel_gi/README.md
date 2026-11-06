@@ -219,6 +219,9 @@ Pass the world position on the voxel face and its axis-aligned normal.
 primary renderer, use the hit position and normal and supply compatible
 depth and normal prepasses.
 
+<details>
+<summary>Every presentation function</summary>
+
 | Function | Result and use |
 | --- | --- |
 | `indirect_light(pixel, position, normal)` | Multiply `.light` by diffuse albedo. `.found` reports sample support. `.coverage` identifies the source of that support. |
@@ -228,6 +231,8 @@ depth and normal prepasses.
 | `sun_count()`, `sun_direction(i)`, `sun_color(i)` | Read the same suns for your own visibility test. Index from 0 to count − 1. Direction points toward the sun. Color is in transport units. |
 | `enabled()`, `voxel_sky()`, `debug_mode()` | Read the indirect toggle, the GI sunlight toggle and the diagnostic mode. |
 | `sunlight_reference(position, normal)` | Trace the face's own four sun corners for a diagnostic comparison. |
+
+</details>
 
 The stock shader shows how to combine these terms with Bevy's PBR.
 [Stock WGSL material](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/shaders/voxel_gi_standard.wgsl)

@@ -88,6 +88,9 @@ In PowerShell, set `$env:VOXEL_GI_SCENE = "cave"` first instead.
 In the [daylight canyon](docs/images/canyon.jpg), look for warm light
 bouncing off the sunlit rim into the shade.
 
+<details>
+<summary>All lab controls</summary>
+
 | Input | Action |
 | --- | --- |
 | WASD / mouse | Move / look |
@@ -102,6 +105,8 @@ bouncing off the sunlit rim into the shade.
 | F6 | Cycle diagnostic views (irradiance, tier coverage, indirect, sun, exact sun, face validity) |
 | F7 | GI's corner sun / Bevy's per-pixel sun |
 | Esc | Release the cursor and open the inspector and HUD buttons |
+
+</details>
 
 Press **Esc**, then **Lighting controls** to tune the look or choose a
 preset. **Copy** and **Paste** move settings as RON. Launch with saved
