@@ -12,6 +12,12 @@ multi-bounce indirect light, traced on the GPU against the voxels themselves.
 ![A cave lit by emissive voxels and a skylight: colored bounce light on every wall](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/cave.jpg)
 ![A daylight canyon: sunlit walls bounce warm light into the shaded side, out to long sightlines](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/canyon.jpg)
 
+![Three frames of a closed room: dim, then lit warm 0.2 s after a glowing block is placed, then dim again 0.3 s after it is removed](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/response.jpg)
+*A glowing block appears in a closed room, just out of view: 0.2 s later its
+bounced light fills the room, and 0.3 s after it's removed the light is gone,
+with no ghost light lingering. Captured headlessly by the lab's `response`
+profile on an Apple M4.*
+
 ## How it works
 
 - **No ray-tracing hardware.** Compute shaders trace the voxels themselves,
