@@ -5,32 +5,26 @@
 [![CI](https://github.com/nathanaelneveux/global-illumination/actions/workflows/ci.yml/badge.svg?branch=voxel-global-illumination)](https://github.com/nathanaelneveux/global-illumination/actions/workflows/ci.yml)
 ![License: MIT or Apache-2.0](https://img.shields.io/crates/l/bevy_voxel_gi.svg)
 
-Light a voxel world with sunlight, sky and glowing blocks. Light bounces
-off the voxels, so a lamp can warm the walls of a cave and sunlight can
-reach surfaces in shadow. The lighting updates as you build and dig.
+Put a lamp on the floor of a stone room. The lamp glows, then the stone
+takes on its color. Open a window and sunlight spills across the floor.
+The light follows your edits as you build and dig.
 
-`bevy_voxel_gi` supports axis-aligned voxel worlds in Bevy 0.19. It traces
-rays in compute shaders on native GPUs.
+`bevy_voxel_gi` adds real-time diffuse global illumination to axis-aligned
+voxel worlds in Bevy 0.19. It runs on native GPU compute.
 
 ## Getting started
 
-- **See it in action.** Run the [examples](#try-the-examples) to see a small
-  room light up, or [explore the lab](#try-the-lab) to dig and place lights.
-- **Light your own voxel engine.** Follow the
-  [core quick start](crates/bevy_voxel_gi/README.md#quick-start) to supply voxels
-  and light your meshes.
-- **Light a `bevy_voxel_world` project.** Use the
-  [BVW connector](crates/bevy_voxel_gi_bvw/README.md#quick-start) for chunk
-  streaming, block edits and a lit terrain material.
-
-Add the [debug plugin](crates/bevy_voxel_gi_debug/README.md) to see lighting
-costs and tune the look while your app runs.
+- **See the light change.** [Run the examples](#try-the-examples) or
+  [explore the lab](#try-the-lab).
+- **Light your own voxel engine.** [Core quick start](crates/bevy_voxel_gi/README.md#quick-start)
+- **Add GI to `bevy_voxel_world`.** [Connector quick start](crates/bevy_voxel_gi_bvw/README.md#quick-start)
+- **Tune lighting live.** [Debug plugin](crates/bevy_voxel_gi_debug/README.md)
 
 ## Try the examples
 
-Clone this repository and run the room example from the checkout. Use
-[Rust 1.95 or newer](https://rustup.rs) and install
-[Bevy’s platform dependencies](https://bevy.org/learn/quick-start/getting-started/setup/#installing-os-dependencies).
+You'll need [Rust 1.95 or newer](https://rustup.rs) and
+[Bevy's platform dependencies](https://bevy.org/learn/quick-start/getting-started/setup/#installing-os-dependencies).
+Start with the stone room.
 
 ```sh
 git clone https://github.com/nathanaelneveux/global-illumination
@@ -38,9 +32,9 @@ cd global-illumination
 cargo run --locked -p bevy_voxel_gi --example minimal
 ```
 
-Look for the orange lamp on the floor and the warm light on the nearby
-stone. Then try the edits example. A window opens and closes every two
-seconds, and a patch of sunlight appears and disappears on the floor.
+Look past the orange lamp to the stone around it. That's where you can
+see the light that bounced. Now try the room with a window that opens
+and closes every two seconds. Watch the patch of sun on the floor.
 
 ```sh
 cargo run --locked -p bevy_voxel_gi --example edits
@@ -48,17 +42,10 @@ cargo run --locked -p bevy_voxel_gi --example edits
 
 ## How it works
 
-A camera's depth and normal prepasses tell GI which voxel faces are visible.
-The tracer samples those faces within a GPU time budget and reuses their
-light as the camera moves. A world cache keeps lighting around the camera
-available off screen. When a ray hits a cached face, it can use the light
-stored there. This lets light build up over multiple bounces.
-
-An edit tells GI where the world changed. Faces near the change use more
-fresh samples, while farther faces can keep more of their history. Small
-faces in the distance use screen-space lighting. Read the
-[architecture guide](docs/architecture.md) for the full path from a voxel
-edit to a lit fragment.
+The camera tells GI which voxel faces it can see. GI traces those faces,
+keeps nearby lighting in a world cache when you look away, and lights
+small distant faces in screen space. An edit gives affected faces a
+reason to take fresh samples. [Architecture](docs/architecture.md)
 
 ![Three views of the same room, with dim walls, warm walls, then dim walls again](docs/images/response.jpg)
 
@@ -77,11 +64,13 @@ Vulkan. DX12 requires the DXC shader compiler. See
 
 ## Try the lab
 
-The lab is the streaming voxel world in this repository. Start it from the
-checkout with `cargo run --locked`. From spawn, follow the pale stone path
-to the right of the house. The cave entrance is near **(20, 11, −18)** and
-leads down to a lava rim. Try placing a light against the wall with **E**,
-then remove it with **left click** and watch the nearby surfaces.
+Run `cargo run --locked` from the checkout. Follow the pale path to the
+right of the house and enter the cave near **(20, 11, −18)**.
+
+Aim at stone and press **E** to place a lamp. Watch the wall beside it
+while you tap **F4** to turn indirect light off and back on. The lamp
+stays bright while its light on the stone comes and goes. Remove it with
+**left click** to see how the room responds to an edit.
 
 ![Green ceiling lights and orange lava light tint the walls of a cave. Sunlight enters through a hole above the spire.](docs/images/cave.jpg)
 
@@ -94,9 +83,8 @@ VOXEL_GI_SCENE=cave cargo run --locked
 VOXEL_GI_SCENE=canyon cargo run --locked
 ```
 
-The cave mixes a skylight with many colored emitters. The
-[daylight canyon](docs/images/canyon.jpg) shows sunlit walls bouncing warm
-light into shade across a much larger space.
+In the [daylight canyon](docs/images/canyon.jpg), look for warm light
+bouncing off the sunlit rim into the shade.
 
 | Input | Action |
 | --- | --- |
@@ -113,16 +101,10 @@ light into shade across a much larger space.
 | F7 | GI's corner sun / Bevy's per-pixel sun |
 | Esc | Release the cursor and open the inspector and HUD buttons |
 
-**Lighting controls** (press Esc, then the HUD button) has quality presets,
-look and light-model settings, and the display switches. **Copy** and **Paste**
-move settings as RON. Launch with saved settings using
-`VOXEL_GI_SETTINGS=path.ron cargo run --locked`. `config/` holds the presets
-(`gi-low.ron`, `gi-high.ron`) and the comparison controls the validation
-docs use.
-
-The top-right HUD shows FPS, GI's main-thread and GPU time, and world-cache
-progress. Coverage counts faces with at least one sample. CPU and GPU work
-overlap, so read their timings separately.
+Press **Esc**, then **Lighting controls** to tune the look or choose a
+preset. **Copy** and **Paste** move settings as RON. Launch with saved
+settings using `VOXEL_GI_SETTINGS=path.ron cargo run --locked`. See
+[the HUD guide](crates/bevy_voxel_gi_debug/README.md) for the readings.
 
 ## Documentation
 

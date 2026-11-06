@@ -5,14 +5,11 @@
 [![CI](https://github.com/nathanaelneveux/global-illumination/actions/workflows/ci.yml/badge.svg?branch=voxel-global-illumination)](https://github.com/nathanaelneveux/global-illumination/actions/workflows/ci.yml)
 ![License: MIT or Apache-2.0](https://img.shields.io/crates/l/bevy_voxel_gi.svg)
 
-`bevy_voxel_gi` adds real-time diffuse global illumination to axis-aligned
-voxel worlds. Give it your voxels and their materials. It traces sunlight,
-sky light and light from glowing blocks, including the light that bounces
-between surfaces.
+Add bounced sunlight, sky and lamp light to an axis-aligned voxel world.
+Supply your voxels and their materials, and GI traces the light on the GPU.
 
-Use it with **Bevy 0.19** and **Rust 1.95 or newer**. It runs on native GPU
-compute, including Metal on Apple Silicon. See [Platforms](#platforms)
-for Vulkan and DX12 setup.
+Use **Bevy 0.19** and **Rust 1.95 or newer** with a
+[native GPU backend](#platforms).
 
 ## Quick start
 
@@ -26,37 +23,33 @@ bevy = "0.19"
 bevy_voxel_gi = "0.1"
 ```
 
-Want to see the lighting first? Run this from a
+To see a working room first, run the example from a
 [repository checkout](https://github.com/nathanaelneveux/global-illumination#try-the-examples).
 
 ```sh
 cargo run --locked -p bevy_voxel_gi --example minimal
 ```
 
-You'll see a stone room with a glowing lamp on the floor. In the
-[`edits` example](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/examples/edits.rs),
-a window opens and closes so you can see the room respond to a voxel edit.
-Both examples use the same setup as the guide below.
+Want to give the room a colder light? Swap the red and blue values in the
+lamp's `MaterialTransport::emission` and run it again. Look at the nearby
+stone to see the difference.
+[Room example source](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/examples/minimal.rs)
 
 ## Light your own world
 
-GI needs to know where the blocks are, how light interacts with them, and
-which material should display the result. The flat ground example below
-shows each part in one file.
+Start with a layer of stone and give GI the same surface you draw.
 
 1. **Give blocks optical properties.** A `MaterialTransport` describes
    diffuse reflectance and emission. Use `MaterialPalette` to assign
    transport IDs and copy its table into `VoxelMaterialTransportTable`.
 2. **Provide a voxel snapshot.** Put your `VoxelSource` in `VoxelGiSource`.
-   GI asks it for the transport material at each voxel in a 32³ page.
-   Return `None` for air when using `dense_page`. Source calls run on worker
-   threads, so give the source an immutable view of your data.
+   Use `dense_page` to return a material per voxel and `None` for air.
+   Worker threads read this snapshot.
 3. **Declare the loaded pages.** Call `VoxelGiInput::page_loaded` for each
-   page you want GI to see. Page coordinates count 32-voxel steps. For
-   example, page `(1, 0, 0)` starts at voxel `(32, 0, 0)`.
+   32³ page. Page `(1, 0, 0)` starts at voxel `(32, 0, 0)`.
 4. **Draw the same surfaces.** Use `standard_material` to make a GI-lit
-   Bevy material. Place its mesh faces on voxel boundaries that agree with
-   your source. The example draws the top of a solid layer at `y = 4`.
+   Bevy material. Draw the mesh on the same boundaries as the source.
+   Here the stone ends at `y = 4`, so the plane goes there too.
 
 <details>
 <summary>Copy the complete main.rs for a sunlit plane</summary>
@@ -169,9 +162,10 @@ default input tracking. Resampling uses the source as the authority for
 the page, so include any edits that should persist. See the [input API](https://docs.rs/bevy_voxel_gi/latest/bevy_voxel_gi/struct.VoxelGiInput.html)
 for exact edits and explicit resampling.
 
-You can return a coarse `PageSample` for a lower level of detail. For
-example, a stride of 4 stores one material per 4³ block. Use the same
-blocks when drawing that page.
+For a lower level of detail, return a coarse `PageSample` and mesh the
+same blocks. A stride of 4 uses one material per 4³ block.
+To see an edit change the light, watch the window open and close in the
+[`edits` example](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/examples/edits.rs).
 
 ## How lighting follows the camera
 
