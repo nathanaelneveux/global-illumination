@@ -296,8 +296,8 @@ tracing from the cost of finding and presenting visible faces. Use
 ## Performance
 
 On an Apple M4 at 2560×1440, finding and presenting visible faces takes
-3.89 ms a frame with the far tier on (an offscreen streaming run). Tracing
-comes on top, within the GPU budget you set.
+3.89 ms a frame with the far tier on (a headless run of the lab's default
+world). Tracing comes on top, within the GPU budget you set.
 [Measurements, with a far-tier-off comparison](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/docs/history/far-per-pixel.md#update-distance-cheaper-classify-handoffs-flicker)
 
 ## Troubleshooting

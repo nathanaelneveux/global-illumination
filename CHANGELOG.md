@@ -18,19 +18,21 @@ The crates share one version. The format follows
 
 ### Documentation
 
-- The crate README's quick start is a complete, commented example; custom
-  materials and ray-traced hosts have their own section.
-- Windows guidance states what was measured (both backends pass on an RX
-  7900 XT; DX12 needs DXC and reached GI's first frame in 6.4 s against
-  0.3 s on Vulkan) instead of recommending Vulkan.
-- Both READMEs open with one "How it works" section that also says what
-  sets the approach apart, so crates.io readers see it too.
-- Every public item is documented (`missing_docs` is now enforced), and the
-  docs.rs landing page adds a linked API map and an FAQ of common pitfalls.
-- `bevy_voxel_gi_bvw`: a compile-checked quick start covering plugin order,
-  the block texture array, the camera and the sun.
+- The repository README opens in a lit stone room, routes readers by goal
+  (your own engine, `bevy_voxel_world`, live tuning) and points to runnable
+  examples with what to look for.
+- Core guide: a copyable quick start, a which-call-when guide to reporting
+  edits, custom materials with a shader function reference, a tuning table,
+  and troubleshooting by symptom.
+- `bevy_voxel_gi_bvw`: a copyable quick start for a lit platform, and steps
+  for building the block texture array.
+- Every public item is documented (`missing_docs` is now enforced); the
+  docs.rs page adds a linked API map.
+- Windows guidance reports what was tested (both backends pass on an RX
+  7900 XT; DX12 needs DXC) instead of an unqualified recommendation.
 - A second example, `edits`: a window opening and closing with `edit_voxel`.
-- Badges, an examples list and a contributing section.
+- A captioned strip of light responding to an edit, badges and a
+  contributing section.
 
 ## [0.1.0] - 2026-11-02
 

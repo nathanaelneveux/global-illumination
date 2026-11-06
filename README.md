@@ -45,8 +45,8 @@ cargo run --locked -p bevy_voxel_gi --example edits
 
 The camera tells GI which voxel faces it can see. GI traces those faces,
 keeps nearby lighting in a world cache when you look away, and lights
-small distant faces in screen space. When you edit a block, the faces it
-affects drop their old light and sample again.
+small distant faces in screen space. When you edit a block, nearby faces
+discount their old light in proportion to the change and sample again.
 [Architecture](docs/architecture.md)
 
 ![Three views of the same room, with dim walls, warm walls, then dim walls again](docs/images/response.jpg)
