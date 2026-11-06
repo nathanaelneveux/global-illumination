@@ -66,10 +66,13 @@ impl Default for VoxelMaterialTransportTable {
 }
 
 impl VoxelMaterialTransportTable {
+    /// The optics of transport material `material`.
     pub fn get(&self, material: u8) -> MaterialTransport {
         self.entries[material as usize]
     }
 
+    /// Sets material `material`'s optics. Diffuse reflectance is clamped to
+    /// [0, 1] and magnitudes are bounded, so bad input can't create energy.
     pub fn set(&mut self, material: u8, transport: MaterialTransport) {
         // A diffuse reflector cannot create energy. Bound source magnitudes
         // as well so malformed host input cannot poison GPU moments.

@@ -25,6 +25,12 @@ The crates share one version. The format follows
   0.3 s on Vulkan) instead of recommending Vulkan.
 - Both READMEs open with one "How it works" section that also says what
   sets the approach apart, so crates.io readers see it too.
+- Every public item is documented (`missing_docs` is now enforced), and the
+  docs.rs landing page adds a linked API map and an FAQ of common pitfalls.
+- `bevy_voxel_gi_bvw`: a compile-checked quick start covering plugin order,
+  the block texture array, the camera and the sun.
+- A second example, `edits`: a window opening and closing with `edit_voxel`.
+- Badges, an examples list and a contributing section.
 
 ## [0.1.0] - 2026-11-02
 

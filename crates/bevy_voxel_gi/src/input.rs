@@ -131,6 +131,7 @@ impl PageSample {
         Self { stride, cells }
     }
 
+    /// Voxels per cell side: 1 at full resolution, up to 32.
     pub fn stride(&self) -> u32 {
         self.stride
     }

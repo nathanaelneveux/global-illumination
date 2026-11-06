@@ -1,5 +1,10 @@
 # bevy_voxel_gi
 
+[![crates.io](https://img.shields.io/crates/v/bevy_voxel_gi.svg)](https://crates.io/crates/bevy_voxel_gi)
+[![docs.rs](https://docs.rs/bevy_voxel_gi/badge.svg)](https://docs.rs/bevy_voxel_gi)
+[![CI](https://github.com/nathanaelneveux/global-illumination/actions/workflows/ci.yml/badge.svg?branch=voxel-global-illumination)](https://github.com/nathanaelneveux/global-illumination/actions/workflows/ci.yml)
+![License: MIT or Apache-2.0](https://img.shields.io/crates/l/bevy_voxel_gi.svg)
+
 Real-time diffuse global illumination for axis-aligned voxel worlds in
 [Bevy](https://bevyengine.org) 0.19: sunlight, sky, emissive voxels and
 multi-bounce indirect light, traced on the GPU against the voxels themselves.
@@ -195,10 +200,13 @@ fn setup(
 ```
 
 [`examples/minimal.rs`](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/examples/minimal.rs)
-is the same shape with a lit room and a glowing lamp:
+is the same shape with a lit room and a glowing lamp, and
+[`examples/edits.rs`](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/examples/edits.rs)
+opens and closes a window in its wall with `edit_voxel`. From a checkout:
 
 ```sh
 cargo run -p bevy_voxel_gi --example minimal
+cargo run -p bevy_voxel_gi --example edits
 ```
 
 More on each step:

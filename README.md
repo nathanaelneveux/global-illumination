@@ -1,5 +1,10 @@
 # bevy_voxel_gi
 
+[![crates.io](https://img.shields.io/crates/v/bevy_voxel_gi.svg)](https://crates.io/crates/bevy_voxel_gi)
+[![docs.rs](https://docs.rs/bevy_voxel_gi/badge.svg)](https://docs.rs/bevy_voxel_gi)
+[![CI](https://github.com/nathanaelneveux/global-illumination/actions/workflows/ci.yml/badge.svg?branch=voxel-global-illumination)](https://github.com/nathanaelneveux/global-illumination/actions/workflows/ci.yml)
+![License: MIT or Apache-2.0](https://img.shields.io/crates/l/bevy_voxel_gi.svg)
+
 Real-time diffuse global illumination for voxel worlds in
 [Bevy](https://bevyengine.org) 0.19: sunlight, sky, emissive voxels and
 multi-bounce indirect light, traced against the voxels themselves on ordinary
@@ -17,7 +22,8 @@ integrated GPUs.
 
 ```sh
 cargo run -p bevy_voxel_gi --example minimal   # a small complete host
-cargo run --locked                         # the lab: a streaming BVW world with GI
+cargo run -p bevy_voxel_gi --example edits     # a window opening and closing
+cargo run --locked                             # the lab: a streaming BVW world with GI
 ```
 
 ## How it works
@@ -123,6 +129,21 @@ converged. CPU and GPU work overlap, so don't add their times.
   profiles, and the evidence rules.
 - [History](docs/history/README.md): past studies, rejected alternatives and
   the measurements behind today's defaults.
+
+## Contributing
+
+Bug reports and GPU reports are welcome as issues; [testing on another
+GPU](docs/testing-other-gpus.md) says what to send. For pull requests:
+
+- One concern per PR, with the problem, its cause and the fix.
+- Run `cargo fmt --all`, Clippy with `-D warnings` and the relevant tests;
+  CI checks them. Changes to GPU code need the native GPU tests
+  (`--include-ignored`) on real hardware.
+- Performance or lighting claims need evidence: before and after runs of the
+  same profile, as [validation](docs/validation.md) describes. Faster frames
+  that show staler or noisier lighting aren't an improvement.
+- [`AGENTS.md`](AGENTS.md) is the project's working agreement, for people and
+  coding agents alike.
 
 ## License
 

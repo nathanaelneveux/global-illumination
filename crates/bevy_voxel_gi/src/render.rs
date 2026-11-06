@@ -37,6 +37,7 @@ pub struct VoxelGiDisplay {
     pub voxel_sun: bool,
     /// Indirect light multiplier.
     pub intensity: f32,
+    /// A diagnostic view in place of the lit colour, or `None`.
     pub debug_view: GiDebugView,
 }
 
@@ -55,13 +56,16 @@ impl Default for VoxelGiDisplay {
 /// Diagnostic shading, replacing the lit color (the material's mode index).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GiDebugView {
+    /// Normal lit shading.
     #[default]
     None,
     /// Combined irradiance (sun and indirect) without albedo.
     Irradiance,
     /// Which lookup supplied each pixel's indirect light.
     Coverage,
+    /// Indirect light alone.
     Indirect,
+    /// GI's sunlight alone.
     Sun,
     /// Sun traced from the face's own corners (reference for `Sun`).
     ExactCornerSun,
@@ -70,10 +74,12 @@ pub enum GiDebugView {
 }
 
 impl GiDebugView {
+    /// The view's index (the material's mode number).
     pub fn index(self) -> u32 {
         self as u32
     }
 
+    /// The view at `index`; `None` past the last.
     pub fn from_index(index: u32) -> Self {
         [
             Self::None,
@@ -434,12 +440,14 @@ pub struct VoxelGiMaterialPlugin<M: Material> {
 }
 
 impl<M: Material> VoxelGiMaterialPlugin<M> {
+    /// Keeps `M`'s bindings current; `access` finds them in an `M`.
     pub fn new(access: fn(&mut M) -> &mut VoxelGiBindings) -> Self {
         Self { access }
     }
 }
 
 impl<B: Material> VoxelGiMaterialPlugin<bevy::pbr::ExtendedMaterial<B, VoxelGiBindings>> {
+    /// For `ExtendedMaterial<Base, VoxelGiBindings>`, the usual wrapping.
     pub fn extended() -> Self {
         Self::new(|material| &mut material.extension)
     }

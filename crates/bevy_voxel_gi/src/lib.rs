@@ -1,4 +1,92 @@
 #![doc = include_str!("../README.md")]
+//!
+//! ## API map
+//!
+//! **Set up**
+//! - [`VoxelGiPlugin`] is GI itself. [`VoxelGiSettings`] holds cost and look
+//!   (start from a [`VoxelGiQuality`] preset); [`VoxelGiDisplay`] switches
+//!   presentation and diagnostic views ([`GiDebugView`]) without touching
+//!   transport.
+//!
+//! **Describe your world**
+//! - [`VoxelGiInput`] declares pages ([`page_loaded`](VoxelGiInput::page_loaded),
+//!   [`page_changed`](VoxelGiInput::page_changed),
+//!   [`page_unloaded`](VoxelGiInput::page_unloaded)) and reports edits
+//!   ([`edit_voxel`](VoxelGiInput::edit_voxel) with a known value,
+//!   [`mark_voxel`](VoxelGiInput::mark_voxel) without one). Use
+//!   [`VoxelGiInput::tracked`] when you report every edit exactly.
+//! - A [`VoxelSource`] in [`VoxelGiSource`] answers GI's page requests with a
+//!   [`PageSample`], built by [`dense_page`] or [`coarse_page`]. A page is
+//!   [`VOXEL_GI_PAGE_EDGE`] voxels on a side.
+//! - [`MaterialPalette`] turns block types into transport IDs and fills the
+//!   [`VoxelMaterialTransportTable`] of [`MaterialTransport`] optics. [`AIR`]
+//!   is transparent.
+//!
+//! **Lights**
+//! - Bevy's [`DirectionalLight`]s become
+//!   GI's suns and [`PointLight`]s its point
+//!   lights. [`VoxelGiEmitter`] adds to a light or stands alone;
+//!   [`VoxelGiEnvironment`] is the sky. Emissive materials light their
+//!   surroundings with no extra setup.
+//!
+//! **Light your meshes**
+//! - The stock path: [`standard_material`] builds a [`VoxelGiStandardMaterial`],
+//!   registered by [`VoxelGiStandardMaterialPlugin`].
+//! - Your own material: add [`VoxelGiBindings`] (from [`VoxelGiMaterialData`]),
+//!   keep them current with [`VoxelGiMaterialPlugin`], and import the
+//!   `bevy_voxel_gi::presentation` WGSL module ([`PRESENTATION_SHADER`]).
+//!
+//! **Watch it**
+//! - [`VoxelGiStats`] reports coverage, cost and readiness
+//!   ([`geometry_pending`](VoxelGiStats::geometry_pending)); [`ViewReceipts`]
+//!   the view tier's GPU time. Order readers after [`VoxelGiSystems`].
+//!   [`SchedulerStats`] is diagnostics only.
+//!
+//! ## FAQ
+//!
+//! **Some faces are black or unlit.** GI lights only the pages you declared,
+//! once their geometry has reached the GPU
+//! ([`VoxelGiStats::geometry_pending`]). Meshes must lie on voxel faces: GI
+//! looks up the face under each fragment. A face drawn where GI's geometry
+//! has none (a chunk you just remeshed, before GI's next scene build) has no
+//! GI light yet; the shader's `face_in_geometry` tells you, so you can light
+//! it yourself.
+//!
+//! **The sun looks wrong: double shadows, or none.** GI traces sun visibility
+//! itself and replaces Bevy's shadowed sun in GI-lit materials. Turn
+//! `shadow_maps_enabled` off on your directional lights, and add
+//! `NotShadowCaster` to GI-lit entities that shouldn't cast Bevy shadows.
+//!
+//! **My own material isn't lit.** It must render forward: Bevy takes an
+//! `ExtendedMaterial`'s render method from the base material, and a deferred
+//! one runs Bevy's deferred shader without GI. Also check bindings 104 and
+//! 106-111 are free and [`VoxelGiMaterialPlugin`] is added.
+//!
+//! **DX12 exits or shows nothing.** DX12 needs the DXC shader compiler; FXC
+//! can't build GI's shaders. See Platforms above, or use Vulkan.
+//!
+//! **What units are light in?** Transport units: a sun contributes its
+//! illuminance / 10,000, and [`MaterialTransport::emission`] uses the same
+//! scale (the minimal example's lamp emits about 40). Materials convert back
+//! for display.
+//!
+//! **How do I make it cheaper?** Lower [`VoxelGiSettings::gpu_time_share`]
+//! (tracing time), `view_receivers` (fixed per-camera work) or
+//! `cache_radius` (off-screen faces), or start from [`VoxelGiQuality::Low`].
+//! Declare only the pages lighting needs: every scene build costs time in
+//! proportion to the declared world.
+//!
+//! **Far terrain fills in slowly, or edits lag in a huge world.** Scene builds
+//! currently scale with the whole declared world (a known limitation): in a
+//! world of 100,000 pages they take seconds.
+//!
+//! **Can I use it without meshes?** Yes. The presentation functions need only
+//! a position and normal, so a ray-traced renderer can call them, provided it
+//! writes depth and normal prepasses for GI to find visible faces.
+//!
+//! **WebGPU?** No: the view tier needs more storage buffers per shader stage
+//! than WebGPU allows.
+#![warn(missing_docs)]
 mod color;
 mod dispatch;
 mod emission;
@@ -140,9 +228,15 @@ pub struct VoxelGiStats {
     /// build or publication is in flight, or pages are waiting): a host
     /// readiness gate, e.g. before captures.
     pub geometry_pending: bool,
+    /// Pages the host has declared loaded.
     pub loaded_pages: usize,
+    /// Faces the world cache holds (within `cache_radius` of the cameras).
     pub surface_probes: usize,
+    /// World-cache progress toward eight samples per face, 0 to 1. Not
+    /// convergence.
     pub bootstrap_coverage: f32,
+    /// Share of world-cache faces with at least one sample, 0 to 1. Not
+    /// convergence.
     pub interactive_coverage: f32,
     /// Fraction passing the adaptive stability heuristic for the current
     /// transport revision. Periodic audits remain eligible; not convergence.
@@ -158,7 +252,9 @@ pub struct VoxelGiStats {
     /// (world-cache transport), presentation and discovery are not limited by
     /// `gpu_time_share`; `view_receivers` scales them.
     pub view_gpu: ViewReceipts,
+    /// The transport backend in use (`"gpu-resident"`).
     pub backend: &'static str,
+    /// Scheduler internals: diagnostics only, see [`SchedulerStats`].
     pub scheduler: SchedulerStats,
 }
 
@@ -169,20 +265,35 @@ pub struct SchedulerStats {
     /// Last app frame's GI system-body times, in telemetry stage order.
     /// Excludes workers/render work; unlike the overlay average, retains spikes.
     pub last_main_stage_ms: [f32; 6],
+    /// World-cache faces queued for urgent relighting (near edits).
     pub pending_probes: usize,
+    /// World-cache paths traced since start.
     pub traced_paths: u64,
+    /// Duration of the last scene build (page sampling to a new scene), on
+    /// a worker.
     pub last_scene_build_ms: f32,
+    /// Duration of the last world-cache trace batch, on a worker.
     pub last_trace_batch_ms: f32,
+    /// World-cache trace batches completed since start.
     pub transport_batches: u64,
+    /// Frames the world-cache scheduler had nothing to dispatch.
     pub idle_scheduler_frames: u64,
+    /// Wall time of the last trace batch's worker task.
     pub last_worker_ms: f32,
+    /// Time spent choosing the last batch's faces.
     pub last_selection_ms: f32,
+    /// Time spent merging the last batch's results into the cache.
     pub last_merge_ms: f32,
+    /// Time spent preparing the last batch's GPU inputs.
     pub last_prepare_ms: f32,
     /// Submission-to-delivery latency; does not imply a blocking GPU wait.
     pub last_snapshot_latency_ms: f32,
+    /// Time spent decoding the last batch's readback.
     pub last_decode_ms: f32,
+    /// GPU bytes of GI's packed voxel geometry.
     pub packed_geometry_bytes: usize,
+    /// Every world-cache face has its bootstrap samples and no page is
+    /// still publishing.
     pub fully_bootstrapped: bool,
     /// World-cache faces the next batch may select.
     pub dispatch_budget: usize,

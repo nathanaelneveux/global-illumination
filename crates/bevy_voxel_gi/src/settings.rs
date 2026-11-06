@@ -6,6 +6,7 @@ use std::time::Duration;
 #[derive(Resource, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct VoxelGiSettings {
+    /// What light transport computes: ray reach and bounce depth.
     pub transport: TransportSettings,
     /// Measured retention constant c (default 1); zero restores the whole-range
     /// distance curve.
@@ -83,6 +84,7 @@ pub struct FarTierSettings {
     /// Threshold in pixels (side) or pixels covered (areas); 0 disables the
     /// far tier.
     pub voxel_pixels: f32,
+    /// How a face's size on screen is measured against `voxel_pixels`.
     pub measure: FarTierMeasure,
     /// Pixels per side of one traced cell (1-4), or 0 (default) to follow
     /// the resolution: about one cell per 480th of the view height (2 at
@@ -100,9 +102,13 @@ pub struct FarTierSettings {
 /// How `FarTierSettings` decides a face is small (see there).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FarTierMeasure {
+    /// A full-resolution voxel's side, in pixels, at the face's distance.
     #[default]
     VoxelSide,
+    /// A voxel's rough covered area in pixels (side squared times the
+    /// cosine to the view ray).
     VoxelArea,
+    /// The same for the face's level-of-detail block.
     BlockArea,
 }
 
@@ -181,13 +187,17 @@ pub(crate) struct SchedulerSettings {
 /// receivers); the look settings stay at their defaults.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum VoxelGiQuality {
+    /// GPU share 0.12, cache radius 32, 32k visible receivers.
     Low,
+    /// GPU share 0.2, cache radius 64, 64k visible receivers.
     #[default]
     Default,
+    /// GPU share 0.3, cache radius 96, 128k visible receivers.
     High,
 }
 
 impl VoxelGiSettings {
+    /// Default settings with a preset's performance knobs.
     pub fn quality(quality: VoxelGiQuality) -> Self {
         let (gpu_time_share, cache_radius, view_receivers) = match quality {
             VoxelGiQuality::Low => (0.12, 32.0, 32_768),
@@ -390,6 +400,7 @@ impl Default for TransportSettings {
 }
 
 impl TransportSettings {
+    /// These settings clamped to the supported ranges.
     pub fn normalized(self) -> Self {
         Self {
             reach: if self.reach.is_finite() {

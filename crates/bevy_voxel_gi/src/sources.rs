@@ -346,6 +346,8 @@ impl Default for TransportSources {
 pub struct VoxelGiEmitter {
     /// Linear RGB radiance (directional) or intensity (point).
     pub color: Vec3,
+    /// Point sources: the distance in voxels beyond which it adds no light
+    /// (the larger of this and a Bevy point light's own range).
     pub range: f32,
 }
 

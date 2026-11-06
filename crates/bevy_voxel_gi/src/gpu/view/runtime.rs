@@ -55,16 +55,21 @@ pub struct ViewReceipts {
     pub available: bool,
     /// Receipts retired so far.
     pub receipt: u32,
+    /// Tracing paths for visible faces.
     pub trace_ms: f32,
     /// Discovery and presentation, excluding the far tier.
     pub presentation_ms: f32,
+    /// Finding visible faces from the depth and normal prepass.
     pub discovery_ms: f32,
     /// The far tier's pass.
     pub pixel_ms: f32,
+    /// Visible faces with a receiver (lit per face) this frame.
     pub active_receivers: u32,
     /// Active receivers with no sample yet.
     pub uncovered: u32,
+    /// Far-tier cells showing a face small on screen.
     pub pixel_owned: u32,
+    /// Far-tier cells that traced a path this frame.
     pub pixel_traced: u32,
     /// View receivers that found no index slot (unlit for that frame),
     /// summed since start; nonzero means the receiver index is too full.

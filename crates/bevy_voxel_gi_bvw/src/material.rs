@@ -24,8 +24,11 @@ pub const VOXEL_TRANSPORT_SHADER_HANDLE: Handle<Shader> =
 pub type VoxelTransportMaterial =
     ExtendedMaterial<ExtendedMaterial<StandardMaterial, VoxelGiBindings>, VoxelTransportExtension>;
 
+/// BVW's half of `VoxelTransportMaterial`: its block texture array and
+/// shader, at bindings 100 and 101.
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct VoxelTransportExtension {
+    /// The block texture array (`prepare_texture_array`).
     #[texture(100, dimension = "2d_array")]
     #[sampler(101)]
     pub voxel_texture: Handle<Image>,

@@ -67,6 +67,7 @@ impl<K: Hash + Eq> Default for MaterialPalette<K> {
 }
 
 impl<K: Hash + Eq> MaterialPalette<K> {
+    /// An empty palette.
     pub fn new() -> Self {
         Self::default()
     }
@@ -117,6 +118,7 @@ impl<K: Hash + Eq> MaterialPalette<K> {
         self.optics.len()
     }
 
+    /// No optics registered yet.
     pub fn is_empty(&self) -> bool {
         self.optics.is_empty()
     }

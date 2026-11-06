@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![warn(missing_docs)]
 mod material;
 
 pub use material::{
@@ -19,6 +20,7 @@ use std::sync::Arc;
 /// them as air. Loaded LOD cells cover their whole block, even on resampling;
 /// the generator must not replace the space between stored sample positions.
 pub trait GiFallbackVoxel {
+    /// The voxel at `position` where no loaded page has one; `Unset` is air.
     fn fallback_voxel(&self, _position: IVec3) -> WorldVoxel<u8> {
         WorldVoxel::Unset
     }
@@ -55,6 +57,7 @@ where
 
 /// Edits through BVW that GI must see: the same value goes to both.
 pub trait BvwVoxelEdits {
+    /// Sets the voxel in BVW and reports the same edit to GI.
     fn set_voxel<C: VoxelWorldConfig<MaterialIndex = u8>>(
         &mut self,
         world: &mut VoxelWorld<C>,
