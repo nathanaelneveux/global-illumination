@@ -1,4 +1,5 @@
 /target/
+/vendor/*/target/
 /imported_assets/
 __pycache__/
 /.cargo/local.toml

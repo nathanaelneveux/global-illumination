@@ -56,6 +56,7 @@ use crate::{input::AccumulatedInput, prelude::*};
 use avian3d::character_controller::move_and_slide::MoveHitData;
 use bevy_app::PluginGroupBuilder;
 use bevy_ecs::{entity::MapEntities, intern::Interned, schedule::ScheduleLabel};
+use bevy_shape::Cuboid;
 use bevy_time::Stopwatch;
 use core::time::Duration;
 
@@ -160,7 +161,7 @@ pub enum AhoySystems {
     WaterState,
     CustomPositionIntegration,
     Transform,
-    SpeculativeMargin::ZERO,
+    SpeculativeCcd::ZERO,
     CollidingEntities,
 )]
 pub struct CharacterController {

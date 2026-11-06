@@ -105,7 +105,7 @@ pub(crate) fn sync_camera_transform(
                 // changing the collider does not change the transform, so to get the correct position for the feet,
                 // we need to use the collider we spawned with.
                 .standing_collider
-                .aabb(Vec3::default(), Rotation::default())
+                .aabb(Vec3::default(), Rotation::default(), 0.0)
                 .size()
                 .y;
             let view_height = if state.crouching {
