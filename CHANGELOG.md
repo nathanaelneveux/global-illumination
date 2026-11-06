@@ -4,6 +4,28 @@ All notable changes to `bevy_voxel_gi`, `bevy_voxel_gi_bvw` and `bevy_voxel_gi_d
 The crates share one version. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.1] - 2026-11-06
+
+### Fixed
+
+- Scene builds always sample edited pages first. A queue of 768 pages or
+  fewer was not sorted, so the sampling time budget could defer a player's
+  edit behind streaming pages.
+- `bevy_voxel_gi_bvw`: a full resample of a downgraded chunk (BVW keeps its
+  finer data while drawing a coarse mesh) stays at the drawn resolution
+  instead of tracing the retained full-resolution data. Chunks whose data is
+  itself coarse keep the authoritative edit overlay.
+
+### Documentation
+
+- The crate README's quick start is a complete, commented example; custom
+  materials and ray-traced hosts have their own section.
+- Windows guidance states what was measured (both backends pass on an RX
+  7900 XT; DX12 needs DXC and reached GI's first frame in 6.4 s against
+  0.3 s on Vulkan) instead of recommending Vulkan.
+- Both READMEs open with one "How it works" section that also says what
+  sets the approach apart, so crates.io readers see it too.
+
 ## [0.1.0] - 2026-11-02
 
 ### Added
