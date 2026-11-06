@@ -5,52 +5,20 @@
 [![CI](https://github.com/nathanaelneveux/global-illumination/actions/workflows/ci.yml/badge.svg?branch=voxel-global-illumination)](https://github.com/nathanaelneveux/global-illumination/actions/workflows/ci.yml)
 ![License: MIT or Apache-2.0](https://img.shields.io/crates/l/bevy_voxel_gi.svg)
 
-Real-time diffuse global illumination for axis-aligned voxel worlds in
-[Bevy](https://bevyengine.org) 0.19: sunlight, sky, emissive voxels and
-multi-bounce indirect light, traced on the GPU against the voxels themselves.
+`bevy_voxel_gi` adds real-time diffuse global illumination to axis-aligned
+voxel worlds. Give it your voxels and their materials. It traces sunlight,
+sky light and light from glowing blocks, including the light that bounces
+between surfaces.
 
-![A cave lit by emissive voxels and a skylight: colored bounce light on every wall](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/cave.jpg)
-![A daylight canyon: sunlit walls bounce warm light into the shaded side, out to long sightlines](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/canyon.jpg)
-
-![Three frames of a closed room: dim, then lit warm 0.2 s after a glowing block is placed, then dim again 0.3 s after it is removed](https://raw.githubusercontent.com/nathanaelneveux/global-illumination/HEAD/docs/images/response.jpg)
-*A glowing block appears in a closed room, just out of view: 0.2 s later its
-bounced light fills the room, and 0.3 s after it's removed the light is gone,
-with no ghost light lingering. Captured headlessly by the lab's `response`
-profile on an Apple M4.*
-
-## How it works
-
-- **No ray-tracing hardware.** Compute shaders trace the voxels themselves,
-  so it runs on Apple Silicon and integrated GPUs. On an Apple M4 at 1440p,
-  finding and presenting visible faces costs about 4 ms a frame, and tracing
-  fills a GPU time share you set (20% of the frame by default).
-- **Visible faces are traced every frame.** They're discovered from each
-  camera's depth and normal prepass and traced within that share, with
-  histories that follow each face as the camera moves.
-- **Light persists off screen.** A world cache keeps faces within 64 voxels
-  of the cameras lit off screen and trades history with visible faces, so
-  turning around, revisiting and editing out of view stay warm. A ray that reaches a cached face ends there
-  with its stored light, so bounces add up over time
-  ([surface cache](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/docs/surface-cache.md)).
-- **Distance costs what the screen shows.** Faces small on screen (a voxel
-  under 8 pixels across) are lit per pixel instead, so distant terrain costs
-  follow the screen, not the world.
-- **Edits relight what they affect.** The host tells GI which voxels
-  changed, and it drops history near each change in proportion to its
-  measured effect: digging a tunnel relights the tunnel without resetting the
-  rest of the scene, and nothing is guessed from frame-to-frame differences.
-- **Emissive blocks are lights.** A light tree chooses which of many emitters
-  to sample.
-- **Noise is pooled, not smeared.** Presentation pools coplanar neighbours by
-  their measured noise until each face has enough samples of its own, then
-  blends over time. Sunlight is sampled at shared voxel corners.
-- **Your engine, your meshes.** GI reads voxels through a trait and lights your
-  materials. It never meshes or owns the world, accepts coarse level-of-detail
-  pages, and works under ray-traced renderers as well as meshes.
+Use it with **Bevy 0.19** and **Rust 1.95 or newer**. It runs on native GPU
+compute, including Metal on Apple Silicon. See [Platforms](#platforms)
+for Vulkan and DX12 setup.
 
 ## Quick start
 
-Add the core crate to a Bevy 0.19 application:
+If your app uses `bevy_voxel_world`, start with the
+[BVW connector guide](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi_bvw/README.md).
+For your own voxel storage, add the core crate to your app.
 
 ```toml
 [dependencies]
@@ -58,19 +26,40 @@ bevy = "0.19"
 bevy_voxel_gi = "0.1"
 ```
 
-| Bevy | bevy_voxel_gi |
-| --- | --- |
-| 0.19 | 0.1 |
+Want to see the lighting first? Run this from a
+[repository checkout](https://github.com/nathanaelneveux/global-illumination#try-the-examples).
 
-Each release targets one Bevy minor version: host materials override Bevy
-PBR internals that change between Bevy releases.
+```sh
+cargo run --locked -p bevy_voxel_gi --example minimal
+```
 
-`bevy_voxel_gi_bvw` connects `bevy_voxel_world` for you; `bevy_voxel_gi_debug`
-adds a HUD and tuning panel. Both share the core's version.
+You'll see a stone room with a glowing lamp on the floor. In the
+[`edits` example](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/examples/edits.rs),
+a window opens and closes so you can see the room respond to a voxel edit.
+Both examples use the same setup as the guide below.
 
-A host does four things: describe how each block reflects and emits light,
-hand GI a read-only view of its voxels, say which 32³ pages exist, and draw
-its meshes with a GI-lit material. A complete flat world:
+## Light your own world
+
+GI needs to know where the blocks are, how light interacts with them, and
+which material should display the result. The flat ground example below
+shows each part in one file.
+
+1. **Give blocks optical properties.** A `MaterialTransport` describes
+   diffuse reflectance and emission. Use `MaterialPalette` to assign
+   transport IDs and copy its table into `VoxelMaterialTransportTable`.
+2. **Provide a voxel snapshot.** Put your `VoxelSource` in `VoxelGiSource`.
+   GI asks it for the transport material at each voxel in a 32³ page.
+   Return `None` for air when using `dense_page`. Source calls run on worker
+   threads, so give the source an immutable view of your data.
+3. **Declare the loaded pages.** Call `VoxelGiInput::page_loaded` for each
+   page you want GI to see. Page coordinates count 32-voxel steps. For
+   example, page `(1, 0, 0)` starts at voxel `(32, 0, 0)`.
+4. **Draw the same surfaces.** Use `standard_material` to make a GI-lit
+   Bevy material. Place its mesh faces on voxel boundaries that agree with
+   your source. The example draws the top of a solid layer at `y = 4`.
+
+<details>
+<summary>Copy the complete main.rs for a sunlit plane</summary>
 
 ```rust,no_run
 use bevy::prelude::*;
@@ -169,30 +158,34 @@ fn setup(
 }
 ```
 
-[`examples/minimal.rs`](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/examples/minimal.rs)
-is the same shape with a lit room and a glowing lamp, and
-[`examples/edits.rs`](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/examples/edits.rs)
-opens and closes a window in its wall with `edit_voxel`. From a checkout:
+</details>
 
-```sh
-cargo run -p bevy_voxel_gi --example minimal
-cargo run -p bevy_voxel_gi --example edits
-```
+Run `cargo run` in your app. You should see a grey plane lit from above.
 
-More on each step:
+When a chunk unloads, call `page_unloaded`. For an edit with a known
+material, use `edit_voxel` and update the mesh to match. If the source has
+changed and you only know which page changed, use `page_changed` with
+default input tracking. See the [input API](https://docs.rs/bevy_voxel_gi/latest/bevy_voxel_gi/struct.VoxelGiInput.html)
+for exact edits and explicit resampling.
 
-- **Materials.** With integer block IDs, build a dense lookup from the
-  palette once, with `optics_id(MaterialTransport::default())` for blocks
-  you haven't registered. Transparent blocks are `AIR` to GI
-  (`palette.insert_transparent`). A source that reports your own IDs
-  unchanged (as `bevy_voxel_gi_bvw` does) sets the table at those IDs
-  instead.
-- **Levels of detail.** A page can be coarse: `PageSample::coarse(stride, ..)`
-  holds one material per 2³, 4³ or 8³ block. Draw it as the same blocks.
-- **Sky and other lights.** `VoxelGiEnvironment` sets the sky.
-  `VoxelGiEmitter` adds a light that has no Bevy counterpart.
-- **Readiness.** `VoxelGiStats::geometry_pending` says whether declared pages
-  have reached the GPU yet.
+You can return a coarse `PageSample` for a lower level of detail. For
+example, a stride of 4 stores one material per 4³ block. Use the same
+blocks when drawing that page.
+
+## How lighting follows the camera
+
+**Visible faces.** Each camera's depth and normal prepasses tell GI which
+voxel faces to light. GI keeps each face's history as the camera moves and
+blends nearby samples while a face is still noisy.
+
+**Off-screen faces.** The world cache keeps light on faces within 64 voxels
+of a camera by default. A ray that hits a cached face can reuse its stored
+light, so bounced light builds up over time and stays available when you
+turn back.
+
+**Distant faces.** When a voxel projects to less than 8 pixels across by
+default, GI switches to a screen-space estimate. This lets it light distant
+terrain with a cost tied to the view.
 
 ## Lighting your own material
 
