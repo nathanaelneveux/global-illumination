@@ -100,14 +100,14 @@ pub fn terrain_view_distance() -> f32 {
     (far_streaming().unwrap_or(SPAWNING_DISTANCE) - 1) as f32 * CHUNK_SIZE_F
 }
 
-/// Far-test LOD bands (chunks from the camera) and their samples per axis;
-/// each LOD number is its stride, except LoD 0. LoD 0 is a small
-/// full-resolution band near the camera and the only one that spawns
-/// colliders (`chunk_colliders`); LoD 1 is still full
+/// Far-test LOD bands (chunks from the camera) and their samples per axis.
+/// A level-L chunk is `32 << L` voxels wide, so the strides are 1, 1, 2, 4
+/// and 8. Level 0 is a small full-resolution band near the camera and the
+/// only one that spawns colliders (`chunk_colliders`); level 1 is still full
 /// resolution, so full detail reaches farther than physics.
 const LOD_BANDS: [(f32, LodLevel, u32); 4] =
-    [(2.0, 0, 32), (8.0, 1, 32), (16.0, 2, 16), (32.0, 4, 8)];
-const LOD_FARTHEST: (LodLevel, u32) = (8, 4);
+    [(2.0, 0, 32), (8.0, 1, 64), (16.0, 2, 64), (32.0, 3, 64)];
+const LOD_FARTHEST: (LodLevel, u32) = (4, 64);
 const LOD_HYSTERESIS_CHUNKS: f32 = 1.0;
 
 fn lod_samples(lod: LodLevel) -> u32 {
@@ -293,7 +293,7 @@ impl VoxelWorldConfig for PrototypeWorld {
 
     fn chunk_data_shape(&self, lod_level: LodLevel) -> UVec3 {
         if self.scene == ScenePreset::Lod {
-            return UVec3::splat(crate::lod_scene::samples(lod_level) + 2);
+            return UVec3::splat(CHUNK_SIZE_I as u32 + 2);
         }
         UVec3::splat(lod_samples(lod_level) + 2)
     }
@@ -310,6 +310,11 @@ impl VoxelWorldConfig for PrototypeWorld {
 
     fn min_despawn_distance(&self) -> u32 {
         MIN_DESPAWN_DISTANCE
+    }
+
+    /// Keep chunks behind the camera: GI traces only what is loaded.
+    fn chunk_despawn_strategy(&self) -> ChunkDespawnStrategy {
+        ChunkDespawnStrategy::FarAway
     }
 
     fn voxel_texture(&self) -> Option<(String, u32)> {
@@ -397,19 +402,24 @@ impl VoxelWorldConfig for PrototypeWorld {
         let ambient_occlusion = self.config.ambient_occlusion;
 
         Some(Box::new(
-            move |_pos, _lod, _data_shape, _mesh_shape, _previous| {
+            move |_pos, lod, _data_shape, _mesh_shape, _previous| {
                 Box::new(
                     move |voxels, data_shape, mesh_shape, texture_index_mapper| {
-                        (
-                            build_chunk_mesh(
-                                voxels,
-                                data_shape,
-                                mesh_shape,
-                                texture_index_mapper,
-                                ambient_occlusion,
-                            ),
-                            None,
-                        )
+                        let mut mesh = build_chunk_mesh(
+                            voxels,
+                            data_shape,
+                            mesh_shape,
+                            texture_index_mapper,
+                            ambient_occlusion,
+                        );
+                        // BVW scales a coarse chunk's positions up to its
+                        // extent; textures keep one tile per voxel.
+                        let samples = mesh_shape.x.saturating_sub(2).max(1);
+                        let spacing = (CHUNK_SIZE_I << lod) as f32 / samples as f32;
+                        bevy_voxel_world::custom_meshing::scale_texture_coordinates(
+                            &mut mesh, spacing,
+                        );
+                        (mesh, None)
                     },
                 )
             },
@@ -457,7 +467,7 @@ fn apply_live_prototype_config(
     mut prototype_world: ResMut<PrototypeWorld>,
     mut voxel_gi_dirty: ResMut<VoxelGiInput>,
     mut commands: Commands,
-    chunks: Query<Entity, (With<Chunk<PrototypeWorld>>, Without<NeedsDespawn>)>,
+    chunks: Query<Entity, With<Chunk<PrototypeWorld>>>,
 ) {
     let Some(template_assets) = template_assets else {
         return;
@@ -487,8 +497,9 @@ fn apply_live_prototype_config(
     *prototype_world = PrototypeWorld::from_config(config.clone());
     voxel_gi_dirty.mark_all_loaded();
 
+    // BVW forgets despawned chunks and spawns them again from the new config.
     for entity in &chunks {
-        commands.entity(entity).try_insert(NeedsDespawn);
+        commands.entity(entity).try_despawn();
     }
 
     info!(

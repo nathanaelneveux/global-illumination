@@ -186,6 +186,9 @@ struct PageCoverage<C> {
     /// pages update once it is gone, so GI never traces geometry no chunk
     /// shows, nor drops a page a finer chunk still covers.
     retiring: Vec<(ChunkKey, Entity)>,
+    /// Spawned chunks' keys, for chunks a game system despawns without
+    /// BVW announcing it.
+    entities: HashMap<Entity, ChunkKey>,
     _world: PhantomData<C>,
 }
 
@@ -194,6 +197,7 @@ impl<C> Default for PageCoverage<C> {
         Self {
             pages: HashMap::default(),
             retiring: Vec::new(),
+            entities: HashMap::default(),
             _world: PhantomData,
         }
     }
@@ -257,16 +261,29 @@ fn forward_chunk_events<C>(
     mut published: MessageReader<ChunkPublished<C>>,
     mut updated: MessageReader<ChunkWillUpdate<C>>,
     mut despawned: MessageReader<ChunkWillDespawn<C>>,
+    mut removed: RemovedComponents<Chunk<C>>,
 ) where
     C: VoxelWorldConfig<MaterialIndex = u8> + Resource,
 {
-    let spawned: Vec<_> = spawned.read().map(|event| event.chunk_key).collect();
+    let spawned: Vec<_> = spawned
+        .read()
+        .map(|event| {
+            coverage.entities.insert(event.entity, event.chunk_key);
+            event.chunk_key
+        })
+        .collect();
     let mut content: Vec<_> = published.read().map(|event| event.chunk_key).collect();
     content.extend(updated.read().map(|event| event.chunk_key));
-    let retired: Vec<_> = despawned
+    let mut retired: Vec<_> = despawned
         .read()
         .map(|event| (event.chunk_key, event.entity))
         .collect();
+    // Chunks despawned by a game system rather than BVW's lifecycle.
+    for entity in removed.read() {
+        if let Some(key) = coverage.entities.remove(&entity) {
+            retired.push((key, entity));
+        }
+    }
     // Only frames that change a page refresh GI's source snapshot.
     if coverage.update(
         input.bypass_change_detection(),
