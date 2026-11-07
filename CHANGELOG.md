@@ -17,8 +17,7 @@ The crates share one version. The format follows
 - `bevy_voxel_gi_bvw`: BVW 0.19's levels of detail. A level-L chunk spans
   (2^L)³ GI pages, traced at its sample spacing; while BVW swaps levels, GI
   follows the finer chunk until the coarser one has replaced it. Levels
-  above `MAX_GI_LOD` (5) are not traced. The plugin warns unless the world
-  keeps chunks out of view loaded (`ChunkDespawnStrategy::FarAway`).
+  above `MAX_GI_LOD` (5) are not traced.
 
 ### Added
 

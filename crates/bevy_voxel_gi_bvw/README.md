@@ -60,9 +60,9 @@ impl VoxelWorldConfig for MyWorld {
     type MaterialIndex = u8;
     type ChunkUserBundle = ();
 
-    // Keep chunks behind the camera: GI traces only what is loaded.
-    fn chunk_despawn_strategy(&self) -> ChunkDespawnStrategy {
-        ChunkDespawnStrategy::FarAway
+    // Chunks this close stay loaded out of view, covering GI's world cache.
+    fn min_despawn_distance(&self) -> u32 {
+        2
     }
 
     fn voxel_lookup_delegate(&self) -> VoxelLookupDelegate<u8> {
@@ -162,10 +162,10 @@ fn dig<C: VoxelWorldConfig<MaterialIndex = u8>>(
 }
 ```
 
-GI lights what BVW has loaded, so keep chunks loaded behind the camera:
-return `ChunkDespawnStrategy::FarAway` from `chunk_despawn_strategy`. BVW's
-default despawns them out of view, and light then leaks through the walls
-behind you. The connector warns at startup if you keep the default.
+GI lights what BVW has loaded. BVW unloads chunks out of view, except
+within `min_despawn_distance` chunks of a camera, so set that to cover
+GI's world cache: 2 chunks for the default 64-voxel `cache_radius`. Walls
+behind you then stay in GI's world, and light does not leak through them.
 
 A level-0 BVW chunk is one 32³ GI page. A chunk at a coarser level of
 detail spans several pages, and GI traces it as its mesh shows it, one

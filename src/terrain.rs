@@ -312,11 +312,6 @@ impl VoxelWorldConfig for PrototypeWorld {
         MIN_DESPAWN_DISTANCE
     }
 
-    /// Keep chunks behind the camera: GI traces only what is loaded.
-    fn chunk_despawn_strategy(&self) -> ChunkDespawnStrategy {
-        ChunkDespawnStrategy::FarAway
-    }
-
     fn voxel_texture(&self) -> Option<(String, u32)> {
         Some((
             "example_voxel_texture.png".into(),

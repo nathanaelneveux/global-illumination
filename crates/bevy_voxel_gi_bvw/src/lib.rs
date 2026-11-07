@@ -51,14 +51,12 @@ where
             "a level-0 BVW chunk must be one GI page"
         );
         material::install(app);
-        app.init_resource::<PageCoverage<C>>()
-            .add_systems(Startup, warn_about_lighting_gaps::<C>)
-            .add_systems(
-                Update,
-                (forward_chunk_events::<C>, refresh_source::<C>)
-                    .chain()
-                    .before(VoxelGiSystems),
-            );
+        app.init_resource::<PageCoverage<C>>().add_systems(
+            Update,
+            (forward_chunk_events::<C>, refresh_source::<C>)
+                .chain()
+                .before(VoxelGiSystems),
+        );
     }
 }
 
@@ -86,18 +84,6 @@ impl BvwVoxelEdits for VoxelGiInput {
             WorldVoxel::Air => self.edit_voxel(position, None),
             WorldVoxel::Unset => self.mark_voxel(position),
         }
-    }
-}
-
-/// GI traces what is loaded. BVW's default despawns chunks out of view,
-/// which takes the walls behind the camera out of GI's world too.
-fn warn_about_lighting_gaps<C: VoxelWorldConfig>(config: Res<C>) {
-    if config.chunk_despawn_strategy() != ChunkDespawnStrategy::FarAway {
-        warn!(
-            "voxel GI: chunks out of view despawn, so light leaks through the walls \
-             behind the camera; return ChunkDespawnStrategy::FarAway from \
-             chunk_despawn_strategy"
-        );
     }
 }
 
