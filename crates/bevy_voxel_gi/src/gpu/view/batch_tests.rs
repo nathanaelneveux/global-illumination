@@ -60,31 +60,21 @@ fn native_view_batches_preserve_raw_prefixes_and_pending_tails() {
         let history = &mut camera.history[0];
         history
             .receivers
-            .upload(
-                device,
-                queue,
-                &ShaderBuffer::from(inputs.clone()).data.unwrap(),
-            )
+            .upload(device, queue, &crate::gpu::std430(&inputs.clone()))
             .unwrap();
         camera
             .params
-            .upload(
-                device,
-                queue,
-                &ShaderBuffer::from(vec![scene.params]).data.unwrap(),
-            )
+            .upload(device, queue, &crate::gpu::std430(&vec![scene.params]))
             .unwrap();
         camera
             .control
             .upload(
                 device,
                 queue,
-                &ShaderBuffer::from(vec![Control {
+                &crate::gpu::std430(&vec![Control {
                     history: UVec4::new(0, 0, 0, 1),
                     ..default()
-                }])
-                .data
-                .unwrap(),
+                }]),
             )
             .unwrap();
         camera
@@ -92,12 +82,10 @@ fn native_view_batches_preserve_raw_prefixes_and_pending_tails() {
             .upload(
                 device,
                 queue,
-                &ShaderBuffer::from(vec![Wave {
+                &crate::gpu::std430(&vec![Wave {
                     range: UVec4::new(0, count * visits, 3, 0),
                     ticket: UVec4::ZERO,
-                }])
-                .data
-                .unwrap(),
+                }]),
             )
             .unwrap();
         let mut words = vec![0u32; 12 + count as usize];

@@ -14,10 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      # The crates' rust-version (Bevy 0.19's minimum). Pinned so new clippy
+      # The crates' rust-version (Bevy 0.20's minimum). Pinned so new clippy
       # lints on a newer stable do not fail CI unannounced; raise it
       # deliberately, with rust-version.
-      - uses: dtolnay/rust-toolchain@1.95
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2

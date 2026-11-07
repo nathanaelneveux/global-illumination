@@ -22,6 +22,7 @@ use bevy::{
 const POOL_PREFIX_BYTES: usize = 16 + 65536 * 20;
 const DISPLAY_BYTES: u64 = OUTPUT_PREFIX_BYTES + MAX_VIEW_RECEIVERS as u64 * 48;
 #[derive(Resource, Clone, ExtractResource)]
+#[extract_app(bevy::render::RenderApp)]
 struct ViewSettings {
     output: Handle<ShaderBuffer>,
     /// The far tier's cells, read by the material.
@@ -171,13 +172,15 @@ fn configure_views(
     }
     let enabled = true;
     if enabled != view.enabled {
-        let mut asset = ShaderBuffer::default();
-        asset.buffer_description.size = if enabled {
-            DISPLAY_BYTES
-        } else {
-            EMPTY_OUTPUT_BYTES
-        };
-        asset.buffer_description.usage =
+        let mut asset = ShaderBuffer::with_size(
+            if enabled {
+                DISPLAY_BYTES
+            } else {
+                EMPTY_OUTPUT_BYTES
+            },
+            default(),
+        );
+        asset.buffer_usage =
             BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
         view.output = buffers.add(asset);
         material_data.far = view.output.clone();
@@ -192,9 +195,8 @@ fn configure_views(
         .max()
         .unwrap_or(0);
     if enabled && needed > view.pixel_bytes_allocated {
-        let mut asset = ShaderBuffer::default();
-        asset.buffer_description.size = needed;
-        asset.buffer_description.usage =
+        let mut asset = ShaderBuffer::with_size(needed, default());
+        asset.buffer_usage =
             BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
         view.pixel_output = buffers.add(asset);
         material_data.far_pixels = view.pixel_output.clone();
@@ -815,7 +817,7 @@ fn render_view(
     let Some(prepass) = prepass else {
         return;
     };
-    let (Some(depth), Some(normals)) = (prepass.depth_view(), prepass.normal_view()) else {
+    let (Some(depth), Some(normals)) = (prepass.depth_only_view(), prepass.normal_view()) else {
         return;
     };
     if view.viewport.z == 0 || view.viewport.w == 0 {
@@ -1033,33 +1035,23 @@ fn render_view(
     };
     camera
         .control
-        .upload(
-            &device,
-            &queue,
-            &ShaderBuffer::from(vec![control]).data.unwrap(),
-        )
+        .upload(&device, &queue, &crate::gpu::std430(&vec![control]))
         .unwrap();
     let mut params = scene.params;
     params.counts.x = count;
     camera
         .params
-        .upload(
-            &device,
-            &queue,
-            &ShaderBuffer::from(vec![params]).data.unwrap(),
-        )
+        .upload(&device, &queue, &crate::gpu::std430(&vec![params]))
         .unwrap();
     camera
         .wave
         .upload(
             &device,
             &queue,
-            &ShaderBuffer::from(vec![Wave {
+            &crate::gpu::std430(&vec![Wave {
                 range: UVec4::new(camera.cursor, work, 3, 0),
                 ticket: UVec4::ZERO,
-            }])
-            .data
-            .unwrap(),
+            }]),
         )
         .unwrap();
     camera.cursor = camera.cursor.wrapping_add(work);
@@ -1340,8 +1332,7 @@ mod tests {
         // same members at the same offsets.
         let presentation = crate::gpu::reflect::Reflection::new(
             &crate::render::presentation_shader_source()
-                .replace("#define_import_path bevy_voxel_gi::presentation", "")
-                .replace("#{MATERIAL_BIND_GROUP}", "2"),
+                .replace("constants::MATERIAL_BIND_GROUP", "2"),
         );
         let runtime = crate::gpu::reflect::Reflection::new(&shader(false));
         assert_eq!(
@@ -1380,7 +1371,7 @@ mod tests {
             interest_max: IVec4::splat(15),
         };
         crate::gpu::reflect::assert_mirrors(
-            &ShaderBuffer::from(control).data.unwrap(),
+            &crate::gpu::std430(&control),
             reflection.layout("ViewControl"),
             &[
                 "world_from_clip",
@@ -1405,7 +1396,7 @@ mod tests {
             ticket: u(2),
         };
         crate::gpu::reflect::assert_mirrors(
-            &ShaderBuffer::from(wave).data.unwrap(),
+            &crate::gpu::std430(&wave),
             reflection.layout("ViewWave"),
             &["range", "ticket"],
         );

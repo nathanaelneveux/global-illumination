@@ -148,7 +148,10 @@ struct Out {
             .recv_timeout(std::time::Duration::from_secs(1))
             .unwrap()
             .unwrap();
-        let pixels = readback.slice(..).get_mapped_range();
+        let pixels = readback
+            .slice(..)
+            .get_mapped_range()
+            .expect("the buffer is mapped once map_async completes");
         let wrong = pixels.chunks_exact(4).filter(|rgba| rgba[0] > 0).count();
         let correct = pixels.chunks_exact(4).filter(|rgba| rgba[1] > 0).count();
         eprintln!(

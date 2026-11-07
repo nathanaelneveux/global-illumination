@@ -1,7 +1,4 @@
 # Vendored from bevy_ahoy 0.2.0 and ported to Bevy 0.20; see VENDORED.md.
-# Its own workspace until the repo moves to Bevy 0.20.
-[workspace]
-
 [package]
 name = "bevy_ahoy"
 authors = ["Jan Hohenheim <jan@hohenheim.ch>"]

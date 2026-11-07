@@ -94,7 +94,7 @@ use pages::{ingest_input, start_scene_task};
 use publication::apply_scene_task;
 use render::install_render_assets;
 pub use render::{
-    GiDebugView, PRESENTATION_SHADER, STANDARD_SHADER, VoxelGiBindings, VoxelGiDisplay,
+    GiDebugView, PBR_SHADER, PRESENTATION_SHADER, STANDARD_SHADER, VoxelGiBindings, VoxelGiDisplay,
     VoxelGiMaterialData, VoxelGiMaterialPlugin, VoxelGiStandardMaterial,
     VoxelGiStandardMaterialPlugin, VoxelGiStandardShader, presentation_shader_source,
     standard_material,

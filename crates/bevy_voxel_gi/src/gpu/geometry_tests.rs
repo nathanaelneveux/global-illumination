@@ -116,7 +116,11 @@ fn check() { output[0] = trace_domain(vec3(8.5, 5.01, 8.5), vec3(0.0, 1.0, 0.0),
         .recv_timeout(Duration::from_secs(1))
         .unwrap()
         .unwrap();
-    let view = readback.buffer.slice(..4).get_mapped_range();
+    let view = readback
+        .buffer
+        .slice(..4)
+        .get_mapped_range()
+        .expect("the buffer is mapped once map_async completes");
     let status = u32::from_le_bytes(view[..4].try_into().unwrap());
     drop(view);
     readback.buffer.unmap();

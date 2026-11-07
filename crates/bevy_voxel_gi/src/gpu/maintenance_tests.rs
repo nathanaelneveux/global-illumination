@@ -437,7 +437,11 @@ pub(super) fn read_words(context: &GpuTransportDevice, source: &Buffer, size: u6
         .recv_timeout(Duration::from_secs(1))
         .unwrap()
         .unwrap();
-    let view = readback.buffer.slice(..size).get_mapped_range();
+    let view = readback
+        .buffer
+        .slice(..size)
+        .get_mapped_range()
+        .expect("the buffer is mapped once map_async completes");
     let words = view
         .chunks_exact(4)
         .map(|word| u32::from_le_bytes(word.try_into().unwrap()))

@@ -70,14 +70,12 @@ impl Fixture {
             .upload(
                 device,
                 queue,
-                &ShaderBuffer::from(vec![Receiver {
+                &crate::gpu::std430(&vec![Receiver {
                     surface: f.voxel.as_vec3() + Vec3::splat(0.5) + normal * 0.5,
                     voxel: f.voxel,
                     face: f.face as u32,
                     sequence: 0,
-                }])
-                .data
-                .unwrap(),
+                }]),
             )
             .unwrap();
         let mut fixture = Self {
@@ -103,13 +101,11 @@ impl Fixture {
             .upload(
                 &self.gpu.context.device,
                 &self.gpu.context.queue,
-                &ShaderBuffer::from(vec![Control {
+                &crate::gpu::std430(&vec![Control {
                     grid: UVec4::new(1, 1, 1, self.camera.history[0].hash.capacity as u32 / 4 - 1),
                     cache: UVec4::new(cache.epoch, 100, 1, 0),
                     ..default()
-                }])
-                .data
-                .unwrap(),
+                }]),
             )
             .unwrap();
         let mut params = scene.params;
@@ -119,7 +115,7 @@ impl Fixture {
             .upload(
                 &self.gpu.context.device,
                 &self.gpu.context.queue,
-                &ShaderBuffer::from(vec![params]).data.unwrap(),
+                &crate::gpu::std430(&vec![params]),
             )
             .unwrap();
         self.allowance(0);
@@ -147,12 +143,10 @@ impl Fixture {
             .upload(
                 &self.gpu.context.device,
                 &self.gpu.context.queue,
-                &ShaderBuffer::from(vec![Wave {
+                &crate::gpu::std430(&vec![Wave {
                     range: UVec4::new(0, visits, hits, 0),
                     ticket: UVec4::ZERO,
-                }])
-                .data
-                .unwrap(),
+                }]),
             )
             .unwrap();
         self.gpu
@@ -313,7 +307,7 @@ fn native_new_face_bootstrap_is_weak_and_does_not_restart_sampling() {
             .upload(
                 &f.gpu.context.device,
                 &f.gpu.context.queue,
-                &ShaderBuffer::from(vec![c]).data.unwrap(),
+                &crate::gpu::std430(&vec![c]),
             )
             .unwrap();
     };
@@ -325,14 +319,12 @@ fn native_new_face_bootstrap_is_weak_and_does_not_restart_sampling() {
         .upload(
             device,
             queue,
-            &ShaderBuffer::from(vec![Receiver {
+            &crate::gpu::std430(&vec![Receiver {
                 voxel: donor,
                 face: face as u32,
                 surface: donor.as_vec3() + Vec3::splat(0.5) + normal.as_vec3() * 0.5,
                 sequence: 64,
-            }])
-            .data
-            .unwrap(),
+            }]),
         )
         .unwrap();
     let hash =
@@ -398,16 +390,14 @@ fn native_new_face_bootstrap_is_weak_and_does_not_restart_sampling() {
             .upload(
                 &f.gpu.context.device,
                 queue,
-                &ShaderBuffer::from(vec![Receiver {
+                &crate::gpu::std430(&vec![Receiver {
                     voxel: position,
                     face: orientation as u32,
                     surface: position.as_vec3()
                         + Vec3::splat(0.5)
                         + FACE_OFFSETS[orientation].as_vec3() * 0.5,
                     sequence: 64,
-                }])
-                .data
-                .unwrap(),
+                }]),
             )
             .unwrap();
         let hash = pcg(pcg(pcg(position.x as u32) ^ position.y as u32) ^ position.z as u32)
@@ -795,13 +785,11 @@ fn native_two_way_cache_rejects_stale_writes_and_obeys_retention() {
 
 #[test]
 fn control_offsets_used_by_native_tests_match_the_encoded_layout() {
-    let bytes = ShaderBuffer::from(vec![Control {
+    let bytes = crate::gpu::std430(&vec![Control {
         history: UVec4::new(0, 0, 0, 0xdead),
         cache: UVec4::new(0xbeef, 0, 0, 0),
         ..default()
-    }])
-    .data
-    .unwrap();
+    }]);
     let word = |offset: u64| {
         let at = offset as usize;
         u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())

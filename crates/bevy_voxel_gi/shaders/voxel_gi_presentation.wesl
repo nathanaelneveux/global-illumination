@@ -1,11 +1,10 @@
 // Voxel GI presentation for host materials: what turns the view tier's
 // output into light at a fragment. Import it from a material shader
-// (`#import bevy_voxel_gi::presentation::{indirect_light, sunlight, ...}`); its
+// (`import bevy_voxel_gi::presentation::{indirect_light, sunlight, ...};`); its
 // globals are namespaced by the import, so they cannot collide with the
 // host's. It binds the GI resources at 104 and 106-111 of the material bind
 // group: hosts add them with `VoxelGiBindings` (an `ExtendedMaterial`
 // extension) and keep those numbers free.
-#define_import_path bevy_voxel_gi::presentation
 
 struct GpuTransportSettings {
     enabled: u32,
@@ -18,7 +17,7 @@ struct GpuTransportSettings {
     sun_color: array<vec4<f32>, 4>,
 }
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(104)
+@group(constants::MATERIAL_BIND_GROUP) @binding(104)
 var<uniform> transport_settings: GpuTransportSettings;
 
 // The GI worker's transport geometry, for sun visibility of uncovered faces.
@@ -27,13 +26,13 @@ struct TraversalParams {
     minimum: vec4<i32>,
     maximum: vec4<i32>,
 }
-@group(#{MATERIAL_BIND_GROUP}) @binding(106)
+@group(constants::MATERIAL_BIND_GROUP) @binding(106)
 var<storage, read> directory: array<vec4<i32>>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(107)
+@group(constants::MATERIAL_BIND_GROUP) @binding(107)
 var<storage, read> regions: array<vec4<u32>>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(108)
+@group(constants::MATERIAL_BIND_GROUP) @binding(108)
 var<storage, read> cells: array<u32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(109)
+@group(constants::MATERIAL_BIND_GROUP) @binding(109)
 var<uniform> params: TraversalParams;
 
 struct FarPixel {
@@ -47,7 +46,7 @@ struct FarOutput {
     heads: array<u32, 65536>, links: array<u32, 131072>,
     pixels: array<FarPixel>,
 }
-@group(#{MATERIAL_BIND_GROUP}) @binding(110)
+@group(constants::MATERIAL_BIND_GROUP) @binding(110)
 var<storage, read> far_view: FarOutput;
 
 // The far tier (voxel_view_pixels.wgsl). Faces small on screen by its
@@ -60,7 +59,7 @@ struct FarCells {
     origin: vec4<u32>, // viewport origin, threshold px (bits), this frame's stamp
     cells: array<vec4<u32>>,
 }
-@group(#{MATERIAL_BIND_GROUP}) @binding(111)
+@group(constants::MATERIAL_BIND_GROUP) @binding(111)
 var<storage, read> far_cells: FarCells;
 
 // #include voxel_traversal.wgsl
