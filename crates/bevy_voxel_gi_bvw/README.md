@@ -60,6 +60,11 @@ impl VoxelWorldConfig for MyWorld {
     type MaterialIndex = u8;
     type ChunkUserBundle = ();
 
+    // Keep chunks behind the camera: GI traces only what is loaded.
+    fn chunk_despawn_strategy(&self) -> ChunkDespawnStrategy {
+        ChunkDespawnStrategy::FarAway
+    }
+
     fn voxel_lookup_delegate(&self) -> VoxelLookupDelegate<u8> {
         Box::new(|_, _, _| {
             Box::new(|p, _| {
@@ -157,9 +162,21 @@ fn dig<C: VoxelWorldConfig<MaterialIndex = u8>>(
 }
 ```
 
-A BVW chunk covers one 32³ GI page. The connector samples the level of
-detail used by the chunk mesh. It asks `GiFallbackVoxel` for data where
-loaded chunks cannot provide it. The default returns air for lighting.
+GI lights what BVW has loaded, so keep chunks loaded behind the camera:
+return `ChunkDespawnStrategy::FarAway` from `chunk_despawn_strategy`. BVW's
+default despawns them out of view, and light then leaks through the walls
+behind you. The connector warns at startup if you keep the default.
+
+A level-0 BVW chunk is one 32³ GI page. A chunk at a coarser level of
+detail spans several pages, and GI traces it as its mesh shows it, one
+voxel per sample block. While BVW swaps detail levels, GI follows the finer
+chunk until the coarser one has fully replaced it. Chunks above level 5
+(`MAX_GI_LOD`) are left out of GI's world.
+
+Within a loaded page, where the chunk has no voxel, the connector asks
+`GiFallbackVoxel`; the default answers air. Chunks that `chunk_fill_hint`
+keeps from spawning never load, so GI treats them as air. That is right
+for empty chunks, but light passes through a chunk hinted solid.
 
 See the [core guide](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/README.md)
 for platform setup, budgets and troubleshooting.

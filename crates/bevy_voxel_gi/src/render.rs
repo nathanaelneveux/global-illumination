@@ -301,14 +301,15 @@ pub fn install_render_assets(app: &mut App) {
     }
     super::gpu::view::install(app, far, far_pixels);
     if let Some(mut shaders) = app.world_mut().get_resource_mut::<Assets<Shader>>() {
-        insert_shaders(&mut shaders);
+        insert_voxel_gi_shaders(&mut shaders);
     }
 }
 
-/// GI's WESL modules. Their `embedded://` paths are their import paths:
-/// `bevy_voxel_gi::presentation`, `bevy_voxel_gi::pbr` and the stock
-/// material's `bevy_voxel_gi::standard`.
-pub(crate) fn insert_shaders(shaders: &mut Assets<Shader>) {
+/// Registers GI's WESL modules in `shaders`, as `VoxelGiPlugin` does: for
+/// composing a material shader without the plugin (a composition test). Their
+/// `embedded://` paths are their import paths: `bevy_voxel_gi::presentation`,
+/// `bevy_voxel_gi::pbr` and the stock material's `bevy_voxel_gi::standard`.
+pub fn insert_voxel_gi_shaders(shaders: &mut Assets<Shader>) {
     let _ = shaders.insert(
         PRESENTATION_SHADER.id(),
         Shader::from_wesl(
@@ -564,7 +565,7 @@ mod standard_tests {
         );
         app.finish();
         app.cleanup();
-        insert_shaders(&mut app.world_mut().resource_mut::<Assets<Shader>>());
+        insert_voxel_gi_shaders(&mut app.world_mut().resource_mut::<Assets<Shader>>());
         let mut cache = ShaderCache::new((), |_, source, _| {
             let ShaderCacheSource::Wgsl(source) = source else {
                 panic!("expected composed WGSL")

@@ -15,7 +15,9 @@ use bevy::shader::ShaderRef;
 use bevy_voxel_gi::{VoxelGiBindings, VoxelGiMaterialData, VoxelGiMaterialPlugin};
 use bevy_voxel_world::rendering::vertex_layout;
 
-pub const VOXEL_TRANSPORT_SHADER: &str = "shaders/voxel_transport.wgsl";
+/// The terrain material shader's path, which is also its WESL import path
+/// (`bevy_voxel_gi_bvw::voxel_transport`).
+pub const VOXEL_TRANSPORT_SHADER: &str = "embedded://bevy_voxel_gi_bvw/voxel_transport.wesl";
 /// The terrain material shader (inserted by `install`).
 pub const VOXEL_TRANSPORT_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("2ae5baf3-fcaf-4036-8021-b3296b833947");
@@ -77,8 +79,8 @@ pub(crate) fn install(app: &mut App) {
     ));
     let _ = app.world_mut().resource_mut::<Assets<Shader>>().insert(
         VOXEL_TRANSPORT_SHADER_HANDLE.id(),
-        Shader::from_wgsl(
-            include_str!("../shaders/voxel_transport.wgsl"),
+        Shader::from_wesl(
+            include_str!("../shaders/voxel_transport.wesl"),
             VOXEL_TRANSPORT_SHADER,
         ),
     );
@@ -375,7 +377,9 @@ mod tests {
     #[test]
     fn terrain_shader_composes_with_bevys_real_pbr_modules_without_a_window() {
         use bevy::render::{RenderPlugin, settings::WgpuSettings};
-        use bevy::shader::{Shader, ShaderCache, ShaderCacheSource, ShaderDefVal};
+        use bevy::shader::{
+            Shader, ShaderCache, ShaderCacheError, ShaderCacheSource, ShaderDefVal,
+        };
         // Load the exact libraries registered by this Bevy build. No copied
         // upstream shader fixtures, window, GPU, or unlocked desktop required.
         let mut app = App::new();
@@ -401,37 +405,31 @@ mod tests {
         );
         app.finish();
         app.cleanup();
-        let mut cache = ShaderCache::new(
-            (),
-            wgpu::Features::empty(),
-            wgpu::DownlevelFlags::all(),
-            |_, source, _| {
-                let ShaderCacheSource::Naga(module) = source else {
-                    panic!("expected Naga module")
-                };
-                naga::valid::Validator::new(
-                    naga::valid::ValidationFlags::all(),
-                    naga::valid::Capabilities::all(),
-                )
-                .validate(&module)
-                .unwrap();
-                Ok(module)
-            },
-        );
-        // The material imports `bevy_voxel_gi::presentation` (VoxelGiPlugin
-        // registers it in an app; here, by hand).
-        let _ = app.world_mut().resource_mut::<Assets<Shader>>().insert(
-            bevy_voxel_gi::PRESENTATION_SHADER.id(),
-            Shader::from_wgsl(
-                bevy_voxel_gi::presentation_shader_source(),
-                "bevy_voxel_gi/presentation.wgsl",
-            ),
+        let mut cache = ShaderCache::new((), |_, source, _| {
+            let ShaderCacheSource::Wgsl(source) = source else {
+                panic!("expected composed WGSL")
+            };
+            let module = naga::front::wgsl::parse_str(&source).map_err(|error| {
+                ShaderCacheError::CreateShaderModule(error.emit_to_string(&source))
+            })?;
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .map_err(|error| ShaderCacheError::CreateShaderModule(error.emit_to_string(&source)))?;
+            Ok(module)
+        });
+        // The material imports GI's modules (VoxelGiPlugin registers them in
+        // an app; here, by hand).
+        bevy_voxel_gi::insert_voxel_gi_shaders(
+            &mut app.world_mut().resource_mut::<Assets<Shader>>(),
         );
         let handle = app
             .world_mut()
             .resource_mut::<Assets<Shader>>()
-            .add(Shader::from_wgsl(
-                include_str!("../shaders/voxel_transport.wgsl"),
+            .add(Shader::from_wesl(
+                include_str!("../shaders/voxel_transport.wesl"),
                 VOXEL_TRANSPORT_SHADER,
             ));
         let mut defs: Vec<ShaderDefVal> = [
@@ -483,26 +481,23 @@ mod tests {
                     );
                     break;
                 }
-                Err(bevy::shader::ShaderCacheError::ShaderImportNotYetAvailable)
+                Err(ShaderCacheError::ShaderImportNotYetAvailable)
                     if std::time::Instant::now() < deadline =>
                 {
                     std::thread::yield_now()
                 }
-                Err(bevy::shader::ShaderCacheError::ProcessShaderError(error)) => {
-                    panic!("{}", error.emit_to_string(&cache.composer))
-                }
-                Err(error) => panic!("terrain shader failed to compose: {error:?}"),
+                Err(error) => panic!("terrain shader failed to compose: {error}"),
             }
         }
-        // Compiling the ordinary PBR material afterwards must not retain our
-        // override or world-space bindings in the shared shader composer.
+        // Compiling the ordinary PBR material afterwards must not pick up GI's
+        // bindings from the shared shader cache.
         let standard_id = app
             .world()
             .resource::<Assets<Shader>>()
             .iter()
             .find(|(_, shader)| {
-                shader.path.ends_with("bevy_pbr/src/render/pbr.wgsl")
-                    || shader.path.ends_with("bevy_pbr/render/pbr.wgsl")
+                shader.path.ends_with("bevy_pbr/src/render/pbr.wesl")
+                    || shader.path.ends_with("bevy_pbr/render/pbr.wesl")
             })
             .map(|(id, _)| id)
             .expect("Bevy's PBR shader was loaded");

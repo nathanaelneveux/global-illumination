@@ -96,8 +96,8 @@ use render::install_render_assets;
 pub use render::{
     GiDebugView, PBR_SHADER, PRESENTATION_SHADER, STANDARD_SHADER, VoxelGiBindings, VoxelGiDisplay,
     VoxelGiMaterialData, VoxelGiMaterialPlugin, VoxelGiStandardMaterial,
-    VoxelGiStandardMaterialPlugin, VoxelGiStandardShader, presentation_shader_source,
-    standard_material,
+    VoxelGiStandardMaterialPlugin, VoxelGiStandardShader, insert_voxel_gi_shaders,
+    presentation_shader_source, standard_material,
 };
 use sources::{TransportSources, synchronize_material_table, synchronize_transport_sources};
 use telemetry::GiWorkTimings;
