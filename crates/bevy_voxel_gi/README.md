@@ -8,7 +8,7 @@
 Add bounced sunlight, sky and lamp light to an axis-aligned voxel world.
 Supply your voxels and their materials, and GI traces the light on the GPU.
 
-Use **Bevy 0.19** and **Rust 1.95 or newer** with a
+Use **Bevy 0.20** and **Rust 1.97.1 or newer** with a
 [native GPU backend](#platforms).
 
 ## Quick start
@@ -19,8 +19,8 @@ For your own voxel storage, add the core crate to your app.
 
 ```toml
 [dependencies]
-bevy = "0.19"
-bevy_voxel_gi = "0.1"
+bevy = "0.20"
+bevy_voxel_gi = "0.2"
 ```
 
 To see a working room first, run the example from a
@@ -203,13 +203,18 @@ Choose forward rendering on the base material. For `StandardMaterial`, set
 enables the prepass and shadow passes. Add `NotShadowCaster` to any entity
 that should skip Bevy's shadow pass.
 
-Add the indirect and emissive terms in your forward fragment shader.
+In your forward fragment shader (WESL), light the surface with
+`bevy_voxel_gi::pbr::apply_pbr_lighting` instead of Bevy's. It is Bevy's
+function with GI's cached sun in place of Bevy's shadowed sun while GI's
+sky is on. Then add the indirect and emissive terms.
 
 ```wgsl
-#import bevy_voxel_gi::presentation::{indirect_light, emission}
+import bevy_voxel_gi::pbr::{apply_pbr_lighting, pixel_footprint};
+import bevy_voxel_gi::presentation::{indirect_light, emission};
 
+var color = apply_pbr_lighting(pbr_input, pixel_footprint(in.world_position.xyz));
 let gi = indirect_light(in.position.xy, in.world_position.xyz, normal);
-color += albedo * gi.light + emission(in.world_position.xyz, normal);
+color += vec4(albedo * gi.light + emission(in.world_position.xyz, normal), 0.0);
 ```
 
 ### Shader reference
@@ -225,7 +230,7 @@ depth and normal prepasses.
 | Function | Result and use |
 | --- | --- |
 | `indirect_light(pixel, position, normal)` | Multiply `.light` by diffuse albedo. `.found` reports sample support. `.coverage` identifies the source of that support. |
-| `sunlight(position, normal, footprint)` | Direct sun in transport units. Multiply by diffuse albedo × 10,000 / π and apply it in place of Bevy's directional term. The footprint is the largest component of `fwidth(position)` in world voxels. |
+| `sunlight(position, normal, footprint)` | Direct sun in transport units, which `bevy_voxel_gi::pbr` applies for you. For your own lighting, multiply by diffuse albedo × 10,000 / π in place of Bevy's directional term. The footprint is `pixel_footprint(position)`. |
 | `emission(position, normal)` | Add the voxel's emitted RGB once. |
 | `face_in_geometry(position, normal)` | True for an exposed face in the published scene. Provide host lighting for other surfaces. |
 | `sun_count()`, `sun_direction(i)`, `sun_color(i)` | Read the same suns for your own visibility test. Index from 0 to count − 1. Direction points toward the sun. Color is in transport units. |
@@ -235,7 +240,7 @@ depth and normal prepasses.
 </details>
 
 The stock shader shows how to combine these terms with Bevy's PBR.
-[Stock WGSL material](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/shaders/voxel_gi_standard.wgsl)
+[Stock WESL material](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/shaders/voxel_gi_standard.wesl)
 
 ## Platforms
 

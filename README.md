@@ -10,7 +10,7 @@ takes on its color. Open a window and sunlight spills across the floor.
 The light follows your edits as you build and dig.
 
 `bevy_voxel_gi` adds real-time diffuse global illumination to axis-aligned
-voxel worlds in Bevy 0.19. It traces light with ordinary GPU compute, so it
+voxel worlds in Bevy 0.20. It traces light with ordinary GPU compute, so it
 needs no ray-tracing hardware.
 
 ## Getting started
@@ -23,7 +23,7 @@ needs no ray-tracing hardware.
 
 ## Try the examples
 
-You'll need [Rust 1.95 or newer](https://rustup.rs) and
+You'll need [Rust 1.97.1 or newer](https://rustup.rs) and
 [Bevy's platform dependencies](https://bevy.org/learn/quick-start/getting-started/setup/#installing-os-dependencies).
 Start with the stone room.
 

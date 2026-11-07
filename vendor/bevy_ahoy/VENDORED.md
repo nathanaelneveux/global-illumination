@@ -29,20 +29,7 @@ left as upstream wrote it.
 
 ## Building
 
-It is its own workspace until the repo moves to Bevy 0.20. Bevy 0.20 needs
-Rust 1.97.1. Keep its build cache apart from the 0.19 one:
-
-```sh
-cd vendor/bevy_ahoy
-CARGO_BUILD_BUILD_DIR=~/Developer/.cargo-build/bevy-0.20 cargo +1.97 test
-```
-
-When the lab moves to Bevy 0.20, delete the `[workspace]` table in this
-`Cargo.toml` and its `Cargo.lock`. Then add this to the root manifest:
-
-```toml
-[patch.crates-io]
-bevy_ahoy = { path = "vendor/bevy_ahoy" }
-```
-
-Removing that patch switches back to upstream.
+It is a workspace member, and the lab depends on it by path. Test it with
+`cargo test -p bevy_ahoy`. To return to upstream once it supports Bevy 0.20,
+point the lab's `bevy_ahoy` dependency back at crates.io and delete this
+directory.

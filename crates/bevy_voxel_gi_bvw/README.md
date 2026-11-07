@@ -12,15 +12,15 @@ texture and its lighting properties.
 
 ## Quick start
 
-Use Bevy 0.19, `bevy_voxel_world` 0.17 and matching versions of the two GI
+Use Bevy 0.20, `bevy_voxel_world` 0.19 and matching versions of the two GI
 crates.
 
 ```toml
 [dependencies]
-bevy = "0.19"
-bevy_voxel_gi = "0.1"
-bevy_voxel_gi_bvw = "0.1"
-bevy_voxel_world = "0.17"
+bevy = "0.20"
+bevy_voxel_gi = "0.2"
+bevy_voxel_gi_bvw = "0.2"
+bevy_voxel_world = "0.19"
 ```
 
 If you already have a world, keep its `VoxelWorldConfig` and voxel generator.
