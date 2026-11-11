@@ -30,13 +30,7 @@ fn view_path_shader_and_receiver_layout_validate() {
     )
     .validate(&module)
     .unwrap();
-    assert_eq!(
-        ShaderBuffer::from(vec![ViewReceiver::default()])
-            .data
-            .unwrap()
-            .len(),
-        32
-    );
+    assert_eq!(crate::gpu::std430(&vec![ViewReceiver::default()]).len(), 32);
     for (name, bytes) in [
         ("ViewReceiver", 32),
         ("ViewPath", PATH_BYTES),
@@ -100,11 +94,7 @@ fn view_paths_with_depth(
         BufferUsages::STORAGE | BufferUsages::COPY_DST,
     );
     inputs
-        .upload(
-            device,
-            queue,
-            &ShaderBuffer::from(receivers.to_vec()).data.unwrap(),
-        )
+        .upload(device, queue, &crate::gpu::std430(&receivers.to_vec()))
         .unwrap();
     let count = receivers.len() * samples as usize;
     let size = count * PATH_BYTES;

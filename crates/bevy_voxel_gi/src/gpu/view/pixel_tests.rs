@@ -141,11 +141,7 @@ impl Far {
         let mask = camera.history[0].hash.capacity as u32 / 4 - 1;
         camera
             .params
-            .upload(
-                device,
-                queue,
-                &ShaderBuffer::from(vec![scene.params]).data.unwrap(),
-            )
+            .upload(device, queue, &crate::gpu::std430(&vec![scene.params]))
             .unwrap();
         let cells = UVec2::splat(16u32.div_ceil(cell));
         let pixels = PixelState::new(device, cells).unwrap();
@@ -224,11 +220,7 @@ impl Far {
         let (device, queue) = (&self.gpu.context.device, &self.gpu.context.queue);
         self.camera
             .control
-            .upload(
-                device,
-                queue,
-                &ShaderBuffer::from(vec![control]).data.unwrap(),
-            )
+            .upload(device, queue, &crate::gpu::std430(&vec![control]))
             .unwrap();
         self.rig
             .run(device, queue, &self.scene, &self.camera, GRID, 0);
@@ -248,11 +240,7 @@ impl Far {
         let (device, queue) = (&self.gpu.context.device, &self.gpu.context.queue);
         self.camera
             .control
-            .upload(
-                device,
-                queue,
-                &ShaderBuffer::from(vec![control]).data.unwrap(),
-            )
+            .upload(device, queue, &crate::gpu::std430(&vec![control]))
             .unwrap();
         let camera = &self.camera;
         let scene = &self.scene;

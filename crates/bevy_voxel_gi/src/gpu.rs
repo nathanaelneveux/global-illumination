@@ -700,7 +700,7 @@ impl GpuTracer {
             if data.is_empty() {
                 data.push(GpuEmitter::default());
             }
-            let mut bytes = ShaderBuffer::from(data).data.unwrap();
+            let mut bytes = crate::gpu::std430(&data);
             bytes.extend(
                 emitters
                     .tree
@@ -722,11 +722,8 @@ impl GpuTracer {
                     }
                 })
                 .collect();
-            self.materials.upload_generation(
-                device,
-                queue,
-                &ShaderBuffer::from(gpu_materials).data.unwrap(),
-            )?;
+            self.materials
+                .upload_generation(device, queue, &crate::gpu::std430(&gpu_materials))?;
             self.material_table = Some(materials.clone());
         }
         let light_count = (sources.directional.len() + sources.points.len()) as u32;
@@ -760,11 +757,8 @@ impl GpuTracer {
             if gpu_lights.is_empty() {
                 gpu_lights.push(GpuLight::default());
             }
-            self.lights.upload_generation(
-                device,
-                queue,
-                &ShaderBuffer::from(gpu_lights).data.unwrap(),
-            )?;
+            self.lights
+                .upload_generation(device, queue, &crate::gpu::std430(&gpu_lights))?;
         }
         self.sources = Some(sources.clone());
         let picks = if self.resident.is_some() {
@@ -795,11 +789,8 @@ impl GpuTracer {
             ),
             transport: Vec4::new(transport.reach, 0.0, 0.0, 0.0),
         };
-        self.params.upload(
-            device,
-            queue,
-            &ShaderBuffer::from(vec![params]).data.unwrap(),
-        )?;
+        self.params
+            .upload(device, queue, &crate::gpu::std430(&vec![params]))?;
         // Geometry, ownership and model are now current. Maintenance needs
         // neither a ray dispatch nor a readback allocation.
         if work.faces.is_empty() && work.picks == 0 {
@@ -1053,7 +1044,8 @@ impl GpuTracer {
         let view = readback
             .buffer
             .slice(0..readback_bytes as u64 + timestamp_bytes as u64)
-            .get_mapped_range();
+            .get_mapped_range()
+            .expect("the buffer is mapped once map_async completes");
         self.last_snapshot_latency_ms = submitted.elapsed().as_secs_f32() * 1000.0;
         let timestamp_ms = if self.timestamps.is_some() {
             // Sum actual compute passes, not the gaps between encoders. Some
@@ -1311,6 +1303,20 @@ fn spectrum_vec(energy: Vec3) -> Vec4 {
 fn decode_spectrum(value: &[f32], _unused: f32) -> Vec3 {
     Vec3::new(value[0], value[1], value[2]).finite_or_zero()
 }
+/// `value` in the std430 layout GI's WGSL declares, as `ShaderBuffer::from`
+/// encoded it before Bevy 0.20 (which now copies plain bytes instead).
+pub(crate) fn std430<T>(value: &T) -> Vec<u8>
+where
+    T: bevy::render::render_resource::ShaderType
+        + bevy::render::render_resource::encase::internal::WriteInto,
+{
+    let mut buffer = bevy::render::render_resource::encase::StorageBuffer::new(Vec::new());
+    buffer
+        .write(value)
+        .expect("GI's GPU structs encode into a growable buffer");
+    buffer.into_inner()
+}
+
 fn encode_words(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|word| word.to_le_bytes()).collect()
 }
@@ -1344,7 +1350,7 @@ pub(super) mod tests {
         };
         let reflection = super::reflect::Reflection::new(&SHADER);
         super::reflect::assert_mirrors(
-            &ShaderBuffer::from(params).data.unwrap(),
+            &crate::gpu::std430(&params),
             reflection.layout("Params"),
             &[
                 "counts",
@@ -1359,27 +1365,9 @@ pub(super) mod tests {
 
     #[test]
     fn gpu_task_and_uniform_layouts_are_stable() {
-        assert_eq!(
-            ShaderBuffer::from(vec![GpuFaceTask::default()])
-                .data
-                .unwrap()
-                .len(),
-            32
-        );
-        assert_eq!(
-            ShaderBuffer::from(vec![GpuParams::default()])
-                .data
-                .unwrap()
-                .len(),
-            96
-        );
-        assert_eq!(
-            ShaderBuffer::from(vec![GpuMaterial::default()])
-                .data
-                .unwrap()
-                .len(),
-            64
-        );
+        assert_eq!(crate::gpu::std430(&vec![GpuFaceTask::default()]).len(), 32);
+        assert_eq!(crate::gpu::std430(&vec![GpuParams::default()]).len(), 96);
+        assert_eq!(crate::gpu::std430(&vec![GpuMaterial::default()]).len(), 64);
     }
 
     /// The native test adapter. It honours wgpu's environment overrides
@@ -1409,7 +1397,7 @@ pub(super) mod tests {
             .unwrap();
         let context = GpuTransportDevice {
             device: device.into(),
-            queue: RenderQueue(Arc::new(bevy::render::renderer::WgpuWrapper::new(queue))),
+            queue: RenderQueue::new(queue),
         };
         GpuTracer::new(context).unwrap()
     }

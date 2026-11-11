@@ -84,21 +84,13 @@ impl GpuTracer {
             }
         };
         if delta.directory_rebuilt {
-            stage(
-                0,
-                0,
-                ShaderBuffer::from(self.packed.directory.clone())
-                    .data
-                    .unwrap(),
-            );
+            stage(0, 0, crate::gpu::std430(&self.packed.directory.clone()));
         } else {
             for range in delta.directory {
                 stage(
                     0,
                     range.start * 16,
-                    ShaderBuffer::from(self.packed.directory[range].to_vec())
-                        .data
-                        .unwrap(),
+                    crate::gpu::std430(&self.packed.directory[range].to_vec()),
                 );
             }
         }
@@ -106,9 +98,7 @@ impl GpuTracer {
             stage(
                 1,
                 range.start * 16,
-                ShaderBuffer::from(self.packed.headers[range].to_vec())
-                    .data
-                    .unwrap(),
+                crate::gpu::std430(&self.packed.headers[range].to_vec()),
             );
         }
         for range in delta.cells {

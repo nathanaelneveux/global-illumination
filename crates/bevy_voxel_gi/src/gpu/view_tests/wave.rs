@@ -48,7 +48,7 @@ impl WaveHarness {
             .upload(
                 device,
                 &context.queue,
-                &ShaderBuffer::from(receivers.to_vec()).data.unwrap(),
+                &crate::gpu::std430(&receivers.to_vec()),
             )
             .unwrap();
         let mut paths = UploadBuffer::new(device, "Wave records", usage);
@@ -127,12 +127,10 @@ impl WaveHarness {
             .upload(
                 &self.context.device,
                 &self.context.queue,
-                &ShaderBuffer::from(vec![WaveControl {
+                &crate::gpu::std430(&vec![WaveControl {
                     range: UVec4::new(0, self.count as u32, steps, finite_depth),
                     ticket,
-                }])
-                .data
-                .unwrap(),
+                }]),
             )
             .unwrap();
         let mut encoder = self.context.device.create_command_encoder(&default());
@@ -166,7 +164,7 @@ impl WaveHarness {
             .upload(
                 &self.context.device,
                 &self.context.queue,
-                &ShaderBuffer::from(receivers.to_vec()).data.unwrap(),
+                &crate::gpu::std430(&receivers.to_vec()),
             )
             .unwrap();
     }

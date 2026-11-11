@@ -16,8 +16,6 @@ bevy.workspace = true
 bevy_voxel_world.workspace = true
 bevy_voxel_gi.workspace = true
 wgpu.workspace = true
-# Material-scoped PBR hooks (`override fn`); keeps Bevy's lighting intact.
-naga_oil = { version = "0.22", default-features = false, features = ["override_any"] }
 
 [dev-dependencies]
 naga.workspace = true

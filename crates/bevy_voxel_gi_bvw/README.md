@@ -12,15 +12,15 @@ texture and its lighting properties.
 
 ## Quick start
 
-Use Bevy 0.19, `bevy_voxel_world` 0.17 and matching versions of the two GI
+Use Bevy 0.20, `bevy_voxel_world` 0.19 and matching versions of the two GI
 crates.
 
 ```toml
 [dependencies]
-bevy = "0.19"
-bevy_voxel_gi = "0.1"
-bevy_voxel_gi_bvw = "0.1"
-bevy_voxel_world = "0.17"
+bevy = "0.20"
+bevy_voxel_gi = "0.2"
+bevy_voxel_gi_bvw = "0.2"
+bevy_voxel_world = "0.19"
 ```
 
 If you already have a world, keep its `VoxelWorldConfig` and voxel generator.
@@ -59,6 +59,11 @@ struct MyWorld;
 impl VoxelWorldConfig for MyWorld {
     type MaterialIndex = u8;
     type ChunkUserBundle = ();
+
+    // Keep chunks behind the camera: GI traces them.
+    fn chunk_despawn_strategy(&self) -> ChunkDespawnStrategy {
+        ChunkDespawnStrategy::FarAway
+    }
 
     fn voxel_lookup_delegate(&self) -> VoxelLookupDelegate<u8> {
         Box::new(|_, _, _| {
@@ -157,9 +162,25 @@ fn dig<C: VoxelWorldConfig<MaterialIndex = u8>>(
 }
 ```
 
-A BVW chunk covers one 32³ GI page. The connector samples the level of
-detail used by the chunk mesh. It asks `GiFallbackVoxel` for data where
-loaded chunks cannot provide it. The default returns air for lighting.
+GI lights what BVW has loaded, including geometry behind the camera that
+blocks or bounces light. BVW's default unloads chunks out of view beyond
+`min_despawn_distance` chunks of a camera. A room then relights when you
+turn back to it, since its walls and the terrain around it left GI's world.
+Return `ChunkDespawnStrategy::FarAway` from `chunk_despawn_strategy` to keep
+everything within the spawning distance loaded. Before bevy_voxel_world
+0.19 the protected radius was effectively 32 times larger, so worlds that
+relied on it need `FarAway` to light as they did.
+
+A level-0 BVW chunk is one 32³ GI page. A chunk at a coarser level of
+detail spans several pages, and GI traces it as its mesh shows it, one
+voxel per sample block. While BVW swaps detail levels, GI follows the finer
+chunk until the coarser one has fully replaced it. Chunks above level 5
+(`MAX_GI_LOD`) are left out of GI's world.
+
+Within a loaded page, where the chunk has no voxel, the connector asks
+`GiFallbackVoxel`; the default answers air. Chunks that `chunk_fill_hint`
+keeps from spawning never load, so GI treats them as air. That is right
+for empty chunks, but light passes through a chunk hinted solid.
 
 See the [core guide](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/README.md)
 for platform setup, budgets and troubleshooting.

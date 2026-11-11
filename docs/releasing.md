@@ -18,7 +18,14 @@ documented platform requirements and known limitations.
 
 Run the crate checks from [validation](validation.md#choose-the-relevant-check).
 Material or shader import changes also need the native pipeline/material tests,
-because a Rust build alone cannot validate WGSL imports and GPU bindings.
+because a Rust build alone cannot validate WESL imports and GPU bindings.
+
+On a Bevy upgrade, re-copy `apply_pbr_lighting` from bevy_pbr's
+`src/render/pbr_functions.wesl` into
+`crates/bevy_voxel_gi/shaders/voxel_gi_pbr.wesl`, keeping only the block
+between its `VOXEL GI` comments, and update the version its header names.
+The composition tests catch a copy that no longer composes, not one that
+silently diverges from Bevy's lighting.
 
 Package the three crates together so Cargo can resolve their unpublished
 workspace dependencies while verifying the archives:

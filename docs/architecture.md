@@ -340,8 +340,8 @@ Detailed development notes and superseded layouts are preserved in
 | Uncertainty heuristic statement (tests) | [`statistics.rs`](../crates/bevy_voxel_gi/src/statistics.rs) |
 | Direct-sun corner words and change footprints | [`sky.rs`](../crates/bevy_voxel_gi/src/sky.rs), [`voxel_path.wgsl`](../crates/bevy_voxel_gi/shaders/voxel_path.wgsl), [`voxel_trace.wgsl`](../crates/bevy_voxel_gi/shaders/voxel_trace.wgsl) (`trace_footprints`) |
 | Temporal display and initialization | [`history.rs`](../crates/bevy_voxel_gi/src/history.rs) |
-| Material data and shared buffers; GI material bindings; stock material | [`render.rs`](../crates/bevy_voxel_gi/src/render.rs) (`VoxelGiBindings`, `VoxelGiStandardMaterial`), [`voxel_gi_standard.wgsl`](../crates/bevy_voxel_gi/shaders/voxel_gi_standard.wgsl) |
-| Presentation for host materials (`bevy_voxel_gi::presentation`) | [`voxel_gi_presentation.wgsl`](../crates/bevy_voxel_gi/shaders/voxel_gi_presentation.wgsl) |
+| Material data and shared buffers; GI material bindings; stock material | [`render.rs`](../crates/bevy_voxel_gi/src/render.rs) (`VoxelGiBindings`, `VoxelGiStandardMaterial`), [`voxel_gi_standard.wesl`](../crates/bevy_voxel_gi/shaders/voxel_gi_standard.wesl), [`voxel_gi_pbr.wesl`](../crates/bevy_voxel_gi/shaders/voxel_gi_pbr.wesl) (`bevy_voxel_gi::pbr`) |
+| Presentation for host materials (`bevy_voxel_gi::presentation`) | [`voxel_gi_presentation.wesl`](../crates/bevy_voxel_gi/shaders/voxel_gi_presentation.wesl) |
 | BVW mesh material (connector crate) | [`bevy_voxel_gi_bvw/src/material.rs`](../crates/bevy_voxel_gi_bvw/src/material.rs), [`bevy_voxel_gi_bvw/shaders/voxel_transport.wgsl`](../crates/bevy_voxel_gi_bvw/shaders/voxel_transport.wgsl) |
 | Accounting; test fixtures | [`telemetry.rs`](../crates/bevy_voxel_gi/src/telemetry.rs); [`research.rs`](../crates/bevy_voxel_gi/src/research.rs) (tests only) |
 | HUD and tuning panel (debug crate) | [`bevy_voxel_gi_debug/src/lib.rs`](../crates/bevy_voxel_gi_debug/src/lib.rs) |

@@ -61,11 +61,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
             let mask = camera.history[0].hash.capacity as u32 / 4 - 1;
             camera
                 .params
-                .upload(
-                    device,
-                    queue,
-                    &ShaderBuffer::from(vec![scene.params]).data.unwrap(),
-                )
+                .upload(device, queue, &crate::gpu::std430(&vec![scene.params]))
                 .unwrap();
             let mut previous_keys = BTreeSet::new();
             let mut previous_shift = 0.;
@@ -81,11 +77,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                 }
                 camera
                     .params
-                    .upload(
-                        device,
-                        queue,
-                        &ShaderBuffer::from(vec![params]).data.unwrap(),
-                    )
+                    .upload(device, queue, &crate::gpu::std430(&vec![params]))
                     .unwrap();
                 let hidden = frame == 5;
                 let world = Mat4::from_cols(
@@ -132,11 +124,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
                 previous_shift = shift;
                 camera
                     .control
-                    .upload(
-                        device,
-                        queue,
-                        &ShaderBuffer::from(vec![control]).data.unwrap(),
-                    )
+                    .upload(device, queue, &crate::gpu::std430(&vec![control]))
                     .unwrap();
                 rig.run(device, queue, &scene, &camera, grid, frame);
                 let current = &camera.history[frame % 2];
@@ -306,11 +294,7 @@ fn native_coarse_page_faces_are_one_receiver_per_block() {
     let mask = camera.history[0].hash.capacity as u32 / 4 - 1;
     camera
         .params
-        .upload(
-            device,
-            queue,
-            &ShaderBuffer::from(vec![scene.params]).data.unwrap(),
-        )
+        .upload(device, queue, &crate::gpu::std430(&vec![scene.params]))
         .unwrap();
     let mut previous = BTreeSet::new();
     for (frame, shift) in [0f32, 0., 1.5].into_iter().enumerate() {
@@ -338,11 +322,7 @@ fn native_coarse_page_faces_are_one_receiver_per_block() {
         };
         camera
             .control
-            .upload(
-                device,
-                queue,
-                &ShaderBuffer::from(vec![control]).data.unwrap(),
-            )
+            .upload(device, queue, &crate::gpu::std430(&vec![control]))
             .unwrap();
         rig.run(device, queue, &scene, &camera, grid, frame);
         let words = crate::gpu::maintenance_tests::read_words(

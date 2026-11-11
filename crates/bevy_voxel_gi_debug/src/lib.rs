@@ -222,7 +222,7 @@ struct QualityLabel;
 fn heading(text: &'static str) -> impl Scene {
     bsn! {
         Node { margin: UiRect::top(px(8)) }
-        Children [ (Text(text) TextFont { font_size: FontSize::Px(13.0) } TextColor(Color::srgb(0.65, 0.7, 0.8))) ]
+        Children [ Text(text) TextFont { font_size: FontSize::Px(13.0) } TextColor(Color::srgb(0.65, 0.7, 0.8)) ]
     }
 }
 
@@ -232,14 +232,14 @@ fn knob_row(knob: Knob, settings: &VoxelGiSettings) -> impl Scene {
     bsn! {
         Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8) }
         Children [
-            (Node { width: px(170) } Children [ (Text({knob.label()}) TextFont { font_size: FontSize::Px(13.0) }) ]),
-            (
-                @FeathersSlider { @value: value, @min: min, @max: max }
-                Node { width: px(180) }
-                SliderStep(step)
-                SliderPrecision(precision)
-                template_value(knob)
-            ),
+            Node { width: px(170) } Children [ Text({knob.label()}) TextFont { font_size: FontSize::Px(13.0) } ]
+            --
+            @FeathersSlider { @min: min, @max: max }
+            SliderValue(value)
+            Node { width: px(180) }
+            SliderStep(step)
+            SliderPrecision(precision)
+            knob
         ]
     }
 }
@@ -247,16 +247,16 @@ fn knob_row(knob: Knob, settings: &VoxelGiSettings) -> impl Scene {
 fn toggle_row(toggle: Toggle, caption: &'static str) -> impl Scene {
     bsn! {
         @FeathersCheckbox
-        template_value(toggle)
-        Children [ (Text(caption) TextFont { font_size: FontSize::Px(13.0) }) ]
+        toggle
+        Children [ Text(caption) TextFont { font_size: FontSize::Px(13.0) } ]
     }
 }
 
 fn button(action: Action, caption: &'static str) -> impl Scene {
     bsn! {
         @FeathersButton
-        template_value(action)
-        Children [ (Text(caption) TextFont { font_size: FontSize::Px(13.0) }) ]
+        action
+        Children [ Text(caption) TextFont { font_size: FontSize::Px(13.0) } ]
     }
 }
 
@@ -275,8 +275,9 @@ fn spawn_ui(mut commands: Commands, settings: Res<VoxelGiSettings>, open: Res<Pa
         }
         BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.72))
         Children [
-            (Text("") TextFont { font_size: FontSize::Px(15.0) } HudText),
-            button(Action::TogglePanel, "Lighting controls"),
+            Text("") TextFont { font_size: FontSize::Px(15.0) } HudText
+            --
+            @button(Action::TogglePanel, "Lighting controls")
         ]
     });
     commands.spawn_scene(bsn! {
@@ -294,50 +295,54 @@ fn spawn_ui(mut commands: Commands, settings: Res<VoxelGiSettings>, open: Res<Pa
         BackgroundColor(Color::srgba(0.08, 0.09, 0.11, 0.94))
         Panel
         Children [
-            heading("Quality preset (performance knobs only)"),
-            (
-                Node { flex_direction: FlexDirection::Row, column_gap: px(6) }
-                Children [
-                    button(Action::Quality(VoxelGiQuality::Low), "Low"),
-                    button(Action::Quality(VoxelGiQuality::Default), "Default"),
-                    button(Action::Quality(VoxelGiQuality::High), "High"),
-                ]
-            ),
-            (Text("") TextFont { font_size: FontSize::Px(12.0) } QualityLabel),
-            heading("Performance"),
-            knob_row(Knob::GpuShare, s),
-            knob_row(Knob::CacheRadius, s),
-            knob_row(Knob::ViewReceivers, s),
-            knob_row(Knob::CacheShare, s),
-            heading("Look"),
-            knob_row(Knob::Spatial, s),
-            knob_row(Knob::NoiseThreshold, s),
-            knob_row(Knob::Response, s),
-            knob_row(Knob::Gain, s),
-            heading("Light model (Apply restarts measurements)"),
-            knob_row(Knob::Reach, s),
-            knob_row(Knob::Bounces, s),
-            (
-                Node { flex_direction: FlexDirection::Row, column_gap: px(6) }
-                Children [
-                    button(Action::ApplyModel, "Apply model"),
-                    button(Action::DiscardModel, "Discard"),
-                ]
-            ),
-            heading("Display"),
-            toggle_row(Toggle::Enabled, "Indirect light (F4)"),
-            toggle_row(Toggle::Corners, "Corner smoothing (F5)"),
-            toggle_row(Toggle::VoxelSun, "Voxel sun (F7)"),
-            toggle_row(Toggle::Irradiance, "Irradiance view (F6)"),
-            heading("Settings as RON"),
-            (
-                Node { flex_direction: FlexDirection::Row, column_gap: px(6) }
-                Children [
-                    button(Action::Copy, "Copy"),
-                    button(Action::Paste, "Paste"),
-                ]
-            ),
-            (Text("") TextFont { font_size: FontSize::Px(12.0) } StatusText),
+            @heading("Quality preset (performance knobs only)")
+            --
+            Node { flex_direction: FlexDirection::Row, column_gap: px(6) }
+            Children [
+                @button(Action::Quality(VoxelGiQuality::Low), "Low")
+                --
+                @button(Action::Quality(VoxelGiQuality::Default), "Default")
+                --
+                @button(Action::Quality(VoxelGiQuality::High), "High")
+            ]
+            --
+            Text("") TextFont { font_size: FontSize::Px(12.0) } QualityLabel
+            --
+            @heading("Performance")
+            -- @knob_row(Knob::GpuShare, s)
+            -- @knob_row(Knob::CacheRadius, s)
+            -- @knob_row(Knob::ViewReceivers, s)
+            -- @knob_row(Knob::CacheShare, s)
+            -- @heading("Look")
+            -- @knob_row(Knob::Spatial, s)
+            -- @knob_row(Knob::NoiseThreshold, s)
+            -- @knob_row(Knob::Response, s)
+            -- @knob_row(Knob::Gain, s)
+            -- @heading("Light model (Apply restarts measurements)")
+            -- @knob_row(Knob::Reach, s)
+            -- @knob_row(Knob::Bounces, s)
+            --
+            Node { flex_direction: FlexDirection::Row, column_gap: px(6) }
+            Children [
+                @button(Action::ApplyModel, "Apply model")
+                --
+                @button(Action::DiscardModel, "Discard")
+            ]
+            -- @heading("Display")
+            -- @toggle_row(Toggle::Enabled, "Indirect light (F4)")
+            -- @toggle_row(Toggle::Corners, "Corner smoothing (F5)")
+            -- @toggle_row(Toggle::VoxelSun, "Voxel sun (F7)")
+            -- @toggle_row(Toggle::Irradiance, "Irradiance view (F6)")
+            -- @heading("Settings as RON")
+            --
+            Node { flex_direction: FlexDirection::Row, column_gap: px(6) }
+            Children [
+                @button(Action::Copy, "Copy")
+                --
+                @button(Action::Paste, "Paste")
+            ]
+            --
+            Text("") TextFont { font_size: FontSize::Px(12.0) } StatusText
         ]
     });
 }

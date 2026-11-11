@@ -26,6 +26,7 @@ pub(crate) fn pixel_output_bytes(viewport: UVec2, cell: u32) -> u64 {
 }
 
 #[derive(Resource, Clone, Default, ExtractResource)]
+#[extract_app(bevy::render::RenderApp)]
 pub(crate) struct ViewTransport(pub Option<SceneBindings>, pub Arc<Mutex<Vec<ViewChange>>>);
 
 #[derive(Clone)]

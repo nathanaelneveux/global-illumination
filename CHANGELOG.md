@@ -4,6 +4,28 @@ All notable changes to `bevy_voxel_gi`, `bevy_voxel_gi_bvw` and `bevy_voxel_gi_d
 The crates share one version. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- Bevy 0.20 (wgpu 30), `bevy_voxel_world` 0.19 and Rust 1.97.1.
+- Shaders are WESL: Bevy 0.20 removed naga_oil. `bevy_voxel_gi::presentation`
+  keeps its import path. Host materials can no longer override Bevy's sun;
+  they call `bevy_voxel_gi::pbr::apply_pbr_lighting(pbr_input, footprint)`
+  instead of Bevy's, a copy of Bevy's function with GI's sun in place of
+  the first directional light while GI's sky is on.
+- `bevy_voxel_gi_bvw`: BVW 0.19's levels of detail. A level-L chunk spans
+  (2^L)³ GI pages, traced at its sample spacing; while BVW swaps levels, GI
+  follows the finer chunk until the coarser one has replaced it. Levels
+  above `MAX_GI_LOD` (5) are not traced. bevy_voxel_world 0.19 protects
+  a 32 times smaller radius from out-of-view despawning than 0.17 did; use
+  `ChunkDespawnStrategy::FarAway` to keep the lighting of 0.1.
+
+### Added
+
+- `PBR_SHADER` and `insert_voxel_gi_shaders`, which registers GI's shader
+  modules for composing materials outside an app.
+
 ## [0.1.1] - 2026-11-06
 
 ### Fixed

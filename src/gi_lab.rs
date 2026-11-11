@@ -73,7 +73,7 @@ enum LabAction {
 fn action_button(action: LabAction, caption: &'static str) -> impl Scene {
     bsn! {
         @FeathersButton
-        template_value(action)
+        action
         on(|activate: On<Activate>,
             actions: Query<&LabAction>,
             mut place: MessageWriter<PlaceEmissiveBlock>,
@@ -84,7 +84,7 @@ fn action_button(action: LabAction, caption: &'static str) -> impl Scene {
                 Err(_) => {}
             }
         })
-        Children [ (Text(caption) TextFont { font_size: FontSize::Px(13.0) }) ]
+        Children [ Text(caption) TextFont { font_size: FontSize::Px(13.0) } ]
     }
 }
 
@@ -102,8 +102,9 @@ fn spawn_actions(mut commands: Commands) {
         }
         BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.72))
         Children [
-            action_button(LabAction::PlaceEmitter, "Add emitting block (E)"),
-            action_button(LabAction::Bomb, "Bomb: radius 5 (B)"),
+            @action_button(LabAction::PlaceEmitter, "Add emitting block (E)")
+            --
+            @action_button(LabAction::Bomb, "Bomb: radius 5 (B)")
         ]
     });
 }

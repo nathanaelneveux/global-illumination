@@ -14,23 +14,19 @@ pub const TARGET: Vec3 = Vec3::new(0.0, 60.0, 0.0);
 pub const DRIFT: Vec3 = Vec3::new(12.0, 0.0, 24.0);
 pub const TURN_RATE: f32 = 0.1;
 
-/// The example's bands: stride (voxels per sample) by chunk distance.
+/// The example's bands by chunk distance: level L samples every `1 << L`
+/// voxels (BVW's default shapes), strides 1 to 32.
 pub fn chunk_lod(chunk_position: IVec3, camera_position: Vec3) -> LodLevel {
     let camera_chunk = (camera_position / 32.0).floor();
     let distance = chunk_position.as_vec3().distance(camera_chunk);
     match distance {
-        d if d < 10.0 => 1,
-        d if d < 25.0 => 2,
-        d if d < 50.0 => 4,
-        d if d < 85.0 => 8,
-        d if d < 125.0 => 16,
-        _ => 32,
+        d if d < 10.0 => 0,
+        d if d < 25.0 => 1,
+        d if d < 50.0 => 2,
+        d if d < 85.0 => 3,
+        d if d < 125.0 => 4,
+        _ => 5,
     }
-}
-
-/// Samples per chunk axis at a stride.
-pub fn samples(lod: LodLevel) -> u32 {
-    32 / u32::from(lod.max(1))
 }
 
 pub fn voxel(position: IVec3) -> WorldVoxel<u8> {

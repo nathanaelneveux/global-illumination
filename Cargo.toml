@@ -7,26 +7,26 @@ description = "Voxel GI lab: the BVW prototype world, scenes and validation harn
 publish = false
 
 [workspace]
-members = ["crates/*"]
+members = ["crates/*", "vendor/*"]
 
 [workspace.package]
 version = "0.1.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.95"
+rust-version = "1.97.1"
 repository = "https://github.com/nathanaelneveux/global-illumination"
 
 [workspace.dependencies]
-bevy = "0.19"
-bevy_voxel_world = "0.17"
+bevy = "0.20"
+bevy_voxel_world = "0.19.1"
 bevy_voxel_gi = { path = "crates/bevy_voxel_gi", version = "0.1.1" }
 bevy_voxel_gi_bvw = { path = "crates/bevy_voxel_gi_bvw", version = "0.1.1" }
 bevy_voxel_gi_debug = { path = "crates/bevy_voxel_gi_debug", version = "0.1.1" }
 # "std" makes error scopes thread-local. Without it (Bevy disables wgpu's
 # defaults) every thread shares one scope stack, and GI pipeline validation on
 # a worker interleaved with Bevy's pipeline cache: "Mismatched pop_error_scope".
-wgpu = { version = "29", default-features = false, features = ["std", "wgsl"] }
-naga = { version = "29", features = ["wgsl-in"] }
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl"] }
+naga = { version = "30", features = ["wgsl-in"] }
 serde = { version = "1", features = ["derive"] }
 ron = "0.11"
 
@@ -50,27 +50,29 @@ dev_native = [
 tracy = ["bevy/trace_tracy", "bevy/debug"]
 
 [dependencies]
-avian3d = { version = "0.7", default-features = false, features = ["3d", "f32", "parry-f32", "debug-plugin"] }
+avian3d = { version = "0.8", default-features = false, features = ["3d", "parry-f32", "debug-plugin"] }
 bevy = { workspace = true, features = ["bevy_feathers", "system_clipboard"] }
 bevy_voxel_gi.workspace = true
 bevy_voxel_gi_bvw.workspace = true
 bevy_voxel_gi_debug.workspace = true
-bevy_ahoy = "0.2"
-bevy_asset_loader = "0.27"
-bevy_common_assets = { version = "0.17", features = ["ron"] }
-bevy_enhanced_input = "0.26"
-bevy-inspector-egui = "0.37"
-bevy_voxel_world = "0.17"
+# Vendored and ported to Bevy 0.20 until upstream releases; see
+# vendor/bevy_ahoy/VENDORED.md.
+bevy_ahoy = { path = "vendor/bevy_ahoy" }
+bevy_asset_loader = "0.28"
+bevy_common_assets = { version = "0.18", features = ["ron"] }
+bevy_enhanced_input = "0.27"
+bevy-inspector-egui = "0.38"
+bevy_voxel_world.workspace = true
 block-mesh = "0.2"
 block-mesh-bgm = "0.2.4"
 ndshape = "0.3"
-noiz = "0.5"
+noiz = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ron = "0.11"
 
 [dev-dependencies]
-naga = { version = "29", features = ["wgsl-in"] }
+naga = { version = "30", features = ["wgsl-in"] }
 
 # Set max log levels. This helps avoid unwanted low-severity log spam, which can affect performance.
 log = { version = "0.4", features = [

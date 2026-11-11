@@ -1,0 +1,71 @@
+# Vendored from bevy_ahoy 0.2.0 and ported to Bevy 0.20; see VENDORED.md.
+[package]
+name = "bevy_ahoy"
+authors = ["Jan Hohenheim <jan@hohenheim.ch>"]
+version = "0.2.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0 "
+description = "A fun 3D Kinematic Character Controller for Bevy + Avian + BEI."
+readme = "readme.md"
+repository = "https://github.com/janhohenheim/bevy_ahoy"
+keywords = ["kcc", "character", "controller", "source", "quake"]
+categories = ["game-development"]
+include = ["/src", "/license*"]
+
+[features]
+default = []
+serialize = ["dep:serde", "avian3d/serialize", "bevy_math/serialize"]
+# `pickup` (avian_pickup) is unavailable until avian_pickup supports Bevy
+# 0.20; its code stays behind `cfg(feature = "pickup")` unchanged.
+
+[dependencies]
+avian3d = { version = "0.8", default-features = false, features = ["parry-f32", "3d"] }
+bevy_ecs = { version = "0.20", default-features = false }
+bevy_app = { version = "0.20", default-features = false }
+bevy_derive = { version = "0.20", default-features = false }
+bevy_utils = { version = "0.20", default-features = false }
+bevy_math = { version = "0.20", default-features = false }
+bevy_shape = { version = "0.20", default-features = false }
+bevy_reflect = { version = "0.20", default-features = false }
+bevy_transform = { version = "0.20", default-features = false }
+bevy_time = { version = "0.20", default-features = false }
+bevy_enhanced_input = { version = "0.27", default-features = false }
+tracing = { version = "0.1", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive"], optional = true }
+
+[dev-dependencies]
+# The readme example, which is also the crate doc, needs Bevy itself.
+bevy = "0.20"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("pickup"))'] }
+# missing_docs = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+needless_lifetimes = "allow"
+doc_markdown = "warn"
+manual_let_else = "warn"
+match_same_arms = "warn"
+redundant_closure_for_method_calls = "warn"
+redundant_else = "warn"
+semicolon_if_nothing_returned = "warn"
+undocumented_unsafe_blocks = "warn"
+unwrap_or_default = "warn"
+nonstandard_macro_braces = "warn"
+ptr_as_ptr = "warn"
+ptr_cast_constness = "warn"
+ref_as_ptr = "warn"
+too_long_first_doc_paragraph = "allow"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+
+[package.metadata.docs.rs]
+rustdoc-args = ["-Zunstable-options", "--generate-link-to-definition"]
+all-features = true

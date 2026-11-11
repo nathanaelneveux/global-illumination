@@ -119,11 +119,7 @@ fn check(@builtin(global_invocation_id) id: vec3<u32>) {{
         BufferUsages::STORAGE | BufferUsages::COPY_DST,
     );
     input
-        .upload(
-            device,
-            queue,
-            &ShaderBuffer::from(cases.clone()).data.unwrap(),
-        )
+        .upload(device, queue, &crate::gpu::std430(&cases.clone()))
         .unwrap();
     let bytes = cases.len() * 16;
     let mut output = UploadBuffer::new(
@@ -181,7 +177,11 @@ fn check(@builtin(global_invocation_id) id: vec3<u32>) {{
         .recv_timeout(Duration::from_secs(1))
         .unwrap()
         .unwrap();
-    let view = readback.buffer.slice(..bytes as u64).get_mapped_range();
+    let view = readback
+        .buffer
+        .slice(..bytes as u64)
+        .get_mapped_range()
+        .expect("the buffer is mapped once map_async completes");
     for (index, (bytes, case)) in view.chunks_exact(16).zip(&cases).enumerate() {
         let actual = Vec4::from_array(std::array::from_fn(|i| {
             f32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())

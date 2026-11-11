@@ -12,7 +12,7 @@ pub(super) fn legacy_task_bytes(work: &TraceWork) -> Vec<u8> {
             sequence: UVec4::new(face.sequence, 0, 0, 0),
         })
         .collect();
-    ShaderBuffer::from(tasks).data.unwrap()
+    crate::gpu::std430(&tasks)
 }
 
 #[test]

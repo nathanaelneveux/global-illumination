@@ -149,6 +149,7 @@ pub struct VoxelGiMaterialData {
 /// The GI worker's geometry buffers, shared with the terrain material like
 /// the resident buffer (each new allocation gets a new asset identity).
 #[derive(Resource, Default, Clone, ExtractResource)]
+#[extract_app(bevy::render::RenderApp)]
 pub(crate) struct GeometryDisplay {
     pub buffers: Option<[Buffer; 3]>,
     pub params: GpuTraversalParams,
@@ -175,10 +176,9 @@ fn publish_geometry_buffers(
     if !unchanged_buffers {
         geometry.installed = geometry.buffers.as_ref().map(|current| {
             current.clone().map(|buffer| {
-                let mut asset = ShaderBuffer::default();
-                asset.buffer_description.label = Some("Voxel GI shared geometry");
-                asset.buffer_description.size = buffer.size();
-                asset.buffer_description.usage = buffer.usage();
+                let mut asset = ShaderBuffer::with_size(buffer.size(), default());
+                asset.label = "Voxel GI shared geometry".into();
+                asset.buffer_usage = buffer.usage();
                 (buffer.clone(), buffers.add(asset))
             })
         });
@@ -205,12 +205,8 @@ fn install_geometry_buffers(
             handle.id(),
             GpuShaderBuffer {
                 buffer: buffer.clone(),
-                buffer_descriptor: wgpu::BufferDescriptor {
-                    label: Some("Voxel GI shared geometry"),
-                    size: buffer.size(),
-                    usage: buffer.usage(),
-                    ..ShaderBuffer::default().buffer_description
-                },
+                label: "Voxel GI shared geometry".into(),
+                buffer_usage: buffer.usage(),
                 had_data: false,
             },
         );
@@ -305,24 +301,48 @@ pub fn install_render_assets(app: &mut App) {
     }
     super::gpu::view::install(app, far, far_pixels);
     if let Some(mut shaders) = app.world_mut().get_resource_mut::<Assets<Shader>>() {
-        let _ = shaders.insert(
-            PRESENTATION_SHADER.id(),
-            Shader::from_wgsl(
-                presentation_shader_source(),
-                "bevy_voxel_gi/presentation.wgsl",
-            ),
-        );
-        let _ = shaders.insert(
-            STANDARD_SHADER.id(),
-            Shader::from_wgsl(STANDARD_SHADER_SOURCE, "bevy_voxel_gi/standard.wgsl"),
-        );
+        insert_voxel_gi_shaders(&mut shaders);
     }
 }
+
+/// Registers GI's WESL modules in `shaders`, as `VoxelGiPlugin` does: for
+/// composing a material shader without the plugin (a composition test). Their
+/// `embedded://` paths are their import paths: `bevy_voxel_gi::presentation`,
+/// `bevy_voxel_gi::pbr` and the stock material's `bevy_voxel_gi::standard`.
+pub fn insert_voxel_gi_shaders(shaders: &mut Assets<Shader>) {
+    let _ = shaders.insert(
+        PRESENTATION_SHADER.id(),
+        Shader::from_wesl(
+            presentation_shader_source(),
+            "embedded://bevy_voxel_gi/presentation.wesl",
+        ),
+    );
+    let _ = shaders.insert(
+        PBR_SHADER.id(),
+        Shader::from_wesl(PBR_SHADER_SOURCE, "embedded://bevy_voxel_gi/pbr.wesl"),
+    );
+    let _ = shaders.insert(
+        STANDARD_SHADER.id(),
+        Shader::from_wesl(
+            STANDARD_SHADER_SOURCE,
+            "embedded://bevy_voxel_gi/standard.wesl",
+        ),
+    );
+}
+
+/// The `bevy_voxel_gi::pbr` WESL module (registered by `VoxelGiPlugin`):
+/// Bevy's `apply_pbr_lighting` with GI's cached voxel sun in place of Bevy's
+/// first directional light while GI's sky is on. Host materials call it
+/// instead of Bevy's.
+pub const PBR_SHADER: Handle<Shader> =
+    bevy::asset::uuid_handle!("4d2b8f61-93c7-4e0a-b1f5-7a3c6e9d2b48");
+/// The `bevy_voxel_gi::pbr` module's source.
+pub const PBR_SHADER_SOURCE: &str = include_str!("../shaders/voxel_gi_pbr.wesl");
 
 /// `VoxelGiStandardMaterial`'s fragment shader.
 pub const STANDARD_SHADER: Handle<Shader> =
     bevy::asset::uuid_handle!("0c5f3d2a-8e61-4b7a-b3c9-6d1e4f2a7b85");
-pub const STANDARD_SHADER_SOURCE: &str = include_str!("../shaders/voxel_gi_standard.wgsl");
+pub const STANDARD_SHADER_SOURCE: &str = include_str!("../shaders/voxel_gi_standard.wesl");
 
 /// Bevy's `StandardMaterial` lit by voxel GI: indirect light and emission
 /// added, GI's cached voxel sun in place of Bevy's shadowed sun. Build one
@@ -387,7 +407,7 @@ pub const PRESENTATION_SHADER: Handle<Shader> =
 /// The `bevy_voxel_gi::presentation` module's source, for hosts composing
 /// shaders outside Bevy's asset pipeline (e.g. composition tests).
 pub fn presentation_shader_source() -> String {
-    super::gpu::include_traversal(include_str!("../shaders/voxel_gi_presentation.wgsl"))
+    super::gpu::include_traversal(include_str!("../shaders/voxel_gi_presentation.wesl"))
 }
 
 /// GI's bindings for a host material (104 and 106-111 of the material bind
@@ -519,7 +539,7 @@ mod standard_tests {
     #[test]
     fn standard_material_shader_composes_with_bevys_real_pbr_modules() {
         use bevy::render::{RenderPlugin, settings::WgpuSettings};
-        use bevy::shader::{ShaderCache, ShaderCacheSource, ShaderDefVal};
+        use bevy::shader::{ShaderCache, ShaderCacheError, ShaderCacheSource, ShaderDefVal};
         // Bevy's own registered PBR libraries plus bevy_voxel_gi::presentation; no
         // window or GPU.
         let mut app = App::new();
@@ -545,37 +565,22 @@ mod standard_tests {
         );
         app.finish();
         app.cleanup();
-        {
-            let mut shaders = app.world_mut().resource_mut::<Assets<Shader>>();
-            let _ = shaders.insert(
-                PRESENTATION_SHADER.id(),
-                Shader::from_wgsl(
-                    presentation_shader_source(),
-                    "bevy_voxel_gi/presentation.wgsl",
-                ),
-            );
-            let _ = shaders.insert(
-                STANDARD_SHADER.id(),
-                Shader::from_wgsl(STANDARD_SHADER_SOURCE, "bevy_voxel_gi/standard.wgsl"),
-            );
-        }
-        let mut cache = ShaderCache::new(
-            (),
-            wgpu::Features::empty(),
-            wgpu::DownlevelFlags::all(),
-            |_, source, _| {
-                let ShaderCacheSource::Naga(module) = source else {
-                    panic!("expected Naga module")
-                };
-                naga::valid::Validator::new(
-                    naga::valid::ValidationFlags::all(),
-                    naga::valid::Capabilities::all(),
-                )
-                .validate(&module)
-                .unwrap();
-                Ok(module)
-            },
-        );
+        insert_voxel_gi_shaders(&mut app.world_mut().resource_mut::<Assets<Shader>>());
+        let mut cache = ShaderCache::new((), |_, source, _| {
+            let ShaderCacheSource::Wgsl(source) = source else {
+                panic!("expected composed WGSL")
+            };
+            let module = naga::front::wgsl::parse_str(&source).map_err(|error| {
+                ShaderCacheError::CreateShaderModule(error.emit_to_string(&source))
+            })?;
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .map_err(|error| ShaderCacheError::CreateShaderModule(error.emit_to_string(&source)))?;
+            Ok(module)
+        });
         let mut defs: Vec<ShaderDefVal> = [
             "VERTEX_POSITIONS",
             "VERTEX_NORMALS",
@@ -592,31 +597,49 @@ mod standard_tests {
             ShaderDefVal::UInt("MAX_CASCADES_PER_LIGHT".into(), 4),
             ShaderDefVal::UInt("AVAILABLE_STORAGE_BUFFER_BINDINGS".into(), 8),
         ]);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            app.update();
-            for (id, shader) in app.world().resource::<Assets<Shader>>().iter() {
-                cache.set_shader(id, shader.clone());
-            }
-            match cache.get(0, STANDARD_SHADER.id(), &defs) {
-                Ok(module) => {
-                    assert!(
-                        module
-                            .entry_points
-                            .iter()
-                            .any(|entry| entry.name == "fragment")
-                    );
-                    break;
+        // Every `@if` path of the copied `apply_pbr_lighting` that GI's sun
+        // touches: the plain material, then the optional lobes.
+        let mut featured = defs.clone();
+        featured.extend(
+            [
+                "STANDARD_MATERIAL_DIFFUSE_TRANSMISSION",
+                "STANDARD_MATERIAL_CLEARCOAT",
+                "STANDARD_MATERIAL_ANISOTROPY",
+                "VERTEX_TANGENTS",
+            ]
+            .map(Into::into),
+        );
+        for (pipeline, defs) in [defs, featured].iter().enumerate() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                app.update();
+                for (id, shader) in app.world().resource::<Assets<Shader>>().iter() {
+                    cache.set_shader(id, shader.clone());
                 }
-                Err(bevy::shader::ShaderCacheError::ShaderImportNotYetAvailable)
-                    if std::time::Instant::now() < deadline =>
-                {
-                    std::thread::yield_now()
+                match cache.get(pipeline, STANDARD_SHADER.id(), defs) {
+                    Ok(module) => {
+                        assert!(
+                            module
+                                .entry_points
+                                .iter()
+                                .any(|entry| entry.name == "fragment")
+                        );
+                        assert!(
+                            module.functions.iter().any(|(_, f)| f
+                                .name
+                                .as_deref()
+                                .is_some_and(|n| n.contains("voxel_sun"))),
+                            "GI's sun is part of the composed lighting"
+                        );
+                        break;
+                    }
+                    Err(ShaderCacheError::ShaderImportNotYetAvailable)
+                        if std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::yield_now()
+                    }
+                    Err(error) => panic!("standard material shader failed to compose: {error}"),
                 }
-                Err(bevy::shader::ShaderCacheError::ProcessShaderError(error)) => {
-                    panic!("{}", error.emit_to_string(&cache.composer))
-                }
-                Err(error) => panic!("standard material shader failed to compose: {error:?}"),
             }
         }
     }

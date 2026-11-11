@@ -234,7 +234,11 @@ impl Budget {
                 }
             }
             let ticket = self.pending.swap_remove(index);
-            let bytes = ticket.buffer.slice(..TICKET_BYTES).get_mapped_range();
+            let bytes = ticket
+                .buffer
+                .slice(..TICKET_BYTES)
+                .get_mapped_range()
+                .expect("the buffer is mapped once map_async completes");
             let stamp = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
             let costs: [f32; STAGES] = std::array::from_fn(|stage| {
                 if ticket.stages & (1 << stage) == 0 {
@@ -446,7 +450,7 @@ mod tests {
     #[test]
     #[ignore = "native device without timestamp queries"]
     fn view_budget_runs_a_fixed_wave_without_timestamp_queries() {
-        use bevy::render::renderer::{RenderDevice, RenderQueue, WgpuWrapper};
+        use bevy::render::renderer::{RenderDevice, RenderQueue};
         let adapter = crate::gpu::tests::native_adapter();
         let (device, queue) =
             bevy::tasks::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -455,7 +459,7 @@ mod tests {
             }))
             .unwrap();
         let device = RenderDevice::from(device);
-        let queue = RenderQueue(std::sync::Arc::new(WgpuWrapper::new(queue)));
+        let queue = RenderQueue::new(queue);
         let mut budget = super::Budget::new(&device, &queue);
         assert!(budget.queries.is_none());
         for _ in 0..3 {

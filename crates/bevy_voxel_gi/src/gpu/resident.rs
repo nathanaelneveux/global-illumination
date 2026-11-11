@@ -1536,7 +1536,10 @@ mod tests {
             })
             .unwrap();
         rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
-        let mapped = buffer.slice(..).get_mapped_range();
+        let mapped = buffer
+            .slice(..)
+            .get_mapped_range()
+            .expect("the buffer is mapped once map_async completes");
         let words = mapped
             .chunks_exact(4)
             .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
