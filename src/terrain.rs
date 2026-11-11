@@ -312,6 +312,20 @@ impl VoxelWorldConfig for PrototypeWorld {
         MIN_DESPAWN_DISTANCE
     }
 
+    /// Keep the chunks within reach loaded out of view, as BVW 0.17 did in
+    /// practice: it compared chunk distances with `min_despawn_distance` in
+    /// voxels, so its protected radius was 64 chunks, wider than the lab
+    /// streams. GI traces the geometry behind the camera; unloading it
+    /// relights a corner when the camera returns (`house`). The LoD flight
+    /// streams 200 chunks and keeps unloading out of view, as 0.17 did there.
+    fn chunk_despawn_strategy(&self) -> ChunkDespawnStrategy {
+        if self.scene == ScenePreset::Lod {
+            ChunkDespawnStrategy::FarAwayOrOutOfView
+        } else {
+            ChunkDespawnStrategy::FarAway
+        }
+    }
+
     fn voxel_texture(&self) -> Option<(String, u32)> {
         Some((
             "example_voxel_texture.png".into(),
