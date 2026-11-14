@@ -165,6 +165,18 @@ Tell GI whenever the world changes:
   GI resamples the page from your source, so the source must already hold
   the change.
 - **A chunk unloaded.** Call `page_unloaded`.
+- **A chunk came back with new contents** (regenerated, or reloaded from a
+  save). Call `page_loaded`, then `resample_page`. GI keeps a page's exact
+  edits across unloading; this drops them and samples your source.
+
+### Choosing what to load
+
+GI lights the pages you declare and treats the rest as empty. If you stream
+only what the camera sees, light changes when you turn: the walls behind
+the camera stop bouncing light, and terrain toward the sun stops casting
+shadows. `VoxelGiDemand` ranks pages by GI's need for them, from the cameras
+outward and along each sun's shadow column. Spend a loading budget in that
+order. If you keep everything near the camera loaded, you can ignore it.
 
 To watch an edit change the light, run the
 [`edits` example](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/examples/edits.rs):

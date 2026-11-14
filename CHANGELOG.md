@@ -25,6 +25,11 @@ The crates share one version. The format follows
 
 - `PBR_SHADER` and `insert_voxel_gi_shaders`, which registers GI's shader
   modules for composing materials outside an app.
+- `VoxelGiDemand`: where GI needs geometry, for hosts that choose what to
+  load. It ranks pages by distance from the cameras and along each sun's
+  shadow column, so a streaming host can keep what GI's rays reach.
+- `VoxelGiInput::resample_page`: drop a page's kept edits and sample its new
+  source, without the urgent relighting `mark_voxel` gives an edit.
 - `bevy_voxel_gi::presentation::diagnostic_view`, the `DEBUG_*` mode constants
   and `SUN_LAMBERT_SCALE`: one diagnostic display for every host material.
   The stock `StandardMaterial` now shows every diagnostic view, not only

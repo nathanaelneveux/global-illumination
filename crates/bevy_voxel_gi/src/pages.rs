@@ -25,7 +25,12 @@ pub(super) fn update_receiver_residency(
     mut runtime: ResMut<VoxelGiRuntime>,
     settings: Res<super::VoxelGiSettings>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    demand: Option<ResMut<super::VoxelGiDemand>>,
 ) {
+    // Demand reads the same cameras; one system keeps its cost to the copy.
+    if let Some(mut demand) = demand {
+        super::demand::refresh(&mut demand, &runtime, &settings, &cameras);
+    }
     let Some(radius) = settings.cache_radius() else {
         let left = runtime
             .receiver_pages
@@ -171,6 +176,13 @@ pub(super) fn ingest_input(
                 if event == PageEvent::Changed && !tracked {
                     runtime.full_resample_pages.insert(page);
                     runtime.page_edits.0.remove(&page);
+                }
+            }
+            PageEvent::Resample => {
+                runtime.page_edits.0.remove(&page);
+                if runtime.loaded_pages.contains(&page) {
+                    runtime.dirty_pages.insert(page);
+                    runtime.full_resample_pages.insert(page);
                 }
             }
             PageEvent::Unloaded => {
@@ -816,5 +828,27 @@ mod tests {
             assert!(runtime.full_resample_pages.contains(&IVec3::ZERO));
             assert!(!runtime.page_edits.0.contains_key(&IVec3::ZERO));
         }
+    }
+
+    #[test]
+    fn a_reloaded_page_resamples_without_an_edit() {
+        let mut app = app(true);
+        // An overlay kept from before the page was unloaded.
+        app.world_mut()
+            .resource_mut::<VoxelGiRuntime>()
+            .page_edits
+            .insert(IVec3::ONE, 7);
+        let mut input = app.world_mut().resource_mut::<VoxelGiInput>();
+        input.page_loaded(IVec3::ZERO);
+        input.resample_page(IVec3::ZERO);
+        // Not loaded: dropped without marking anything.
+        input.resample_page(IVec3::X);
+        app.update();
+        let runtime = app.world().resource::<VoxelGiRuntime>();
+        assert!(runtime.dirty_pages.contains(&IVec3::ZERO));
+        assert!(runtime.full_resample_pages.contains(&IVec3::ZERO));
+        assert!(!runtime.page_edits.0.contains_key(&IVec3::ZERO));
+        assert!(runtime.dirty_voxels.is_empty() && !runtime.urgent_edit);
+        assert!(!runtime.dirty_pages.contains(&IVec3::X));
     }
 }

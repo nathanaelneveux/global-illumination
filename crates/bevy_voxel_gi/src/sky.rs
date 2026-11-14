@@ -18,6 +18,11 @@ pub(crate) struct SkyLight {
 /// source order, at most `MAX_SKY_LIGHTS` (a corner's lit bit `i` is light
 /// `i` of this list; `sky_corner_visibility` counts the same way).
 pub(crate) fn sky_lights(sources: &TransportSources) -> Vec<SkyLight> {
+    sky_light_iter(sources).collect()
+}
+
+/// `sky_lights` without collecting.
+pub(crate) fn sky_light_iter(sources: &TransportSources) -> impl Iterator<Item = SkyLight> + '_ {
     sources
         .directional
         .iter()
@@ -29,7 +34,6 @@ pub(crate) fn sky_lights(sources: &TransportSources) -> Vec<SkyLight> {
             })
         })
         .take(MAX_SKY_LIGHTS)
-        .collect()
 }
 
 /// Directional lights corner words and the display carry.

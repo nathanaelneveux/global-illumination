@@ -31,6 +31,7 @@ impl VoxelGiInput {
 pub(super) enum PageEvent {
     Loaded,
     Changed,
+    Resample,
     Unloaded,
 }
 
@@ -64,6 +65,23 @@ impl VoxelGiInput {
     /// A page was unloaded: its geometry and receivers leave GI.
     pub fn page_unloaded(&mut self, page: IVec3) {
         self.pages.push((page, PageEvent::Unloaded));
+    }
+
+    /// Resample a page from the source and discard its edit overlay, as a
+    /// new source rather than an edit: nothing near it is relit urgently.
+    ///
+    /// GI keeps a page's exact edits (its overlay) across unloading, for
+    /// hosts whose source lags their edits. When a page's source is genuinely
+    /// new (the host regenerated or reloaded it), call this after
+    /// [`Self::page_loaded`] so stale edits are not applied over it. Edits to
+    /// the page queued earlier this frame are dropped too; include them in
+    /// the source if they should survive. Unlike [`Self::mark_voxel`] it does
+    /// not treat any voxel as edited.
+    pub fn resample_page(&mut self, page: IVec3) {
+        let edge = PAGE_EDGE as i32;
+        self.edits
+            .retain(|voxel, _| voxel.div_euclid(IVec3::splat(edge)) != page);
+        self.pages.push((page, PageEvent::Resample));
     }
 
     /// An exact edit: `Some(material)` is solid, `None` air. Last write wins.
@@ -282,5 +300,17 @@ mod tests {
         input.edit_voxel(IVec3::ZERO, Some(4));
         input.mark_all_loaded();
         assert!(input.edits.is_empty());
+    }
+
+    #[test]
+    fn a_page_resample_drops_only_that_pages_queued_edits() {
+        let mut input = VoxelGiInput::tracked();
+        input.edit_voxel(IVec3::new(5, 0, 0), Some(1));
+        input.edit_voxel(IVec3::new(-1, 0, 0), Some(2));
+        input.resample_page(IVec3::ZERO);
+        assert_eq!(input.edits.len(), 1);
+        assert!(input.edits.contains_key(&IVec3::new(-1, 0, 0)));
+        assert!(input.voxels.is_empty());
+        assert_eq!(input.pages, vec![(IVec3::ZERO, PageEvent::Resample)]);
     }
 }

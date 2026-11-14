@@ -11,7 +11,8 @@
 //! | Build a page at the mesh's resolution | [`PageSample`], [`dense_page`], [`coarse_page`], [page edge](VOXEL_GI_PAGE_EDGE) |
 //! | Declare page residency | [`page_loaded`](VoxelGiInput::page_loaded), [`page_unloaded`](VoxelGiInput::page_unloaded) |
 //! | Send a known edit | [`edit_voxel`](VoxelGiInput::edit_voxel), [tracked input](VoxelGiInput::tracked) |
-//! | Refresh from the source | [`page_changed`](VoxelGiInput::page_changed), [`mark_voxel`](VoxelGiInput::mark_voxel), [`mark_all_loaded`](VoxelGiInput::mark_all_loaded) |
+//! | Refresh from the source | [`page_changed`](VoxelGiInput::page_changed), [`resample_page`](VoxelGiInput::resample_page), [`mark_voxel`](VoxelGiInput::mark_voxel), [`mark_all_loaded`](VoxelGiInput::mark_all_loaded) |
+//! | Choose which pages to load | [`VoxelGiDemand`] |
 //!
 //! ### Materials and lights
 //!
@@ -37,6 +38,7 @@
 //!
 #![warn(missing_docs)]
 mod color;
+mod demand;
 mod dispatch;
 mod emission;
 mod field;
@@ -76,6 +78,7 @@ use std::time::{Duration, Instant};
 use bevy::prelude::*;
 use bevy::tasks::Task;
 
+pub use demand::VoxelGiDemand;
 use field::ReceiverField;
 pub use palette::{MaterialPalette, PaletteFull};
 pub use settings::{
@@ -128,6 +131,7 @@ impl Plugin for VoxelGiPlugin {
             .init_resource::<VoxelGiSettings>()
             .init_resource::<VoxelGiEnvironment>()
             .init_resource::<VoxelMaterialTransportTable>()
+            .init_resource::<VoxelGiDemand>()
             .add_systems(
                 Update,
                 (

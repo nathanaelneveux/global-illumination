@@ -842,9 +842,15 @@ fn cache_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
         },
         GlobalTransform::from_translation(Vec3::new(304.0, 16.0, 16.0)),
     ));
+    world.init_resource::<VoxelGiDemand>();
     world
         .run_system_once(pages::update_receiver_residency)
         .unwrap();
+    // Demand follows the active camera and the settings, not the inactive one.
+    let demand = world.resource::<VoxelGiDemand>();
+    assert_eq!(demand.cameras(), &[Vec3::splat(16.0)]);
+    assert_eq!(demand.receiver_radius(), 64.0);
+    assert_eq!(demand.limit(), 64.0 + 768.0);
     let runtime = world.resource::<VoxelGiRuntime>();
     let allowed = runtime.receiver_pages.as_ref().unwrap();
     // Page 2 starts 48 voxels away (within 64); page 4 is 112 away.
