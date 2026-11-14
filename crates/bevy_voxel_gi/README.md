@@ -234,7 +234,9 @@ depth and normal prepasses.
 | `emission(position, normal)` | Add the voxel's emitted RGB once. |
 | `face_in_geometry(position, normal)` | True for an exposed face in the published scene. Provide host lighting for other surfaces. |
 | `sun_count()`, `sun_direction(i)`, `sun_color(i)` | Read the same suns for your own visibility test. Index from 0 to count − 1. Direction points toward the sun. Color is in transport units. |
-| `enabled()`, `voxel_sky()`, `debug_mode()` | Read the indirect toggle, the GI sunlight toggle and the diagnostic mode. |
+| `enabled()`, `voxel_sky()`, `debug_mode()` | Read the indirect toggle, the GI sunlight toggle and the diagnostic mode, one of the `DEBUG_*` constants (`DEBUG_NONE` in normal presentation). |
+| `diagnostic_view(pixel, position, normal, footprint, exposure)` | When `debug_mode() != DEBUG_NONE`, show `.color` in place of the lit fragment, so every host shows the same diagnostics. Write a `.raw` colour (a validation code) as it is; apply your display transform to the others. |
+| `SUN_LAMBERT_SCALE` | 10,000 / π: `sunlight` × albedo × this × the view's exposure is the diffuse sun in Bevy's units. |
 | `sunlight_reference(position, normal)` | Trace the face's own four sun corners for a diagnostic comparison. |
 
 </details>

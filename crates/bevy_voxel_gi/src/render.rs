@@ -511,6 +511,27 @@ mod standard_tests {
     use super::*;
 
     #[test]
+    fn shader_debug_constants_match_the_debug_views() {
+        let source = presentation_shader_source();
+        for (index, name) in [
+            "NONE",
+            "IRRADIANCE",
+            "COVERAGE",
+            "INDIRECT",
+            "SUN",
+            "EXACT_SUN",
+            "FACE_VALIDITY",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(GiDebugView::from_index(index as u32).index(), index as u32);
+            let line = format!("const DEBUG_{name}: u32 = {index}u;");
+            assert!(source.contains(&line), "missing `{line}`");
+        }
+    }
+
+    #[test]
     fn standard_material_renders_forward_under_a_deferred_default() {
         // Explicit Forward wins over `DefaultOpaqueRendererMethod`; Auto or
         // Deferred would select Bevy's deferred shader, which has no GI.

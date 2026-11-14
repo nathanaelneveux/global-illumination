@@ -6,8 +6,9 @@
 import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::alpha_discard,
+    mesh_view_bindings::view,
 };
-import bevy_voxel_gi::presentation::{indirect_light, emission, debug_mode};
+import bevy_voxel_gi::presentation::{indirect_light, emission, debug_mode, diagnostic_view, DEBUG_NONE};
 
 @if(PREPASS_PIPELINE)
 import bevy_pbr::{
@@ -34,13 +35,21 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     return deferred_output(in, pbr_input);
 @else {
     var out: FragmentOutput;
-    out.color = apply_pbr_lighting(pbr_input, pixel_footprint(in.world_position.xyz));
+    let footprint = pixel_footprint(in.world_position.xyz);
+    out.color = apply_pbr_lighting(pbr_input, footprint);
     let normal = normalize(in.world_normal);
-    let gi = indirect_light(in.position.xy, in.world_position.xyz, normal);
-    if debug_mode() == 2u {
-        out.color = vec4(gi.coverage, 1.0);
+    if debug_mode() != DEBUG_NONE {
+        let shown = diagnostic_view(
+            in.position.xy, in.world_position.xyz, normal, footprint, view.exposure,
+        );
+        out.color = vec4(shown.color, 1.0);
+        if shown.raw {
+            return out;
+        }
+        out.color = main_pass_post_lighting_processing(pbr_input, out.color);
         return out;
     }
+    let gi = indirect_light(in.position.xy, in.world_position.xyz, normal);
     out.color = vec4(
         out.color.rgb + pbr_input.material.base_color.rgb * (1.0 - pbr_input.material.metallic) * gi.light
             + emission(in.world_position.xyz, normal),
