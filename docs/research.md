@@ -181,3 +181,44 @@ Experiments after 0.1, each judged against the same scenes on the M4:
   [bevy#26127](https://github.com/bevyengine/bevy/pull/26127). Apply the same
   transmittance when importing suns, and check a sunset sweep against raster
   lighting.
+
+### What voxel_engine needs next (reviewed 2026-11-14)
+
+The engine (`~/Developer/voxel_engine`, StarWrought's host) now streams by
+visibility, draws a ray-traced far field and is heading for co-op, ships and
+planets. Its GI adapter and notes point at these gaps. Each is general: any
+streaming or ray-traced host meets it.
+
+- **Geometry demand: landed as `VoxelGiDemand` (2026-11-14), unqualified.**
+  It ranks pages by distance from the cameras and along each sun's shadow
+  column (the world cache's receivers swept 768 voxels toward the sun). It
+  costs a copy of the camera and sun inputs per frame, and only when they
+  change. The ranking's shape is reasoned, not measured: qualify it in the
+  engine (its sparse-near experiment lost offscreen shadow casters) by
+  comparing visibility-only acquisition, acquisition plus demand to a budget,
+  and full acquisition, on `house`-like returns and sun shadows. BVW has no
+  hook to keep chunks a consumer asks for, so the BVW connector cannot honor
+  demand yet.
+- **Unknown is not empty.** Undeclared pages are air to GI's rays, so sky
+  leaks through geometry a host has not loaded. A host-declared known region
+  (or known-empty pages) would let rays stop at unknown space instead of
+  counting it as sky. This changes light at the edge of every loaded world:
+  design what unknown space contributes before implementing it.
+- **The far tier under jittered visibility.** The engine's far records
+  jitter each pixel's sample, so a far pixel shows a different face each
+  time it is traced. Face lookups stay valid, but on its 4 km terrain at
+  1440p 41% of far-band pixels lacked indirect light against 16% without
+  jitter (2026-11-09, dark speckle near the horizon). Any host with
+  temporal anti-aliasing jitters the same way. Reproduce with a jittered
+  projection in the lab, then make the far tier's history follow the
+  surface rather than the face.
+- **Partial shapes and transmission.** GI transports opaque full cubes; the
+  engine keeps cutouts, glass, water and partial models on direct lighting.
+  StarWrought's first building material is quarter-block plating, so this
+  becomes visible early. Candidates: sub-voxel occupancy masks per material,
+  and a transmission flag for glass and water (with the deferred colored
+  transmission).
+- **Rigid local spaces.** Ships built from blocks are voxel grids that move.
+  GI's scene is one world-aligned grid; a ship needs a transform per grid
+  (separate scenes traced in their own frames, or re-voxelization), and its
+  light history must move with it. Not needed until the engine's rung 4.
