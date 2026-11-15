@@ -482,8 +482,14 @@ struct BindingsAccess<M: Material>(fn(&mut M) -> &mut VoxelGiBindings);
 
 impl<M: Material> Plugin for VoxelGiMaterialPlugin<M> {
     fn build(&self, app: &mut App) {
+        // Before Bevy flushes this frame's asset events: a material rewritten
+        // after the flush reaches the render world a frame late, binding the
+        // previous geometry and output buffers for that frame.
         app.insert_resource(BindingsAccess::<M>(self.access))
-            .add_systems(PostUpdate, sync_bindings::<M>);
+            .add_systems(
+                PostUpdate,
+                sync_bindings::<M>.before(bevy::asset::AssetEventSystems),
+            );
     }
 }
 
@@ -493,6 +499,9 @@ fn sync_bindings<M: Material>(
     mut materials: ResMut<Assets<M>>,
     mut events: MessageReader<AssetEvent<M>>,
 ) {
+    if !data.is_changed() && events.is_empty() {
+        return;
+    }
     let current = VoxelGiBindings::from(&*data);
     if data.is_changed() {
         events.clear();
@@ -599,6 +608,52 @@ mod standard_tests {
         let current = VoxelGiBindings::from(app.world().resource::<VoxelGiMaterialData>());
         let materials = app.world().resource::<Assets<VoxelGiStandardMaterial>>();
         assert_eq!(materials.get(&handle).unwrap().base.extension, current);
+    }
+
+    #[test]
+    fn rebound_materials_reach_the_render_world_the_same_frame() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<ShaderBuffer>()
+            .init_asset::<VoxelGiStandardMaterial>()
+            .add_plugins(VoxelGiMaterialPlugin::<VoxelGiStandardMaterial>::new(
+                |material| &mut material.base.extension,
+            ));
+        let mut buffers = app.world_mut().resource_mut::<Assets<ShaderBuffer>>();
+        let first = buffers.add(ShaderBuffer::from(vec![UVec4::ZERO]));
+        let second = buffers.add(ShaderBuffer::from(vec![UVec4::ONE]));
+        app.insert_resource(VoxelGiMaterialData {
+            directory: first.clone(),
+            regions: first.clone(),
+            cells: first.clone(),
+            traversal: default(),
+            far: first.clone(),
+            far_pixels: first,
+            settings: default(),
+        });
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<VoxelGiStandardMaterial>>()
+            .add(standard_material(StandardMaterial::default()));
+        app.update();
+        app.update();
+        // GI reallocates a buffer: within one frame the material is rewritten
+        // and its `Modified` event flushed, where extraction reads it.
+        app.world_mut().resource_mut::<VoxelGiMaterialData>().cells = second;
+        let mut cursor = app
+            .world()
+            .resource::<Messages<AssetEvent<VoxelGiStandardMaterial>>>()
+            .get_cursor_current();
+        app.update();
+        let messages = app
+            .world()
+            .resource::<Messages<AssetEvent<VoxelGiStandardMaterial>>>();
+        assert!(
+            cursor
+                .read(messages)
+                .any(|event| *event == AssetEvent::Modified { id: handle.id() }),
+            "the rebinding must be flushed in the frame it happens"
+        );
     }
 
     #[test]
