@@ -130,17 +130,23 @@ Experiments after 0.1, each judged against the same scenes on the M4:
   Record any visible bias and boundary popping alongside savings. This is a
   future experiment, with no geometry policy or default changed.
 
-- **A host API that's pleasant to use (breaking, so with the 0.20 port).**
-  Writing the 0.1.1 quick start as code showed friction a newcomer hits in the
-  first minute: three resources wired by hand (`VoxelGiInput`,
-  `VoxelGiSource` set as `source.0 = Some(Arc::new(..))`, and the material
-  table replaced with `palette.table().clone()`); `u16` palette IDs against
-  `u8` page materials (`as u8` in every host); `standard_material(base,
-  &data)` needing GI's internal binding resource; and `sample_page`'s
-  `resample` flag, which simple sources must understand to ignore. Aim for one
-  obvious path (for example a setter for the source, palette IDs typed for
-  pages, materials that get their bindings from the plugin), and judge it by
-  rewriting `examples/minimal.rs` and both connectors against it.
+- **A host API that's pleasant to use: done for 0.2 (2026-11-15).** The
+  friction the 0.1.1 quick start showed is gone: `VoxelGiPlugins` and a
+  prelude; `VoxelGiSource::new` (closures are sources; `resample_page` is a
+  separate, defaulted method); `GiVoxel` in place of `u16` IDs, `u8`
+  materials and `AIR`; `VoxelGiMaterials::insert` in place of
+  `MaterialPalette` and its table copy; materials that get their bindings
+  from the plugin; `VoxelGiCamera` marking the cameras GI lights;
+  `VoxelGiSettings { .., ..default() }` compiling. The CHANGELOG has the
+  migration table. Considered and left out, each for its own reason:
+  - `#[non_exhaustive]` on settings and optics structs: it forbids
+    `..default()` outside the crate, and every Bevy release breaks GI's API
+    anyway, so new fields wait for those.
+  - Light units matching Bevy's (lux, nits) for `VoxelGiEnvironment` and
+    `MaterialTransport::emission`: it changes calibration and the look, so
+    it needs visual comparisons, not an API pass.
+  - GI's numbers in Bevy's `DiagnosticsStore`, and per-camera settings on
+    `VoxelGiCamera`: additive, so they can land in a 0.2.x release.
 - **MetalFX denoising.** [metalfx_wgpu](https://github.com/mate-h/metalfx_wgpu)
   wraps MetalFX's temporal denoised scaler (macOS 26, wgpu 30, so Bevy 0.20).
   Since July, Solari runs on Metal

@@ -24,9 +24,19 @@ const RECEIVER_HYSTERESIS: f32 = PAGE_EDGE as f32;
 pub(super) fn update_receiver_residency(
     mut runtime: ResMut<VoxelGiRuntime>,
     settings: Res<super::VoxelGiSettings>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<super::VoxelGiCamera>>,
+    plain: Query<&Camera, (With<Camera3d>, Without<super::VoxelGiCamera>)>,
     demand: Option<ResMut<super::VoxelGiDemand>>,
 ) {
+    if !runtime.loaded_pages.is_empty()
+        && !cameras.iter().any(|(camera, _)| camera.is_active)
+        && plain.iter().any(|camera| camera.is_active)
+    {
+        warn_once!(
+            "Voxel GI: no active camera has `VoxelGiCamera`, so nothing is lit; \
+             add it to the cameras that show your world"
+        );
+    }
     // Demand reads the same cameras; one system keeps its cost to the copy.
     if let Some(mut demand) = demand {
         super::demand::refresh(&mut demand, &runtime, &settings, &cameras);
@@ -236,7 +246,7 @@ pub(super) const SCENE_SAMPLE_BUDGET: std::time::Duration = std::time::Duration:
 pub(super) fn start_scene_task(
     mut runtime: ResMut<VoxelGiRuntime>,
     source: Res<VoxelGiSource>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, With<super::VoxelGiCamera>>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
     let _timing = timings.main_scope(super::telemetry::MainStage::SceneDispatch);

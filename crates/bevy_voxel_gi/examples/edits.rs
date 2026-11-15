@@ -5,11 +5,7 @@
 //!
 //! `cargo run -p bevy_voxel_gi --example edits`
 use bevy::prelude::*;
-use bevy_voxel_gi::{
-    GiVoxel, MaterialTransport, PageSample, VoxelGiInput, VoxelGiMaterials, VoxelGiPlugin,
-    VoxelGiSource, VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin, VoxelSource, dense_page,
-    standard_material,
-};
+use bevy_voxel_gi::prelude::*;
 
 /// The room: a floor, two walls and a ceiling, open towards +x and +z.
 /// The window is part of the x = 0 wall at the start.
@@ -26,19 +22,6 @@ fn opening_voxels() -> impl Iterator<Item = IVec3> {
     (3..7).flat_map(|y| (9..12).map(move |z| IVec3::new(0, y, z)))
 }
 
-/// GI's view of the room as it was built. Edits reach GI through
-/// `VoxelGiInput::edit_voxel` and stay applied on top of this source, so
-/// it never needs rebuilding.
-struct Room {
-    stone: GiVoxel,
-}
-
-impl VoxelSource for Room {
-    fn sample_page(&self, page: IVec3) -> PageSample {
-        dense_page(page, |p| stone(p).then_some(self.stone))
-    }
-}
-
 #[derive(Resource)]
 struct Opening {
     open: bool,
@@ -52,7 +35,7 @@ struct Opening {
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, VoxelGiPlugin, VoxelGiStandardMaterialPlugin))
+        .add_plugins((DefaultPlugins, VoxelGiPlugins))
         .add_systems(Startup, setup)
         .add_systems(Update, toggle_window)
         .run();
@@ -61,18 +44,22 @@ fn main() {
 fn setup(
     mut commands: Commands,
     mut input: ResMut<VoxelGiInput>,
-    mut source: ResMut<VoxelGiSource>,
-    mut table: ResMut<VoxelGiMaterials>,
+    mut gi_materials: ResMut<VoxelGiMaterials>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<VoxelGiStandardMaterial>>,
 ) {
-    let stone_id = table
+    let stone_id = gi_materials
         .insert(MaterialTransport {
             diffuse: Vec3::splat(0.6),
             ..default()
         })
         .unwrap();
-    source.set(Room { stone: stone_id });
+    // GI's view of the room as it was built. Edits reach GI through
+    // `VoxelGiInput::edit_voxel` and stay applied on top of this source, so
+    // it never needs rebuilding.
+    commands.insert_resource(VoxelGiSource::new(move |page: IVec3| {
+        dense_page(page, |p| stone(p).then_some(stone_id))
+    }));
     input.page_loaded(IVec3::ZERO);
 
     let cube = meshes.add(Cuboid::from_length(1.0));
@@ -125,6 +112,7 @@ fn setup(
     ));
     commands.spawn((
         Camera3d::default(),
+        VoxelGiCamera,
         Transform::from_xyz(30.0, 9.0, 30.0).looking_at(Vec3::new(4.0, 3.0, 8.0), Vec3::Y),
     ));
 }

@@ -14,6 +14,29 @@ The crates share one version. The format follows
   they call `bevy_voxel_gi::pbr::apply_pbr_lighting(pbr_input, footprint)`
   instead of Bevy's, a copy of Bevy's function with GI's sun in place of
   the first directional light while GI's sky is on.
+- An API pass for approachability (breaking; see "Migrating from 0.1" below):
+  - `GiVoxel` replaces raw material IDs: `GiVoxel::AIR` or
+    `GiVoxel::solid(0..=255)`, in `PageSample`, `dense_page`, `coarse_page`
+    and `edit_voxel`. Page lookups return `GiVoxel` or `Option<GiVoxel>`.
+  - `VoxelGiMaterials` (formerly `VoxelMaterialTransportTable`) assigns
+    materials itself: `insert(optics)` shares a material between identical
+    optics. `MaterialPalette` and its table copy are gone; `PaletteFull` is
+    `MaterialsFull`.
+  - `VoxelGiSource::new(source)` and `set`; the field is private. A closure
+    `Fn(IVec3) -> PageSample` is a `VoxelSource`. `sample_page` loses its
+    `resample` flag: sources that cache override `resample_page` instead.
+  - `standard_material(base)` and the BVW connector's
+    `material_template(texture)` no longer take `VoxelGiMaterialData`;
+    custom materials start from `VoxelGiBindings::default()`, and
+    `VoxelGiMaterialPlugin` fills the bindings in when a material is added.
+  - `VoxelGiPlugins` adds GI and the GI-lit `StandardMaterial`, and
+    `bevy_voxel_gi::prelude` holds the types most hosts use.
+  - `VoxelGiSettings { cache_radius: 32.0, ..default() }` compiles outside
+    the crate.
+  - `VoxelGiCamera` marks the cameras GI lights, and brings the depth and
+    normal prepasses it needs. Other 3D cameras cost GI nothing (before,
+    every active `Camera3d` got the view tier and world cache). GI warns
+    once when only unmarked cameras are active.
 - `bevy_voxel_gi_bvw`: BVW 0.19's levels of detail. A level-L chunk spans
   (2^L)³ GI pages, traced at its sample spacing; while BVW swaps levels, GI
   follows the finer chunk until the coarser one has replaced it. Levels
@@ -34,6 +57,29 @@ The crates share one version. The format follows
   and `SUN_LAMBERT_SCALE`: one diagnostic display for every host material.
   The stock `StandardMaterial` now shows every diagnostic view, not only
   coverage.
+
+### Migrating from 0.1
+
+| 0.1 | 0.2 |
+| --- | --- |
+| `add_plugins((VoxelGiPlugin, VoxelGiStandardMaterialPlugin))` | `add_plugins(VoxelGiPlugins)` (both still exist on their own) |
+| `use bevy_voxel_gi::{...}` | `use bevy_voxel_gi::prelude::*` |
+| Every active `Camera3d` is lit | Add `VoxelGiCamera` to the cameras GI lights |
+| `source.0 = Some(Arc::new(MySource))` | `source.set(MySource)` or `commands.insert_resource(VoxelGiSource::new(MySource))` |
+| `fn sample_page(&self, page, resample: bool)` | `fn sample_page(&self, page)`; override `resample_page` if `resample` mattered |
+| `MaterialPalette::new()`, `insert(key, optics)`, `*table = palette.table().clone()` | `materials.insert(optics)` on `ResMut<VoxelGiMaterials>`; keep your own key map if you need one |
+| `palette.optics_id(optics)` | `materials.insert(optics)` |
+| `insert_transparent(key)` | `GiVoxel::AIR` |
+| `VoxelMaterialTransportTable` | `VoxelGiMaterials` (`get`, `set` unchanged) |
+| `u16` IDs, `AIR`, `id as u8` | `GiVoxel`, `GiVoxel::AIR`, `GiVoxel::solid(id)` |
+| `PageSample::full(Vec<u16>)` | `PageSample::full(Vec<GiVoxel>)` (no copy) |
+| `page.material(local)` | `page.voxel(local)` |
+| `dense_page(page, \|v\| Some(id_u8))` | `dense_page(page, \|v\| Some(gi_voxel))` or return a `GiVoxel` |
+| `edit_voxel(v, Some(id))`, `edit_voxel(v, None)` | `edit_voxel(v, GiVoxel::solid(id))`, `edit_voxel(v, GiVoxel::AIR)` |
+| `standard_material(base, &data)` | `standard_material(base)` |
+| `material_template(texture, &data)` (BVW) | `material_template(texture)` |
+| `VoxelGiBindings::from(&data)` | `VoxelGiBindings::default()` (the plugin fills it in) |
+| `VoxelGiSettings { cache_radius: 32.0, ..default() }` did not compile | It does |
 
 ## [0.1.1] - 2026-11-06
 

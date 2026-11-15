@@ -273,6 +273,7 @@ fn spawn_player(mut commands: Commands, world: Res<PrototypeWorld>) {
         Name::new("PlayerCamera"),
         PlayerCamera,
         Camera3d::default(),
+        bevy_voxel_gi::VoxelGiCamera,
         Projection::Perspective(PerspectiveProjection {
             fov: if crate::scene_presets::ScenePreset::current()
                 != crate::scene_presets::ScenePreset::Terrain

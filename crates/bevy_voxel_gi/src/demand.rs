@@ -184,7 +184,7 @@ pub(super) fn refresh(
     demand: &mut ResMut<VoxelGiDemand>,
     runtime: &super::VoxelGiRuntime,
     settings: &super::VoxelGiSettings,
-    cameras: &Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: &Query<(&Camera, &GlobalTransform), With<super::VoxelGiCamera>>,
 ) {
     let active = || {
         cameras

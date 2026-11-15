@@ -829,18 +829,23 @@ fn cache_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
     });
     let camera = world
         .spawn((
-            Camera3d::default(),
+            super::VoxelGiCamera,
             GlobalTransform::from_translation(Vec3::splat(16.0)),
         ))
         .id();
     // Inactive streaming cameras load geometry, not lighting receivers.
     world.spawn((
-        Camera3d::default(),
+        super::VoxelGiCamera,
         Camera {
             is_active: false,
             ..default()
         },
         GlobalTransform::from_translation(Vec3::new(304.0, 16.0, 16.0)),
+    ));
+    // A plain 3D camera (a minimap, say) is not GI's.
+    world.spawn((
+        Camera3d::default(),
+        GlobalTransform::from_translation(Vec3::new(1016.0, 16.0, 16.0)),
     ));
     world.init_resource::<VoxelGiDemand>();
     world

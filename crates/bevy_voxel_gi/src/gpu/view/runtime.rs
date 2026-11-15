@@ -5,12 +5,13 @@ use super::*;
 use crate::{FarTierSettings, VoxelGiSettings, render::VoxelGiMaterialData};
 use bevy::{
     core_pipeline::{
-        prepass::{DepthPrepass, NormalPrepass, ViewPrepassTextures},
+        prepass::ViewPrepassTextures,
         schedule::{Core3d, Core3dSystems},
     },
     platform::collections::HashMap,
     render::{
         GpuResourceAppExt, Render, RenderApp, RenderSystems,
+        extract_component::ExtractComponentPlugin,
         extract_resource::ExtractResourcePlugin,
         render_asset::RenderAssets,
         renderer::{RenderContext, ViewQuery},
@@ -77,12 +78,6 @@ pub struct ViewReceipts {
     pub hash_overflows: u64,
 }
 
-#[derive(Component)]
-struct AddedPrepasses {
-    depth: bool,
-    normal: bool,
-}
-
 pub(crate) fn install(
     app: &mut App,
     output: Handle<ShaderBuffer>,
@@ -108,7 +103,10 @@ pub(crate) fn install(
         receipts: default(),
         sun_flips: default(),
     });
-    app.add_plugins(ExtractResourcePlugin::<ViewSettings>::default());
+    app.add_plugins((
+        ExtractResourcePlugin::<ViewSettings>::default(),
+        ExtractComponentPlugin::<crate::VoxelGiCamera>::default(),
+    ));
     app.add_systems(Update, configure_views);
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
         render_app.init_gpu_resource::<ViewRenderer>();
@@ -137,17 +135,7 @@ fn configure_views(
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut material_data: ResMut<VoxelGiMaterialData>,
     runtime: Option<ResMut<crate::VoxelGiRuntime>>,
-    cameras: Query<
-        (
-            Entity,
-            Has<DepthPrepass>,
-            Has<NormalPrepass>,
-            Option<&AddedPrepasses>,
-            &Camera,
-        ),
-        With<Camera3d>,
-    >,
-    mut commands: Commands,
+    cameras: Query<&Camera, With<crate::VoxelGiCamera>>,
 ) {
     let receipts = *view.receipts.lock().unwrap();
     if stats.view_gpu != receipts {
@@ -190,7 +178,7 @@ fn configure_views(
     // the viewport (one shared scratch output, written per camera).
     let needed = cameras
         .iter()
-        .filter_map(|(.., camera)| camera.physical_viewport_size())
+        .filter_map(|camera| camera.physical_viewport_size())
         .map(|size| pixel_output_bytes(size, pixel.cell_for(size.y)))
         .max()
         .unwrap_or(0);
@@ -204,30 +192,6 @@ fn configure_views(
     }
     if view.pixel != pixel {
         view.pixel = pixel;
-    }
-    for (entity, depth, normal, added, _) in &cameras {
-        if enabled && added.is_none() {
-            let mut entity = commands.entity(entity);
-            entity.insert(AddedPrepasses {
-                depth: !depth,
-                normal: !normal,
-            });
-            if !depth {
-                entity.insert(DepthPrepass);
-            }
-            if !normal {
-                entity.insert(NormalPrepass);
-            }
-        } else if !enabled && let Some(added) = added {
-            let mut entity = commands.entity(entity);
-            if added.depth {
-                entity.remove::<DepthPrepass>();
-            }
-            if added.normal {
-                entity.remove::<NormalPrepass>();
-            }
-            entity.remove::<AddedPrepasses>();
-        }
     }
     view.enabled = enabled;
     view.inner_radius = 0.0;
@@ -783,7 +747,12 @@ mod coverage_tests;
 mod pixel_tests;
 
 fn render_view(
-    view: ViewQuery<(&ExtractedView, Option<&ViewPrepassTextures>, &Msaa)>,
+    view: ViewQuery<(
+        &ExtractedView,
+        Option<&ViewPrepassTextures>,
+        &Msaa,
+        Has<crate::VoxelGiCamera>,
+    )>,
     scene: Res<ViewTransport>,
     settings: Res<ViewSettings>,
     assets: Res<RenderAssets<GpuShaderBuffer>>,
@@ -813,7 +782,11 @@ fn render_view(
     let Some(scene) = &scene.0 else {
         return;
     };
-    let (view, prepass, msaa) = view.into_inner();
+    let (view, prepass, msaa, gi_camera) = view.into_inner();
+    if !gi_camera {
+        // Not a GI camera: its GI-lit materials see the cleared output.
+        return;
+    }
     let Some(prepass) = prepass else {
         return;
     };

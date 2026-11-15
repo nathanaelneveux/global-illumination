@@ -7,7 +7,7 @@
 //!
 //! | Task | API |
 //! | --- | --- |
-//! | Install GI and provide a snapshot | [`VoxelGiPlugin`], [`VoxelGiSource`], [`VoxelSource::sample_page`] |
+//! | Install GI and provide a snapshot | [`VoxelGiPlugins`], [`prelude`], [`VoxelGiCamera`], [`VoxelGiSource::new`], [`VoxelSource`] |
 //! | Build a page at the mesh's resolution | [`PageSample`], [`dense_page`], [`coarse_page`], [page edge](VOXEL_GI_PAGE_EDGE) |
 //! | Declare page residency | [`page_loaded`](VoxelGiInput::page_loaded), [`page_unloaded`](VoxelGiInput::page_unloaded) |
 //! | Send a known edit | [`edit_voxel`](VoxelGiInput::edit_voxel), [tracked input](VoxelGiInput::tracked) |
@@ -37,6 +37,7 @@
 //! | Wait for geometry or read GPU cost | [`VoxelGiStats::geometry_pending`], [`ViewReceipts`], [system ordering](VoxelGiSystems) |
 //!
 #![warn(missing_docs)]
+mod camera;
 mod color;
 mod demand;
 mod dispatch;
@@ -78,6 +79,7 @@ use std::time::{Duration, Instant};
 use bevy::prelude::*;
 use bevy::tasks::Task;
 
+pub use camera::VoxelGiCamera;
 pub use demand::VoxelGiDemand;
 use field::ReceiverField;
 pub use settings::{
@@ -110,9 +112,41 @@ use work::TraceWork;
 use world::{PAGE_EDGE, SurfaceProbe, SurfaceProbeDescriptor, TransportScene};
 
 /// Voxel GI: page ingestion, transport and the view tier. Materials bind
-/// `VoxelGiMaterialData` (the BVW connector's material does this); the debug
-/// HUD and panel are the opt-in `VoxelGiDebugPlugin`.
+/// `VoxelGiBindings` (the BVW connector's material does this); the debug
+/// HUD and panel are the opt-in `VoxelGiDebugPlugin`. [`VoxelGiPlugins`]
+/// adds it with the GI-lit `StandardMaterial`.
 pub struct VoxelGiPlugin;
+
+/// GI and the GI-lit `StandardMaterial`: [`VoxelGiPlugin`] and
+/// [`VoxelGiStandardMaterialPlugin`]. Add it beside Bevy's `DefaultPlugins`:
+///
+/// ```no_run
+/// # use bevy::prelude::*;
+/// # use bevy_voxel_gi::prelude::*;
+/// App::new().add_plugins((DefaultPlugins, VoxelGiPlugins)).run();
+/// ```
+///
+/// A host that lights only its own materials can add `VoxelGiPlugin` alone,
+/// or disable the standard material here.
+pub struct VoxelGiPlugins;
+
+impl bevy::app::PluginGroup for VoxelGiPlugins {
+    fn build(self) -> bevy::app::PluginGroupBuilder {
+        bevy::app::PluginGroupBuilder::start::<Self>()
+            .add(VoxelGiPlugin)
+            .add(VoxelGiStandardMaterialPlugin)
+    }
+}
+
+/// The types most hosts use: `use bevy_voxel_gi::prelude::*;`.
+pub mod prelude {
+    pub use crate::{
+        GiVoxel, MaterialTransport, PageSample, VoxelGiCamera, VoxelGiDemand, VoxelGiDisplay,
+        VoxelGiEmitter, VoxelGiEnvironment, VoxelGiInput, VoxelGiMaterials, VoxelGiPlugin,
+        VoxelGiPlugins, VoxelGiQuality, VoxelGiSettings, VoxelGiSource, VoxelGiStandardMaterial,
+        VoxelGiStats, VoxelGiSystems, VoxelSource, coarse_page, dense_page, standard_material,
+    };
+}
 
 /// Schedule host readers after this set to observe this frame's published
 /// diagnostics. Worker results remain asynchronous.

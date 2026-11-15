@@ -42,7 +42,7 @@ use bevy::{
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
-use bevy_voxel_gi::{MaterialTransport, VoxelGiMaterials, VoxelGiPlugin};
+use bevy_voxel_gi::{MaterialTransport, VoxelGiCamera, VoxelGiMaterials, VoxelGiPlugin};
 use bevy_voxel_gi_bvw::{
     GiFallbackVoxel, VoxelGiBvwPlugin, material_template, prepare_texture_array,
 };
@@ -115,6 +115,7 @@ fn main() {
 fn setup(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
+        VoxelGiCamera,
         VoxelWorldCamera::<MyWorld>::default(),
         Transform::from_xyz(13.0, 7.0, 17.0).looking_at(Vec3::new(7.5, 0.0, 7.5), Vec3::Y),
     ));

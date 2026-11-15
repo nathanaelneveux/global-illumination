@@ -27,7 +27,7 @@ pub(super) fn start_trace_task(
     mut runtime: ResMut<VoxelGiRuntime>,
     field: ResMut<ReceiverField>,
     mut stats: ResMut<VoxelGiStats>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<super::VoxelGiCamera>>,
     gpu_device: Option<Res<gpu::GpuTransportDevice>>,
     settings: Res<VoxelGiSettings>,
     mut timings: ResMut<GiWorkTimings>,
