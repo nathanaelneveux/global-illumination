@@ -57,7 +57,7 @@ Start with a layer of stone and give GI the same surface you draw.
 ```rust,no_run
 use bevy::prelude::*;
 use bevy_voxel_gi::{
-    GiVoxel, MaterialTransport, PageSample, VoxelGiInput, VoxelGiMaterialData,
+    GiVoxel, MaterialTransport, PageSample, VoxelGiInput,
     VoxelGiPlugin, VoxelGiSource, VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin,
     VoxelGiMaterials, VoxelSource, dense_page, standard_material,
 };
@@ -88,7 +88,6 @@ fn setup(
     mut gi_materials: ResMut<VoxelGiMaterials>,
     mut source: ResMut<VoxelGiSource>,
     mut input: ResMut<VoxelGiInput>,
-    gi_bindings: Res<VoxelGiMaterialData>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<VoxelGiStandardMaterial>>,
 ) {
@@ -115,13 +114,12 @@ fn setup(
 
     // 4. Meshes. GI lights a fragment from the voxel face it lies on, so
     //    meshes sit on voxel faces: here, the top of the stone at y = 4.
-    //    `gi_bindings` carries GI's GPU data; the plugin keeps it current.
+    //    The plugin fills in GI's GPU bindings and keeps them current.
     let ground = materials.add(standard_material(
         StandardMaterial {
             base_color: Color::srgb(0.6, 0.6, 0.6),
             ..default()
         },
-        &gi_bindings,
     ));
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(128.0, 128.0))),

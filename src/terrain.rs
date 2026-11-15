@@ -11,7 +11,7 @@ use crate::scene_presets::ScenePreset;
 use crate::structures::{Bounds, StructureLayer, VoxelOp, showcase};
 use crate::terrain_meshing::build_chunk_mesh;
 use crate::terrain_noise::{BEDROCK_FLOOR_Y, MAX_SURFACE_Y, TerrainColumn, TerrainNoise};
-use bevy_voxel_gi::{MaterialTransport, VoxelGiInput, VoxelGiMaterialData, VoxelGiMaterials};
+use bevy_voxel_gi::{MaterialTransport, VoxelGiInput, VoxelGiMaterials};
 use bevy_voxel_gi_bvw::material_template;
 
 pub type MaterialIndex = u8;
@@ -154,10 +154,9 @@ impl Plugin for TerrainPlugin {
                 .resource::<crate::assets::TemplateAssets>()
                 .voxel_texture
                 .clone();
-            let data = app.world().resource::<VoxelGiMaterialData>().clone();
             app.add_plugins(
                 VoxelWorldPlugin::with_config(PrototypeWorld::default())
-                    .with_material(material_template(texture, &data)),
+                    .with_material(material_template(texture)),
             );
         } else {
             // GI-off control: BVW's own standard voxel material.

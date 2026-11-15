@@ -8,9 +8,9 @@
 //! image is saved first, so the check works with the screen asleep.)
 use bevy::prelude::*;
 use bevy_voxel_gi::{
-    GiVoxel, MaterialTransport, PageSample, VoxelGiInput, VoxelGiMaterialData, VoxelGiMaterials,
-    VoxelGiPlugin, VoxelGiSource, VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin,
-    VoxelSource, dense_page, standard_material,
+    GiVoxel, MaterialTransport, PageSample, VoxelGiInput, VoxelGiMaterials, VoxelGiPlugin,
+    VoxelGiSource, VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin, VoxelSource, dense_page,
+    standard_material,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -67,7 +67,6 @@ fn setup(
     mut input: ResMut<VoxelGiInput>,
     mut source: ResMut<VoxelGiSource>,
     mut table: ResMut<VoxelGiMaterials>,
-    data: Res<VoxelGiMaterialData>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<VoxelGiStandardMaterial>>,
 ) {
@@ -85,21 +84,15 @@ fn setup(
     input.page_loaded(IVec3::ZERO);
 
     let cube = meshes.add(Cuboid::from_length(1.0));
-    let stone = materials.add(standard_material(
-        StandardMaterial {
-            base_color: Color::srgb(0.6, 0.6, 0.6),
-            perceptual_roughness: 0.9,
-            ..default()
-        },
-        &data,
-    ));
-    let lamp = materials.add(standard_material(
-        StandardMaterial {
-            base_color: Color::srgb(1.0, 0.8, 0.5),
-            ..default()
-        },
-        &data,
-    ));
+    let stone = materials.add(standard_material(StandardMaterial {
+        base_color: Color::srgb(0.6, 0.6, 0.6),
+        perceptual_roughness: 0.9,
+        ..default()
+    }));
+    let lamp = materials.add(standard_material(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.8, 0.5),
+        ..default()
+    }));
     for z in 0..32 {
         for y in 0..13 {
             for x in 0..32 {

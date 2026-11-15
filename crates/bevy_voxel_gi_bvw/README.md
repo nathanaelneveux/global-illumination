@@ -42,9 +42,7 @@ use bevy::{
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
-use bevy_voxel_gi::{
-    MaterialTransport, VoxelGiMaterialData, VoxelGiPlugin, VoxelGiMaterials,
-};
+use bevy_voxel_gi::{MaterialTransport, VoxelGiMaterials, VoxelGiPlugin};
 use bevy_voxel_gi_bvw::{
     GiFallbackVoxel, VoxelGiBvwPlugin, material_template, prepare_texture_array,
 };
@@ -100,7 +98,7 @@ fn main() {
     );
     prepare_texture_array(&mut image, 1).unwrap();
     let texture = app.world_mut().resource_mut::<Assets<Image>>().add(image);
-    let material = material_template(texture, app.world().resource::<VoxelGiMaterialData>());
+    let material = material_template(texture);
 
     let mut optics = app.world_mut().resource_mut::<VoxelGiMaterials>();
     optics.set(STONE, MaterialTransport { diffuse: Vec3::splat(0.5), ..default() });
