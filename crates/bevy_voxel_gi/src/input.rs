@@ -1,6 +1,7 @@
 //! Host input: which 32³ pages are loaded, what changed in them, and how to
 //! read their voxels. Storage engines (BVW through its connector, or any
 //! other) report here; GI never reads a host's chunks or meshes directly.
+use super::GiVoxel;
 use super::world::{AIR, PAGE_EDGE, PAGE_SIZE};
 use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
@@ -84,10 +85,11 @@ impl VoxelGiInput {
         self.pages.push((page, PageEvent::Resample));
     }
 
-    /// An exact edit: `Some(material)` is solid, `None` air. Last write wins.
-    pub fn edit_voxel(&mut self, voxel: IVec3, material: Option<u8>) {
+    /// An exact edit: the voxel is now `value` (a solid material or
+    /// [`GiVoxel::AIR`]). Last write wins.
+    pub fn edit_voxel(&mut self, voxel: IVec3, value: GiVoxel) {
         self.voxels.remove(&voxel);
-        self.edits.insert(voxel, material.map_or(AIR, u16::from));
+        self.edits.insert(voxel, value.raw());
     }
 
     /// Requests an authoritative resample of the voxel's page.
@@ -121,10 +123,10 @@ impl VoxelGiInput {
 ///
 /// ```
 /// # use bevy::prelude::*;
-/// # use bevy_voxel_gi::{VoxelGiSource, dense_page};
+/// # use bevy_voxel_gi::{GiVoxel, VoxelGiSource, dense_page};
 /// // A stone floor at y = 0 (material 0), air elsewhere.
 /// let source = VoxelGiSource::new(|page: IVec3| {
-///     dense_page(page, |voxel| (voxel.y == 0).then_some(0))
+///     dense_page(page, |voxel| (voxel.y == 0).then_some(GiVoxel::solid(0)))
 /// });
 /// # assert!(source.get().is_some());
 /// ```
@@ -164,30 +166,38 @@ pub struct PageSample {
 }
 
 impl PageSample {
-    /// An all-air page (one stride-32 cell). Air is not material 0: GI's
-    /// solids are 0-255 (`dense_page`/`coarse_page` map `None` to air).
+    /// An all-air page (one stride-32 cell).
     pub fn air() -> Self {
-        Self::coarse(PAGE_EDGE, vec![AIR])
+        Self::uniform(GiVoxel::AIR)
     }
 
-    /// A full-resolution page (`32³` materials, x fastest).
+    /// A page of one value throughout (one stride-32 cell).
+    pub fn uniform(voxel: GiVoxel) -> Self {
+        Self::from_raw(PAGE_EDGE, vec![voxel.raw()])
+    }
+
+    /// A full-resolution page (`32³` voxels, x fastest).
     ///
     /// # Panics
     ///
     /// Panics if the input length differs from `32³`.
-    pub fn full(materials: Vec<u16>) -> Self {
-        Self::coarse(1, materials)
+    pub fn full(voxels: Vec<GiVoxel>) -> Self {
+        Self::coarse(1, voxels)
     }
 
     /// A page at `stride` (a power of two from 1 to 32) with `(32 / stride)³`
-    /// cell materials, x fastest. Use IDs 0–255 for solids and [`AIR`] for
-    /// empty cells.
+    /// cells, x fastest.
     ///
     /// # Panics
     ///
-    /// Panics if the stride or cell count is invalid. Debug builds also check
-    /// material IDs.
-    pub fn coarse(stride: u32, cells: Vec<u16>) -> Self {
+    /// Panics if the stride or cell count is invalid.
+    pub fn coarse(stride: u32, cells: Vec<GiVoxel>) -> Self {
+        // Same size and alignment: reinterpreted in place, no copy.
+        Self::from_raw(stride, bytemuck::cast_vec(cells))
+    }
+
+    /// `coarse` over GI's internal encoding (`0..=255` solid, `AIR`).
+    pub(crate) fn from_raw(stride: u32, cells: Vec<u16>) -> Self {
         assert!(
             stride.is_power_of_two() && stride <= PAGE_EDGE,
             "page stride {stride} must be a power of two up to {PAGE_EDGE}"
@@ -198,10 +208,7 @@ impl PageSample {
             edge * edge * edge,
             "a stride-{stride} page has {edge}³ cells"
         );
-        debug_assert!(
-            cells.iter().all(|&material| material <= AIR),
-            "transport materials are 0..=255 or AIR; map host block types with MaterialPalette"
-        );
+        debug_assert!(cells.iter().all(|&material| material <= AIR));
         Self { stride, cells }
     }
 
@@ -210,8 +217,13 @@ impl PageSample {
         self.stride
     }
 
-    /// The material at a page-local voxel (each `0..32`).
-    pub fn material(&self, local: UVec3) -> u16 {
+    /// The voxel at a page-local position (each `0..32`).
+    pub fn voxel(&self, local: UVec3) -> GiVoxel {
+        GiVoxel::from_raw(self.raw(local))
+    }
+
+    /// `voxel` in GI's internal encoding.
+    pub(crate) fn raw(&self, local: UVec3) -> u16 {
         let edge = PAGE_EDGE / self.stride;
         let cell = local / self.stride;
         self.cells[((cell.z * edge + cell.y) * edge + cell.x) as usize]
@@ -296,18 +308,23 @@ impl std::fmt::Debug for VoxelGiSource {
 }
 
 /// Build a full-resolution page by calling the lookup at each world voxel.
-/// The lookup receives world coordinates. Return `None` for air.
-pub fn dense_page(page: IVec3, voxel: impl Fn(IVec3) -> Option<u8>) -> PageSample {
+/// The lookup receives world coordinates and returns a [`GiVoxel`], or an
+/// `Option<GiVoxel>` whose `None` is air.
+pub fn dense_page<V: Into<GiVoxel>>(page: IVec3, voxel: impl Fn(IVec3) -> V) -> PageSample {
     coarse_page(page, 1, voxel)
 }
 
-/// Build a page by sampling the minimum world voxel of each coarse cell.
-/// Return `None` for air.
+/// Build a page by sampling the minimum world voxel of each coarse cell, as
+/// [`dense_page`] does.
 ///
 /// # Panics
 ///
 /// Panics unless `stride` is a power of two from 1 to 32.
-pub fn coarse_page(page: IVec3, stride: u32, voxel: impl Fn(IVec3) -> Option<u8>) -> PageSample {
+pub fn coarse_page<V: Into<GiVoxel>>(
+    page: IVec3,
+    stride: u32,
+    voxel: impl Fn(IVec3) -> V,
+) -> PageSample {
     let origin = page * PAGE_EDGE as i32;
     let edge = PAGE_EDGE / stride.max(1);
     let mut cells = vec![AIR; (edge * edge * edge) as usize];
@@ -315,13 +332,12 @@ pub fn coarse_page(page: IVec3, stride: u32, voxel: impl Fn(IVec3) -> Option<u8>
         for y in 0..edge {
             for x in 0..edge {
                 let cell = UVec3::new(x, y, z);
-                if let Some(material) = voxel(origin + (cell * stride).as_ivec3()) {
-                    cells[((z * edge + y) * edge + x) as usize] = u16::from(material);
-                }
+                cells[((z * edge + y) * edge + x) as usize] =
+                    voxel(origin + (cell * stride).as_ivec3()).into().raw();
             }
         }
     }
-    PageSample::coarse(stride, cells)
+    PageSample::from_raw(stride, cells)
 }
 
 /// Every page holding a voxel is this many voxels wide.
@@ -336,7 +352,7 @@ mod tests {
         // Stride 8: 4³ cells; the cell at (1, 0, 3) covers x 8..16, z 24..32.
         let page = coarse_page(IVec3::new(-1, 0, 2), 8, |p| {
             let local = p - IVec3::new(-32, 0, 64);
-            (local == IVec3::new(8, 0, 24)).then_some(5)
+            (local == IVec3::new(8, 0, 24)).then_some(GiVoxel::solid(5))
         });
         assert_eq!(page.stride(), 8);
         let dense = page.clone().into_dense();
@@ -348,28 +364,31 @@ mod tests {
         assert_eq!(at(16, 0, 24), AIR);
         assert_eq!(at(7, 0, 24), AIR);
         assert_eq!(dense.iter().filter(|&&m| m == 5).count(), 512);
-        assert_eq!(page.material(UVec3::new(9, 3, 30)), 5);
+        assert_eq!(page.voxel(UVec3::new(9, 3, 30)), GiVoxel::solid(5));
         assert_eq!(
-            dense_page(IVec3::ZERO, |_| Some(2)).into_dense(),
+            dense_page(IVec3::ZERO, |_| GiVoxel::solid(2)).into_dense(),
             vec![2; 32 * 32 * 32]
         );
-        assert_eq!(PageSample::air(), coarse_page(IVec3::ZERO, 32, |_| None));
-        assert_eq!(PageSample::air().material(UVec3::splat(31)), AIR);
+        assert_eq!(
+            PageSample::air(),
+            coarse_page(IVec3::ZERO, 32, |_| None::<GiVoxel>)
+        );
+        assert_eq!(PageSample::air().voxel(UVec3::splat(31)), GiVoxel::AIR);
     }
 
     #[test]
     #[should_panic(expected = "power of two")]
     fn page_strides_must_divide_the_page() {
-        PageSample::coarse(3, vec![0; 1000]);
+        PageSample::coarse(3, vec![GiVoxel::AIR; 1000]);
     }
 
     #[test]
     fn unknown_notification_supersedes_an_exact_value_in_the_same_frame() {
         let mut input = VoxelGiInput::tracked();
-        input.edit_voxel(IVec3::ONE, Some(7));
+        input.edit_voxel(IVec3::ONE, GiVoxel::solid(7));
         input.mark_voxel(IVec3::ONE);
         assert!(input.edits.is_empty());
-        input.edit_voxel(IVec3::ZERO, Some(4));
+        input.edit_voxel(IVec3::ZERO, GiVoxel::solid(4));
         input.mark_all_loaded();
         assert!(input.edits.is_empty());
     }
@@ -377,8 +396,8 @@ mod tests {
     #[test]
     fn a_page_resample_drops_only_that_pages_queued_edits() {
         let mut input = VoxelGiInput::tracked();
-        input.edit_voxel(IVec3::new(5, 0, 0), Some(1));
-        input.edit_voxel(IVec3::new(-1, 0, 0), Some(2));
+        input.edit_voxel(IVec3::new(5, 0, 0), GiVoxel::solid(1));
+        input.edit_voxel(IVec3::new(-1, 0, 0), GiVoxel::solid(2));
         input.resample_page(IVec3::ZERO);
         assert_eq!(input.edits.len(), 1);
         assert!(input.edits.contains_key(&IVec3::new(-1, 0, 0)));

@@ -30,11 +30,14 @@ pub const FACE_OFFSETS: [IVec3; 6] = [
     IVec3::NEG_Z,
 ];
 
-/// Opaque diffuse RGB response. No transmission, heat capacity or dose
-/// conversion is implied; those belong to the host simulation.
+/// A transport material's optics: opaque diffuse RGB response and emission.
+/// No transmission, heat capacity or dose conversion is implied; those belong
+/// to the host simulation. Write one with `..default()` for the fields you
+/// leave out.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MaterialTransport {
-    /// Fraction of incident energy reflected, clamped to [0, 1] by `set`.
+    /// Fraction of incident energy reflected, clamped to [0, 1] by
+    /// `VoxelGiMaterials`.
     pub diffuse: Vec3,
     /// Emitted energy in normalized solver units, not watts or temperature.
     pub emission: Vec3,
@@ -49,24 +52,62 @@ impl Default for MaterialTransport {
     }
 }
 
-/// RGB optical properties for every voxel material index. This is a
-/// resource so games can define emissive and reflective blocks without changing
-/// the tracer. Defaults are neutral; the host assigns its own material IDs.
-#[derive(Resource, Clone, Debug, PartialEq)]
-pub struct VoxelMaterialTransportTable {
+/// The optics of GI's 256 transport materials (see [`GiVoxel`]).
+///
+/// [`insert`](Self::insert) gives optics a material, sharing one between
+/// identical optics. Hosts whose block IDs already fit `0..=255` can instead
+/// [`set`](Self::set) each block's optics at its own ID (the BVW connector
+/// does). Unassigned materials keep the default optics. Change this resource
+/// at runtime to relight the world.
+///
+/// [`GiVoxel`]: crate::GiVoxel
+#[derive(Resource, Clone, Debug)]
+pub struct VoxelGiMaterials {
     entries: [MaterialTransport; 256],
+    /// Materials given optics by `insert` or `set`, one bit each.
+    assigned: [u64; 4],
 }
 
-impl Default for VoxelMaterialTransportTable {
+/// Equal when every material has the same optics, assigned or not: that is
+/// all transport sees.
+impl PartialEq for VoxelGiMaterials {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries
+    }
+}
+
+impl Default for VoxelGiMaterials {
     fn default() -> Self {
         Self {
             entries: [MaterialTransport::default(); 256],
+            assigned: [0; 4],
         }
     }
 }
 
-impl VoxelMaterialTransportTable {
-    /// The optics of transport material `material`.
+impl VoxelGiMaterials {
+    /// A material with these optics: an assigned one with identical optics,
+    /// else the lowest unassigned material.
+    pub fn insert(
+        &mut self,
+        optics: MaterialTransport,
+    ) -> Result<crate::GiVoxel, crate::MaterialsFull> {
+        let optics = Self::bounded(optics);
+        let existing =
+            (0..=255u8).find(|&m| self.is_assigned(m) && self.entries[m as usize] == optics);
+        let material = match existing {
+            Some(material) => material,
+            None => {
+                let free = (0..=255u8).find(|&m| !self.is_assigned(m));
+                let material = free.ok_or(crate::MaterialsFull)?;
+                self.set(material, optics);
+                material
+            }
+        };
+        Ok(crate::GiVoxel::solid(material))
+    }
+
+    /// The optics of material `material`.
     pub fn get(&self, material: u8) -> MaterialTransport {
         self.entries[material as usize]
     }
@@ -74,12 +115,35 @@ impl VoxelMaterialTransportTable {
     /// Sets material `material`'s optics. Diffuse reflectance is clamped to
     /// [0, 1] and magnitudes are bounded, so bad input can't create energy.
     pub fn set(&mut self, material: u8, transport: MaterialTransport) {
+        self.entries[material as usize] = Self::bounded(transport);
+        self.assigned[material as usize / 64] |= 1 << (material % 64);
+    }
+
+    /// Whether `material` was given optics by `insert` or `set`.
+    pub fn is_assigned(&self, material: u8) -> bool {
+        self.assigned[material as usize / 64] & (1 << (material % 64)) != 0
+    }
+
+    /// Materials given optics so far.
+    pub fn len(&self) -> usize {
+        self.assigned
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum()
+    }
+
+    /// No material has been given optics.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn bounded(transport: MaterialTransport) -> MaterialTransport {
         // A diffuse reflector cannot create energy. Bound source magnitudes
         // as well so malformed host input cannot poison GPU moments.
-        self.entries[material as usize] = MaterialTransport {
+        MaterialTransport {
             diffuse: transport.diffuse.bounded(1.0),
             emission: transport.emission.bounded(1.0e12),
-        };
+        }
     }
 }
 
@@ -1067,7 +1131,7 @@ mod tests {
 
     #[test]
     fn material_updates_cannot_introduce_nan_or_amplifying_reflectance() {
-        let mut table = VoxelMaterialTransportTable::default();
+        let mut table = VoxelGiMaterials::default();
         table.set(
             7,
             MaterialTransport {

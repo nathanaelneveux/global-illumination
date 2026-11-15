@@ -473,6 +473,7 @@ fn edited_stride(
 
 #[cfg(test)]
 mod tests {
+    use super::super::GiVoxel;
     use super::super::input::{VoxelGiInput, dense_page};
     use super::super::telemetry::GiWorkTimings;
     use super::super::world::{AIR, PAGE_SIZE};
@@ -505,9 +506,9 @@ mod tests {
             .insert(page);
         {
             let mut input = app.world_mut().resource_mut::<VoxelGiInput>();
-            input.edit_voxel(position, Some(1));
-            input.edit_voxel(position, None);
-            input.edit_voxel(position, Some(2));
+            input.edit_voxel(position, GiVoxel::solid(1));
+            input.edit_voxel(position, GiVoxel::AIR);
+            input.edit_voxel(position, GiVoxel::solid(2));
         }
         app.update();
         app.world_mut()
@@ -524,7 +525,7 @@ mod tests {
         );
         {
             let mut input = app.world_mut().resource_mut::<VoxelGiInput>();
-            input.edit_voxel(position, None);
+            input.edit_voxel(position, GiVoxel::AIR);
             input.page_unloaded(page);
         }
         app.update();
@@ -535,7 +536,7 @@ mod tests {
         app.update();
         let runtime = app.world().resource::<VoxelGiRuntime>();
         assert!(runtime.dirty_pages.contains(&page));
-        let mut data = dense_page(page, |_| Some(1)).into_dense();
+        let mut data = dense_page(page, |_| GiVoxel::solid(1)).into_dense();
         apply_page_edits(&mut data, page * 32, &runtime.page_edits.0[&page]);
         assert_eq!(
             data[naadf::linear_index((position - page * 32).as_uvec3(), PAGE_SIZE)],
@@ -626,7 +627,9 @@ mod tests {
                 if page.y > 0 {
                     return PageSample::air();
                 }
-                dense_page(page, |voxel| (voxel.y < 3 + (voxel.x & 1)).then_some(1))
+                dense_page(page, |voxel| {
+                    (voxel.y < 3 + (voxel.x & 1)).then_some(GiVoxel::solid(1))
+                })
             }
         }
         let dense: Vec<_> = (0..MAX_DENSE_PAGES as i32 + 40)

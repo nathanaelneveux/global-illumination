@@ -39,7 +39,7 @@ fn native_view_discovery_keeps_thin_surfaces_without_growing_storage() {
         vec![(IVec3::ZERO, page)],
         &[],
     ));
-    let materials = VoxelMaterialTransportTable::default();
+    let materials = VoxelGiMaterials::default();
     let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
     gpu.submit_compact(
         scene,
@@ -273,7 +273,7 @@ fn native_coarse_page_faces_are_one_receiver_per_block() {
         vec![(IVec3::ZERO, page, 3)],
         &[],
     ));
-    let materials = VoxelMaterialTransportTable::default();
+    let materials = VoxelGiMaterials::default();
     let emitters = Arc::new(EmissionDistribution::build(&scene, &materials));
     gpu.submit_compact(
         scene,

@@ -432,7 +432,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             field.probes.insert(voxel, probe);
             field.pages.insert(IVec3::ZERO, vec![voxel]);
             field.update_indices(&[voxel], &HashMap::new());
-            let mut materials = VoxelMaterialTransportTable::default();
+            let mut materials = VoxelGiMaterials::default();
             materials.set(
                 4,
                 MaterialTransport {
@@ -604,7 +604,7 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
             field.pages.insert(page_of(voxel), vec![voxel]);
         }
         field.update_indices(&[near, far], &HashMap::new());
-        let mut materials = VoxelMaterialTransportTable::default();
+        let mut materials = VoxelGiMaterials::default();
         materials.set(
             4,
             MaterialTransport {

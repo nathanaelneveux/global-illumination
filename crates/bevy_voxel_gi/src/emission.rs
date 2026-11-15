@@ -1,7 +1,7 @@
 //! Power-weighted surface-light sampling, independent of camera and raster mesh.
 //! Paired with cosine path sampling using MIS, so tiny bright emitters do not
 //! depend on accidentally being hit by a hemisphere ray.
-use super::world::{AIR, FACE_OFFSETS, REGION_EDGE, TransportScene, VoxelMaterialTransportTable};
+use super::world::{AIR, FACE_OFFSETS, REGION_EDGE, TransportScene, VoxelGiMaterials};
 use bevy::prelude::*;
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ mod tree;
 
 pub(crate) struct EmissionCache {
     scene: Arc<TransportScene>,
-    materials: Arc<VoxelMaterialTransportTable>,
+    materials: Arc<VoxelGiMaterials>,
     pub distribution: Arc<EmissionDistribution>,
 }
 
@@ -33,7 +33,7 @@ impl EmissionCache {
     pub fn prepare(
         previous: Option<Self>,
         scene: Arc<TransportScene>,
-        materials: Arc<VoxelMaterialTransportTable>,
+        materials: Arc<VoxelGiMaterials>,
     ) -> Self {
         if let Some(mut previous) = previous
             && Arc::ptr_eq(&materials, &previous.materials)
@@ -61,7 +61,7 @@ impl EmissionCache {
 fn emission_geometry_changed(
     previous: &TransportScene,
     next: &TransportScene,
-    materials: &VoxelMaterialTransportTable,
+    materials: &VoxelGiMaterials,
 ) -> bool {
     let mut emitting = [0_u64; 4];
     for material in 0..256 {
@@ -88,7 +88,7 @@ fn emission_geometry_changed(
 }
 
 impl EmissionDistribution {
-    pub fn build(scene: &TransportScene, materials: &VoxelMaterialTransportTable) -> Self {
+    pub fn build(scene: &TransportScene, materials: &VoxelGiMaterials) -> Self {
         let weights: [f32; 256] =
             std::array::from_fn(|material| materials.get(material as u8).emission.max_element());
         let mut emitting = [0_u64; 4];
@@ -194,7 +194,7 @@ impl EmissionDistribution {
         voxel: IVec3,
         face: u32,
         material: u8,
-        materials: &VoxelMaterialTransportTable,
+        materials: &VoxelGiMaterials,
     ) -> f32 {
         if self.tree.is_empty() {
             return materials.get(material).emission.max_element() / self.total_weight.max(1e-20);
@@ -231,7 +231,7 @@ mod tests {
             vec![(IVec3::ZERO, voxels.clone())],
             &[],
         ));
-        let mut materials = VoxelMaterialTransportTable::default();
+        let mut materials = VoxelGiMaterials::default();
         materials.set(
             4,
             MaterialTransport {
@@ -287,7 +287,7 @@ mod tests {
             vec![(IVec3::ZERO, voxels)],
             &[],
         ));
-        let mut materials = VoxelMaterialTransportTable::default();
+        let mut materials = VoxelGiMaterials::default();
         materials.set(
             4,
             MaterialTransport {
@@ -327,7 +327,7 @@ mod tests {
             vec![(IVec3::ZERO, page.clone())],
             &[],
         ));
-        let mut materials = VoxelMaterialTransportTable::default();
+        let mut materials = VoxelGiMaterials::default();
         // A registered but absent emitter must not scan any mixed region.
         materials.set(
             4,
@@ -407,7 +407,7 @@ mod tests {
             vec![(IVec3::ZERO, page)],
             &[],
         );
-        let mut materials = VoxelMaterialTransportTable::default();
+        let mut materials = VoxelGiMaterials::default();
         materials.set(
             10,
             MaterialTransport {

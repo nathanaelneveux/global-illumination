@@ -11,7 +11,7 @@ const BATCH: usize = 768;
 fn sample(page: IVec3) -> PageSample {
     let surface = 5 + (page.x * 7 + page.z * 3).rem_euclid(3) - 1;
     if page.y < surface {
-        PageSample::coarse(PAGE_EDGE, vec![1])
+        PageSample::uniform(crate::GiVoxel::solid(1))
     } else if page.y > surface {
         PageSample::air()
     } else {
@@ -24,7 +24,7 @@ fn sample(page: IVec3) -> PageSample {
                 }
             }
         }
-        PageSample::full(cells)
+        PageSample::from_raw(1, cells)
     }
 }
 

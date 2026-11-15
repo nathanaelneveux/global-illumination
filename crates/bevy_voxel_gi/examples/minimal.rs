@@ -8,9 +8,9 @@
 //! image is saved first, so the check works with the screen asleep.)
 use bevy::prelude::*;
 use bevy_voxel_gi::{
-    MaterialPalette, MaterialTransport, PageSample, VoxelGiInput, VoxelGiMaterialData,
+    GiVoxel, MaterialTransport, PageSample, VoxelGiInput, VoxelGiMaterialData, VoxelGiMaterials,
     VoxelGiPlugin, VoxelGiSource, VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin,
-    VoxelMaterialTransportTable, VoxelSource, dense_page, standard_material,
+    VoxelSource, dense_page, standard_material,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -38,7 +38,7 @@ fn block(p: IVec3) -> Option<Block> {
 /// GI reads voxels through a `VoxelSource`: transport material IDs from the
 /// palette, per 32³ page.
 struct Room {
-    ids: [u8; 2],
+    ids: [GiVoxel; 2],
 }
 
 impl VoxelSource for Room {
@@ -66,13 +66,12 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     mut input: ResMut<VoxelGiInput>,
     mut source: ResMut<VoxelGiSource>,
-    mut table: ResMut<VoxelMaterialTransportTable>,
+    mut table: ResMut<VoxelGiMaterials>,
     data: Res<VoxelGiMaterialData>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<VoxelGiStandardMaterial>>,
 ) {
-    // Optics per block type; identical optics would share an ID.
-    let mut palette = MaterialPalette::new();
+    // Optics per block type; identical optics would share a material.
     let stone = MaterialTransport {
         diffuse: Vec3::splat(0.6),
         emission: Vec3::ZERO,
@@ -81,11 +80,7 @@ fn setup(
         diffuse: Vec3::splat(0.8),
         emission: Vec3::new(40.0, 28.0, 14.0),
     };
-    let ids = [
-        palette.insert(Block::Stone, stone).unwrap() as u8,
-        palette.insert(Block::Lamp, lamp).unwrap() as u8,
-    ];
-    *table = palette.table().clone();
+    let ids = [table.insert(stone).unwrap(), table.insert(lamp).unwrap()];
     source.set(Room { ids });
     input.page_loaded(IVec3::ZERO);
 

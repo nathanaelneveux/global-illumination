@@ -89,10 +89,7 @@ pub(super) struct SceneChanges {
     pub transport: Option<GeometryChange>,
 }
 
-fn emission_luminance(
-    materials: Option<&super::world::VoxelMaterialTransportTable>,
-    material: u16,
-) -> f32 {
+fn emission_luminance(materials: Option<&super::world::VoxelGiMaterials>, material: u16) -> f32 {
     if material == AIR {
         return 0.0;
     }
@@ -114,7 +111,7 @@ impl SceneChanges {
         previous: &TransportScene,
         next: &TransportScene,
         radius: i32,
-        materials: Option<&super::world::VoxelMaterialTransportTable>,
+        materials: Option<&super::world::VoxelGiMaterials>,
     ) -> Self {
         let changed = next.changed_regions(previous);
         if changed.is_empty() {

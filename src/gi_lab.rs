@@ -121,7 +121,7 @@ pub fn init_gi_off_resources(app: &mut App) {
     app.init_resource::<bevy_voxel_gi::VoxelGiStats>()
         .init_resource::<bevy_voxel_gi::VoxelGiDisplay>()
         .init_resource::<bevy_voxel_gi::VoxelGiEnvironment>()
-        .init_resource::<bevy_voxel_gi::VoxelMaterialTransportTable>()
+        .init_resource::<bevy_voxel_gi::VoxelGiMaterials>()
         .init_resource::<VoxelGiSettings>();
 }
 

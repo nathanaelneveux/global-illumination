@@ -43,7 +43,7 @@ use bevy::{
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
 use bevy_voxel_gi::{
-    MaterialTransport, VoxelGiMaterialData, VoxelGiPlugin, VoxelMaterialTransportTable,
+    MaterialTransport, VoxelGiMaterialData, VoxelGiPlugin, VoxelGiMaterials,
 };
 use bevy_voxel_gi_bvw::{
     GiFallbackVoxel, VoxelGiBvwPlugin, material_template, prepare_texture_array,
@@ -102,7 +102,7 @@ fn main() {
     let texture = app.world_mut().resource_mut::<Assets<Image>>().add(image);
     let material = material_template(texture, app.world().resource::<VoxelGiMaterialData>());
 
-    let mut optics = app.world_mut().resource_mut::<VoxelMaterialTransportTable>();
+    let mut optics = app.world_mut().resource_mut::<VoxelGiMaterials>();
     optics.set(STONE, MaterialTransport { diffuse: Vec3::splat(0.5), ..default() });
     optics.set(
         LAMP,
@@ -136,9 +136,9 @@ build the texture array:
    `texture_array_ready` first, reading the image with `Assets::get`: a
    mutable borrow re-uploads it to the GPU.
 
-Set each block's optical properties in `VoxelMaterialTransportTable` at
+Set each block's optical properties in `VoxelGiMaterials` at
 its BVW material index. If BVW calls your lamp material `1`, set `emission`
-on slot `1`. Skip `MaterialPalette` here: it assigns its own IDs. Every
+on slot `1`. Use `set` here, not `insert`, which picks its own IDs. Every
 solid BVW voxel is opaque to GI.
 
 ## Edits and levels of detail

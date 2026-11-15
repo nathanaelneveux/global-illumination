@@ -29,6 +29,7 @@ wgpu = { version = "30", default-features = false, features = ["std", "wgsl"] }
 naga = { version = "30", features = ["wgsl-in"] }
 serde = { version = "1", features = ["derive"] }
 ron = "0.11"
+bytemuck = { version = "1.25", features = ["derive", "extern_crate_alloc"] }
 
 [workspace.lints.clippy]
 too_many_arguments = "allow"

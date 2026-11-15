@@ -1,7 +1,7 @@
 //! Deterministic, opt-in long-range daylight fixture. The host renderer and
 //! offline transport studies share this exact geometry and optical palette.
 use bevy::prelude::*;
-use bevy_voxel_gi::{MaterialTransport, VoxelMaterialTransportTable};
+use bevy_voxel_gi::{MaterialTransport, VoxelGiMaterials};
 use bevy_voxel_world::prelude::WorldVoxel;
 
 pub const SIZE: IVec3 = IVec3::new(256, 256, 512);
@@ -58,8 +58,8 @@ pub fn voxel(p: IVec3) -> WorldVoxel<u8> {
     WorldVoxel::Solid(if (p.y / 16) % 4 == 2 { 2 } else { 1 })
 }
 
-pub fn materials() -> VoxelMaterialTransportTable {
-    let mut table = VoxelMaterialTransportTable::default();
+pub fn materials() -> VoxelGiMaterials {
+    let mut table = VoxelGiMaterials::default();
     for (id, color) in [
         (1, Vec3::new(0.55, 0.20, 0.09)),
         (2, Vec3::new(0.65, 0.38, 0.23)),

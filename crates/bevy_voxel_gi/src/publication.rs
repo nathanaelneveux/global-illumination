@@ -198,7 +198,7 @@ fn page_matches(
     field: &ReceiverField,
     page: IVec3,
     descriptors: &[SurfaceProbeDescriptor],
-    materials: &super::world::VoxelMaterialTransportTable,
+    materials: &super::world::VoxelGiMaterials,
 ) -> bool {
     field.pages.get(&page).is_some_and(|current| {
         current.len() == descriptors.len()

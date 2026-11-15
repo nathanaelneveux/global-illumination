@@ -6,9 +6,9 @@
 //! `cargo run -p bevy_voxel_gi --example edits`
 use bevy::prelude::*;
 use bevy_voxel_gi::{
-    MaterialPalette, MaterialTransport, PageSample, VoxelGiInput, VoxelGiMaterialData,
+    GiVoxel, MaterialTransport, PageSample, VoxelGiInput, VoxelGiMaterialData, VoxelGiMaterials,
     VoxelGiPlugin, VoxelGiSource, VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin,
-    VoxelMaterialTransportTable, VoxelSource, dense_page, standard_material,
+    VoxelSource, dense_page, standard_material,
 };
 
 /// The room: a floor, two walls and a ceiling, open towards +x and +z.
@@ -30,7 +30,7 @@ fn opening_voxels() -> impl Iterator<Item = IVec3> {
 /// `VoxelGiInput::edit_voxel` and stay applied on top of this source, so
 /// it never needs rebuilding.
 struct Room {
-    stone: u8,
+    stone: GiVoxel,
 }
 
 impl VoxelSource for Room {
@@ -43,7 +43,7 @@ impl VoxelSource for Room {
 struct Opening {
     open: bool,
     timer: Timer,
-    stone: u8,
+    stone: GiVoxel,
     cube: Handle<Mesh>,
     material: Handle<VoxelGiStandardMaterial>,
     /// The window's cube entities while it is closed.
@@ -62,18 +62,17 @@ fn setup(
     mut commands: Commands,
     mut input: ResMut<VoxelGiInput>,
     mut source: ResMut<VoxelGiSource>,
-    mut table: ResMut<VoxelMaterialTransportTable>,
+    mut table: ResMut<VoxelGiMaterials>,
     gi_bindings: Res<VoxelGiMaterialData>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<VoxelGiStandardMaterial>>,
 ) {
-    let mut palette = MaterialPalette::new();
-    let optics = MaterialTransport {
-        diffuse: Vec3::splat(0.6),
-        emission: Vec3::ZERO,
-    };
-    let stone_id = palette.insert("stone", optics).unwrap() as u8;
-    *table = palette.table().clone();
+    let stone_id = table
+        .insert(MaterialTransport {
+            diffuse: Vec3::splat(0.6),
+            ..default()
+        })
+        .unwrap();
     source.set(Room { stone: stone_id });
     input.page_loaded(IVec3::ZERO);
 
@@ -147,9 +146,12 @@ fn toggle_window(
     }
     opening.open = !opening.open;
     for p in opening_voxels() {
-        // `None` is air; `Some(id)` a solid voxel of that material.
-        let material = (!opening.open).then_some(opening.stone);
-        input.edit_voxel(p, material);
+        let voxel = if opening.open {
+            GiVoxel::AIR
+        } else {
+            opening.stone
+        };
+        input.edit_voxel(p, voxel);
     }
     if opening.open {
         for entity in opening.cubes.drain(..) {

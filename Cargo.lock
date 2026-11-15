@@ -2215,6 +2215,7 @@ name = "bevy_voxel_gi"
 version = "0.1.1"
 dependencies = [
  "bevy",
+ "bytemuck",
  "naga",
  "ron 0.11.0",
  "serde",

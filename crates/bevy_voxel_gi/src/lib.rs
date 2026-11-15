@@ -18,7 +18,7 @@
 //!
 //! | Task | API |
 //! | --- | --- |
-//! | Assign material IDs and optical properties | [`MaterialPalette`], [`VoxelMaterialTransportTable::set`], [`MaterialTransport`], [`AIR`] |
+//! | Give blocks optics | [`VoxelGiMaterials::insert`], [`MaterialTransport`], [`GiVoxel`], [`VoxelGiMaterials::set`] |
 //! | Make a glowing block | [`MaterialTransport::emission`] |
 //! | Light a scene with the sun, a point light or a sky | [Bevy directional light](DirectionalLight), [Bevy point light](PointLight), [`VoxelGiEnvironment`] |
 //! | Add a light for GI | [`VoxelGiEmitter`] |
@@ -49,7 +49,6 @@ mod history;
 mod input;
 mod naadf;
 mod pages;
-mod palette;
 mod publication;
 mod reconstruction;
 pub(crate) mod render;
@@ -66,6 +65,7 @@ mod statistics;
 mod sun_changes;
 mod telemetry;
 mod tracer;
+mod voxel;
 mod work;
 mod world;
 
@@ -80,12 +80,12 @@ use bevy::tasks::Task;
 
 pub use demand::VoxelGiDemand;
 use field::ReceiverField;
-pub use palette::{MaterialPalette, PaletteFull};
 pub use settings::{
     FarTierMeasure, FarTierSettings, TransportSettings, VoxelGiQuality, VoxelGiSettings,
 };
 pub use sources::{VoxelGiEmitter, VoxelGiEnvironment};
-pub use world::{AIR, MaterialTransport, VoxelMaterialTransportTable};
+pub use voxel::{GiVoxel, MaterialsFull};
+pub use world::{MaterialTransport, VoxelGiMaterials};
 
 use dispatch::{apply_trace_task, start_trace_task};
 pub use gpu::view::ViewReceipts;
@@ -130,7 +130,7 @@ impl Plugin for VoxelGiPlugin {
             .init_resource::<GiWorkTimings>()
             .init_resource::<VoxelGiSettings>()
             .init_resource::<VoxelGiEnvironment>()
-            .init_resource::<VoxelMaterialTransportTable>()
+            .init_resource::<VoxelGiMaterials>()
             .init_resource::<VoxelGiDemand>()
             .add_systems(
                 Update,
@@ -256,7 +256,7 @@ pub struct SchedulerStats {
 struct VoxelGiRuntime {
     scene: Arc<TransportScene>,
     sources: TransportSources,
-    materials: Arc<VoxelMaterialTransportTable>,
+    materials: Arc<VoxelGiMaterials>,
     transport: TransportSettings,
     loaded_pages: HashSet<IVec3>,
     /// Bounds of `loaded_pages`: the host's declared geometry interest.
@@ -324,7 +324,7 @@ impl Default for VoxelGiRuntime {
         Self {
             scene: Arc::new(TransportScene::default()),
             sources: TransportSources::default(),
-            materials: Arc::new(VoxelMaterialTransportTable::default()),
+            materials: Arc::new(VoxelGiMaterials::default()),
             transport: TransportSettings::default(),
             loaded_pages: HashSet::new(),
             interest: default(),

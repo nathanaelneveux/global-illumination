@@ -1,6 +1,6 @@
 //! Host-only experiment selection. Transport code never branches on a scene.
 use bevy::prelude::*;
-use bevy_voxel_gi::VoxelMaterialTransportTable;
+use bevy_voxel_gi::VoxelGiMaterials;
 use bevy_voxel_world::prelude::WorldVoxel;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -40,7 +40,7 @@ impl ScenePreset {
             Self::Lod => Some(crate::lod_scene::voxel(p)),
         }
     }
-    pub fn materials(self) -> Option<VoxelMaterialTransportTable> {
+    pub fn materials(self) -> Option<VoxelGiMaterials> {
         match self {
             Self::Terrain => None,
             Self::Cave => Some(crate::cave_scene::materials()),

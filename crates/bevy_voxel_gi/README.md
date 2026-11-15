@@ -40,10 +40,10 @@ stone to see the difference.
 Start with a layer of stone and give GI the same surface you draw.
 
 1. **Give blocks optical properties.** A `MaterialTransport` describes
-   diffuse reflectance and emission. Use `MaterialPalette` to assign
-   transport IDs and copy its table into `VoxelMaterialTransportTable`.
+   diffuse reflectance and emission. `VoxelGiMaterials::insert` gives it a
+   `GiVoxel` material; identical optics share one.
 2. **Provide a voxel snapshot.** Put your `VoxelSource` in `VoxelGiSource`.
-   Use `dense_page` to return a material per voxel and `None` for air.
+   Use `dense_page` to return a `GiVoxel` per voxel (or `None` for air).
    Worker threads read this snapshot.
 3. **Declare the loaded pages.** Call `VoxelGiInput::page_loaded` for each
    32³ page. Page `(1, 0, 0)` starts at voxel `(32, 0, 0)`.
@@ -57,9 +57,9 @@ Start with a layer of stone and give GI the same surface you draw.
 ```rust,no_run
 use bevy::prelude::*;
 use bevy_voxel_gi::{
-    MaterialPalette, MaterialTransport, PageSample, VoxelGiInput, VoxelGiMaterialData,
+    GiVoxel, MaterialTransport, PageSample, VoxelGiInput, VoxelGiMaterialData,
     VoxelGiPlugin, VoxelGiSource, VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin,
-    VoxelMaterialTransportTable, VoxelSource, dense_page, standard_material,
+    VoxelGiMaterials, VoxelSource, dense_page, standard_material,
 };
 
 fn main() {
@@ -73,36 +73,33 @@ fn main() {
 /// GI reads your world through a `VoxelSource`, one 32³ page at a time, on
 /// worker threads: give it an immutable snapshot of your voxel data.
 struct Flat {
-    stone: u8,
+    stone: GiVoxel,
 }
 
 impl VoxelSource for Flat {
-    // `resample` asks for authoritative data after a change GI wasn't told
-    // the details of; a source with one representation can ignore it.
     fn sample_page(&self, page: IVec3) -> PageSample {
-        // A transport material per voxel; `None` is air.
+        // A material per voxel; `None` is air.
         dense_page(page, |voxel| (voxel.y < 4).then_some(self.stone))
     }
 }
 
 fn setup(
     mut commands: Commands,
-    mut palette_table: ResMut<VoxelMaterialTransportTable>,
+    mut gi_materials: ResMut<VoxelGiMaterials>,
     mut source: ResMut<VoxelGiSource>,
     mut input: ResMut<VoxelGiInput>,
     gi_bindings: Res<VoxelGiMaterialData>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<VoxelGiStandardMaterial>>,
 ) {
-    // 1. Optics. The palette gives each distinct optics a transport ID
-    //    (blocks with identical optics share one); GI reads the table.
-    let mut palette = MaterialPalette::new();
-    let stone = MaterialTransport {
-        diffuse: Vec3::splat(0.6),
-        emission: Vec3::ZERO, // a lamp would set this
-    };
-    let stone = palette.insert("stone", stone).unwrap() as u8;
-    *palette_table = palette.table().clone();
+    // 1. Optics. Each distinct optics gets a material (blocks with
+    //    identical optics share one).
+    let stone = gi_materials
+        .insert(MaterialTransport {
+            diffuse: Vec3::splat(0.6),
+            ..default() // a lamp would set `emission`
+        })
+        .unwrap();
 
     // 2. Voxels: the source GI samples from.
     source.set(Flat { stone });

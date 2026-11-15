@@ -61,7 +61,7 @@ impl GpuTracer {
     pub(crate) fn needs_model(
         &self,
         sources: &TransportSources,
-        materials: &VoxelMaterialTransportTable,
+        materials: &VoxelGiMaterials,
         transport: super::super::TransportSettings,
     ) -> bool {
         self.sources.as_ref() != Some(sources)

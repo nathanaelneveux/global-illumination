@@ -816,7 +816,7 @@ impl ResidentAccumulator {
     pub(super) fn set_materials(
         &mut self,
         context: &GpuTransportDevice,
-        materials: &VoxelMaterialTransportTable,
+        materials: &VoxelGiMaterials,
     ) -> Result<(), String> {
         let w = Vec3::new(0.2126, 0.7152, 0.0722);
         let values: Vec<[f32; 2]> = (0..=u8::MAX)
@@ -1573,7 +1573,7 @@ mod tests {
         gpu.enable_resident().unwrap();
         let (scene, mut sources, probes) = super::super::tests::open_floor_fixture();
         sources.environment = Vec3::new(0.3, 0.1, 0.8);
-        let materials = VoxelMaterialTransportTable::default();
+        let materials = VoxelGiMaterials::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let mut work = TraceWork::from_probes(&probes[..8]);
         let trace = |gpu: &mut GpuTracer, work: &mut TraceWork| {
@@ -1633,7 +1633,7 @@ mod tests {
         let mut gpu = super::super::tests::native_tracer();
         gpu.enable_resident().unwrap();
         let (scene, sources, probes) = super::super::tests::open_floor_fixture();
-        let materials = VoxelMaterialTransportTable::default();
+        let materials = VoxelGiMaterials::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let mut work = TraceWork::from_probes(&probes[264..265]);
         work.faces[0].samples = 4096;
@@ -1681,7 +1681,7 @@ mod tests {
         let mut gpu = super::super::tests::native_tracer();
         gpu.enable_resident().unwrap();
         let (scene, sources, probes) = super::super::tests::open_floor_fixture();
-        let materials = VoxelMaterialTransportTable::default();
+        let materials = VoxelGiMaterials::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let mut work = TraceWork::from_probes(&probes[..1]);
         work.measured_retention = 1.0;
@@ -1739,7 +1739,7 @@ mod tests {
         let mut gpu = super::super::tests::native_tracer();
         gpu.enable_resident().unwrap();
         let (scene, sources, probes) = super::super::tests::open_floor_fixture();
-        let materials = VoxelMaterialTransportTable::default();
+        let materials = VoxelGiMaterials::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let run = |gpu: &mut GpuTracer, work: &mut TraceWork| {
             work.picks = 64;
@@ -1831,7 +1831,7 @@ mod tests {
         let mut gpu = super::super::tests::native_tracer();
         gpu.enable_resident().unwrap();
         let (scene, sources, probes) = super::super::tests::open_floor_fixture();
-        let materials = VoxelMaterialTransportTable::default();
+        let materials = VoxelGiMaterials::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let mut pending = TraceWork::from_probes(&probes[..1]);
         pending.batch_id = 1;
@@ -1876,7 +1876,7 @@ mod tests {
         let mut gpu = super::super::tests::native_tracer();
         gpu.enable_resident().unwrap();
         let (scene, sources, mut probes) = super::super::tests::open_floor_fixture();
-        let materials = VoxelMaterialTransportTable::default();
+        let materials = VoxelGiMaterials::default();
         let emitters = Arc::new(EmissionDistribution::default());
         for (i, probe) in probes.iter_mut().enumerate() {
             for face in 0..6 {
@@ -1993,7 +1993,7 @@ mod tests {
             gpu.enable_resident().unwrap();
             gpu.without_footprints();
             let (scene, sources, probes) = super::super::tests::open_floor_fixture();
-            let materials = VoxelMaterialTransportTable::default();
+            let materials = VoxelGiMaterials::default();
             let emitters = Arc::new(EmissionDistribution::default());
             let trace =
                 |gpu: &mut GpuTracer, probes: &[SurfaceProbe], events: Vec<RetentionEvent>| {
@@ -2070,7 +2070,7 @@ mod tests {
         let mut gpu = super::super::tests::native_tracer();
         gpu.enable_resident().unwrap();
         let (scene, sources, probes) = super::super::tests::open_floor_fixture();
-        let materials = VoxelMaterialTransportTable::default();
+        let materials = VoxelGiMaterials::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let focus = IVec3::new(3, 5, 3);
         let mut batch = 0u32;
@@ -2207,7 +2207,7 @@ mod tests {
         use crate::naadf::{linear_index, volume_len};
         use crate::sources::DirectionalTransportLight;
         use crate::world::{AIR, PAGE_SIZE};
-        let materials = VoxelMaterialTransportTable::default();
+        let materials = VoxelGiMaterials::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let sources = TransportSources {
             directional: vec![DirectionalTransportLight {
@@ -2383,7 +2383,7 @@ mod tests {
         gpu.trace_compact(
             scene,
             &sources,
-            &VoxelMaterialTransportTable::default(),
+            &VoxelGiMaterials::default(),
             &mut work,
             4,
             &emitters,
@@ -2410,7 +2410,7 @@ mod tests {
         gpu.enable_resident().unwrap();
         gpu.without_footprints();
         let (scene, sources, probes) = super::super::tests::open_floor_fixture();
-        let materials = VoxelMaterialTransportTable::default();
+        let materials = VoxelGiMaterials::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let trace = |gpu: &mut GpuTracer, probes: &[SurfaceProbe], events| {
             let mut work = TraceWork::from_probes(probes);
@@ -2534,7 +2534,7 @@ mod tests {
         candidate.enable_resident().unwrap();
         let (mut scene, mut sources, initial) = super::super::tests::open_floor_fixture();
         sources.environment = Vec3::new(0.3, 0.1, 0.8);
-        let materials = VoxelMaterialTransportTable::default();
+        let materials = VoxelGiMaterials::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let mut expected = initial.clone();
         let mut actual = initial;
@@ -2686,7 +2686,7 @@ mod tests {
         let mut resident = GpuTracer::new(control.context.clone()).unwrap();
         resident.enable_resident().unwrap();
         let (scene, sources, _) = super::super::tests::open_floor_fixture();
-        let materials = VoxelMaterialTransportTable::default();
+        let materials = VoxelGiMaterials::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let mut a = SurfaceProbe::new(IVec3::new(0, 4, 0), 12);
         let mut b = a.clone();
@@ -2754,7 +2754,7 @@ mod tests {
         let mut candidate = GpuTracer::new(control.context.clone()).unwrap();
         candidate.enable_resident().unwrap();
         let (scene, mut sources, initial) = super::super::tests::open_floor_fixture();
-        let materials = VoxelMaterialTransportTable::default();
+        let materials = VoxelGiMaterials::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let mut pending = Vec::new();
         // Batches each probe has had in its current slot: GPU state carries

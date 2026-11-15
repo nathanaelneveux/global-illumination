@@ -10,7 +10,8 @@ pub use material::{
 use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use bevy_voxel_gi::{
-    PageSample, VoxelGiInput, VoxelGiSource, VoxelGiSystems, VoxelSource, coarse_page, dense_page,
+    GiVoxel, PageSample, VoxelGiInput, VoxelGiSource, VoxelGiSystems, VoxelSource, coarse_page,
+    dense_page,
 };
 use bevy_voxel_world::prelude::*;
 use std::marker::PhantomData;
@@ -80,8 +81,8 @@ impl BvwVoxelEdits for VoxelGiInput {
     ) {
         world.set_voxel(position, voxel);
         match voxel {
-            WorldVoxel::Solid(material) => self.edit_voxel(position, Some(material)),
-            WorldVoxel::Air => self.edit_voxel(position, None),
+            WorldVoxel::Solid(material) => self.edit_voxel(position, GiVoxel::solid(material)),
+            WorldVoxel::Air => self.edit_voxel(position, GiVoxel::AIR),
             WorldVoxel::Unset => self.mark_voxel(position),
         }
     }
@@ -288,10 +289,11 @@ struct BvwSource<C: VoxelWorldConfig<MaterialIndex = u8>> {
     config: C,
 }
 
-fn solid(voxel: WorldVoxel<u8>) -> Option<u8> {
+/// BVW's material indices are GI's transport materials, unchanged.
+fn solid(voxel: WorldVoxel<u8>) -> GiVoxel {
     match voxel {
-        WorldVoxel::Solid(material) => Some(material),
-        WorldVoxel::Air | WorldVoxel::Unset => None,
+        WorldVoxel::Solid(material) => GiVoxel::solid(material),
+        WorldVoxel::Air | WorldVoxel::Unset => GiVoxel::AIR,
     }
 }
 
@@ -350,8 +352,7 @@ fn sample_page(
     // covers the position there yet: keep the chunk's block. Only this
     // resampled page expands; ordinary ingestion stays strided.
     dense_page(page, |position| match voxels(position) {
-        // Solid IDs fit u8; PageSample's air value does not.
-        WorldVoxel::Unset => u8::try_from(materials.material((position - origin).as_uvec3())).ok(),
+        WorldVoxel::Unset => materials.voxel((position - origin).as_uvec3()),
         voxel => solid(voxel),
     })
 }
@@ -624,8 +625,8 @@ mod tests {
             for x in [0, 5, 31] {
                 let block = (origin.x + x as i32).div_euclid(stride as i32) * stride as i32;
                 assert_eq!(
-                    sample.material(UVec3::new(x, 7, 3)),
-                    block.rem_euclid(200) as u16,
+                    sample.voxel(UVec3::new(x, 7, 3)),
+                    GiVoxel::solid(block.rem_euclid(200) as u8),
                     "level {lod}, x {x}"
                 );
             }
@@ -661,13 +662,15 @@ mod tests {
             })
             .unwrap();
         let mut expected = VoxelGiInput::tracked();
-        expected.edit_voxel(position, Some(2));
+        expected.edit_voxel(position, GiVoxel::solid(2));
         expected.mark_voxel(IVec3::ZERO);
         assert_eq!(input, expected);
     }
 
     fn stored_voxel(page: &PageSample, local: UVec3) -> WorldVoxel<u8> {
-        u8::try_from(page.material(local)).map_or(WorldVoxel::Air, WorldVoxel::Solid)
+        page.voxel(local)
+            .material()
+            .map_or(WorldVoxel::Air, WorldVoxel::Solid)
     }
 
     #[test]
@@ -680,7 +683,7 @@ mod tests {
                     ((p - origin).as_uvec3() / stride)
                         .element_sum()
                         .is_multiple_of(2)
-                        .then_some(2)
+                        .then_some(GiVoxel::solid(2))
                 });
                 // Positions no edit or chunk answers are Unset, not holes in
                 // the coarse cell.
@@ -694,8 +697,8 @@ mod tests {
                 for i in 0..32u32 * 32 * 32 {
                     let local = UVec3::new(i % 32, i / 32 % 32, i / 1024);
                     assert_eq!(
-                        resampled.material(local),
-                        stored.material(local),
+                        resampled.voxel(local),
+                        stored.voxel(local),
                         "stride {stride}, local {local}"
                     );
                 }
@@ -718,7 +721,9 @@ mod tests {
                 world.set_voxel(added, WorldVoxel::Solid(0));
             })
             .unwrap();
-        let stored = coarse_page(key, 8, |p| (p.x - origin.x < 8).then_some(2));
+        let stored = coarse_page(key, 8, |p| {
+            (p.x - origin.x < 8).then_some(GiVoxel::solid(2))
+        });
         // Check both the current write buffer and the persisted edit map.
         for flushed in [false, true] {
             if flushed {

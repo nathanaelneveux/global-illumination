@@ -33,8 +33,8 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{TextureFormat, TextureUsages};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 use bevy_voxel_gi::{
-    MaterialTransport, VoxelGiEmitter, VoxelGiInput, VoxelGiSettings, VoxelGiStats,
-    VoxelMaterialTransportTable,
+    MaterialTransport, VoxelGiEmitter, VoxelGiInput, VoxelGiMaterials, VoxelGiSettings,
+    VoxelGiStats,
 };
 use bevy_voxel_gi_bvw::BvwVoxelEdits;
 use bevy_voxel_world::prelude::*;
@@ -206,7 +206,7 @@ pub(super) fn run_validation(
     mut commands: Commands,
     handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
     mut display: ResMut<bevy_voxel_gi::VoxelGiDisplay>,
-    mut transport_materials: ResMut<VoxelMaterialTransportTable>,
+    mut transport_materials: ResMut<VoxelGiMaterials>,
     asset_context: (
         Res<TemplateAssets>,
         Res<AssetServer>,
