@@ -299,7 +299,20 @@ impl<C> VoxelSource for BvwSource<C>
 where
     C: VoxelWorldConfig<MaterialIndex = u8> + GiFallbackVoxel + Send + Sync + 'static,
 {
-    fn sample_page(&self, page: IVec3, resample: bool) -> PageSample {
+    fn sample_page(&self, page: IVec3) -> PageSample {
+        self.sample(page, false)
+    }
+
+    fn resample_page(&self, page: IVec3) -> PageSample {
+        self.sample(page, true)
+    }
+}
+
+impl<C> BvwSource<C>
+where
+    C: VoxelWorldConfig<MaterialIndex = u8> + GiFallbackVoxel,
+{
+    fn sample(&self, page: IVec3, resample: bool) -> PageSample {
         let materials = finest_published(page, &*self.chunks).map(|chunk| {
             sample_chunk(page, &chunk, |position| {
                 self.config.fallback_voxel(position)
@@ -382,14 +395,14 @@ fn refresh_source<C>(
 ) where
     C: VoxelWorldConfig<MaterialIndex = u8> + GiFallbackVoxel + Resource + Clone,
 {
-    if source.0.is_some() && !input.is_changed() && !config.is_changed() {
+    if source.get().is_some() && !input.is_changed() && !config.is_changed() {
         return;
     }
-    source.0 = Some(Arc::new(BvwSource {
+    source.set(BvwSource {
         chunks: published_chunks(&world),
         voxels: world.get_voxel_fn(),
         config: config.clone(),
-    }));
+    });
 }
 
 #[cfg(test)]

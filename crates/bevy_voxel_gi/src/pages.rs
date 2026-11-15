@@ -254,7 +254,7 @@ pub(super) fn start_scene_task(
     {
         return;
     }
-    let Some(source) = source.0.clone() else {
+    let Some(source) = source.get().cloned() else {
         return;
     };
 
@@ -332,7 +332,11 @@ pub(super) fn start_scene_task(
                 break;
             }
             let origin = page * PAGE_EDGE as i32;
-            let sample = source.sample_page(page, resample);
+            let sample = if resample {
+                source.resample_page(page)
+            } else {
+                source.sample_page(page)
+            };
             let mut stride = sample.stride().trailing_zeros() as u8;
             let page_edits = edits.get(&page);
             let voxels = match sample.into_voxels() {
@@ -618,7 +622,7 @@ mod tests {
         // resample flags, unless unloaded meanwhile.
         struct Source;
         impl VoxelSource for Source {
-            fn sample_page(&self, page: IVec3, _: bool) -> PageSample {
+            fn sample_page(&self, page: IVec3) -> PageSample {
                 if page.y > 0 {
                     return PageSample::air();
                 }
@@ -632,7 +636,7 @@ mod tests {
             .map(|i| IVec3::new(i % 40, 1 + i / 1000, i / 40 % 25))
             .collect();
         let mut app = app(true);
-        app.insert_resource(VoxelGiSource(Some(Arc::new(Source))));
+        app.insert_resource(VoxelGiSource::new(Source));
         {
             let mut runtime = app.world_mut().resource_mut::<VoxelGiRuntime>();
             // The dense budget alone, whatever this machine's sampling speed.
@@ -723,7 +727,7 @@ mod tests {
         use bevy::ecs::system::RunSystemOnce;
         struct Slow;
         impl VoxelSource for Slow {
-            fn sample_page(&self, _: IVec3, _: bool) -> PageSample {
+            fn sample_page(&self, _: IVec3) -> PageSample {
                 std::thread::sleep(std::time::Duration::from_millis(2));
                 PageSample::air()
             }
@@ -732,7 +736,7 @@ mod tests {
             .map(|i| IVec3::new(i, 0, 0))
             .collect();
         let mut app = app(true);
-        app.insert_resource(VoxelGiSource(Some(Arc::new(Slow))));
+        app.insert_resource(VoxelGiSource::new(Slow));
         {
             let mut runtime = app.world_mut().resource_mut::<VoxelGiRuntime>();
             runtime.scene_sample_budget = std::time::Duration::from_millis(20);
@@ -772,7 +776,7 @@ mod tests {
         // the focus, so only edit-first ordering gets it into this build.
         struct Slow;
         impl VoxelSource for Slow {
-            fn sample_page(&self, _: IVec3, _: bool) -> PageSample {
+            fn sample_page(&self, _: IVec3) -> PageSample {
                 std::thread::sleep(std::time::Duration::from_millis(2));
                 PageSample::air()
             }
@@ -780,7 +784,7 @@ mod tests {
         let pages: Vec<_> = (0..40).map(|i| IVec3::new(i, 0, 0)).collect();
         let edited = IVec3::new(39, 0, 0);
         let mut app = app(true);
-        app.insert_resource(VoxelGiSource(Some(Arc::new(Slow))));
+        app.insert_resource(VoxelGiSource::new(Slow));
         {
             let mut runtime = app.world_mut().resource_mut::<VoxelGiRuntime>();
             runtime.scene_sample_budget = std::time::Duration::from_millis(10);

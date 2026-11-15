@@ -61,7 +61,6 @@ use bevy_voxel_gi::{
     VoxelGiPlugin, VoxelGiSource, VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin,
     VoxelMaterialTransportTable, VoxelSource, dense_page, standard_material,
 };
-use std::sync::Arc;
 
 fn main() {
     App::new()
@@ -80,7 +79,7 @@ struct Flat {
 impl VoxelSource for Flat {
     // `resample` asks for authoritative data after a change GI wasn't told
     // the details of; a source with one representation can ignore it.
-    fn sample_page(&self, page: IVec3, _resample: bool) -> PageSample {
+    fn sample_page(&self, page: IVec3) -> PageSample {
         // A transport material per voxel; `None` is air.
         dense_page(page, |voxel| (voxel.y < 4).then_some(self.stone))
     }
@@ -106,7 +105,7 @@ fn setup(
     *palette_table = palette.table().clone();
 
     // 2. Voxels: the source GI samples from.
-    source.0 = Some(Arc::new(Flat { stone }));
+    source.set(Flat { stone });
 
     // 3. Pages: the 32³ pages GI knows about are its whole world. Tell it
     //    as they load and unload (`page_unloaded`); report edits with

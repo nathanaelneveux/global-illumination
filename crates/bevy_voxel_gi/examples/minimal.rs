@@ -12,7 +12,6 @@ use bevy_voxel_gi::{
     VoxelGiPlugin, VoxelGiSource, VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin,
     VoxelMaterialTransportTable, VoxelSource, dense_page, standard_material,
 };
-use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Block {
@@ -43,7 +42,7 @@ struct Room {
 }
 
 impl VoxelSource for Room {
-    fn sample_page(&self, page: IVec3, _resample: bool) -> PageSample {
+    fn sample_page(&self, page: IVec3) -> PageSample {
         if page != IVec3::ZERO {
             return PageSample::air();
         }
@@ -87,7 +86,7 @@ fn setup(
         palette.insert(Block::Lamp, lamp).unwrap() as u8,
     ];
     *table = palette.table().clone();
-    source.0 = Some(Arc::new(Room { ids }));
+    source.set(Room { ids });
     input.page_loaded(IVec3::ZERO);
 
     let cube = meshes.add(Cuboid::from_length(1.0));

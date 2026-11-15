@@ -116,11 +116,39 @@ impl VoxelGiInput {
 /// data changes. GI applies exact edits reported through [`VoxelGiInput`]
 /// on top of that snapshot. The page can reach the GPU after sampling and
 /// scene construction finish.
+///
+/// A closure `Fn(IVec3) -> PageSample` is a source:
+///
+/// ```
+/// # use bevy::prelude::*;
+/// # use bevy_voxel_gi::{VoxelGiSource, dense_page};
+/// // A stone floor at y = 0 (material 0), air elsewhere.
+/// let source = VoxelGiSource::new(|page: IVec3| {
+///     dense_page(page, |voxel| (voxel.y == 0).then_some(0))
+/// });
+/// # assert!(source.get().is_some());
+/// ```
 pub trait VoxelSource: Send + Sync + 'static {
-    /// The page's material ids, at full resolution or at the stride the host
-    /// stores it at (`PageSample`). `resample` asks for authoritative
-    /// contents after an untracked change, not a cached fast path.
-    fn sample_page(&self, page: IVec3, resample: bool) -> PageSample;
+    /// The page's voxels, at full resolution or at the stride the host
+    /// stores it at (`PageSample`).
+    fn sample_page(&self, page: IVec3) -> PageSample;
+
+    /// The page's authoritative contents after a change GI was not told the
+    /// details of (`page_changed`, `mark_voxel`, `resample_page`). Defaults to
+    /// `sample_page`; override it only when `sample_page` reads a cache or
+    /// a coarser copy that can lag the host's data.
+    fn resample_page(&self, page: IVec3) -> PageSample {
+        self.sample_page(page)
+    }
+}
+
+impl<F> VoxelSource for F
+where
+    F: Fn(IVec3) -> PageSample + Send + Sync + 'static,
+{
+    fn sample_page(&self, page: IVec3) -> PageSample {
+        self(page)
+    }
 }
 
 /// A page's voxels as the host stores them: `(32 / stride)³` cells, x
@@ -219,9 +247,53 @@ impl PageSample {
     }
 }
 
-/// The host's current `VoxelSource`. Scene builds wait until one is present.
+/// The host's current [`VoxelSource`]. Scene builds wait until one is present.
+///
+/// Insert one with [`Self::new`], or replace the source in place with
+/// [`Self::set`] when the host's data is a new snapshot. Scene builds already
+/// running keep the source they started with.
 #[derive(Resource, Default, Clone)]
-pub struct VoxelGiSource(pub Option<Arc<dyn VoxelSource>>);
+pub struct VoxelGiSource(Option<Arc<dyn VoxelSource>>);
+
+impl VoxelGiSource {
+    /// A resource holding `source`.
+    pub fn new(source: impl VoxelSource) -> Self {
+        Self(Some(Arc::new(source)))
+    }
+
+    /// A resource holding a source the host already shares.
+    pub fn from_shared(source: Arc<dyn VoxelSource>) -> Self {
+        Self(Some(source))
+    }
+
+    /// Replace the source; later scene builds sample this one.
+    pub fn set(&mut self, source: impl VoxelSource) {
+        self.0 = Some(Arc::new(source));
+    }
+
+    /// Replace the source with one the host already shares.
+    pub fn set_shared(&mut self, source: Arc<dyn VoxelSource>) {
+        self.0 = Some(source);
+    }
+
+    /// Remove the source: scene builds wait until another is set.
+    pub fn clear(&mut self) {
+        self.0 = None;
+    }
+
+    /// The current source, if any.
+    pub fn get(&self) -> Option<&Arc<dyn VoxelSource>> {
+        self.0.as_ref()
+    }
+}
+
+impl std::fmt::Debug for VoxelGiSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("VoxelGiSource")
+            .field(&self.0.as_ref().map(|_| "dyn VoxelSource"))
+            .finish()
+    }
+}
 
 /// Build a full-resolution page by calling the lookup at each world voxel.
 /// The lookup receives world coordinates. Return `None` for air.

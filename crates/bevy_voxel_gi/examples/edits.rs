@@ -10,7 +10,6 @@ use bevy_voxel_gi::{
     VoxelGiPlugin, VoxelGiSource, VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin,
     VoxelMaterialTransportTable, VoxelSource, dense_page, standard_material,
 };
-use std::sync::Arc;
 
 /// The room: a floor, two walls and a ceiling, open towards +x and +z.
 /// The window is part of the x = 0 wall at the start.
@@ -35,7 +34,7 @@ struct Room {
 }
 
 impl VoxelSource for Room {
-    fn sample_page(&self, page: IVec3, _resample: bool) -> PageSample {
+    fn sample_page(&self, page: IVec3) -> PageSample {
         dense_page(page, |p| stone(p).then_some(self.stone))
     }
 }
@@ -75,7 +74,7 @@ fn setup(
     };
     let stone_id = palette.insert("stone", optics).unwrap() as u8;
     *table = palette.table().clone();
-    source.0 = Some(Arc::new(Room { stone: stone_id }));
+    source.set(Room { stone: stone_id });
     input.page_loaded(IVec3::ZERO);
 
     let cube = meshes.add(Cuboid::from_length(1.0));
