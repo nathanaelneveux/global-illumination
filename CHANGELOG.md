@@ -61,6 +61,9 @@ The crates share one version. The format follows
   first. They followed the first marked camera, active or not, so under a
   streaming backlog an inactive camera's surroundings went before the
   player's.
+- GI-lit materials show emission through cameras without `VoxelGiCamera`
+  (a minimap, a portal) and through GI cameras without receivers that frame,
+  as `VoxelGiCamera` documents. They showed none.
 - `bevy_voxel_gi_bvw`: with default input tracking, a chunk BVW republishes
   or swaps for another level is sampled at its stride, as drawn. It was
   resampled through BVW's edit map at full resolution, 32,768 lookups a

@@ -782,9 +782,14 @@ fn render_view(
     let Some(scene) = &scene.0 else {
         return;
     };
+    // Material optics (emission) serve every camera's GI-lit materials,
+    // whether or not it is a GI camera or gets receivers this frame.
+    ctx.command_encoder()
+        .copy_buffer_to_buffer(&scene.buffers[3], 0, &output.buffer, 32, 16384);
     let (view, prepass, msaa, gi_camera) = view.into_inner();
     if !gi_camera {
-        // Not a GI camera: its GI-lit materials see the cleared output.
+        // Not a GI camera: its GI-lit materials see no receivers (the
+        // cleared header), with emission and the traced sun.
         return;
     }
     let Some(prepass) = prepass else {
@@ -1053,7 +1058,6 @@ fn render_view(
         &current.hash.buffer,
     ];
     let encoder = ctx.command_encoder();
-    encoder.copy_buffer_to_buffer(&scene.buffers[3], 0, &output.buffer, 32, 16384);
     encoder.clear_buffer(&current.hash.buffer, 0, None);
     encoder.clear_buffer(&current.pool.buffer, 0, Some(POOL_PREFIX_BYTES as u64));
     encoder.clear_buffer(&camera.queue.buffer, 0, Some(queue_words::PREFIX * 4));

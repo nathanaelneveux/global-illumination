@@ -508,10 +508,9 @@ fn sunlight_reference(position: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     return exact_corner_sun(position, normal).rgb;
 }
 
-/// The emitted light of the voxel under a face (zero for air or before the
-/// first view output).
+/// The emitted light of the voxel under a face (zero for air or before GI's
+/// first scene). Every camera has it, GI camera or not.
 fn emission(position: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
-    if far_view.shape.z == 0u { return vec3(0.0); }
     let material = voxel_material(vec3<i32>(floor(position - normal * 0.01)));
     if material >= 256u { return vec3(0.0); }
     return far_view.optical[material * 4u + 2u].rgb;
