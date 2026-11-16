@@ -84,20 +84,20 @@ mesh's material for a frame or two at startup.
 
 Experiments after 0.1, each judged against the same scenes on the M4:
 
-- **Scene builds that cost the change, not the world (decided 2026-11-02).**
-  Every scene build rebuilds the top-level empty-space field and copies the
-  region map for the whole loaded world, and probably repeats more
-  whole-world work. With `VOXEL_GI_LAB_FAR=64` (about 98,000 pages), builds
-  take over a second at 283k regions and 3 to 5 s at 566k. That bounds far
-  streaming and edit latency for every host with a large world (`3b4b5f6`
-  commit message; `world::stream_bench`). Profile a far-world build first,
-  then make the region map persistent and update the top-level field
-  locally. Judge by edit response in a far world (`response`, `tunnel`
-  profiles with `VOXEL_GI_LAB_FAR`) and by how quickly far lighting fills in.
-  It also shortens the black flashes along LoD band edges: a remeshed
-  chunk's faces are not GI's until the next build lands. A shader fallback
-  for them cost 1.5 ms or more per frame in every form tried, and was
-  reverted (`7e8c034`).
+- **Scene builds that cost the change, not the world (done 2026-11-15).**
+  The region map is persistent (`world::RegionMap`: 8³-region shards that
+  snapshots share, with per-shard bounds), and the top-level field is
+  updated in place: a cell turning blocked cuts the boxes holding it, and
+  boxes regrow by NAADF's merging rule from the changed cells, as NAADF
+  refines its chunk bounds over frames. Its boxes are 0.99 to 1.46 times the
+  full rebuild's mean volume. GPU packing rewrites only the region headers
+  whose bounds changed. `world::stream_bench`, 110k pages (dev profile, M4): a
+  sky edit costs 72 ms instead of about 2 s, a page past the world's edge
+  7 ms. Far gameplay (`VOXEL_GI_LAB_FAR=64`): streaming-phase frame p95/p99
+  fell from 70 to 94 / 87 to 99 ms to 24 to 25 / 29 to 30 ms, and freshly
+  streamed terrain no longer shows black while it waits for a build. Left:
+  a change of the world's bounds still copies the field and repacks every
+  region header, and the GPU starts a new buffer generation for it.
 
 - **Selective GI geometry coverage (proposed 2026-11-03; untested).**
   The BVW connector declares every loaded chunk, and GI retains that geometry

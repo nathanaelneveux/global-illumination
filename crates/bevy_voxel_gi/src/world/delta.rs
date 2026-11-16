@@ -75,7 +75,7 @@ mod tests {
             .keys()
             .chain(next.regions.keys())
             .filter(
-                |key| match (previous.regions.get(*key), next.regions.get(*key)) {
+                |key| match (previous.regions.get(key), next.regions.get(key)) {
                     (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
                     _ => true,
                 },

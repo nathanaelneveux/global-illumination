@@ -1,15 +1,19 @@
 // Spatial keys are trusted engine data. Match the field's fast Bevy maps rather
 // than paying the standard library's adversarial-string hashing cost per cell.
-use bevy::platform::collections::{HashMap, HashSet};
+#[cfg(test)]
+use bevy::platform::collections::HashMap;
+use bevy::platform::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
 use bevy::prelude::*;
 
 use super::color::FiniteColor;
-use super::naadf::{Aadf, build_aadf, linear_index, volume_len};
+use super::naadf::{Aadf, build_aadf, linear_index, try_grow, volume_len};
 mod delta;
+mod regions;
 pub(crate) use delta::SceneStamp;
+pub use regions::RegionMap;
 
 /// Transport-only sentinel outside the complete `u8` material index range.
 pub const AIR: u16 = u8::MAX as u16 + 1;
@@ -407,6 +411,14 @@ pub struct TopLevelAadf {
     // Immutable scene snapshots can share this independently of changed voxel
     // data: only region residency and empty/nonempty topology define the field.
     fields: Arc<[Aadf]>,
+    // Which cells are barriers (solid or not loaded), kept with the field so
+    // an update reads only the regions that changed.
+    blocked: Arc<[bool]>,
+    // The field this one was updated from in place (same bounds), by
+    // address, and the region cells whose bounds differ from it. A consumer
+    // holding that field can patch just these cells; its own reference keeps
+    // the address from being reused.
+    parent: Option<(usize, Arc<[IVec3]>)>,
 }
 
 impl TopLevelAadf {
@@ -416,11 +428,34 @@ impl TopLevelAadf {
             && Arc::ptr_eq(&self.fields, &other.fields)
     }
 
-    fn build(regions: &HashMap<IVec3, Arc<NaadfRegion>>) -> Self {
-        let Some(minimum) = regions.keys().copied().reduce(IVec3::min) else {
+    /// The region cells whose bounds differ from `older`, when this field was
+    /// updated in place from it; `None` when they are unrelated.
+    pub(crate) fn changed_since(&self, older: &Self) -> Option<&[IVec3]> {
+        let (parent, cells) = self.parent.as_ref()?;
+        (*parent == older.fields.as_ptr() as *const u8 as usize && !older.fields.is_empty())
+            .then_some(&**cells)
+    }
+
+    /// A field grown from nothing: what a scene without a predecessor gets.
+    #[cfg(test)]
+    fn build(regions: &RegionMap) -> Self {
+        Self::default().updated(regions, &[])
+    }
+
+    /// This field after the regions at `changed` changed residency or
+    /// emptiness, at the cost of the change (plus a copy of the field).
+    ///
+    /// Boxes stay valid throughout: a cell turning blocked cuts the boxes
+    /// that held it, and boxes grow only by NAADF's merging rule from
+    /// neighbours whose own boxes cover the growth. Growth restarts from the
+    /// cells whose neighbourhood changed and stops when no box can grow, as
+    /// NAADF refines its chunk bounds over frames. The result is a fixed
+    /// point of the same rule a full build reaches, not necessarily the same
+    /// one: the order of growth differs.
+    fn updated(&self, regions: &RegionMap, changed: &[IVec3]) -> Self {
+        let Some((minimum, maximum)) = regions.bounds() else {
             return Self::default();
         };
-        let maximum = regions.keys().copied().reduce(IVec3::max).unwrap();
         let size = (maximum - minimum + IVec3::ONE).as_uvec3();
 
         // Sparse, disconnected loaded islands must not allocate their entire
@@ -431,26 +466,219 @@ impl TopLevelAadf {
                 minimum,
                 maximum,
                 size,
-                fields: Arc::default(),
+                ..default()
             };
         }
 
         // Missing cells are barriers: the tracer never assumes unloaded world
         // space is empty. Loaded, empty regions are the only top-level cells
         // eligible for skipping.
-        let mut blocked = vec![true; volume_len(size)];
-        for (coordinate, region) in regions {
-            let local = (*coordinate - minimum).as_uvec3();
-            blocked[linear_index(local, size)] = region.any_solid;
+        let is_blocked = |cell: IVec3| regions.get(&cell).is_none_or(|region| region.any_solid);
+        let index = |cell: IVec3| linear_index((cell - minimum).as_uvec3(), size);
+        let mut growth = Growth::new(size);
+        let (mut fields, mut blocked);
+        let in_place = !self.fields.is_empty() && self.minimum == minimum && self.size == size;
+        if in_place {
+            fields = self.fields.to_vec();
+            blocked = self.blocked.to_vec();
+        } else {
+            // New bounds: keep what this field covers, clipped to them, and
+            // start the rest from their regions.
+            fields = vec![Aadf::default(); volume_len(size)];
+            blocked = vec![true; volume_len(size)];
+            let kept = !self.fields.is_empty();
+            for z in minimum.z..=maximum.z {
+                for y in minimum.y..=maximum.y {
+                    for x in minimum.x..=maximum.x {
+                        let cell = IVec3::new(x, y, z);
+                        let i = index(cell);
+                        if kept && cell.cmpge(self.minimum).all() && cell.cmple(self.maximum).all()
+                        {
+                            let old = linear_index((cell - self.minimum).as_uvec3(), self.size);
+                            blocked[i] = self.blocked[old];
+                            fields[i] = clip(
+                                self.fields[old],
+                                (cell - minimum).as_uvec3(),
+                                (maximum - cell).as_uvec3(),
+                            );
+                        } else {
+                            blocked[i] = is_blocked(cell);
+                            if !blocked[i] {
+                                growth.touch(i);
+                            }
+                        }
+                    }
+                }
+            }
         }
-        let fields = build_aadf(size, &blocked);
 
+        let mut newly_blocked = Vec::new();
+        for &cell in changed {
+            if cell.cmplt(minimum).any() || cell.cmpgt(maximum).any() {
+                continue;
+            }
+            let i = index(cell);
+            let now = is_blocked(cell);
+            if now == blocked[i] {
+                continue;
+            }
+            blocked[i] = now;
+            if now {
+                fields[i] = Aadf::default();
+                newly_blocked.push((cell - minimum).as_uvec3());
+            } else {
+                growth.touch(i);
+            }
+        }
+        if !newly_blocked.is_empty() {
+            cut_boxes(&mut fields, &blocked, size, &newly_blocked, &mut growth);
+        }
+        growth.run(&mut fields, &blocked);
+
+        let parent = in_place.then(|| {
+            let cells: Vec<IVec3> = fields
+                .iter()
+                .zip(self.fields.iter())
+                .enumerate()
+                .filter(|(_, (new, old))| new != old)
+                .map(|(i, _)| {
+                    let i = i as u32;
+                    minimum
+                        + UVec3::new(i % size.x, (i / size.x) % size.y, i / (size.x * size.y))
+                            .as_ivec3()
+                })
+                .collect();
+            (self.fields.as_ptr() as *const u8 as usize, cells.into())
+        });
         Self {
             minimum,
             maximum,
             size,
             fields: fields.into(),
+            blocked: blocked.into(),
+            parent,
         }
+    }
+
+    /// The full synchronous NAADF build over the same cells (`build_aadf`),
+    /// the field before incremental updates: the reference for box quality.
+    #[cfg(test)]
+    pub(crate) fn synchronous(&self) -> Vec<Aadf> {
+        build_aadf(self.size, &self.blocked)
+    }
+
+    /// Panics unless every box holds only empty cells inside the bounds and
+    /// no box can grow: a fixed point of the merging rule over `regions`.
+    /// A summed-volume table of barriers checks each box in eight reads.
+    #[cfg(test)]
+    pub(crate) fn assert_valid_fixed_point(&self, regions: &RegionMap) {
+        if self.fields.is_empty() {
+            return;
+        }
+        let size = self.size;
+        let table_size = size + UVec3::ONE;
+        let mut table = vec![0u32; volume_len(table_size)];
+        for z in 0..size.z {
+            for y in 0..size.y {
+                for x in 0..size.x {
+                    let cell = UVec3::new(x, y, z);
+                    let i = linear_index(cell, size);
+                    let world = cell.as_ivec3() + self.minimum;
+                    assert_eq!(
+                        self.blocked[i],
+                        regions.get(&world).is_none_or(|region| region.any_solid),
+                        "blocked state of {world}"
+                    );
+                    table[linear_index(cell + UVec3::ONE, table_size)] = u32::from(self.blocked[i]);
+                }
+            }
+        }
+        let steps = [
+            1,
+            table_size.x as usize,
+            (table_size.x * table_size.y) as usize,
+        ];
+        for (axis, step) in steps.into_iter().enumerate() {
+            for i in 0..table.len() {
+                let coordinate = [
+                    i % table_size.x as usize,
+                    (i / table_size.x as usize) % table_size.y as usize,
+                    i / (table_size.x * table_size.y) as usize,
+                ];
+                if coordinate[axis] > 0 {
+                    table[i] += table[i - step];
+                }
+            }
+        }
+        let barriers = |a: UVec3, b: UVec3| {
+            let b = b + UVec3::ONE;
+            let at = |x: u32, y: u32, z: u32| {
+                table[linear_index(UVec3::new(x, y, z), table_size)] as i64
+            };
+            at(b.x, b.y, b.z) - at(a.x, b.y, b.z) - at(b.x, a.y, b.z) - at(b.x, b.y, a.z)
+                + at(a.x, a.y, b.z)
+                + at(a.x, b.y, a.z)
+                + at(b.x, a.y, a.z)
+                - at(a.x, a.y, a.z)
+        };
+        for z in 0..size.z {
+            for y in 0..size.y {
+                for x in 0..size.x {
+                    let cell = UVec3::new(x, y, z);
+                    let i = linear_index(cell, size);
+                    let world = cell.as_ivec3() + self.minimum;
+                    let field = self.fields[i];
+                    if self.blocked[i] {
+                        assert_eq!(field, Aadf::default(), "blocked {world} has a box");
+                        continue;
+                    }
+                    assert!(
+                        cell.cmpge(field.negative()).all(),
+                        "{world} box below the bounds"
+                    );
+                    let (minimum, maximum) = field_box(field, cell);
+                    assert!(maximum.cmplt(size).all(), "{world} box above the bounds");
+                    assert_eq!(
+                        barriers(minimum, maximum),
+                        0,
+                        "{world}'s box holds a barrier"
+                    );
+                    let mut grown = field;
+                    for direction in 0..6 {
+                        let neighbour = cell.as_ivec3() + direction_step(direction);
+                        try_grow(
+                            &mut grown,
+                            neighbour,
+                            direction,
+                            size,
+                            &self.blocked,
+                            &self.fields,
+                        );
+                    }
+                    assert_eq!(grown, field, "{world}'s box can still grow");
+                }
+            }
+        }
+    }
+
+    /// Mean box volume over empty cells, a proxy for how far rays skip.
+    #[cfg(test)]
+    pub(crate) fn mean_box_volume(fields: &[Aadf], blocked: &[bool]) -> f64 {
+        let (mut sum, mut count) = (0.0, 0usize);
+        for (field, blocked) in fields.iter().zip(blocked) {
+            if !blocked {
+                sum += (field.negative() + field.positive() + UVec3::ONE)
+                    .as_dvec3()
+                    .element_product();
+                count += 1;
+            }
+        }
+        sum / count.max(1) as f64
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fields_and_blocked(&self) -> (&[Aadf], &[bool]) {
+        (&self.fields, &self.blocked)
     }
 
     pub fn field(&self, coordinate: IVec3) -> Aadf {
@@ -462,9 +690,209 @@ impl TopLevelAadf {
     }
 }
 
+/// `field` limited to `below` cells on the negative side and `above` on the
+/// positive side of its cell on each axis.
+fn clip(field: Aadf, below: UVec3, above: UVec3) -> Aadf {
+    let mut bounds = field.bounds;
+    for axis in 0..3 {
+        bounds[axis * 2] = bounds[axis * 2].min(below[axis].min(255) as u8);
+        bounds[axis * 2 + 1] = bounds[axis * 2 + 1].min(above[axis].min(255) as u8);
+    }
+    Aadf { bounds }
+}
+
+/// The box of `field` around `cell`, as inclusive corners.
+fn field_box(field: Aadf, cell: UVec3) -> (UVec3, UVec3) {
+    (cell - field.negative(), cell + field.positive())
+}
+
+/// Cuts every box that holds a newly blocked cell to one that does not:
+/// along the one direction that keeps the most volume, or down to its own
+/// cell when no single direction clears it. A summed-volume table over the
+/// newly blocked cells' bounding box counts them in a box in eight reads.
+fn cut_boxes(
+    fields: &mut [Aadf],
+    blocked: &[bool],
+    size: UVec3,
+    newly_blocked: &[UVec3],
+    growth: &mut Growth,
+) {
+    let low = newly_blocked.iter().copied().reduce(UVec3::min).unwrap();
+    let high = newly_blocked.iter().copied().reduce(UVec3::max).unwrap();
+    let extent = high - low + UVec3::ONE;
+    // table[(x, y, z)] counts newly blocked cells in [low, low + (x, y, z)).
+    let table_size = extent + UVec3::ONE;
+    let mut table = vec![0u32; volume_len(table_size)];
+    for cell in newly_blocked {
+        table[linear_index(*cell - low + UVec3::ONE, table_size)] += 1;
+    }
+    for axis in 0..3 {
+        let step = match axis {
+            0 => 1,
+            1 => table_size.x as usize,
+            _ => (table_size.x * table_size.y) as usize,
+        };
+        for i in 0..table.len() {
+            let coordinate = [
+                i % table_size.x as usize,
+                (i / table_size.x as usize) % table_size.y as usize,
+                i / (table_size.x * table_size.y) as usize,
+            ];
+            if coordinate[axis] > 0 {
+                table[i] += table[i - step];
+            }
+        }
+    }
+    let count = |minimum: UVec3, maximum: UVec3| -> u32 {
+        // Inclusive box, clamped to the table's cells.
+        let a = minimum.max(low);
+        let b = maximum.min(high);
+        if a.cmpgt(b).any() {
+            return 0;
+        }
+        let (a, b) = (a - low, b - low + UVec3::ONE);
+        let at =
+            |x: u32, y: u32, z: u32| table[linear_index(UVec3::new(x, y, z), table_size)] as i64;
+        (at(b.x, b.y, b.z) - at(a.x, b.y, b.z) - at(b.x, a.y, b.z) - at(b.x, b.y, a.z)
+            + at(a.x, a.y, b.z)
+            + at(a.x, b.y, a.z)
+            + at(b.x, a.y, a.z)
+            - at(a.x, a.y, a.z)) as u32
+    };
+    for z in 0..size.z {
+        for y in 0..size.y {
+            for x in 0..size.x {
+                let cell = UVec3::new(x, y, z);
+                let i = linear_index(cell, size);
+                if blocked[i] || fields[i] == Aadf::default() {
+                    continue;
+                }
+                let (minimum, maximum) = field_box(fields[i], cell);
+                if count(minimum, maximum) == 0 {
+                    continue;
+                }
+                let mut best: Option<(u64, Aadf)> = None;
+                for direction in 0..6 {
+                    let with = |extent: u8| {
+                        let mut field = fields[i];
+                        field.bounds[direction] = extent;
+                        field
+                    };
+                    let clear = |extent: u8| {
+                        let (minimum, maximum) = field_box(with(extent), cell);
+                        count(minimum, maximum) == 0
+                    };
+                    if !clear(0) {
+                        continue;
+                    }
+                    // The largest clear extent: clear(0) holds, clear(full) does not.
+                    let (mut good, mut bad) = (0u8, fields[i].bounds[direction]);
+                    while bad - good > 1 {
+                        let middle = good + (bad - good) / 2;
+                        if clear(middle) {
+                            good = middle;
+                        } else {
+                            bad = middle;
+                        }
+                    }
+                    let field = with(good);
+                    let volume = (field.negative() + field.positive() + UVec3::ONE)
+                        .as_u64vec3()
+                        .element_product();
+                    if best.is_none_or(|(most, _)| volume > most) {
+                        best = Some((volume, field));
+                    }
+                }
+                fields[i] = best.map_or(Aadf::default(), |(_, field)| field);
+                growth.push(i);
+            }
+        }
+    }
+}
+
+/// Cells whose boxes may grow, grown in place until none can. A box grows
+/// by one cell towards a neighbour whose box covers the slab it adds
+/// (`try_grow`); after a cell grows, its neighbours may grow towards it.
+struct Growth {
+    size: UVec3,
+    queue: std::collections::VecDeque<usize>,
+    queued: Vec<bool>,
+}
+
+/// `try_grow`'s direction `d` (`naadf::NEG_X`..`POS_Z`) as a step.
+fn direction_step(direction: usize) -> IVec3 {
+    let mut step = IVec3::ZERO;
+    step[direction / 2] = if direction.is_multiple_of(2) { -1 } else { 1 };
+    step
+}
+
+impl Growth {
+    fn new(size: UVec3) -> Self {
+        Self {
+            size,
+            queue: Default::default(),
+            queued: vec![false; volume_len(size)],
+        }
+    }
+
+    fn cell(&self, i: usize) -> IVec3 {
+        let size = self.size;
+        UVec3::new(
+            i as u32 % size.x,
+            (i as u32 / size.x) % size.y,
+            i as u32 / (size.x * size.y),
+        )
+        .as_ivec3()
+    }
+
+    fn push(&mut self, i: usize) {
+        if !std::mem::replace(&mut self.queued[i], true) {
+            self.queue.push_back(i);
+        }
+    }
+
+    /// A cell whose own state changed: it and its neighbours may grow.
+    fn touch(&mut self, i: usize) {
+        self.push(i);
+        let cell = self.cell(i);
+        for direction in 0..6 {
+            let n = cell + direction_step(direction);
+            if n.cmpge(IVec3::ZERO).all() && n.cmplt(self.size.as_ivec3()).all() {
+                self.push(linear_index(n.as_uvec3(), self.size));
+            }
+        }
+    }
+
+    fn run(&mut self, fields: &mut [Aadf], blocked: &[bool]) {
+        while let Some(i) = self.queue.pop_front() {
+            self.queued[i] = false;
+            if blocked[i] {
+                continue;
+            }
+            let cell = self.cell(i);
+            let mut current = fields[i];
+            for direction in 0..6 {
+                let neighbour = cell + direction_step(direction);
+                try_grow(
+                    &mut current,
+                    neighbour,
+                    direction,
+                    self.size,
+                    blocked,
+                    fields,
+                );
+            }
+            if current != fields[i] {
+                fields[i] = current;
+                self.touch(i);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct TransportScene {
-    pub regions: HashMap<IVec3, Arc<NaadfRegion>>,
+    pub regions: RegionMap,
     pub top_level: TopLevelAadf,
     journal: delta::SceneJournal,
 }
@@ -583,13 +1011,13 @@ impl TransportScene {
                 .zip(regions.get(key))
                 .is_some_and(|(old, region)| old.any_solid == region.any_solid)
         });
+        let mut keys: Vec<_> = touched.into_iter().collect();
+        keys.sort_unstable_by_key(|p| (p.z, p.y, p.x));
         let top_level = if topology_unchanged {
             previous.top_level.clone()
         } else {
-            TopLevelAadf::build(&regions)
+            previous.top_level.updated(&regions, &keys)
         };
-        let mut keys: Vec<_> = touched.into_iter().collect();
-        keys.sort_unstable_by_key(|p| (p.z, p.y, p.x));
         Self {
             regions,
             top_level,

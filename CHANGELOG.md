@@ -49,6 +49,11 @@ The crates share one version. The format follows
 - World-cache residency visits the pages around the cameras instead of every
   loaded page each frame: the lab's main-thread Update schedule fell from
   1.75 to 0.13 ms a frame in a 160,000-page world.
+- Scene builds cost the change instead of the whole loaded world: the
+  region map is shared between builds and the top-level empty-space field is
+  updated where regions change. In a 110,000-page world an edit that fills
+  sky took about 2 s to build and now takes about 70 ms; streaming far
+  terrain no longer shows faces black while a build catches up.
 
 ### Added
 
