@@ -95,9 +95,23 @@ Experiments after 0.1, each judged against the same scenes on the M4:
   sky edit costs 72 ms instead of about 2 s, a page past the world's edge
   7 ms. Far gameplay (`VOXEL_GI_LAB_FAR=64`): streaming-phase frame p95/p99
   fell from 70 to 94 / 87 to 99 ms to 24 to 25 / 29 to 30 ms, and freshly
-  streamed terrain no longer shows black while it waits for a build. Left:
+  streamed terrain no longer shows black while it waits for a build.
+  Frequent builds then left the trace worker more than the journal's 8
+  transitions behind, and its whole-world fallback diff cost ~60 ms a
+  batch; the fallback now skips shards both scenes share (2026-11-16,
+  worker p50 back to 0.4 ms, p99 1.5 against the old 12.7). Left:
   a change of the world's bounds still copies the field and repacks every
   region header, and the GPU starts a new buffer generation for it.
+
+- **The far tier's fixed cost (measured 2026-11-15; no change).** Its
+  per-pixel stage costs about 0.33 ms a frame at 1440p with no far cell on
+  screen, about 0.7 ms with ~2,000. With classification emptied it falls
+  to 0.13 ms, so ~0.2 ms is one depth read and distance test per 3x3 cell
+  (~410k cells). Discovery cannot classify for free (it skips stable
+  tiles), reusing last frame's answer would miss far faces a turn reveals,
+  and 8x8-cell workgroups changed nothing (branch `opt/far-classify`,
+  `a0a6baf`). A cheaper test needs a conservative far-depth bound per tile,
+  such as a depth pyramid.
 
 - **Selective GI geometry coverage (proposed 2026-11-03; untested).**
   The BVW connector declares every loaded chunk, and GI retains that geometry
