@@ -126,11 +126,15 @@ impl VoxelGiDemand {
         if !max_priority.is_finite() || max_priority < 0.0 {
             return Vec::new();
         }
-        let page_of = |p: Vec3| p.div_euclid(Vec3::splat(PAGE_EDGE as f32)).as_ivec3();
+        let edge = Vec3::splat(PAGE_EDGE as f32);
+        let page_of = |p: Vec3| p.div_euclid(edge).as_ivec3();
         let mut boxes = Vec::new();
         for &camera in &self.cameras {
+            // A page counts when its closed box reaches the sphere: one whose
+            // upper face lies on it starts a whole page below.
             let r = Vec3::splat(max_priority);
-            boxes.push((page_of(camera - r), page_of(camera + r)));
+            let lowest = ((camera - r) / edge).ceil().as_ivec3() - IVec3::ONE;
+            boxes.push((lowest, page_of(camera + r)));
             let r = Vec3::splat(max_priority.min(self.column_radius()) + PAGE_HALF_DIAGONAL);
             for &sun in &self.suns {
                 let end = camera + sun * SUN_HORIZON;
@@ -286,5 +290,43 @@ mod tests {
             camera + Vec3::new(0.3, 1.0, 0.2).normalize() * 600.0
         )));
         assert!(demand.pages(f32::NAN).is_empty());
+    }
+
+    #[test]
+    fn pages_touching_the_range_on_a_page_face_are_listed() {
+        // Cameras on page faces and ranges ending on them: a page whose box
+        // only touches the sphere has priority equal to the range.
+        let at_zero = VoxelGiDemand::new([Vec3::ZERO], [], 64.0, 768.0);
+        assert_eq!(at_zero.priority(IVec3::NEG_X), Some(0.0));
+        assert!(
+            at_zero
+                .pages(0.0)
+                .iter()
+                .any(|&(page, _)| page == IVec3::NEG_X)
+        );
+        for camera in [
+            Vec3::ZERO,
+            Vec3::new(32.0, -64.0, 0.0),
+            Vec3::new(5.0, 32.0, -7.0),
+        ] {
+            let demand = VoxelGiDemand::new([camera], [], 64.0, 768.0);
+            for range in [0.0, 27.0, 32.0, 64.0] {
+                let listed: HashSet<IVec3> = demand
+                    .pages(range)
+                    .into_iter()
+                    .map(|(page, _)| page)
+                    .collect();
+                let around = page_at(camera);
+                for z in -4..=4 {
+                    for y in -4..=4 {
+                        for x in -4..=4 {
+                            let page = around + IVec3::new(x, y, z);
+                            let wanted = demand.priority(page).unwrap() <= range;
+                            assert_eq!(listed.contains(&page), wanted, "{camera} {range} {page}");
+                        }
+                    }
+                }
+            }
+        }
     }
 }
