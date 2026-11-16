@@ -99,13 +99,14 @@ pub fn terrain_view_distance() -> f32 {
 }
 
 /// Far-test LOD bands (chunks from the camera) and their samples per axis.
-/// A level-L chunk is `32 << L` voxels wide, so the strides are 1, 1, 2, 4
-/// and 8. Level 0 is a small full-resolution band near the camera and the
-/// only one that spawns colliders (`chunk_colliders`); level 1 is still full
-/// resolution, so full detail reaches farther than physics.
+/// A level-L chunk is `32 << L` voxels wide, so the strides are 1, 2, 4, 8
+/// and 16. Level 0 is a small full-resolution band near the camera and the
+/// only one that spawns colliders (`chunk_colliders`). bevy_voxel_world
+/// 0.19's mesher takes at most 62 samples inside a chunk, so a coarse chunk
+/// cannot keep 64 (0.1's lab kept full resolution to level 1 that way).
 const LOD_BANDS: [(f32, LodLevel, u32); 4] =
-    [(2.0, 0, 32), (8.0, 1, 64), (16.0, 2, 64), (32.0, 3, 64)];
-const LOD_FARTHEST: (LodLevel, u32) = (4, 64);
+    [(2.0, 0, 32), (8.0, 1, 32), (16.0, 2, 32), (32.0, 3, 32)];
+const LOD_FARTHEST: (LodLevel, u32) = (4, 32);
 const LOD_HYSTERESIS_CHUNKS: f32 = 1.0;
 
 fn lod_samples(lod: LodLevel) -> u32 {
