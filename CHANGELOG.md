@@ -54,6 +54,9 @@ The crates share one version. The format follows
   updated where regions change. In a 110,000-page world an edit that fills
   sky took about 2 s to build and now takes about 70 ms; streaming far
   terrain no longer shows faces black while a build catches up.
+- GI-lit materials replaced at their handle (`Assets::insert`) get GI's
+  bindings, and added or replaced materials have them on their first frame
+  drawn instead of the next.
 
 ### Added
 
