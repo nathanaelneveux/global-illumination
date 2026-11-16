@@ -58,6 +58,31 @@ pub(super) fn update_receiver_residency(
     if foci.is_empty() {
         return;
     }
+    let first = runtime.receiver_pages.is_none();
+    let mut allowed = runtime.receiver_pages.take().unwrap_or_default();
+    let (entered, left) = step_residency(&runtime.loaded_pages, &mut allowed, &foci, radius, first);
+    runtime.receiver_pages = Some(allowed);
+    mark_receivers(&mut runtime, entered, left);
+}
+
+/// One residency update: pages enter `allowed` within `radius` of a focus
+/// (distance to the page's nearest point) and leave beyond `radius` plus the
+/// hysteresis. Unloaded pages drop out silently. Returns the pages that
+/// entered and left; on the `first` update, every loaded page outside leaves
+/// (it may hold receivers from before residency) and none enter (allowed
+/// pages keep the receivers they have).
+///
+/// The cost follows the radius and the pages already allowed, not the loaded
+/// world: entering pages lie in the page box around a focus, so it visits
+/// those boxes, or the loaded set when that is smaller (a radius wider than
+/// the world).
+fn step_residency(
+    loaded: &HashSet<IVec3>,
+    allowed: &mut HashSet<IVec3>,
+    foci: &[Vec3],
+    radius: f32,
+    first: bool,
+) -> (Vec<IVec3>, Vec<IVec3>) {
     let distance = |page: IVec3| {
         let minimum = (page * PAGE_EDGE as i32).as_vec3();
         let maximum = minimum + Vec3::splat(PAGE_EDGE as f32);
@@ -65,35 +90,66 @@ pub(super) fn update_receiver_residency(
             .map(|focus| focus.clamp(minimum, maximum).distance(*focus))
             .fold(f32::INFINITY, f32::min)
     };
-    let first = runtime.receiver_pages.is_none();
-    let mut allowed = runtime.receiver_pages.take().unwrap_or_default();
-    let (mut entered, mut left) = (Vec::new(), Vec::new());
-    for &page in &runtime.loaded_pages {
-        let d = distance(page);
-        if allowed.contains(&page) {
-            if d > radius + RECEIVER_HYSTERESIS {
-                left.push(page);
-            }
-        } else if d <= radius {
-            entered.push(page);
-        } else if first {
-            // Startup: pages outside lose their receivers.
-            left.push(page);
-        }
-    }
-    allowed.retain(|page| runtime.loaded_pages.contains(page));
-    for page in &entered {
-        allowed.insert(*page);
-    }
+    allowed.retain(|page| loaded.contains(page));
+    let mut left: Vec<_> = allowed
+        .iter()
+        .copied()
+        .filter(|&page| distance(page) > radius + RECEIVER_HYSTERESIS)
+        .collect();
     for page in &left {
         allowed.remove(page);
     }
-    runtime.receiver_pages = Some(allowed);
+    let mut entered = Vec::new();
+    let mut enter = |page: IVec3| {
+        if !allowed.contains(&page) && distance(page) <= radius && allowed.insert(page) {
+            entered.push(page);
+        }
+    };
+    let page_box = |focus: Vec3| {
+        let edge = PAGE_EDGE as f32;
+        // A page reaches `focus - radius` when its far face does: one page
+        // below ceil (it may touch the sphere exactly at that face).
+        let minimum = ((focus - radius) / edge).ceil() - 1.0;
+        let maximum = ((focus + radius) / edge).floor();
+        (minimum, maximum)
+    };
+    let box_pages: f64 = foci
+        .iter()
+        .map(|&focus| {
+            let (minimum, maximum) = page_box(focus);
+            (maximum - minimum + 1.0).as_dvec3().element_product()
+        })
+        .sum();
+    if box_pages < loaded.len() as f64 {
+        for &focus in foci {
+            let (minimum, maximum) = page_box(focus);
+            let (minimum, maximum) = (minimum.as_ivec3(), maximum.as_ivec3());
+            for z in minimum.z..=maximum.z {
+                for y in minimum.y..=maximum.y {
+                    for x in minimum.x..=maximum.x {
+                        let page = IVec3::new(x, y, z);
+                        if loaded.contains(&page) {
+                            enter(page);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        loaded.iter().copied().for_each(enter);
+    }
     if first {
-        // Pages already allowed keep their receivers; only changes rescan.
+        // Startup: pages outside lose their receivers; pages already allowed
+        // keep theirs, so only later changes rescan.
+        left.extend(
+            loaded
+                .iter()
+                .copied()
+                .filter(|page| !allowed.contains(page)),
+        );
         entered.clear();
     }
-    mark_receivers(&mut runtime, entered, left);
+    (entered, left)
 }
 
 fn mark_receivers(runtime: &mut VoxelGiRuntime, entered: Vec<IVec3>, left: Vec<IVec3>) {
@@ -489,6 +545,117 @@ mod tests {
     use super::super::world::{AIR, PAGE_SIZE};
     use super::super::{VoxelGiRuntime, naadf, page_of};
     use super::*;
+
+    /// The whole-world scan residency replaced: every loaded page, every update.
+    fn scan_residency(
+        loaded: &HashSet<IVec3>,
+        allowed: &mut HashSet<IVec3>,
+        foci: &[Vec3],
+        radius: f32,
+        first: bool,
+    ) -> (HashSet<IVec3>, HashSet<IVec3>) {
+        let distance = |page: IVec3| {
+            let minimum = (page * PAGE_EDGE as i32).as_vec3();
+            let maximum = minimum + Vec3::splat(PAGE_EDGE as f32);
+            foci.iter()
+                .map(|focus| focus.clamp(minimum, maximum).distance(*focus))
+                .fold(f32::INFINITY, f32::min)
+        };
+        allowed.retain(|page| loaded.contains(page));
+        let (mut entered, mut left) = (HashSet::new(), HashSet::new());
+        for &page in loaded {
+            let d = distance(page);
+            if allowed.contains(&page) {
+                if d > radius + RECEIVER_HYSTERESIS {
+                    left.insert(page);
+                }
+            } else if d <= radius {
+                entered.insert(page);
+            } else if first {
+                left.insert(page);
+            }
+        }
+        allowed.extend(entered.iter().copied());
+        allowed.retain(|page| !left.contains(page));
+        if first {
+            entered.clear();
+        }
+        (entered, left)
+    }
+
+    #[test]
+    #[ignore = "residency benchmark; run with --nocapture"]
+    fn bench_residency_in_a_far_world() {
+        // VOXEL_GI_LAB_FAR=64's shape: about 98,000 pages.
+        let loaded: HashSet<IVec3> = (-64..64)
+            .flat_map(|z| (-64..64).flat_map(move |x| (0..6).map(move |y| IVec3::new(x, y, z))))
+            .collect();
+        for (name, local) in [("whole-world scan", false), ("camera-local", true)] {
+            let mut allowed = HashSet::new();
+            let started = Instant::now();
+            let frames = 200;
+            for frame in 0..frames {
+                let foci = [Vec3::new(frame as f32 * 0.5, 80.0, 16.0)];
+                if local {
+                    step_residency(&loaded, &mut allowed, &foci, 64.0, frame == 0);
+                } else {
+                    scan_residency(&loaded, &mut allowed, &foci, 64.0, frame == 0);
+                }
+            }
+            eprintln!(
+                "{name}: {:.3} ms a frame over {} pages",
+                started.elapsed().as_secs_f64() * 1000.0 / frames as f64,
+                loaded.len()
+            );
+        }
+    }
+
+    #[test]
+    fn local_residency_matches_a_whole_world_scan() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move |n: u64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) % n
+        };
+        // Radii whose page boxes are smaller and larger than the loaded set.
+        for radius in [20.0, 64.0, 150.0, 1000.0] {
+            let mut loaded = HashSet::new();
+            for _ in 0..1500 {
+                let page = IVec3::new(next(24) as i32, next(8) as i32, next(24) as i32) - 4;
+                loaded.insert(page);
+            }
+            let (mut local, mut scan) = (HashSet::new(), HashSet::new());
+            for step in 0..60 {
+                // Streaming: some pages unload, others load.
+                for _ in 0..20 {
+                    let page = IVec3::new(next(24) as i32, next(8) as i32, next(24) as i32) - 4;
+                    if next(2) == 0 {
+                        loaded.remove(&page);
+                    } else {
+                        loaded.insert(page);
+                    }
+                }
+                let foci: Vec<Vec3> = (0..1 + next(3))
+                    .map(|_| {
+                        Vec3::new(next(800) as f32, next(300) as f32, next(800) as f32) - 128.0
+                    })
+                    .collect();
+                let first = step == 0;
+                let (entered, left) = step_residency(&loaded, &mut local, &foci, radius, first);
+                let (expected_entered, expected_left) =
+                    scan_residency(&loaded, &mut scan, &foci, radius, first);
+                assert_eq!(local, scan, "radius {radius}, step {step}");
+                assert_eq!(entered.len(), expected_entered.len());
+                assert_eq!(
+                    entered.into_iter().collect::<HashSet<_>>(),
+                    expected_entered
+                );
+                assert_eq!(left.into_iter().collect::<HashSet<_>>(), expected_left);
+            }
+        }
+    }
 
     fn app(tracked: bool) -> App {
         let mut app = App::new();
