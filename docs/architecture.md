@@ -73,13 +73,14 @@ and request authoritative resampling; later exact edits can override again.
 Overlays survive unload/reload and grow with distinct edited positions.
 There is no save-game persistence or host acknowledgement for retiring them.
 
-The BVW connector samples the geometry its chunk mesh uses. A downgraded
-chunk may retain finer data. GI follows its meshing shape and nearest
-resampling rule, including during a resample. When data and mesh
-resolution agree, authoritative resampling can apply known live values at
-individual voxels. Where BVW returns `Unset`, GI uses the stored coarse
-cell. Nonstandard chunk shapes use the full-resolution lookup and optional
-`GiFallbackVoxel`.
+The BVW connector traces what BVW draws. A page a published chunk covers is
+that chunk as meshed (its meshing shape and BVW's nearest resampling),
+whether GI samples or resamples it; a downgraded chunk's retained finer
+data is not traced. BVW's own writes reach GI when it republishes the
+chunk, and `BvwVoxelEdits::set_voxel`'s exact edits apply over it at once.
+A chunk whose sample spacing is not a power of two is sampled voxel by
+voxel. Pages no chunk covers read BVW's world lookup, then the optional
+`GiFallbackVoxel` generator.
 
 ## Geometry and traversal
 
