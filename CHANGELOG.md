@@ -44,6 +44,12 @@ The crates share one version. The format follows
   a 32 times smaller radius from out-of-view despawning than 0.17 did; use
   `ChunkDespawnStrategy::FarAway` to keep the lighting of 0.1.
 
+### Fixed
+
+- World-cache residency visits the pages around the cameras instead of every
+  loaded page each frame: the lab's main-thread Update schedule fell from
+  1.75 to 0.13 ms a frame in a 160,000-page world.
+
 ### Added
 
 - `PBR_SHADER` and `insert_voxel_gi_shaders`, which registers GI's shader
