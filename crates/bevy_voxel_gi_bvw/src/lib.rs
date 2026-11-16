@@ -106,8 +106,13 @@ struct Published {
     entity: Entity,
     empty: bool,
     shape: UVec3,
+    /// As drawn: at the mesh shape.
     voxels: Arc<dyn Fn(IVec3) -> Option<WorldVoxel<u8>> + Send + Sync>,
+    /// As stored: at the data shape, as BVW's world lookup reads chunks.
+    stored: Arc<Stored>,
 }
+
+type Stored = dyn Fn(IVec3) -> Option<WorldVoxel<u8>> + Send + Sync;
 
 type ChunkLookup = dyn Fn(ChunkKey) -> Option<Published> + Send + Sync;
 
@@ -122,6 +127,10 @@ fn published_chunks<C: VoxelWorldConfig<MaterialIndex = u8>>(
             entity: data.get_entity(),
             empty: data.is_empty(),
             shape: data.mesh_shape(),
+            stored: {
+                let data = data.clone();
+                Arc::new(move |position| data.get_voxel_at_world_position(position))
+            },
             voxels: Arc::new(move |position| {
                 let (data_shape, mesh_shape) = (data.data_shape(), data.mesh_shape());
                 let offset = position - data.key().min_voxel();
@@ -327,27 +336,27 @@ where
     C: VoxelWorldConfig<MaterialIndex = u8> + GiFallbackVoxel,
 {
     fn sample(&self, page: IVec3, resample: bool) -> PageSample {
-        let materials = finest_published(page, &*self.chunks).map(|chunk| {
-            sample_chunk(page, &chunk, |position| {
-                self.config.fallback_voxel(position)
-            })
+        let chunk = finest_published(page, &*self.chunks);
+        let drawn = chunk.as_ref().map(|chunk| {
+            let page = sample_chunk(page, chunk, |position| self.config.fallback_voxel(position));
+            (page, &*chunk.stored)
         });
-        sample_page(page, resample, materials, &*self.voxels, |position| {
+        sample_page(page, resample, drawn, &*self.voxels, |position| {
             self.config.fallback_voxel(position)
         })
     }
 }
 
-/// A page from its finest published chunk's `materials`, or from the world's
-/// lookup and generator where no chunk covers it.
+/// A page from its finest published chunk, as drawn and as stored, or from
+/// the world's lookup and generator where no chunk covers it.
 fn sample_page(
     page: IVec3,
     resample: bool,
-    materials: Option<PageSample>,
+    drawn: Option<(PageSample, &Stored)>,
     voxels: &dyn Fn(IVec3) -> WorldVoxel<u8>,
     fallback: impl Fn(IVec3) -> WorldVoxel<u8>,
 ) -> PageSample {
-    let Some(materials) = materials else {
+    let Some((materials, stored)) = drawn else {
         return dense_page(page, |position| {
             solid(match voxels(position) {
                 WorldVoxel::Unset => fallback(position),
@@ -359,12 +368,15 @@ fn sample_page(
         return materials;
     }
     let origin = page * CHUNK as i32;
-    // The world's lookup includes uncommitted writes and BVW's edit map,
-    // including edits inside a coarse chunk's blocks. Unset means nothing
-    // covers the position there yet: keep the chunk's block. Only this
-    // resampled page expands; ordinary ingestion stays strided.
+    // The world's lookup answers BVW's writes (uncommitted and in its edit
+    // map, including inside a coarse chunk's blocks), else the chunk's
+    // stored voxel, at its data shape. A value equal to the stored one is
+    // geometry: keep it as drawn, which may differ (a coarser mesh shape).
+    // Unset means nothing covers the position yet: keep the chunk's block.
+    // Only this resampled page expands; ordinary ingestion stays strided.
     dense_page(page, |position| match voxels(position) {
         WorldVoxel::Unset => materials.voxel((position - origin).as_uvec3()),
+        voxel if stored(position) == Some(voxel) => materials.voxel((position - origin).as_uvec3()),
         voxel => solid(voxel),
     })
 }
@@ -800,11 +812,22 @@ mod tests {
                 // the coarse cell.
                 let voxels = |_: IVec3| WorldVoxel::Unset;
                 assert_eq!(
-                    sample_page(key, false, Some(stored.clone()), &voxels, |_| generator),
+                    sample_page(
+                        key,
+                        false,
+                        Some((stored.clone(), &|_| None)),
+                        &voxels,
+                        |_| generator
+                    ),
                     stored
                 );
-                let resampled =
-                    sample_page(key, true, Some(stored.clone()), &voxels, |_| generator);
+                let resampled = sample_page(
+                    key,
+                    true,
+                    Some((stored.clone(), &|_| None)),
+                    &voxels,
+                    |_| generator,
+                );
                 for i in 0..32u32 * 32 * 32 {
                     let local = UVec3::new(i % 32, i / 32 % 32, i / 1024);
                     assert_eq!(
@@ -844,9 +867,13 @@ mod tests {
                 .world_mut()
                 .run_system_once(|world: VoxelWorld<TestWorld>| world.get_voxel_fn())
                 .unwrap();
-            let resampled = sample_page(key, true, Some(stored.clone()), &*voxels, |_| {
-                WorldVoxel::Unset
-            });
+            let resampled = sample_page(
+                key,
+                true,
+                Some((stored.clone(), &|_| None)),
+                &*voxels,
+                |_| WorldVoxel::Unset,
+            );
             for i in 0..32u32 * 32 * 32 {
                 let local = UVec3::new(i % 32, i / 32 % 32, i / 1024);
                 let p = origin + local.as_ivec3();
@@ -864,6 +891,52 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn authoritative_resampling_keeps_drawn_geometry_and_applies_edits() {
+        // A chunk stored finer than it is drawn: the store has a solid voxel
+        // at `detail` that the coarser mesh leaves out. BVW's world lookup
+        // returns that stored voxel with no edit, at `detail`, and an edit
+        // at `edited`.
+        let key = IVec3::ZERO;
+        let (detail, edited, dug) = (
+            IVec3::new(5, 6, 7),
+            IVec3::new(9, 9, 9),
+            IVec3::new(20, 1, 1),
+        );
+        let drawn = dense_page(key, |p| (p == dug).then_some(GiVoxel::solid(3)));
+        let stored = move |p: IVec3| {
+            Some(if p == detail || p == dug {
+                WorldVoxel::Solid(if p == dug { 3 } else { 1 })
+            } else {
+                WorldVoxel::Air
+            })
+        };
+        let world = move |p: IVec3| {
+            if p == edited {
+                WorldVoxel::Solid(4)
+            } else if p == dug {
+                WorldVoxel::Air
+            } else {
+                stored(p).unwrap()
+            }
+        };
+        let page = sample_page(key, true, Some((drawn, &stored)), &world, |_| {
+            WorldVoxel::Unset
+        });
+        assert_eq!(
+            page.voxel(detail.as_uvec3()),
+            GiVoxel::AIR,
+            "stored, not drawn, not edited"
+        );
+        assert_eq!(
+            page.voxel(edited.as_uvec3()),
+            GiVoxel::solid(4),
+            "an edit adds"
+        );
+        assert_eq!(page.voxel(dug.as_uvec3()), GiVoxel::AIR, "an edit removes");
+        assert_eq!(page.voxel(UVec3::ZERO), GiVoxel::AIR);
     }
 
     #[test]
