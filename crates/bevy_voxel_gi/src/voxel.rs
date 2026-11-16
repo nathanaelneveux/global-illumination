@@ -26,8 +26,15 @@ use super::world::AIR;
 /// ```
 ///
 /// It is two bytes: a host can keep a dense `Vec<GiVoxel>` indexed by its
-/// own block IDs and build pages from it without conversion.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, bytemuck::Pod, bytemuck::Zeroable)]
+/// own block IDs and build pages from it without conversion. It cannot be
+/// cast from arbitrary integers, which could hold no valid voxel:
+///
+/// ```compile_fail
+/// # use bevy_voxel_gi::GiVoxel;
+/// let voxels: &[GiVoxel] = bytemuck::cast_slice(&[257_u16]);
+/// ```
+// `NoUninit` only: GI's own zero-copy casts go from `GiVoxel` to `u16`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, bytemuck::NoUninit)]
 #[repr(transparent)]
 pub struct GiVoxel(u16);
 
