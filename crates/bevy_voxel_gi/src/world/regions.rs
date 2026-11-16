@@ -134,6 +134,39 @@ impl RegionMap {
         self.iter().map(|(_, value)| value)
     }
 
+    /// The regions loaded in only one of the maps or held as different
+    /// allocations, unsorted. Shards the maps share are skipped, so the cost
+    /// follows the shards changed between them, not the loaded world.
+    pub fn changed_keys(&self, other: &Self) -> Vec<IVec3> {
+        let mut keys = Vec::new();
+        for (key, shard) in &self.shards {
+            let theirs = other.shards.get(key);
+            if theirs.is_some_and(|theirs| Arc::ptr_eq(theirs, shard)) {
+                continue;
+            }
+            keys.extend(shard.regions.iter().filter_map(|(region, value)| {
+                let same = theirs
+                    .and_then(|theirs| theirs.regions.get(region))
+                    .is_some_and(|other| Arc::ptr_eq(other, value));
+                (!same).then_some(*region)
+            }));
+            if let Some(theirs) = theirs {
+                keys.extend(
+                    theirs
+                        .regions
+                        .keys()
+                        .filter(|region| !shard.regions.contains_key(*region)),
+                );
+            }
+        }
+        for (key, shard) in &other.shards {
+            if !self.shards.contains_key(key) {
+                keys.extend(shard.regions.keys());
+            }
+        }
+        keys
+    }
+
     /// The loaded regions' bounding box (inclusive): one entry per shard.
     pub fn bounds(&self) -> Option<(IVec3, IVec3)> {
         self.shards
@@ -188,6 +221,77 @@ impl<const N: usize> From<[(IVec3, Arc<NaadfRegion>); N]> for RegionMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changed_keys_match_a_whole_map_comparison() {
+        fn naive(a: &RegionMap, b: &RegionMap) -> Vec<IVec3> {
+            let mut keys: Vec<_> = a
+                .keys()
+                .chain(b.keys())
+                .filter(|key| match (a.get(key), b.get(key)) {
+                    (Some(x), Some(y)) => !Arc::ptr_eq(x, y),
+                    _ => true,
+                })
+                .copied()
+                .collect();
+            keys.sort_unstable_by_key(|p| (p.z, p.y, p.x));
+            keys.dedup();
+            keys
+        }
+        fn sorted(mut keys: Vec<IVec3>) -> Vec<IVec3> {
+            keys.sort_unstable_by_key(|p| (p.z, p.y, p.x));
+            let len = keys.len();
+            keys.dedup();
+            assert_eq!(keys.len(), len, "a key is reported once");
+            keys
+        }
+        let region = |c: IVec3| Arc::new(NaadfRegion::build(c, vec![super::super::AIR; 4096]));
+        let mut seed = 0x9e37_79b9_u32;
+        let mut next = move |n: i32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed % n as u32) as i32
+        };
+        let mut map: RegionMap = (0..200)
+            .map(|i| IVec3::new(i % 30 - 15, i / 30 - 3, i % 7))
+            .map(|c| (c, region(c)))
+            .collect();
+        let mut snapshots = vec![map.clone()];
+        for step in 0..60 {
+            for _ in 0..next(6) {
+                let c = IVec3::new(next(40) - 20, next(12) - 6, next(10) - 2);
+                match next(3) {
+                    0 => {
+                        map.remove(&c);
+                    }
+                    // Re-inserting the same allocation copies the shard
+                    // without changing the region.
+                    1 if map.contains_key(&c) => {
+                        let same = Arc::clone(&map[&c]);
+                        map.insert(c, same);
+                    }
+                    _ => {
+                        map.insert(c, region(c));
+                    }
+                }
+            }
+            for older in snapshots.iter().rev().take(12) {
+                assert_eq!(sorted(map.changed_keys(older)), naive(&map, older));
+                assert_eq!(sorted(older.changed_keys(&map)), naive(older, &map));
+            }
+            if step % 3 == 0 {
+                snapshots.push(map.clone());
+            }
+        }
+        // Independent maps share no shard and compare region by region.
+        let rebuilt: RegionMap = map.iter().map(|(k, v)| (*k, Arc::clone(v))).collect();
+        assert!(map.changed_keys(&rebuilt).is_empty());
+        assert_eq!(
+            sorted(map.changed_keys(&RegionMap::default())),
+            naive(&map, &RegionMap::default())
+        );
+    }
 
     #[test]
     fn snapshots_share_untouched_shards_and_bounds_are_exact() {

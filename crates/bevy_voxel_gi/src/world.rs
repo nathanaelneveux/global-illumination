@@ -906,25 +906,23 @@ impl TransportScene {
         self.journal.since(stamp)
     }
 
-    /// Canonical region identity delta. Lineage avoids whole-world discovery;
-    /// independent scenes and consumers older than the journal compare safely.
+    /// Canonical region identity delta. Lineage names the candidates
+    /// directly; independent scenes and consumers older than the journal
+    /// compare the region maps, which skips the shards they share.
     pub(crate) fn changed_regions(&self, previous: &Self) -> Vec<IVec3> {
-        let mut keys = self
-            .region_delta_since(&previous.stamp())
-            .unwrap_or_else(|| {
-                self.regions
-                    .keys()
-                    .chain(previous.regions.keys())
-                    .copied()
-                    .collect()
-            });
-        keys.retain(
-            |key| match (previous.regions.get(key), self.regions.get(key)) {
-                (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
-                (None, None) => false,
-                _ => true,
-            },
-        );
+        let mut keys = match self.region_delta_since(&previous.stamp()) {
+            Some(mut keys) => {
+                keys.retain(
+                    |key| match (previous.regions.get(key), self.regions.get(key)) {
+                        (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+                        (None, None) => false,
+                        _ => true,
+                    },
+                );
+                keys
+            }
+            None => self.regions.changed_keys(&previous.regions),
+        };
         keys.sort_unstable_by_key(|p| (p.z, p.y, p.x));
         keys.dedup();
         keys
