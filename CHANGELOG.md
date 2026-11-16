@@ -28,7 +28,8 @@ The crates share one version. The format follows
   - `standard_material(base)` and the BVW connector's
     `material_template(texture)` no longer take `VoxelGiMaterialData`;
     custom materials start from `VoxelGiBindings::default()`, and
-    `VoxelGiMaterialPlugin` fills the bindings in when a material is added.
+    `VoxelGiMaterialPlugin` fills the bindings in when a material is added
+    or replaced, before it is first drawn.
   - `VoxelGiPlugins` adds GI and the GI-lit `StandardMaterial`, and
     `bevy_voxel_gi::prelude` holds the types most hosts use.
   - `VoxelGiSettings { cache_radius: 32.0, ..default() }` compiles outside
@@ -43,6 +44,12 @@ The crates share one version. The format follows
   above `MAX_GI_LOD` (5) are not traced. bevy_voxel_world 0.19 protects
   a 32 times smaller radius from out-of-view despawning than 0.17 did; use
   `ChunkDespawnStrategy::FarAway` to keep the lighting of 0.1.
+- `bevy_voxel_gi_bvw`: GI traces what BVW draws. A page a published chunk
+  covers is that chunk as meshed, whether sampled or resampled
+  (`mark_voxel`, `resample_page`, `mark_all_loaded`); 0.1 resampled through
+  BVW's edit map, at full resolution even inside coarse chunks. Writes made
+  with BVW's own `set_voxel` reach GI when BVW republishes the chunk;
+  `BvwVoxelEdits::set_voxel` still reports its exact edit at once.
 
 ### Fixed
 
@@ -54,9 +61,6 @@ The crates share one version. The format follows
   updated where regions change. In a 110,000-page world an edit that fills
   sky took about 2 s to build and now takes about 70 ms; streaming far
   terrain no longer shows faces black while a build catches up.
-- GI-lit materials replaced at their handle (`Assets::insert`) get GI's
-  bindings, and added or replaced materials have them on their first frame
-  drawn instead of the next.
 - Scene builds sample and publish pages nearest any active `VoxelGiCamera`
   first. They followed the first marked camera, active or not, so under a
   streaming backlog an inactive camera's surroundings went before the
@@ -70,9 +74,8 @@ The crates share one version. The format follows
   page (about 134 million for a level-4 chunk).
 - `bevy_voxel_gi_bvw`: GI traces a chunk at its meshing shape
   (`chunk_meshing_shape`), as BVW's mesher resamples it, instead of at its
-  stored data shape, on authoritative resampling too. A chunk stored finer
-  than it is drawn cast shadows and bounced light from detail its mesh does
-  not show.
+  stored data shape. A chunk stored finer than it is drawn cast shadows and
+  bounced light from detail its mesh does not show.
 
 ### Added
 
@@ -101,9 +104,7 @@ The crates share one version. The format follows
 - `VoxelGiDemand`'s ranking is reasoned, not measured, and the BVW connector
   cannot honor it: bevy_voxel_world has no way to keep chunks a consumer
   asks for.
-- `bevy_voxel_gi_bvw`: authoritative resampling (`mark_voxel`,
-  `resample_page`, `mark_all_loaded`) traces BVW's full-resolution edits
-  inside coarse chunks. GI follows BVW's own mesher; a host's meshing
+- `bevy_voxel_gi_bvw`: GI follows BVW's own mesher; a host's meshing
   function can draw something else.
 - 0.2 is measured on an Apple M4 (Metal). 0.1 was also tested on an AMD
   RX 7900 XT (Vulkan, DX12 with DXC).
