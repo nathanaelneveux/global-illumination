@@ -65,6 +65,10 @@ The crates share one version. The format follows
   first. They followed the first camera, active or not, so under a
   streaming backlog an inactive camera's surroundings went before the
   player's.
+- With no active GI camera, the world cache holds no receivers and traces
+  nothing; deactivating the last one retires its receivers. Before, startup
+  without one allowed receivers on every loaded page, and the last camera's
+  stayed after it was deactivated. Sun and emission are unaffected.
 - GI-lit materials show emission through every camera. A camera that got
   no receivers that frame (no prepass, an empty viewport) showed none; in
   0.2 that includes cameras without `VoxelGiCamera`, such as a minimap.

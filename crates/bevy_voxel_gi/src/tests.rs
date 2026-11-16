@@ -932,6 +932,64 @@ fn cacheless_residency_retires_every_page_without_a_camera_or_geometry_changes()
 }
 
 #[test]
+fn without_an_active_gi_camera_no_page_keeps_receivers() {
+    use bevy::ecs::system::RunSystemOnce;
+    let far = IVec3::new(40, 0, 0);
+    let mut world = World::new();
+    let mut runtime = VoxelGiRuntime::default();
+    runtime.loaded_pages.extend([IVec3::ZERO, far]);
+    world.insert_resource(runtime);
+    world.init_resource::<VoxelGiSettings>();
+    let step = |world: &mut World| {
+        world.run_system_once(pages::track_cameras).unwrap();
+        world
+            .run_system_once(pages::update_receiver_residency)
+            .unwrap();
+        let mut runtime = world.resource_mut::<VoxelGiRuntime>();
+        let dirty = std::mem::take(&mut runtime.receiver_dirty);
+        let retired = std::mem::take(&mut runtime.receiver_retired);
+        (runtime.receiver_pages.clone().unwrap(), dirty, retired)
+    };
+    // Startup with an unmarked camera and an inactive GI camera: no page has
+    // receivers (before, residency stayed unset, which allowed every page).
+    world.spawn((
+        Camera3d::default(),
+        GlobalTransform::from_translation(Vec3::splat(16.0)),
+    ));
+    let camera = world
+        .spawn((
+            super::VoxelGiCamera,
+            Camera {
+                is_active: false,
+                ..default()
+            },
+            GlobalTransform::from_translation(Vec3::splat(16.0)),
+        ))
+        .id();
+    let (allowed, dirty, retired) = step(&mut world);
+    assert!(allowed.is_empty() && dirty.is_empty());
+    assert_eq!(retired, HashSet::from([IVec3::ZERO, far]));
+    // The GI camera activates: the page around it gets receivers.
+    world
+        .entity_mut(camera)
+        .get_mut::<Camera>()
+        .unwrap()
+        .is_active = true;
+    let (allowed, dirty, _) = step(&mut world);
+    assert_eq!(allowed, HashSet::from([IVec3::ZERO]));
+    assert_eq!(dirty, HashSet::from([IVec3::ZERO]));
+    // The last GI camera deactivates: its receivers retire.
+    world
+        .entity_mut(camera)
+        .get_mut::<Camera>()
+        .unwrap()
+        .is_active = false;
+    let (allowed, dirty, retired) = step(&mut world);
+    assert!(allowed.is_empty() && dirty.is_empty());
+    assert_eq!(retired, HashSet::from([IVec3::ZERO]));
+}
+
+#[test]
 fn scene_sampling_starts_nearest_any_active_camera() {
     use bevy::ecs::system::RunSystemOnce;
     use std::sync::Mutex;

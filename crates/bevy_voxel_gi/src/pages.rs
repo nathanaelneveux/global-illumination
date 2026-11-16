@@ -51,7 +51,9 @@ pub(super) fn track_cameras(
 
 /// Which loaded pages have world-cache receivers: those within
 /// `cache_radius` of any active camera (distance to the page's nearest point),
-/// kept until beyond the radius plus a hysteresis. Geometry is unaffected.
+/// kept until beyond the radius plus a hysteresis. With no active GI camera
+/// no page is in reach, so receivers retire; geometry (sun, emission) is
+/// unaffected either way.
 pub(super) fn update_receiver_residency(
     mut runtime: ResMut<VoxelGiRuntime>,
     settings: Res<super::VoxelGiSettings>,
@@ -66,9 +68,6 @@ pub(super) fn update_receiver_residency(
         return;
     };
     let foci = runtime.cameras.clone();
-    if foci.is_empty() {
-        return;
-    }
     let first = runtime.receiver_pages.is_none();
     let mut allowed = runtime.receiver_pages.take().unwrap_or_default();
     let (entered, left) = step_residency(&runtime.loaded_pages, &mut allowed, &foci, radius, first);
