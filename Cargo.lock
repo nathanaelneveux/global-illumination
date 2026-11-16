@@ -2212,7 +2212,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_voxel_gi"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "bevy",
  "bytemuck",
@@ -2224,7 +2224,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_voxel_gi_bvw"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "bevy",
  "bevy_voxel_gi",
@@ -2235,7 +2235,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_voxel_gi_debug"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "bevy",
  "bevy_voxel_gi",

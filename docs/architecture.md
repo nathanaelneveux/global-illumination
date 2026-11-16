@@ -54,15 +54,15 @@ that every frame or source call has a fixed maximum cost.
 ## Host input contract
 
 `VoxelGiInput` declares loaded, changed and unloaded **32³ pages**.
-`VoxelSource::sample_page` returns material IDs 0–255 or `AIR` (256), at a
-power-of-two stride from 1 to 32. Source calls run on workers; hosts should
+`VoxelSource::sample_page` returns `GiVoxel`s (`GiVoxel::solid(0..=255)` or
+`GiVoxel::AIR`), at a power-of-two stride from 1 to 32. Source calls run on workers; hosts should
 provide immutable snapshots. A single build does not make multiple live host
 lookups an atomic world snapshot.
 
-`MaterialPalette` maps host keys to deduplicated transport IDs. Its IDs must
-be the ones returned by the source. The BVW connector instead passes raw
-`u8` material indices through: hosts populate `VoxelMaterialTransportTable`
-at those same indices.
+`VoxelGiMaterials::insert` assigns transport materials, sharing one between
+identical optics; the source returns the materials it assigned. The BVW
+connector instead passes raw `u8` material indices through: hosts `set`
+`VoxelGiMaterials` at those same indices.
 
 Default input tracking conservatively resamples unknown changes. A host that
 opts into `VoxelGiInput::tracked()` must forward every edit through
@@ -322,9 +322,10 @@ Detailed development notes and superseded layouts are preserved in
 | --- | --- |
 | Plugin wiring and runtime state | [`lib.rs`](../crates/bevy_voxel_gi/src/lib.rs) |
 | Host input: pages, edits, voxel source, interest envelope | [`input.rs`](../crates/bevy_voxel_gi/src/input.rs), [`pages.rs`](../crates/bevy_voxel_gi/src/pages.rs) |
-| Host block types to transport materials | [`palette.rs`](../crates/bevy_voxel_gi/src/palette.rs) (`MaterialPalette`) |
+| Voxels and transport materials | [`voxel.rs`](../crates/bevy_voxel_gi/src/voxel.rs) (`GiVoxel`), [`world.rs`](../crates/bevy_voxel_gi/src/world.rs) (`VoxelGiMaterials`) |
+| Which cameras GI lights; where it needs geometry | [`camera.rs`](../crates/bevy_voxel_gi/src/camera.rs) (`VoxelGiCamera`), [`demand.rs`](../crates/bevy_voxel_gi/src/demand.rs) (`VoxelGiDemand`) |
 | BVW events, edits and source (connector crate) | [`bevy_voxel_gi_bvw/src/lib.rs`](../crates/bevy_voxel_gi_bvw/src/lib.rs) |
-| Scene/receiver representation | [`world.rs`](../crates/bevy_voxel_gi/src/world.rs), [`field.rs`](../crates/bevy_voxel_gi/src/field.rs) |
+| Scene/receiver representation | [`world.rs`](../crates/bevy_voxel_gi/src/world.rs), [`world/regions.rs`](../crates/bevy_voxel_gi/src/world/regions.rs) (shared region map), [`field.rs`](../crates/bevy_voxel_gi/src/field.rs) |
 | Acceleration, packing and shared GPU transactions | [`naadf.rs`](../crates/bevy_voxel_gi/src/naadf.rs), [`gpu_scene.rs`](../crates/bevy_voxel_gi/src/gpu_scene.rs), [`gpu/geometry.rs`](../crates/bevy_voxel_gi/src/gpu/geometry.rs) |
 | Change metadata and retention | [`world/delta.rs`](../crates/bevy_voxel_gi/src/world/delta.rs), [`geometry.rs`](../crates/bevy_voxel_gi/src/geometry.rs), [`retention.rs`](../crates/bevy_voxel_gi/src/retention.rs), [`sources.rs`](../crates/bevy_voxel_gi/src/sources.rs), [`sun_changes.rs`](../crates/bevy_voxel_gi/src/sun_changes.rs) |
 | Receiver page publication | [`publication.rs`](../crates/bevy_voxel_gi/src/publication.rs) |
@@ -342,7 +343,7 @@ Detailed development notes and superseded layouts are preserved in
 | Temporal display and initialization | [`history.rs`](../crates/bevy_voxel_gi/src/history.rs) |
 | Material data and shared buffers; GI material bindings; stock material | [`render.rs`](../crates/bevy_voxel_gi/src/render.rs) (`VoxelGiBindings`, `VoxelGiStandardMaterial`), [`voxel_gi_standard.wesl`](../crates/bevy_voxel_gi/shaders/voxel_gi_standard.wesl), [`voxel_gi_pbr.wesl`](../crates/bevy_voxel_gi/shaders/voxel_gi_pbr.wesl) (`bevy_voxel_gi::pbr`) |
 | Presentation for host materials (`bevy_voxel_gi::presentation`) | [`voxel_gi_presentation.wesl`](../crates/bevy_voxel_gi/shaders/voxel_gi_presentation.wesl) |
-| BVW mesh material (connector crate) | [`bevy_voxel_gi_bvw/src/material.rs`](../crates/bevy_voxel_gi_bvw/src/material.rs), [`bevy_voxel_gi_bvw/shaders/voxel_transport.wgsl`](../crates/bevy_voxel_gi_bvw/shaders/voxel_transport.wgsl) |
+| BVW mesh material (connector crate) | [`bevy_voxel_gi_bvw/src/material.rs`](../crates/bevy_voxel_gi_bvw/src/material.rs), [`bevy_voxel_gi_bvw/shaders/voxel_transport.wesl`](../crates/bevy_voxel_gi_bvw/shaders/voxel_transport.wesl) |
 | Accounting; test fixtures | [`telemetry.rs`](../crates/bevy_voxel_gi/src/telemetry.rs); [`research.rs`](../crates/bevy_voxel_gi/src/research.rs) (tests only) |
 | HUD and tuning panel (debug crate) | [`bevy_voxel_gi_debug/src/lib.rs`](../crates/bevy_voxel_gi_debug/src/lib.rs) |
 | Validation harness (lab) | [`src/validation.rs`](../src/validation.rs), [`src/validation/`](../src/validation/) |

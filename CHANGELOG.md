@@ -80,6 +80,26 @@ The crates share one version. The format follows
   The stock `StandardMaterial` now shows every diagnostic view, not only
   coverage.
 
+### Known limitations
+
+- Opaque diffuse transport only: no colored transmission, no specular GI.
+- The far tier's indirect light flickers somewhat more in motion than the
+  per-face tiers'.
+- Not WebGPU: the view tier needs more storage buffers per stage than
+  WebGPU allows.
+- A change of the loaded world's bounds still copies the top-level field and
+  repacks every region header, and the GPU starts a new buffer generation.
+  Other scene builds cost the change.
+- `VoxelGiDemand`'s ranking is reasoned, not measured, and the BVW connector
+  cannot honor it: bevy_voxel_world has no way to keep chunks a consumer
+  asks for.
+- `bevy_voxel_gi_bvw`: authoritative resampling (`mark_voxel`,
+  `resample_page`, `mark_all_loaded`) traces BVW's full-resolution edits
+  inside coarse chunks. GI follows BVW's own mesher; a host's meshing
+  function can draw something else.
+- 0.2 is measured on an Apple M4 (Metal). 0.1 was also tested on an AMD
+  RX 7900 XT (Vulkan, DX12 with DXC).
+
 ### Migrating from 0.1
 
 | 0.1 | 0.2 |
