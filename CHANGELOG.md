@@ -4,7 +4,7 @@ All notable changes to `bevy_voxel_gi`, `bevy_voxel_gi_bvw` and `bevy_voxel_gi_d
 The crates share one version. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-16
 
 ### Changed
 
