@@ -926,3 +926,51 @@ fn cacheless_residency_retires_every_page_without_a_camera_or_geometry_changes()
     assert!(runtime.dirty_pages.is_empty());
     assert_eq!(runtime.loaded_pages.len(), 2);
 }
+
+#[test]
+fn scene_sampling_starts_nearest_any_active_camera() {
+    use bevy::ecs::system::RunSystemOnce;
+    use std::sync::Mutex;
+    bevy::tasks::AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default);
+    let east = IVec3::new(100, 0, 0);
+    let west = IVec3::new(-99, 0, 0);
+    let between = IVec3::new(50, 0, 0);
+    let mut runtime = VoxelGiRuntime::default();
+    for page in [IVec3::ZERO, between, east, west] {
+        runtime.loaded_pages.insert(page);
+        runtime.dirty_pages.insert(page);
+    }
+    let mut world = World::new();
+    world.insert_resource(runtime);
+    world.init_resource::<super::telemetry::GiWorkTimings>();
+    let sampled = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&sampled);
+    world.insert_resource(VoxelGiSource::new(move |page: IVec3| {
+        seen.lock().unwrap().push(page);
+        PageSample::air()
+    }));
+    // An inactive camera at the origin; the players are at pages 100 and -100.
+    world.spawn((
+        super::VoxelGiCamera,
+        Camera {
+            is_active: false,
+            ..default()
+        },
+        GlobalTransform::from_translation(Vec3::splat(16.0)),
+    ));
+    for x in [3216.0, -3184.0] {
+        world.spawn((
+            super::VoxelGiCamera,
+            Camera::default(),
+            GlobalTransform::from_translation(Vec3::new(x, 16.0, 16.0)),
+        ));
+    }
+    world.run_system_once(pages::start_scene_task).unwrap();
+    let task = world
+        .resource_mut::<VoxelGiRuntime>()
+        .scene_task
+        .take()
+        .expect("a scene build starts");
+    bevy::tasks::block_on(task);
+    assert_eq!(*sampled.lock().unwrap(), [east, west, between, IVec3::ZERO]);
+}

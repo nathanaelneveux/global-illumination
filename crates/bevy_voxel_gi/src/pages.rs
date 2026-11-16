@@ -4,7 +4,7 @@
 use super::input::{PageEvent, VoxelGiInput, VoxelGiSource};
 use super::telemetry::GiWorkTimings;
 use super::world::{
-    PAGE_EDGE, PAGE_SIZE, PageVoxels, TransportScene, affected_probe_pages,
+    PAGE_EDGE, PAGE_SIZE, PageVoxels, TransportScene, affected_probe_pages, focus_distance_squared,
     scan_surface_probe_pages,
 };
 use super::{SceneBuildResult, VoxelGiRuntime, naadf, page_of};
@@ -302,7 +302,7 @@ pub(super) const SCENE_SAMPLE_BUDGET: std::time::Duration = std::time::Duration:
 pub(super) fn start_scene_task(
     mut runtime: ResMut<VoxelGiRuntime>,
     source: Res<VoxelGiSource>,
-    cameras: Query<&GlobalTransform, With<super::VoxelGiCamera>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<super::VoxelGiCamera>>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
     let _timing = timings.main_scope(super::telemetry::MainStage::SceneDispatch);
@@ -328,20 +328,25 @@ pub(super) fn start_scene_task(
     // Sample edited pages, then the nearest: the dense budget (a dense page
     // costs 64 KB; streaming a far world queues tens of thousands) and the
     // sampling time budget can each stop a build early, and the worker hands
-    // the rest back. Any queue can hit the time budget, so always sort.
-    let focus = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
-        page_of(camera.translation().floor().as_ivec3())
-    });
+    // the rest back. Any queue can hit the time budget, so always sort,
+    // nearest any active GI camera first (as residency and demand rank),
+    // or the origin without one.
+    let mut foci: Vec<IVec3> = cameras
+        .iter()
+        .filter(|(camera, _)| camera.is_active)
+        .map(|(_, transform)| page_of(transform.translation().floor().as_ivec3()))
+        .collect();
+    if foci.is_empty() {
+        foci.push(IVec3::ZERO);
+    }
+    let foci: Arc<[IVec3]> = foci.into();
     let edited: HashSet<IVec3> = runtime
         .dirty_voxels
         .iter()
         .map(|voxel| page_of(*voxel))
         .collect();
     dirty_pages.sort_unstable_by_key(|page| {
-        (
-            !edited.contains(page),
-            (page.as_i64vec3() - focus.as_i64vec3()).length_squared(),
-        )
+        (!edited.contains(page), focus_distance_squared(&foci, *page))
     });
     if dirty_pages.len() > MAX_SAMPLED_PAGES {
         let deferred = dirty_pages.split_off(MAX_SAMPLED_PAGES);
@@ -378,9 +383,6 @@ pub(super) fn start_scene_task(
     let retention_radius = super::retention::INFLUENCE_RADIUS;
     let materials = Arc::clone(&runtime.materials);
     let sources = runtime.sources.clone();
-    let focus_page = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
-        page_of(camera.translation().floor().as_ivec3())
-    });
     let sample_budget = runtime.scene_sample_budget;
     runtime.scene_task = Some(AsyncComputeTaskPool::get().spawn(async move {
         let _span = info_span!("gi_scene_build").entered();
@@ -452,7 +454,7 @@ pub(super) fn start_scene_task(
                 Some(allowed) => affected_pages.intersection(allowed).copied().collect(),
                 None => affected_pages.clone(),
             };
-            scan_surface_probe_pages(&scene, &scanned, focus_page)
+            scan_surface_probe_pages(&scene, &scanned, &foci)
         } else {
             Vec::new()
         };
@@ -473,7 +475,7 @@ pub(super) fn start_scene_task(
         pages.sort_unstable_by_key(|(page, _)| {
             (
                 !exact_edits.iter().any(|v| page_of(*v) == *page),
-                (page.as_i64vec3() - focus_page.as_i64vec3()).length_squared(),
+                focus_distance_squared(&foci, *page),
             )
         });
         SceneBuildResult {

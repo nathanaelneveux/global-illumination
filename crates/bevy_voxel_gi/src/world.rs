@@ -1329,20 +1329,27 @@ pub fn affected_probe_pages(changed_pages: &[IVec3], removed_pages: &[IVec3]) ->
     affected
 }
 
+/// Squared page distance from `page` to the nearest of `foci` (the active
+/// cameras' pages), or 0 without one: work near any camera goes first.
+pub(crate) fn focus_distance_squared(foci: &[IVec3], page: IVec3) -> i64 {
+    foci.iter()
+        .map(|focus| (page.as_i64vec3() - focus.as_i64vec3()).length_squared())
+        .min()
+        .unwrap_or(0)
+}
+
 /// Rebuild only the probe descriptors in the requested 32-cubed pages. This
 /// is the hot edit path; it avoids cloning and rescanning the complete loaded
 /// world merely because one voxel changed.
 pub fn scan_surface_probe_pages(
     scene: &TransportScene,
     pages: &HashSet<IVec3>,
-    focus_page: IVec3,
+    foci: &[IVec3],
 ) -> Vec<SurfaceProbeDescriptor> {
     let mut found = Vec::new();
     let mut ordered_pages: Vec<_> = pages.iter().copied().collect();
-    ordered_pages.sort_unstable_by_key(|page| {
-        let delta = (*page - focus_page).as_i64vec3();
-        (delta.length_squared(), page.z, page.y, page.x)
-    });
+    ordered_pages
+        .sort_unstable_by_key(|page| (focus_distance_squared(foci, *page), page.z, page.y, page.x));
     for page in ordered_pages {
         let origin = page * PAGE_EDGE as i32;
         for z in 0..PAGE_EDGE {
@@ -1386,7 +1393,7 @@ pub fn rebuild_surface_probes(
         .keys()
         .map(|region| region.div_euclid(IVec3::splat(2)))
         .collect();
-    let descriptors = scan_surface_probe_pages(scene, &pages, IVec3::ZERO);
+    let descriptors = scan_surface_probe_pages(scene, &pages, &[IVec3::ZERO]);
 
     let mut probes = HashMap::new();
     for descriptor in descriptors {
