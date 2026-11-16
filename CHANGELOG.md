@@ -61,13 +61,13 @@ The crates share one version. The format follows
   updated where regions change. In a 110,000-page world an edit that fills
   sky took about 2 s to build and now takes about 70 ms; streaming far
   terrain no longer shows faces black while a build catches up.
-- Scene builds sample and publish pages nearest any active `VoxelGiCamera`
-  first. They followed the first marked camera, active or not, so under a
+- Scene builds sample and publish pages nearest any active GI camera
+  first. They followed the first camera, active or not, so under a
   streaming backlog an inactive camera's surroundings went before the
   player's.
-- GI-lit materials show emission through cameras without `VoxelGiCamera`
-  (a minimap, a portal) and through GI cameras without receivers that frame,
-  as `VoxelGiCamera` documents. They showed none.
+- GI-lit materials show emission through every camera. A camera that got
+  no receivers that frame (no prepass, an empty viewport) showed none; in
+  0.2 that includes cameras without `VoxelGiCamera`, such as a minimap.
 - `bevy_voxel_gi_bvw`: with default input tracking, a chunk BVW republishes
   or swaps for another level is sampled at its stride, as drawn. It was
   resampled through BVW's edit map at full resolution, 32,768 lookups a
