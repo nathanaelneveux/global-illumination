@@ -44,6 +44,14 @@ The crates share one version. The format follows
   a 32 times smaller radius from out-of-view despawning than 0.17 did; use
   `ChunkDespawnStrategy::FarAway` to keep the lighting of 0.1.
 
+### Fixed
+
+- Scene builds cost the change instead of the whole loaded world: the
+  region map is shared between builds and the top-level empty-space field is
+  updated where regions change. In a 110,000-page world an edit that fills
+  sky took about 2 s to build and now takes about 70 ms; streaming far
+  terrain no longer shows faces black while a build catches up.
+
 ### Added
 
 - `PBR_SHADER` and `insert_voxel_gi_shaders`, which registers GI's shader

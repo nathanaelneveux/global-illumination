@@ -120,14 +120,10 @@ impl SceneChanges {
                 transport: None,
             };
         }
-        let mut occupied_min = IVec3::MAX;
-        let mut occupied_max = IVec3::MIN;
-        for (&coordinate, region) in &previous.regions {
-            if region.any_solid {
-                occupied_min = occupied_min.min(coordinate);
-                occupied_max = occupied_max.max(coordinate);
-            }
-        }
+        let (occupied_min, occupied_max) = previous
+            .regions
+            .solid_bounds()
+            .unwrap_or((IVec3::MAX, IVec3::MIN));
         let mut result = Self {
             changed: false,
             transport: None,
