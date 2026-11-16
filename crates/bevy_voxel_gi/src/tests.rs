@@ -848,6 +848,7 @@ fn cache_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
         GlobalTransform::from_translation(Vec3::new(1016.0, 16.0, 16.0)),
     ));
     world.init_resource::<VoxelGiDemand>();
+    world.run_system_once(pages::track_cameras).unwrap();
     world
         .run_system_once(pages::update_receiver_residency)
         .unwrap();
@@ -870,6 +871,7 @@ fn cache_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
         .insert(GlobalTransform::from_translation(Vec3::new(
             120.0, 16.0, 16.0,
         )));
+    world.run_system_once(pages::track_cameras).unwrap();
     world
         .run_system_once(pages::update_receiver_residency)
         .unwrap();
@@ -890,6 +892,7 @@ fn cache_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
         .resource_mut::<VoxelGiRuntime>()
         .receiver_retired
         .clear();
+    world.run_system_once(pages::track_cameras).unwrap();
     world
         .run_system_once(pages::update_receiver_residency)
         .unwrap();
@@ -917,6 +920,7 @@ fn cacheless_residency_retires_every_page_without_a_camera_or_geometry_changes()
         cache_radius: 0.0,
         ..default()
     });
+    world.run_system_once(pages::track_cameras).unwrap();
     world
         .run_system_once(pages::update_receiver_residency)
         .unwrap();
@@ -943,6 +947,7 @@ fn scene_sampling_starts_nearest_any_active_camera() {
     let mut world = World::new();
     world.insert_resource(runtime);
     world.init_resource::<super::telemetry::GiWorkTimings>();
+    world.init_resource::<VoxelGiSettings>();
     let sampled = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&sampled);
     world.insert_resource(VoxelGiSource::new(move |page: IVec3| {
@@ -965,6 +970,7 @@ fn scene_sampling_starts_nearest_any_active_camera() {
             GlobalTransform::from_translation(Vec3::new(x, 16.0, 16.0)),
         ));
     }
+    world.run_system_once(pages::track_cameras).unwrap();
     world.run_system_once(pages::start_scene_task).unwrap();
     let task = world
         .resource_mut::<VoxelGiRuntime>()

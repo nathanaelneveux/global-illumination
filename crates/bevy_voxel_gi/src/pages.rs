@@ -5,7 +5,7 @@ use super::input::{PageEvent, VoxelGiInput, VoxelGiSource};
 use super::telemetry::GiWorkTimings;
 use super::world::{
     PAGE_EDGE, PAGE_SIZE, PageVoxels, TransportScene, affected_probe_pages, focus_distance_squared,
-    scan_surface_probe_pages,
+    page_distance, pages_within, scan_surface_probe_pages,
 };
 use super::{SceneBuildResult, VoxelGiRuntime, naadf, page_of};
 use bevy::platform::collections::{HashMap, HashSet};
@@ -18,18 +18,25 @@ use std::time::Instant;
 /// camera moving back and forth across it does not churn pages.
 const RECEIVER_HYSTERESIS: f32 = PAGE_EDGE as f32;
 
-/// Which loaded pages have world-cache receivers: those within
-/// `cache_radius` of any active camera (distance to the page's nearest point),
-/// kept until beyond the radius plus a hysteresis. Geometry is unaffected.
-pub(super) fn update_receiver_residency(
+/// The active `VoxelGiCamera`s this frame, read once: residency, demand,
+/// scene builds and dispatch all rank by `runtime.cameras`.
+pub(super) fn track_cameras(
     mut runtime: ResMut<VoxelGiRuntime>,
     settings: Res<super::VoxelGiSettings>,
     cameras: Query<(&Camera, &GlobalTransform), With<super::VoxelGiCamera>>,
     plain: Query<&Camera, (With<Camera3d>, Without<super::VoxelGiCamera>)>,
     demand: Option<ResMut<super::VoxelGiDemand>>,
 ) {
+    let active = cameras
+        .iter()
+        .filter(|(camera, _)| camera.is_active)
+        .map(|(_, transform)| transform.translation());
+    if !runtime.cameras.iter().copied().eq(active.clone()) {
+        runtime.cameras.clear();
+        runtime.cameras.extend(active);
+    }
     if !runtime.loaded_pages.is_empty()
-        && !cameras.iter().any(|(camera, _)| camera.is_active)
+        && runtime.cameras.is_empty()
         && plain.iter().any(|camera| camera.is_active)
     {
         warn_once!(
@@ -37,10 +44,18 @@ pub(super) fn update_receiver_residency(
              add it to the cameras that show your world"
         );
     }
-    // Demand reads the same cameras; one system keeps its cost to the copy.
     if let Some(mut demand) = demand {
-        super::demand::refresh(&mut demand, &runtime, &settings, &cameras);
+        super::demand::refresh(&mut demand, &runtime, &settings);
     }
+}
+
+/// Which loaded pages have world-cache receivers: those within
+/// `cache_radius` of any active camera (distance to the page's nearest point),
+/// kept until beyond the radius plus a hysteresis. Geometry is unaffected.
+pub(super) fn update_receiver_residency(
+    mut runtime: ResMut<VoxelGiRuntime>,
+    settings: Res<super::VoxelGiSettings>,
+) {
     let Some(radius) = settings.cache_radius() else {
         let left = runtime
             .receiver_pages
@@ -50,11 +65,7 @@ pub(super) fn update_receiver_residency(
         mark_receivers(&mut runtime, Vec::new(), left.into_iter().collect());
         return;
     };
-    let foci: Vec<Vec3> = cameras
-        .iter()
-        .filter(|(camera, _)| camera.is_active)
-        .map(|(_, transform)| transform.translation())
-        .collect();
+    let foci = runtime.cameras.clone();
     if foci.is_empty() {
         return;
     }
@@ -84,10 +95,8 @@ fn step_residency(
     first: bool,
 ) -> (Vec<IVec3>, Vec<IVec3>) {
     let distance = |page: IVec3| {
-        let minimum = (page * PAGE_EDGE as i32).as_vec3();
-        let maximum = minimum + Vec3::splat(PAGE_EDGE as f32);
         foci.iter()
-            .map(|focus| focus.clamp(minimum, maximum).distance(*focus))
+            .map(|&focus| page_distance(page, focus))
             .fold(f32::INFINITY, f32::min)
     };
     allowed.retain(|page| loaded.contains(page));
@@ -105,25 +114,18 @@ fn step_residency(
             entered.push(page);
         }
     };
-    let page_box = |focus: Vec3| {
-        let edge = PAGE_EDGE as f32;
-        // A page reaches `focus - radius` when its far face does: one page
-        // below ceil (it may touch the sphere exactly at that face).
-        let minimum = ((focus - radius) / edge).ceil() - 1.0;
-        let maximum = ((focus + radius) / edge).floor();
-        (minimum, maximum)
-    };
     let box_pages: f64 = foci
         .iter()
         .map(|&focus| {
-            let (minimum, maximum) = page_box(focus);
-            (maximum - minimum + 1.0).as_dvec3().element_product()
+            let (minimum, maximum) = pages_within(focus, radius);
+            (maximum - minimum + IVec3::ONE)
+                .as_dvec3()
+                .element_product()
         })
         .sum();
     if box_pages < loaded.len() as f64 {
         for &focus in foci {
-            let (minimum, maximum) = page_box(focus);
-            let (minimum, maximum) = (minimum.as_ivec3(), maximum.as_ivec3());
+            let (minimum, maximum) = pages_within(focus, radius);
             for z in minimum.z..=maximum.z {
                 for y in minimum.y..=maximum.y {
                     for x in minimum.x..=maximum.x {
@@ -302,7 +304,6 @@ pub(super) const SCENE_SAMPLE_BUDGET: std::time::Duration = std::time::Duration:
 pub(super) fn start_scene_task(
     mut runtime: ResMut<VoxelGiRuntime>,
     source: Res<VoxelGiSource>,
-    cameras: Query<(&Camera, &GlobalTransform), With<super::VoxelGiCamera>>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
     let _timing = timings.main_scope(super::telemetry::MainStage::SceneDispatch);
@@ -331,10 +332,10 @@ pub(super) fn start_scene_task(
     // the rest back. Any queue can hit the time budget, so always sort,
     // nearest any active GI camera first (as residency and demand rank),
     // or the origin without one.
-    let mut foci: Vec<IVec3> = cameras
+    let mut foci: Vec<IVec3> = runtime
+        .cameras
         .iter()
-        .filter(|(camera, _)| camera.is_active)
-        .map(|(_, transform)| page_of(transform.translation().floor().as_ivec3()))
+        .map(|camera| page_of(camera.floor().as_ivec3()))
         .collect();
     if foci.is_empty() {
         foci.push(IVec3::ZERO);

@@ -2,7 +2,7 @@
 use bevy::platform::collections::HashSet;
 use bevy::prelude::*;
 
-use super::world::PAGE_EDGE;
+use super::world::{PAGE_EDGE, page_distance, pages_within, pages_within_box};
 
 /// How far toward each sun GI traces direct visibility (its sun horizon).
 const SUN_HORIZON: f32 = super::tracer::MAX_PATH_DISTANCE;
@@ -97,15 +97,12 @@ impl VoxelGiDemand {
     /// are measured from the page's centre less half its diagonal, so they
     /// may rank a page up to that much too near.
     pub fn priority(&self, page: IVec3) -> Option<f32> {
-        let edge = PAGE_EDGE as f32;
-        let min = (page * PAGE_EDGE as i32).as_vec3();
-        let max = min + Vec3::splat(edge);
-        let center = min + Vec3::splat(edge * 0.5);
+        let center = (page * PAGE_EDGE as i32).as_vec3() + Vec3::splat(PAGE_EDGE as f32 * 0.5);
         let column = self.column_radius();
         self.cameras
             .iter()
             .map(|&camera| {
-                let mut distance = camera.clamp(min, max).distance(camera);
+                let mut distance = page_distance(page, camera);
                 for &sun in &self.suns {
                     let along = segment_distance(center, camera, camera + sun * SUN_HORIZON);
                     let shadow = (along - PAGE_HALF_DIAGONAL).max(0.0);
@@ -126,19 +123,15 @@ impl VoxelGiDemand {
         if !max_priority.is_finite() || max_priority < 0.0 {
             return Vec::new();
         }
-        let edge = Vec3::splat(PAGE_EDGE as f32);
-        let page_of = |p: Vec3| p.div_euclid(edge).as_ivec3();
         let mut boxes = Vec::new();
         for &camera in &self.cameras {
-            // A page counts when its closed box reaches the sphere: one whose
-            // upper face lies on it starts a whole page below.
-            let r = Vec3::splat(max_priority);
-            let lowest = ((camera - r) / edge).ceil().as_ivec3() - IVec3::ONE;
-            boxes.push((lowest, page_of(camera + r)));
-            let r = Vec3::splat(max_priority.min(self.column_radius()) + PAGE_HALF_DIAGONAL);
+            boxes.push(pages_within(camera, max_priority));
+            // A column page's centre is within this of the sun segment, so its
+            // box is within it of the segment's bounding box.
+            let r = max_priority.min(self.column_radius()) + PAGE_HALF_DIAGONAL;
             for &sun in &self.suns {
                 let end = camera + sun * SUN_HORIZON;
-                boxes.push((page_of(camera.min(end) - r), page_of(camera.max(end) + r)));
+                boxes.push(pages_within_box(camera.min(end), camera.max(end), r));
             }
         }
         let mut seen = HashSet::new();
@@ -181,21 +174,15 @@ fn segment_distance(point: Vec3, start: Vec3, end: Vec3) -> f32 {
 }
 
 /// Copies the inputs only when they changed, so hosts' change detection
-/// fires on movement and settings, not every frame. Called from the receiver
-/// residency update, which reads the same cameras; the suns are the previous
-/// frame's until this frame's sources synchronize.
+/// fires on movement and settings, not every frame. Called when GI reads the
+/// active cameras (`pages::track_cameras`); the suns are the previous frame's
+/// until this frame's sources synchronize.
 pub(super) fn refresh(
     demand: &mut ResMut<VoxelGiDemand>,
     runtime: &super::VoxelGiRuntime,
     settings: &super::VoxelGiSettings,
-    cameras: &Query<(&Camera, &GlobalTransform), With<super::VoxelGiCamera>>,
 ) {
-    let active = || {
-        cameras
-            .iter()
-            .filter(|(camera, _)| camera.is_active)
-            .map(|(_, transform)| transform.translation())
-    };
+    let active = || runtime.cameras.iter().copied();
     let suns = || super::sky::sky_light_iter(&runtime.sources).map(|light| light.direction);
     let receiver_radius = settings.cache_radius().unwrap_or(0.0);
     let reach = runtime.transport.reach;

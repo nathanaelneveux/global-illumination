@@ -25,6 +25,28 @@ pub const REGION_SIZE: UVec3 = UVec3::splat(REGION_EDGE);
 pub const BRICK_GRID_SIZE: UVec3 = UVec3::splat(BRICKS_PER_AXIS);
 pub const PAGE_SIZE: UVec3 = UVec3::splat(PAGE_EDGE);
 
+/// Distance in voxels from `point` to page `page`'s closed box (zero inside).
+pub(crate) fn page_distance(page: IVec3, point: Vec3) -> f32 {
+    let minimum = (page * PAGE_EDGE as i32).as_vec3();
+    let maximum = minimum + Vec3::splat(PAGE_EDGE as f32);
+    point.clamp(minimum, maximum).distance(point)
+}
+
+/// The inclusive page range holding every page within `radius` of `point`
+/// (`page_distance <= radius`).
+pub(crate) fn pages_within(point: Vec3, radius: f32) -> (IVec3, IVec3) {
+    pages_within_box(point, point, radius)
+}
+
+/// The inclusive page range holding every page whose closed box comes within
+/// `radius` of the box from `low` to `high`. A page whose upper face lies
+/// exactly at that distance starts a whole page below it.
+pub(crate) fn pages_within_box(low: Vec3, high: Vec3, radius: f32) -> (IVec3, IVec3) {
+    let edge = PAGE_EDGE as f32;
+    let minimum = ((low - radius) / edge).ceil().as_ivec3() - IVec3::ONE;
+    (minimum, ((high + radius) / edge).floor().as_ivec3())
+}
+
 pub const FACE_OFFSETS: [IVec3; 6] = [
     IVec3::X,
     IVec3::NEG_X,
@@ -1494,6 +1516,72 @@ mod stream_bench;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_ranges_hold_every_page_within_reach() {
+        // Points and boxes on page faces, and radii ending on them, included.
+        let mut seed = 0x2545_f491_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        fn coordinate(next: &mut impl FnMut() -> u32) -> f32 {
+            let raw = (next() % 257) as f32 - 128.0;
+            if next().is_multiple_of(3) {
+                (raw / 32.0).round() * 32.0
+            } else {
+                raw + 0.37
+            }
+        }
+        for _ in 0..200 {
+            let a = Vec3::new(
+                coordinate(&mut next),
+                coordinate(&mut next),
+                coordinate(&mut next),
+            );
+            let b = a + Vec3::new(
+                coordinate(&mut next),
+                coordinate(&mut next),
+                coordinate(&mut next),
+            )
+            .abs()
+                * 0.5;
+            let radius = [0.0, 16.0, 32.0, 47.5, 64.0][(next() % 5) as usize];
+            let (minimum, maximum) = pages_within_box(a, b, radius);
+            let (point_min, point_max) = pages_within(a, radius);
+            for z in -8..=8 {
+                for y in -8..=8 {
+                    for x in -8..=8 {
+                        let page = IVec3::new(x, y, z);
+                        let low = (page * PAGE_EDGE as i32).as_vec3();
+                        let high = low + Vec3::splat(PAGE_EDGE as f32);
+                        let gap = (a - high).max(low - b).max(Vec3::ZERO).length();
+                        if gap <= radius {
+                            assert!(
+                                page.cmpge(minimum).all() && page.cmple(maximum).all(),
+                                "{a} {b} {radius} {page}"
+                            );
+                        }
+                        if page_distance(page, a) <= radius {
+                            assert!(
+                                page.cmpge(point_min).all() && page.cmple(point_max).all(),
+                                "{a} {radius} {page}"
+                            );
+                        }
+                    }
+                }
+            }
+            // Not wastefully wide: at most one page beyond the reach each way.
+            let size = maximum - minimum + IVec3::ONE;
+            let reach = ((b - a + 2.0 * radius) / PAGE_EDGE as f32)
+                .ceil()
+                .as_ivec3()
+                + IVec3::splat(2);
+            assert!(size.cmple(reach).all(), "{size} > {reach}");
+        }
+    }
 
     #[test]
     fn uniform_pages_build_the_regions_dense_expansion_would() {

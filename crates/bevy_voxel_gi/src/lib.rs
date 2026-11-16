@@ -170,6 +170,7 @@ impl Plugin for VoxelGiPlugin {
                 Update,
                 (
                     ingest_input,
+                    pages::track_cameras,
                     pages::update_receiver_residency,
                     synchronize_transport_sources,
                     synchronize_material_table,
@@ -293,6 +294,9 @@ struct VoxelGiRuntime {
     materials: Arc<VoxelGiMaterials>,
     transport: TransportSettings,
     loaded_pages: HashSet<IVec3>,
+    /// The active `VoxelGiCamera`s' positions this frame (`pages::track_cameras`).
+    /// Residency, demand, scene builds and dispatch all rank by these.
+    cameras: Vec<Vec3>,
     /// Bounds of `loaded_pages`: the host's declared geometry interest.
     interest: pages::Interest,
     dirty_pages: HashSet<IVec3>,
@@ -361,6 +365,7 @@ impl Default for VoxelGiRuntime {
             materials: Arc::new(VoxelGiMaterials::default()),
             transport: TransportSettings::default(),
             loaded_pages: HashSet::new(),
+            cameras: Vec::new(),
             interest: default(),
             dirty_pages: HashSet::new(),
             full_resample_pages: HashSet::new(),
