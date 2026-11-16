@@ -33,7 +33,7 @@ const PAGE_HALF_DIAGONAL: f32 = PAGE_EDGE as f32 * 0.866_025_4;
 /// columns. Visible faces farther away trace their own surroundings, which a
 /// host that loads what its cameras see mostly holds already.
 ///
-/// GI updates this every frame from its active 3D cameras (their world
+/// GI updates this every frame from the active `VoxelGiCamera`s (their world
 /// positions, one world unit per voxel), its suns and its settings, and it
 /// changes whenever a camera moves. Re-rank at your own cadence, for example
 /// when a camera crosses into another page.
