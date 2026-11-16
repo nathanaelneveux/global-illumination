@@ -350,7 +350,12 @@ pub(super) fn run_validation(
     let measured = run.started.unwrap().elapsed().as_secs_f32();
     let profile = run.profile;
     if run.gi_ready_s.is_none() {
-        if !crate::gi_lab::gi_enabled() || stats.view_gpu.receipt > 0 {
+        // An unmarked camera (`VOXEL_GI_LAB_UNMARKED`) gets no view frames:
+        // its GI is the published geometry (sun and emission).
+        let unmarked = std::env::var_os("VOXEL_GI_LAB_UNMARKED").is_some()
+            && stats.loaded_pages > 0
+            && !stats.geometry_pending;
+        if !crate::gi_lab::gi_enabled() || stats.view_gpu.receipt > 0 || unmarked {
             run.gi_ready_s = Some(measured);
             info!(gi_ready_s = measured, "GI validation: first view frame");
         } else if measured >= GI_READY_TIMEOUT_S {

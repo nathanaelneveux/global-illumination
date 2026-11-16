@@ -269,32 +269,38 @@ fn spawn_player(mut commands: Commands, world: Res<PrototypeWorld>) {
             .insert(ContextActivity::<PlayerInput>::INACTIVE);
     }
 
-    commands.spawn((
-        Name::new("PlayerCamera"),
-        PlayerCamera,
-        Camera3d::default(),
-        bevy_voxel_gi::VoxelGiCamera,
-        Projection::Perspective(PerspectiveProjection {
-            fov: if crate::scene_presets::ScenePreset::current()
-                != crate::scene_presets::ScenePreset::Terrain
-            {
-                65.0_f32.to_radians()
-            } else {
-                std::f32::consts::FRAC_PI_4
+    let camera = commands
+        .spawn((
+            Name::new("PlayerCamera"),
+            PlayerCamera,
+            Camera3d::default(),
+            Projection::Perspective(PerspectiveProjection {
+                fov: if crate::scene_presets::ScenePreset::current()
+                    != crate::scene_presets::ScenePreset::Terrain
+                {
+                    65.0_f32.to_radians()
+                } else {
+                    std::f32::consts::FRAC_PI_4
+                },
+                ..default()
+            }),
+            DistanceFog {
+                color: sky_color(),
+                falloff: FogFalloff::Linear {
+                    start: FOG_START,
+                    end: terrain_view_distance(),
+                },
+                ..default()
             },
-            ..default()
-        }),
-        DistanceFog {
-            color: sky_color(),
-            falloff: FogFalloff::Linear {
-                start: FOG_START,
-                end: terrain_view_distance(),
-            },
-            ..default()
-        },
-        CharacterControllerCameraOf::new(player),
-        VoxelWorldCamera::<PrototypeWorld>::default(),
-    ));
+            CharacterControllerCameraOf::new(player),
+            VoxelWorldCamera::<PrototypeWorld>::default(),
+        ))
+        .id();
+    // `VOXEL_GI_LAB_UNMARKED=1`: the player's camera is not a GI camera, as
+    // a minimap or portal camera would be (GI's sun and emission only).
+    if std::env::var_os("VOXEL_GI_LAB_UNMARKED").is_none() {
+        commands.entity(camera).insert(bevy_voxel_gi::VoxelGiCamera);
+    }
 }
 
 fn player_controller() -> CharacterController {
