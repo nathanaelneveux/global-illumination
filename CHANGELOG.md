@@ -61,6 +61,10 @@ The crates share one version. The format follows
   or swaps for another level is sampled at its stride, as drawn. It was
   resampled through BVW's edit map at full resolution, 32,768 lookups a
   page (about 134 million for a level-4 chunk).
+- `bevy_voxel_gi_bvw`: GI traces a chunk at its meshing shape
+  (`chunk_meshing_shape`), as BVW's mesher resamples it, instead of at its
+  stored data shape. A chunk stored finer than it is drawn cast shadows
+  and bounced light from detail its mesh does not show.
 
 ### Added
 

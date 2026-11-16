@@ -93,7 +93,8 @@ trait ChunkView {
     fn key(&self) -> ChunkKey;
     fn entity(&self) -> Entity;
     fn is_empty(&self) -> bool;
-    fn data_shape(&self) -> UVec3;
+    /// The padded shape BVW meshes the chunk at.
+    fn mesh_shape(&self) -> UVec3;
     /// The voxel covering `position`, as the chunk's mesh shows it.
     fn voxel(&self, position: IVec3) -> Option<WorldVoxel<u8>>;
 }
@@ -120,8 +121,15 @@ fn published_chunks<C: VoxelWorldConfig<MaterialIndex = u8>>(
             key: data.key(),
             entity: data.get_entity(),
             empty: data.is_empty(),
-            shape: data.data_shape(),
-            voxels: Arc::new(move |position| data.get_voxel_at_world_position(position)),
+            shape: data.mesh_shape(),
+            voxels: Arc::new(move |position| {
+                let (data_shape, mesh_shape) = (data.data_shape(), data.mesh_shape());
+                let offset = position - data.key().min_voxel();
+                let extent = data.key().voxel_extent();
+                let axis =
+                    |i: usize| drawn_coordinate(offset[i], extent, mesh_shape[i], data_shape[i]);
+                Some(data.get_voxel(UVec3::new(axis(0)?, axis(1)?, axis(2)?)))
+            }),
         })
     })
 }
@@ -136,7 +144,7 @@ impl ChunkView for Published {
     fn is_empty(&self) -> bool {
         self.empty
     }
-    fn data_shape(&self) -> UVec3 {
+    fn mesh_shape(&self) -> UVec3 {
         self.shape
     }
     fn voxel(&self, position: IVec3) -> Option<WorldVoxel<u8>> {
@@ -363,8 +371,37 @@ fn sample_page(
 
 const CHUNK: u32 = bevy_voxel_gi::VOXEL_GI_PAGE_EDGE;
 
-/// The voxels between a chunk's samples, when they are the same power of two
-/// on every axis (BVW's default shapes: `1 << lod`).
+/// Along one axis, the data voxel BVW's mesher draws `offset` voxels into a
+/// chunk `extent` voxels wide, or `None` outside its padded data. The mesh
+/// cell covering the voxel is the last one starting at or before it, as
+/// BVW's `get_voxel_at_world_position` finds data voxels; a mesh shape that
+/// differs from the data shape takes each cell's nearest data voxel, as
+/// BVW's mesher resamples. With equal shapes this is BVW's own lookup.
+fn drawn_coordinate(offset: i32, extent: i32, mesh_dim: u32, data_dim: u32) -> Option<u32> {
+    let inner = |dim: u32| dim.saturating_sub(2).max(1);
+    let spacing = extent as f32 / inner(mesh_dim) as f32;
+    let cell = ((offset as f32 + 1.0) / spacing).ceil();
+    if mesh_dim == 0 || data_dim == 0 || cell < 0.0 || cell >= mesh_dim as f32 {
+        return None;
+    }
+    let cell = cell as u32;
+    if inner(mesh_dim) == inner(data_dim) {
+        return Some(cell);
+    }
+    // Padding stays aligned with the data's padding.
+    if cell == 0 {
+        return Some(0);
+    }
+    if cell >= mesh_dim - 1 {
+        return Some(data_dim - 1);
+    }
+    let ratio = (inner(data_dim) - 1).max(1) as f32 / (inner(mesh_dim) - 1).max(1) as f32;
+    Some((((cell - 1) as f32 * ratio).round() as u32 + 1).min(data_dim - 1))
+}
+
+/// The voxels between the samples a chunk is drawn with (its mesh shape),
+/// when they are the same power of two on every axis (BVW's default
+/// shapes: `1 << lod`).
 fn sample_spacing(key: ChunkKey, shape: UVec3) -> Option<u32> {
     let samples = shape.x.checked_sub(2).filter(|samples| *samples > 0)?;
     let extent = key.voxel_extent() as u32;
@@ -385,7 +422,7 @@ fn sample_chunk(
         return PageSample::air();
     }
     let at = |position| solid(chunk.voxel(position).unwrap_or_else(|| fallback(position)));
-    match sample_spacing(chunk.key(), chunk.data_shape()) {
+    match sample_spacing(chunk.key(), chunk.mesh_shape()) {
         Some(spacing) => coarse_page(page, spacing.min(CHUNK), at),
         None => dense_page(page, at),
     }
@@ -453,7 +490,7 @@ mod tests {
         fn is_empty(&self) -> bool {
             false
         }
-        fn data_shape(&self) -> UVec3 {
+        fn mesh_shape(&self) -> UVec3 {
             self.shape
         }
         fn voxel(&self, position: IVec3) -> Option<WorldVoxel<u8>> {
@@ -602,6 +639,55 @@ mod tests {
                 .for_each(|p| i.page_loaded(p))),
             "a coarse remesh leaves the page a finer chunk covers alone"
         );
+    }
+
+    #[test]
+    fn gi_draws_each_data_voxel_where_bvws_mesher_does() {
+        use bevy::mesh::VertexAttributeValues;
+        use bevy_voxel_world::custom_meshing::generate_chunk_mesh_for_shape;
+        // (data, mesh) padded sizes of a level-0 chunk: equal (BVW's default),
+        // meshed coarser than stored (the review's 34 -> 18), a finer store.
+        for (data, mesh) in [(34, 34), (34, 18), (34, 10), (66, 34), (22, 10)] {
+            for i in 1..data - 1 {
+                // BVW's (ndshape's) order: x fastest.
+                let mut voxels = vec![WorldVoxel::<u8>::Air; (data * data * data) as usize];
+                let middle = data / 2;
+                voxels[(i + middle * data + middle * data * data) as usize] = WorldVoxel::Solid(1);
+                let drawn = |axis_index: u32| {
+                    (0..32).filter(move |&offset| {
+                        drawn_coordinate(offset, 32, mesh, data) == Some(axis_index)
+                    })
+                };
+                let gi = |index| drawn(index).min().zip(drawn(index).max());
+                let rendered = generate_chunk_mesh_for_shape(
+                    Arc::from(voxels),
+                    IVec3::ZERO,
+                    UVec3::splat(data),
+                    UVec3::splat(mesh),
+                    Arc::new(|_| [0, 0, 0]),
+                );
+                let bounds = match rendered.attribute(Mesh::ATTRIBUTE_POSITION) {
+                    Some(VertexAttributeValues::Float32x3(positions)) if !positions.is_empty() => {
+                        let (lo, hi) = positions
+                            .iter()
+                            .fold((Vec3::INFINITY, Vec3::NEG_INFINITY), |(lo, hi), p| {
+                                (lo.min(Vec3::from(*p)), hi.max(Vec3::from(*p)))
+                            });
+                        // Mesh positions include the one-voxel padding.
+                        Some((lo - 1.0, hi - 1.0))
+                    }
+                    _ => None,
+                };
+                let expected = bounds.map(|(lo, hi)| {
+                    (
+                        (lo.x.round() as i32, hi.x.round() as i32 - 1),
+                        (lo.y.round() as i32, hi.y.round() as i32 - 1),
+                    )
+                });
+                let ours = gi(i).zip(gi(data / 2));
+                assert_eq!(ours, expected, "data {data}, mesh {mesh}, data voxel {i}");
+            }
+        }
     }
 
     #[test]
