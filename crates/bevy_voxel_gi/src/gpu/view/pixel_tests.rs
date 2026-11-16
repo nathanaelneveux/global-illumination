@@ -86,7 +86,7 @@ impl Far {
                 }
             }
         }
-        let mut materials = VoxelMaterialTransportTable::default();
+        let mut materials = VoxelGiMaterials::default();
         if let Some(emissive) = ceiling {
             for x in 8..24 {
                 for z in 8..24 {

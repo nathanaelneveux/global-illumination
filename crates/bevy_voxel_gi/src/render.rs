@@ -346,7 +346,8 @@ pub const STANDARD_SHADER_SOURCE: &str = include_str!("../shaders/voxel_gi_stand
 
 /// Bevy's `StandardMaterial` lit by voxel GI: indirect light and emission
 /// added, GI's cached voxel sun in place of Bevy's shadowed sun. Build one
-/// with `standard_material`; `VoxelGiStandardMaterialPlugin` registers it.
+/// with `standard_material`; `VoxelGiStandardMaterialPlugin` registers it
+/// and fills in GI's bindings.
 /// It renders forward only: GI's presentation is in the forward fragment
 /// shader, and a deferred `StandardMaterial` would run Bevy's own deferred
 /// shader without it.
@@ -367,18 +368,16 @@ impl bevy::pbr::MaterialExtension for VoxelGiStandardShader {
 
 /// A `VoxelGiStandardMaterial` over `base`, forced to forward rendering
 /// (an `ExtendedMaterial` takes its render method from `base`, and `Auto`
-/// follows a deferred `DefaultOpaqueRendererMethod`).
-pub fn standard_material(
-    base: StandardMaterial,
-    data: &VoxelGiMaterialData,
-) -> VoxelGiStandardMaterial {
+/// follows a deferred `DefaultOpaqueRendererMethod`). GI's bindings are
+/// filled in when the material is added to `Assets`.
+pub fn standard_material(base: StandardMaterial) -> VoxelGiStandardMaterial {
     bevy::pbr::ExtendedMaterial {
         base: bevy::pbr::ExtendedMaterial {
             base: StandardMaterial {
                 opaque_render_method: bevy::material::OpaqueRendererMethod::Forward,
                 ..base
             },
-            extension: VoxelGiBindings::from(data),
+            extension: VoxelGiBindings::default(),
         },
         extension: VoxelGiStandardShader {},
     }
@@ -413,10 +412,12 @@ pub fn presentation_shader_source() -> String {
 /// GI's bindings for a host material (104 and 106-111 of the material bind
 /// group, where `bevy_voxel_gi::presentation` reads them). Wrap the host material
 /// as `ExtendedMaterial<HostMaterial, VoxelGiBindings>`: the host keeps its
-/// own shaders and bindings, which must leave those numbers free. Build it
-/// with `VoxelGiBindings::from(&VoxelGiMaterialData)` and add
-/// `VoxelGiMaterialPlugin` to keep it current.
-#[derive(Asset, TypePath, bevy::render::render_resource::AsBindGroup, Debug, Clone, PartialEq)]
+/// own shaders and bindings, which must leave those numbers free. Use
+/// `VoxelGiBindings::default()` and add `VoxelGiMaterialPlugin`, which fills
+/// the bindings in when a material is added and keeps them current.
+#[derive(
+    Asset, TypePath, bevy::render::render_resource::AsBindGroup, Debug, Clone, PartialEq, Default,
+)]
 pub struct VoxelGiBindings {
     #[uniform(104)]
     pub(crate) settings: GpuTransportSettings,
@@ -454,9 +455,10 @@ impl From<&VoxelGiMaterialData> for VoxelGiBindings {
     }
 }
 
-/// Keeps every `M`'s `VoxelGiBindings` current with `VoxelGiMaterialData`
-/// (new GPU allocations get new handles). `access` finds the bindings in
-/// an `M`; `extended()` covers `ExtendedMaterial<Base, VoxelGiBindings>`.
+/// Fills in every `M`'s `VoxelGiBindings` when it is added to `Assets<M>`
+/// and keeps them current with `VoxelGiMaterialData` (new GPU allocations
+/// get new handles). `access` finds the bindings in an `M`; `extended()`
+/// covers `ExtendedMaterial<Base, VoxelGiBindings>`.
 pub struct VoxelGiMaterialPlugin<M: Material> {
     access: fn(&mut M) -> &mut VoxelGiBindings,
 }
@@ -480,12 +482,23 @@ struct BindingsAccess<M: Material>(fn(&mut M) -> &mut VoxelGiBindings);
 
 impl<M: Material> Plugin for VoxelGiMaterialPlugin<M> {
     fn build(&self, app: &mut App) {
+        // Extraction reads this frame's flushed asset events and clones the
+        // asset as it is then. GI's buffers changing rewrites every material
+        // before the flush, so the rewrite's `Modified` is flushed this frame;
+        // a material the host added or replaced is completed after the flush,
+        // once its event exists, so its first extraction is already bound.
         app.insert_resource(BindingsAccess::<M>(self.access))
-            .add_systems(PostUpdate, sync_bindings::<M>);
+            .add_systems(
+                PostUpdate,
+                (
+                    rebind_materials::<M>.before(bevy::asset::AssetEventSystems),
+                    bind_new_materials::<M>.after(bevy::asset::AssetEventSystems),
+                ),
+            );
     }
 }
 
-fn sync_bindings<M: Material>(
+fn rebind_materials<M: Material>(
     data: Res<VoxelGiMaterialData>,
     access: Res<BindingsAccess<M>>,
     mut materials: ResMut<Assets<M>>,
@@ -502,6 +515,32 @@ fn sync_bindings<M: Material>(
     }
 }
 
+/// Materials added or replaced at their handle: a host builds them with
+/// default bindings. Completing one sends another `Modified`, which finds
+/// it current, so this settles.
+fn bind_new_materials<M: Material>(
+    data: Res<VoxelGiMaterialData>,
+    access: Res<BindingsAccess<M>>,
+    mut materials: ResMut<Assets<M>>,
+    mut events: MessageReader<AssetEvent<M>>,
+) {
+    if events.is_empty() {
+        return;
+    }
+    let current = VoxelGiBindings::from(&*data);
+    for event in events.read() {
+        let (AssetEvent::Added { id } | AssetEvent::Modified { id }) = *event else {
+            continue;
+        };
+        let Some(mut material) = materials.get_mut(id) else {
+            continue;
+        };
+        if *(access.0)(material.bypass_change_detection()) != current {
+            *(access.0)(material.into_inner()) = current.clone();
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "render/coverage_tests.rs"]
 mod coverage_tests;
@@ -511,29 +550,149 @@ mod standard_tests {
     use super::*;
 
     #[test]
+    fn shader_debug_constants_match_the_debug_views() {
+        let source = presentation_shader_source();
+        for (index, name) in [
+            "NONE",
+            "IRRADIANCE",
+            "COVERAGE",
+            "INDIRECT",
+            "SUN",
+            "EXACT_SUN",
+            "FACE_VALIDITY",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(GiDebugView::from_index(index as u32).index(), index as u32);
+            let line = format!("const DEBUG_{name}: u32 = {index}u;");
+            assert!(source.contains(&line), "missing `{line}`");
+        }
+    }
+
+    #[test]
     fn standard_material_renders_forward_under_a_deferred_default() {
         // Explicit Forward wins over `DefaultOpaqueRendererMethod`; Auto or
         // Deferred would select Bevy's deferred shader, which has no GI.
-        let data = VoxelGiMaterialData {
-            directory: default(),
-            regions: default(),
-            cells: default(),
-            traversal: default(),
-            far: default(),
-            far_pixels: default(),
-            settings: default(),
-        };
         let deferred = StandardMaterial {
             opaque_render_method: bevy::material::OpaqueRendererMethod::Deferred,
             ..default()
         };
         for base in [StandardMaterial::default(), deferred] {
-            let material = standard_material(base, &data);
+            let material = standard_material(base);
             assert_eq!(
                 Material::opaque_render_method(&material),
                 bevy::material::OpaqueRendererMethod::Forward
             );
         }
+    }
+
+    #[test]
+    fn added_and_replaced_materials_are_bound_by_their_first_extraction() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<ShaderBuffer>()
+            .init_asset::<VoxelGiStandardMaterial>()
+            .add_plugins(VoxelGiMaterialPlugin::<VoxelGiStandardMaterial>::new(
+                |material| &mut material.base.extension,
+            ));
+        let buffer = app
+            .world_mut()
+            .resource_mut::<Assets<ShaderBuffer>>()
+            .add(ShaderBuffer::from(vec![UVec4::ZERO]));
+        app.insert_resource(VoxelGiMaterialData {
+            directory: buffer.clone(),
+            regions: buffer.clone(),
+            cells: buffer.clone(),
+            traversal: default(),
+            far: buffer.clone(),
+            far_pixels: buffer,
+            settings: default(),
+        });
+        app.update();
+        let current = VoxelGiBindings::from(app.world().resource::<VoxelGiMaterialData>());
+        // Extraction runs after `PostUpdate` and clones the asset whose
+        // event this frame flushed: the asset after one update is what the
+        // render world first sees.
+        let bound = |app: &App, handle: &Handle<VoxelGiStandardMaterial>| {
+            app.world()
+                .resource::<Assets<VoxelGiStandardMaterial>>()
+                .get(handle)
+                .unwrap()
+                .base
+                .extension
+                .clone()
+        };
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<VoxelGiStandardMaterial>>()
+            .add(standard_material(StandardMaterial::default()));
+        app.update();
+        assert_eq!(bound(&app, &handle), current, "added");
+        // Replacing the asset at its handle sends `Modified`, not `Added`.
+        app.world_mut()
+            .resource_mut::<Assets<VoxelGiStandardMaterial>>()
+            .insert(handle.id(), standard_material(StandardMaterial::default()))
+            .unwrap();
+        app.update();
+        assert_eq!(bound(&app, &handle), current, "replaced");
+        // Completing a material settles: no event a frame later rewrites it.
+        app.update();
+        let mut cursor = app
+            .world()
+            .resource::<Messages<AssetEvent<VoxelGiStandardMaterial>>>()
+            .get_cursor_current();
+        app.update();
+        let messages = app
+            .world()
+            .resource::<Messages<AssetEvent<VoxelGiStandardMaterial>>>();
+        assert_eq!(cursor.read(messages).count(), 0);
+    }
+
+    #[test]
+    fn rebound_materials_reach_the_render_world_the_same_frame() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<ShaderBuffer>()
+            .init_asset::<VoxelGiStandardMaterial>()
+            .add_plugins(VoxelGiMaterialPlugin::<VoxelGiStandardMaterial>::new(
+                |material| &mut material.base.extension,
+            ));
+        let mut buffers = app.world_mut().resource_mut::<Assets<ShaderBuffer>>();
+        let first = buffers.add(ShaderBuffer::from(vec![UVec4::ZERO]));
+        let second = buffers.add(ShaderBuffer::from(vec![UVec4::ONE]));
+        app.insert_resource(VoxelGiMaterialData {
+            directory: first.clone(),
+            regions: first.clone(),
+            cells: first.clone(),
+            traversal: default(),
+            far: first.clone(),
+            far_pixels: first,
+            settings: default(),
+        });
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<VoxelGiStandardMaterial>>()
+            .add(standard_material(StandardMaterial::default()));
+        app.update();
+        app.update();
+        // GI reallocates a buffer: within one frame the material is rewritten
+        // and its `Modified` event flushed, where extraction reads it.
+        app.world_mut().resource_mut::<VoxelGiMaterialData>().cells = second;
+        let mut cursor = app
+            .world()
+            .resource::<Messages<AssetEvent<VoxelGiStandardMaterial>>>()
+            .get_cursor_current();
+        app.update();
+        let messages = app
+            .world()
+            .resource::<Messages<AssetEvent<VoxelGiStandardMaterial>>>();
+        assert!(
+            cursor
+                .read(messages)
+                .any(|event| *event == AssetEvent::Modified { id: handle.id() }),
+            "the rebinding must be flushed in the frame it happens"
+        );
     }
 
     #[test]

@@ -457,7 +457,7 @@ fn retained_cache_pairs_stay_coherent_when_either_member_grows() {
     let mut gpu = super::tests::native_tracer();
     gpu.enable_resident().unwrap();
     let (scene, sources, probes) = super::tests::open_floor_fixture();
-    let materials = VoxelMaterialTransportTable::default();
+    let materials = VoxelGiMaterials::default();
     let emitters = Arc::new(EmissionDistribution::default());
     let mut work = TraceWork::from_probes(&probes[..1]);
     gpu.trace_compact(

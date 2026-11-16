@@ -42,9 +42,7 @@ use bevy::{
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
-use bevy_voxel_gi::{
-    MaterialTransport, VoxelGiMaterialData, VoxelGiPlugin, VoxelMaterialTransportTable,
-};
+use bevy_voxel_gi::{MaterialTransport, VoxelGiCamera, VoxelGiMaterials, VoxelGiPlugin};
 use bevy_voxel_gi_bvw::{
     GiFallbackVoxel, VoxelGiBvwPlugin, material_template, prepare_texture_array,
 };
@@ -100,9 +98,9 @@ fn main() {
     );
     prepare_texture_array(&mut image, 1).unwrap();
     let texture = app.world_mut().resource_mut::<Assets<Image>>().add(image);
-    let material = material_template(texture, app.world().resource::<VoxelGiMaterialData>());
+    let material = material_template(texture);
 
-    let mut optics = app.world_mut().resource_mut::<VoxelMaterialTransportTable>();
+    let mut optics = app.world_mut().resource_mut::<VoxelGiMaterials>();
     optics.set(STONE, MaterialTransport { diffuse: Vec3::splat(0.5), ..default() });
     optics.set(
         LAMP,
@@ -117,6 +115,7 @@ fn main() {
 fn setup(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
+        VoxelGiCamera,
         VoxelWorldCamera::<MyWorld>::default(),
         Transform::from_xyz(13.0, 7.0, 17.0).looking_at(Vec3::new(7.5, 0.0, 7.5), Vec3::Y),
     ));
@@ -136,9 +135,9 @@ build the texture array:
    `texture_array_ready` first, reading the image with `Assets::get`: a
    mutable borrow re-uploads it to the GPU.
 
-Set each block's optical properties in `VoxelMaterialTransportTable` at
+Set each block's optical properties in `VoxelGiMaterials` at
 its BVW material index. If BVW calls your lamp material `1`, set `emission`
-on slot `1`. Skip `MaterialPalette` here: it assigns its own IDs. Every
+on slot `1`. Use `set` here, not `insert`, which picks its own IDs. Every
 solid BVW voxel is opaque to GI.
 
 ## Edits and levels of detail
@@ -161,6 +160,12 @@ fn dig<C: VoxelWorldConfig<MaterialIndex = u8>>(
     gi.set_voxel(world, position, WorldVoxel::Air);
 }
 ```
+
+GI traces what BVW draws: a page a published chunk covers is that chunk as
+meshed, also when GI resamples it. A voxel written with BVW's own
+`set_voxel` reaches GI when BVW republishes its chunk. `BvwVoxelEdits`
+reports its exact edit at once, and GI keeps that value over republished
+chunks; write each voxel through one of the two.
 
 GI lights what BVW has loaded, including geometry behind the camera that
 blocks or bounces light. BVW's default unloads chunks out of view beyond

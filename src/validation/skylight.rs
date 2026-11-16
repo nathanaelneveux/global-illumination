@@ -86,7 +86,7 @@ impl SkylightRun {
         elapsed: f32,
         world: &mut VoxelWorld<PrototypeWorld>,
         dirty: &mut VoxelGiInput,
-        materials: &mut ResMut<VoxelMaterialTransportTable>,
+        materials: &mut ResMut<VoxelGiMaterials>,
     ) {
         let Some(mode) = mode() else { return };
         if dark() && !self.darkened {

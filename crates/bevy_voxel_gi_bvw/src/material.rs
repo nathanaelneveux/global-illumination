@@ -12,7 +12,7 @@ use bevy::render::render_resource::{
     TextureFormat, TextureUsages, TextureViewDescriptor, TextureViewDimension,
 };
 use bevy::shader::ShaderRef;
-use bevy_voxel_gi::{VoxelGiBindings, VoxelGiMaterialData, VoxelGiMaterialPlugin};
+use bevy_voxel_gi::{VoxelGiBindings, VoxelGiMaterialPlugin};
 use bevy_voxel_world::rendering::vertex_layout;
 
 /// The terrain material shader's path, which is also its WESL import path
@@ -88,10 +88,8 @@ pub(crate) fn install(app: &mut App) {
 
 /// A BVW voxel material over `texture` (a 2D array, see `prepare_texture_array`),
 /// rendered forward: GI's presentation is in the forward fragment shader.
-pub fn material_template(
-    texture: Handle<Image>,
-    data: &VoxelGiMaterialData,
-) -> VoxelTransportMaterial {
+/// GI's bindings are filled in when BVW adds it to `Assets`.
+pub fn material_template(texture: Handle<Image>) -> VoxelTransportMaterial {
     ExtendedMaterial {
         base: ExtendedMaterial {
             base: StandardMaterial {
@@ -101,7 +99,7 @@ pub fn material_template(
                 opaque_render_method: OpaqueRendererMethod::Forward,
                 ..default()
             },
-            extension: VoxelGiBindings::from(data),
+            extension: VoxelGiBindings::default(),
         },
         extension: VoxelTransportExtension {
             voxel_texture: texture,
@@ -536,7 +534,6 @@ mod tests {
         // itself still gets the connector's shader and binding sync.
         app.add_plugins(MaterialPlugin::<VoxelTransportMaterial>::default());
         install(&mut app);
-        let data = app.world().resource::<VoxelGiMaterialData>().clone();
         let mut texture = Image::new_fill(
             wgpu::Extent3d {
                 width: 1,
@@ -553,8 +550,8 @@ mod tests {
         let material = app
             .world_mut()
             .resource_mut::<Assets<VoxelTransportMaterial>>()
-            .add(material_template(texture, &data));
-        let template = material_template(default(), &data);
+            .add(material_template(texture));
+        let template = material_template(default());
         assert_eq!(
             Material::opaque_render_method(&template),
             OpaqueRendererMethod::Forward,

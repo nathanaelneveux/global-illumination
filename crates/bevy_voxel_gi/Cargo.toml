@@ -17,6 +17,7 @@ wgpu.workspace = true
 serde.workspace = true
 ron.workspace = true
 naga.workspace = true
+bytemuck.workspace = true
 
 [lints]
 workspace = true

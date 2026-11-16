@@ -33,8 +33,8 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{TextureFormat, TextureUsages};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 use bevy_voxel_gi::{
-    MaterialTransport, VoxelGiEmitter, VoxelGiInput, VoxelGiSettings, VoxelGiStats,
-    VoxelMaterialTransportTable,
+    MaterialTransport, VoxelGiEmitter, VoxelGiInput, VoxelGiMaterials, VoxelGiSettings,
+    VoxelGiStats,
 };
 use bevy_voxel_gi_bvw::BvwVoxelEdits;
 use bevy_voxel_world::prelude::*;
@@ -206,7 +206,7 @@ pub(super) fn run_validation(
     mut commands: Commands,
     handle: Option<Res<VoxelWorldMaterialHandle<VoxelTransportMaterial>>>,
     mut display: ResMut<bevy_voxel_gi::VoxelGiDisplay>,
-    mut transport_materials: ResMut<VoxelMaterialTransportTable>,
+    mut transport_materials: ResMut<VoxelGiMaterials>,
     asset_context: (
         Res<TemplateAssets>,
         Res<AssetServer>,
@@ -350,7 +350,12 @@ pub(super) fn run_validation(
     let measured = run.started.unwrap().elapsed().as_secs_f32();
     let profile = run.profile;
     if run.gi_ready_s.is_none() {
-        if !crate::gi_lab::gi_enabled() || stats.view_gpu.receipt > 0 {
+        // An unmarked camera (`VOXEL_GI_LAB_UNMARKED`) gets no view frames:
+        // its GI is the published geometry (sun and emission).
+        let unmarked = std::env::var_os("VOXEL_GI_LAB_UNMARKED").is_some()
+            && stats.loaded_pages > 0
+            && !stats.geometry_pending;
+        if !crate::gi_lab::gi_enabled() || stats.view_gpu.receipt > 0 || unmarked {
             run.gi_ready_s = Some(measured);
             info!(gi_ready_s = measured, "GI validation: first view frame");
         } else if measured >= GI_READY_TIMEOUT_S {

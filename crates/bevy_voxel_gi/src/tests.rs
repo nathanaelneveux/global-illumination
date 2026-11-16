@@ -432,7 +432,7 @@ fn material_replacement_retains_incident_history_but_rejects_old_jobs() {
             field.probes.insert(voxel, probe);
             field.pages.insert(IVec3::ZERO, vec![voxel]);
             field.update_indices(&[voxel], &HashMap::new());
-            let mut materials = VoxelMaterialTransportTable::default();
+            let mut materials = VoxelGiMaterials::default();
             materials.set(
                 4,
                 MaterialTransport {
@@ -604,7 +604,7 @@ fn scene_publication_retains_the_same_spatial_history_for_emitters_and_occluders
             field.pages.insert(page_of(voxel), vec![voxel]);
         }
         field.update_indices(&[near, far], &HashMap::new());
-        let mut materials = VoxelMaterialTransportTable::default();
+        let mut materials = VoxelGiMaterials::default();
         materials.set(
             4,
             MaterialTransport {
@@ -829,22 +829,34 @@ fn cache_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
     });
     let camera = world
         .spawn((
-            Camera3d::default(),
+            super::VoxelGiCamera,
             GlobalTransform::from_translation(Vec3::splat(16.0)),
         ))
         .id();
     // Inactive streaming cameras load geometry, not lighting receivers.
     world.spawn((
-        Camera3d::default(),
+        super::VoxelGiCamera,
         Camera {
             is_active: false,
             ..default()
         },
         GlobalTransform::from_translation(Vec3::new(304.0, 16.0, 16.0)),
     ));
+    // A plain 3D camera (a minimap, say) is not GI's.
+    world.spawn((
+        Camera3d::default(),
+        GlobalTransform::from_translation(Vec3::new(1016.0, 16.0, 16.0)),
+    ));
+    world.init_resource::<VoxelGiDemand>();
+    world.run_system_once(pages::track_cameras).unwrap();
     world
         .run_system_once(pages::update_receiver_residency)
         .unwrap();
+    // Demand follows the active camera and the settings, not the inactive one.
+    let demand = world.resource::<VoxelGiDemand>();
+    assert_eq!(demand.cameras(), &[Vec3::splat(16.0)]);
+    assert_eq!(demand.receiver_radius(), 64.0);
+    assert_eq!(demand.limit(), 64.0 + 768.0);
     let runtime = world.resource::<VoxelGiRuntime>();
     let allowed = runtime.receiver_pages.as_ref().unwrap();
     // Page 2 starts 48 voxels away (within 64); page 4 is 112 away.
@@ -859,6 +871,7 @@ fn cache_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
         .insert(GlobalTransform::from_translation(Vec3::new(
             120.0, 16.0, 16.0,
         )));
+    world.run_system_once(pages::track_cameras).unwrap();
     world
         .run_system_once(pages::update_receiver_residency)
         .unwrap();
@@ -879,6 +892,7 @@ fn cache_radius_admits_near_pages_and_retires_far_ones_with_hysteresis() {
         .resource_mut::<VoxelGiRuntime>()
         .receiver_retired
         .clear();
+    world.run_system_once(pages::track_cameras).unwrap();
     world
         .run_system_once(pages::update_receiver_residency)
         .unwrap();
@@ -906,6 +920,7 @@ fn cacheless_residency_retires_every_page_without_a_camera_or_geometry_changes()
         cache_radius: 0.0,
         ..default()
     });
+    world.run_system_once(pages::track_cameras).unwrap();
     world
         .run_system_once(pages::update_receiver_residency)
         .unwrap();
@@ -914,4 +929,112 @@ fn cacheless_residency_retires_every_page_without_a_camera_or_geometry_changes()
     assert_eq!(runtime.receiver_retired, runtime.loaded_pages);
     assert!(runtime.dirty_pages.is_empty());
     assert_eq!(runtime.loaded_pages.len(), 2);
+}
+
+#[test]
+fn without_an_active_gi_camera_no_page_keeps_receivers() {
+    use bevy::ecs::system::RunSystemOnce;
+    let far = IVec3::new(40, 0, 0);
+    let mut world = World::new();
+    let mut runtime = VoxelGiRuntime::default();
+    runtime.loaded_pages.extend([IVec3::ZERO, far]);
+    world.insert_resource(runtime);
+    world.init_resource::<VoxelGiSettings>();
+    let step = |world: &mut World| {
+        world.run_system_once(pages::track_cameras).unwrap();
+        world
+            .run_system_once(pages::update_receiver_residency)
+            .unwrap();
+        let mut runtime = world.resource_mut::<VoxelGiRuntime>();
+        let dirty = std::mem::take(&mut runtime.receiver_dirty);
+        let retired = std::mem::take(&mut runtime.receiver_retired);
+        (runtime.receiver_pages.clone().unwrap(), dirty, retired)
+    };
+    // Startup with an unmarked camera and an inactive GI camera: no page has
+    // receivers (before, residency stayed unset, which allowed every page).
+    world.spawn((
+        Camera3d::default(),
+        GlobalTransform::from_translation(Vec3::splat(16.0)),
+    ));
+    let camera = world
+        .spawn((
+            super::VoxelGiCamera,
+            Camera {
+                is_active: false,
+                ..default()
+            },
+            GlobalTransform::from_translation(Vec3::splat(16.0)),
+        ))
+        .id();
+    let (allowed, dirty, retired) = step(&mut world);
+    assert!(allowed.is_empty() && dirty.is_empty());
+    assert_eq!(retired, HashSet::from([IVec3::ZERO, far]));
+    // The GI camera activates: the page around it gets receivers.
+    world
+        .entity_mut(camera)
+        .get_mut::<Camera>()
+        .unwrap()
+        .is_active = true;
+    let (allowed, dirty, _) = step(&mut world);
+    assert_eq!(allowed, HashSet::from([IVec3::ZERO]));
+    assert_eq!(dirty, HashSet::from([IVec3::ZERO]));
+    // The last GI camera deactivates: its receivers retire.
+    world
+        .entity_mut(camera)
+        .get_mut::<Camera>()
+        .unwrap()
+        .is_active = false;
+    let (allowed, dirty, retired) = step(&mut world);
+    assert!(allowed.is_empty() && dirty.is_empty());
+    assert_eq!(retired, HashSet::from([IVec3::ZERO]));
+}
+
+#[test]
+fn scene_sampling_starts_nearest_any_active_camera() {
+    use bevy::ecs::system::RunSystemOnce;
+    use std::sync::Mutex;
+    bevy::tasks::AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default);
+    let east = IVec3::new(100, 0, 0);
+    let west = IVec3::new(-99, 0, 0);
+    let between = IVec3::new(50, 0, 0);
+    let mut runtime = VoxelGiRuntime::default();
+    for page in [IVec3::ZERO, between, east, west] {
+        runtime.loaded_pages.insert(page);
+        runtime.dirty_pages.insert(page);
+    }
+    let mut world = World::new();
+    world.insert_resource(runtime);
+    world.init_resource::<super::telemetry::GiWorkTimings>();
+    world.init_resource::<VoxelGiSettings>();
+    let sampled = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&sampled);
+    world.insert_resource(VoxelGiSource::new(move |page: IVec3| {
+        seen.lock().unwrap().push(page);
+        PageSample::air()
+    }));
+    // An inactive camera at the origin; the players are at pages 100 and -100.
+    world.spawn((
+        super::VoxelGiCamera,
+        Camera {
+            is_active: false,
+            ..default()
+        },
+        GlobalTransform::from_translation(Vec3::splat(16.0)),
+    ));
+    for x in [3216.0, -3184.0] {
+        world.spawn((
+            super::VoxelGiCamera,
+            Camera::default(),
+            GlobalTransform::from_translation(Vec3::new(x, 16.0, 16.0)),
+        ));
+    }
+    world.run_system_once(pages::track_cameras).unwrap();
+    world.run_system_once(pages::start_scene_task).unwrap();
+    let task = world
+        .resource_mut::<VoxelGiRuntime>()
+        .scene_task
+        .take()
+        .expect("a scene build starts");
+    bevy::tasks::block_on(task);
+    assert_eq!(*sampled.lock().unwrap(), [east, west, between, IVec3::ZERO]);
 }

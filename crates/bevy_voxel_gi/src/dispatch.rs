@@ -27,7 +27,6 @@ pub(super) fn start_trace_task(
     mut runtime: ResMut<VoxelGiRuntime>,
     field: ResMut<ReceiverField>,
     mut stats: ResMut<VoxelGiStats>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     gpu_device: Option<Res<gpu::GpuTransportDevice>>,
     settings: Res<VoxelGiSettings>,
     mut timings: ResMut<GiWorkTimings>,
@@ -59,12 +58,11 @@ pub(super) fn start_trace_task(
         return;
     };
     let selection_started = Instant::now();
-    let focus = cameras
-        .iter()
-        .find(|(camera, _)| camera.is_active)
-        .map_or(IVec3::ZERO, |(_, transform)| {
-            transform.translation().floor().as_ivec3()
-        });
+    // The GPU ranks work around one point: the first active GI camera.
+    let focus = runtime
+        .cameras
+        .first()
+        .map_or(IVec3::ZERO, |camera| camera.floor().as_ivec3());
     runtime.batch_size = runtime.batch_size.min(settings.batch_limit());
     // Three owned staging allocations bound queue latency and memory. When full,
     // poll without selecting more work: never turn backpressure into a CPU wait.

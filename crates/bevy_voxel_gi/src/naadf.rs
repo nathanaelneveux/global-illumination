@@ -114,7 +114,7 @@ pub fn build_aadf(size: UVec3, blocked: &[bool]) -> Vec<Aadf> {
     source
 }
 
-fn try_grow(
+pub(crate) fn try_grow(
     current: &mut Aadf,
     neighbour: IVec3,
     direction: usize,

@@ -9,9 +9,7 @@ import bevy_pbr::render::{
     mesh_view_bindings,
     view_transformations::position_world_to_clip,
 };
-import bevy_voxel_gi::presentation::{
-    indirect_light, sunlight, sunlight_reference, emission, face_in_geometry, voxel_sky, debug_mode,
-};
+import bevy_voxel_gi::presentation::{indirect_light, emission, debug_mode, diagnostic_view, DEBUG_NONE};
 
 @if(PREPASS_PIPELINE)
 import bevy_pbr::{
@@ -116,44 +114,29 @@ fn fragment(in: CustomVertexOutput, @builtin(front_facing) is_front: bool) -> Fr
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input, footprint);
     let normal = normalize(in.world_normal);
+    // Validation diagnostics, shared with every GI host. Normal presentation
+    // never enters this branch.
+    if debug_mode() != DEBUG_NONE {
+        let shown = diagnostic_view(
+            in.position.xy,
+            in.world_position.xyz,
+            normal,
+            footprint,
+            mesh_view_bindings::view.exposure,
+        );
+        out.color = vec4(shown.color, 1.0);
+        if shown.raw {
+            return out;
+        }
+        out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+        return out;
+    }
     let gi = indirect_light(in.position.xy, in.world_position.xyz, normal);
-    // Validation-only identity coverage, before tone mapping or fog. Selected
-    // receiver counters cannot detect visible surfaces absent from the grid.
-    if debug_mode() == 6u {
-        let valid = face_in_geometry(in.world_position.xyz, normal);
-        // Independent channels survive MSAA resolve: red is missing indirect
-        // support, green is a lookup outside exposed transport geometry.
-        // A completely covered indoor view legitimately has a zero failure
-        // mask. A tiny blue witness proves the diagnostic shader ran, without
-        // relaxing black-frame checks for ordinary lighting captures. The
-        // analyzer excludes blue (sky, mixed silhouettes and this witness).
-        let witness = select(0.0, 0.5, all(in.position.xy < vec2(4.0)));
-        out.color = vec4(1.0 - gi.coverage.g, select(1.0, 0.0, valid), witness, 1.0);
-        return out;
-    }
-    if debug_mode() == 2u {
-        out.color = vec4(gi.coverage, 1.0);
-        return out;
-    }
     out.color = vec4<f32>(
         out.color.rgb + pbr_input.material.base_color.rgb * (1.0 - pbr_input.material.metallic) * gi.light
             + emission(in.world_position.xyz, normal),
         out.color.a,
     );
-    if debug_mode() != 0u {
-        var diagnostic_light = gi.light;
-        // Component captures isolate motion-induced lighting changes from
-        // textured appearance. Normal presentation never enters this branch.
-        if debug_mode() >= 4u { diagnostic_light = vec3(0.0); }
-        if debug_mode() != 3u && voxel_sky() {
-            var light = sunlight(in.world_position.xyz, normal, footprint);
-            if debug_mode() == 5u {
-                light = sunlight_reference(in.world_position.xyz, normal);
-            }
-            diagnostic_light += light * (10000.0 / 3.14159265359) * mesh_view_bindings::view.exposure;
-        }
-        out.color = vec4(diagnostic_light, 1.0);
-    }
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }

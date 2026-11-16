@@ -108,11 +108,11 @@ fn full_region_reference(coordinate: IVec3, materials: Vec<u16>) -> NaadfRegion 
 
 fn assert_same_region(actual: NaadfRegion, expected: NaadfRegion) {
     let a = TransportScene {
-        regions: HashMap::from([(actual.coordinate, Arc::new(actual))]),
+        regions: RegionMap::from([(actual.coordinate, Arc::new(actual))]),
         ..default()
     };
     let b = TransportScene {
-        regions: HashMap::from([(expected.coordinate, Arc::new(expected))]),
+        regions: RegionMap::from([(expected.coordinate, Arc::new(expected))]),
         ..default()
     };
     assert_same_scene(&a, &b);
@@ -212,7 +212,12 @@ fn assert_same_scene(actual: &TransportScene, reference: &TransportScene) {
     assert_eq!(actual.top_level.minimum, reference.top_level.minimum);
     assert_eq!(actual.top_level.maximum, reference.top_level.maximum);
     assert_eq!(actual.top_level.size, reference.top_level.size);
-    assert_eq!(actual.top_level.fields, reference.top_level.fields);
+    // Incremental and full builds reach fixed points of the same rule by
+    // different growth orders: compare validity, not cells.
+    actual.top_level.assert_valid_fixed_point(&actual.regions);
+    reference
+        .top_level
+        .assert_valid_fixed_point(&reference.regions);
     assert_eq!(actual.regions.len(), reference.regions.len());
     for (key, region) in &reference.regions {
         let actual_region = &actual.regions[key];
@@ -285,10 +290,7 @@ fn scene_construction_matches_full_rebuild_through_edit_and_residency_changes() 
         let next = TransportScene::with_page_delta(&scene, changed.clone(), &removed);
         reference = rebuild_on_any_change(&reference, changed, &removed);
         assert_same_scene(&next, &reference);
-        assert_eq!(
-            scene.top_level.fields,
-            TopLevelAadf::build(&scene.regions).fields
-        );
+        scene.top_level.assert_valid_fixed_point(&scene.regions);
         scene = next;
     }
 }
@@ -326,10 +328,7 @@ fn occupied_region_edits_share_only_top_level_acceleration() {
         &emptied.top_level.fields
     ));
     assert_eq!(edited.material_at(IVec3::new(5, 5, 6)), Some(2));
-    assert_eq!(
-        emptied.top_level.fields,
-        TopLevelAadf::build(&emptied.regions).fields
-    );
+    emptied.top_level.assert_valid_fixed_point(&emptied.regions);
 }
 
 #[test]

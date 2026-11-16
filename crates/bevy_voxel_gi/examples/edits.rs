@@ -5,12 +5,7 @@
 //!
 //! `cargo run -p bevy_voxel_gi --example edits`
 use bevy::prelude::*;
-use bevy_voxel_gi::{
-    MaterialPalette, MaterialTransport, PageSample, VoxelGiInput, VoxelGiMaterialData,
-    VoxelGiPlugin, VoxelGiSource, VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin,
-    VoxelMaterialTransportTable, VoxelSource, dense_page, standard_material,
-};
-use std::sync::Arc;
+use bevy_voxel_gi::prelude::*;
 
 /// The room: a floor, two walls and a ceiling, open towards +x and +z.
 /// The window is part of the x = 0 wall at the start.
@@ -27,24 +22,11 @@ fn opening_voxels() -> impl Iterator<Item = IVec3> {
     (3..7).flat_map(|y| (9..12).map(move |z| IVec3::new(0, y, z)))
 }
 
-/// GI's view of the room as it was built. Edits reach GI through
-/// `VoxelGiInput::edit_voxel` and stay applied on top of this source, so
-/// it never needs rebuilding.
-struct Room {
-    stone: u8,
-}
-
-impl VoxelSource for Room {
-    fn sample_page(&self, page: IVec3, _resample: bool) -> PageSample {
-        dense_page(page, |p| stone(p).then_some(self.stone))
-    }
-}
-
 #[derive(Resource)]
 struct Opening {
     open: bool,
     timer: Timer,
-    stone: u8,
+    stone: GiVoxel,
     cube: Handle<Mesh>,
     material: Handle<VoxelGiStandardMaterial>,
     /// The window's cube entities while it is closed.
@@ -53,7 +35,7 @@ struct Opening {
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, VoxelGiPlugin, VoxelGiStandardMaterialPlugin))
+        .add_plugins((DefaultPlugins, VoxelGiPlugins))
         .add_systems(Startup, setup)
         .add_systems(Update, toggle_window)
         .run();
@@ -62,31 +44,30 @@ fn main() {
 fn setup(
     mut commands: Commands,
     mut input: ResMut<VoxelGiInput>,
-    mut source: ResMut<VoxelGiSource>,
-    mut table: ResMut<VoxelMaterialTransportTable>,
-    gi_bindings: Res<VoxelGiMaterialData>,
+    mut gi_materials: ResMut<VoxelGiMaterials>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<VoxelGiStandardMaterial>>,
 ) {
-    let mut palette = MaterialPalette::new();
-    let optics = MaterialTransport {
-        diffuse: Vec3::splat(0.6),
-        emission: Vec3::ZERO,
-    };
-    let stone_id = palette.insert("stone", optics).unwrap() as u8;
-    *table = palette.table().clone();
-    source.0 = Some(Arc::new(Room { stone: stone_id }));
+    let stone_id = gi_materials
+        .insert(MaterialTransport {
+            diffuse: Vec3::splat(0.6),
+            ..default()
+        })
+        .unwrap();
+    // GI's view of the room as it was built. Edits reach GI through
+    // `VoxelGiInput::edit_voxel` and stay applied on top of this source, so
+    // it never needs rebuilding.
+    commands.insert_resource(VoxelGiSource::new(move |page: IVec3| {
+        dense_page(page, |p| stone(p).then_some(stone_id))
+    }));
     input.page_loaded(IVec3::ZERO);
 
     let cube = meshes.add(Cuboid::from_length(1.0));
-    let material = materials.add(standard_material(
-        StandardMaterial {
-            base_color: Color::srgb(0.6, 0.6, 0.6),
-            perceptual_roughness: 0.9,
-            ..default()
-        },
-        &gi_bindings,
-    ));
+    let material = materials.add(standard_material(StandardMaterial {
+        base_color: Color::srgb(0.6, 0.6, 0.6),
+        perceptual_roughness: 0.9,
+        ..default()
+    }));
     let mut cubes = Vec::new();
     for z in 0..32 {
         for y in 0..13 {
@@ -131,6 +112,7 @@ fn setup(
     ));
     commands.spawn((
         Camera3d::default(),
+        VoxelGiCamera,
         Transform::from_xyz(30.0, 9.0, 30.0).looking_at(Vec3::new(4.0, 3.0, 8.0), Vec3::Y),
     ));
 }
@@ -148,9 +130,12 @@ fn toggle_window(
     }
     opening.open = !opening.open;
     for p in opening_voxels() {
-        // `None` is air; `Some(id)` a solid voxel of that material.
-        let material = (!opening.open).then_some(opening.stone);
-        input.edit_voxel(p, material);
+        let voxel = if opening.open {
+            GiVoxel::AIR
+        } else {
+            opening.stone
+        };
+        input.edit_voxel(p, voxel);
     }
     if opening.open {
         for entity in opening.cubes.drain(..) {

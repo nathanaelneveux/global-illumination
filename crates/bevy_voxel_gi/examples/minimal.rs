@@ -7,12 +7,7 @@
 //! `VOXEL_GI_EXAMPLE_SCREENSHOT=path` the camera renders offscreen and the
 //! image is saved first, so the check works with the screen asleep.)
 use bevy::prelude::*;
-use bevy_voxel_gi::{
-    MaterialPalette, MaterialTransport, PageSample, VoxelGiInput, VoxelGiMaterialData,
-    VoxelGiPlugin, VoxelGiSource, VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin,
-    VoxelMaterialTransportTable, VoxelSource, dense_page, standard_material,
-};
-use std::sync::Arc;
+use bevy_voxel_gi::prelude::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Block {
@@ -36,24 +31,9 @@ fn block(p: IVec3) -> Option<Block> {
     (shell || pillar).then_some(Block::Stone)
 }
 
-/// GI reads voxels through a `VoxelSource`: transport material IDs from the
-/// palette, per 32³ page.
-struct Room {
-    ids: [u8; 2],
-}
-
-impl VoxelSource for Room {
-    fn sample_page(&self, page: IVec3, _resample: bool) -> PageSample {
-        if page != IVec3::ZERO {
-            return PageSample::air();
-        }
-        dense_page(page, |p| block(p).map(|b| self.ids[b as usize]))
-    }
-}
-
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, VoxelGiPlugin, VoxelGiStandardMaterialPlugin))
+        .add_plugins((DefaultPlugins, VoxelGiPlugins))
         .add_systems(Startup, setup)
         .add_systems(Update, exit_after_frames)
         .run();
@@ -66,46 +46,40 @@ fn setup(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut input: ResMut<VoxelGiInput>,
-    mut source: ResMut<VoxelGiSource>,
-    mut table: ResMut<VoxelMaterialTransportTable>,
-    data: Res<VoxelGiMaterialData>,
+    mut gi_materials: ResMut<VoxelGiMaterials>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<VoxelGiStandardMaterial>>,
 ) {
-    // Optics per block type; identical optics would share an ID.
-    let mut palette = MaterialPalette::new();
+    // Optics per block type; identical optics would share a material.
     let stone = MaterialTransport {
         diffuse: Vec3::splat(0.6),
-        emission: Vec3::ZERO,
+        ..default()
     };
     let lamp = MaterialTransport {
         diffuse: Vec3::splat(0.8),
         emission: Vec3::new(40.0, 28.0, 14.0),
     };
     let ids = [
-        palette.insert(Block::Stone, stone).unwrap() as u8,
-        palette.insert(Block::Lamp, lamp).unwrap() as u8,
+        gi_materials.insert(stone).unwrap(),
+        gi_materials.insert(lamp).unwrap(),
     ];
-    *table = palette.table().clone();
-    source.0 = Some(Arc::new(Room { ids }));
+    // GI samples 32³ pages from the source on worker threads; a closure is
+    // a source. Outside the room everything is air.
+    commands.insert_resource(VoxelGiSource::new(move |page: IVec3| {
+        dense_page(page, |p| block(p).map(|b| ids[b as usize]))
+    }));
     input.page_loaded(IVec3::ZERO);
 
     let cube = meshes.add(Cuboid::from_length(1.0));
-    let stone = materials.add(standard_material(
-        StandardMaterial {
-            base_color: Color::srgb(0.6, 0.6, 0.6),
-            perceptual_roughness: 0.9,
-            ..default()
-        },
-        &data,
-    ));
-    let lamp = materials.add(standard_material(
-        StandardMaterial {
-            base_color: Color::srgb(1.0, 0.8, 0.5),
-            ..default()
-        },
-        &data,
-    ));
+    let stone = materials.add(standard_material(StandardMaterial {
+        base_color: Color::srgb(0.6, 0.6, 0.6),
+        perceptual_roughness: 0.9,
+        ..default()
+    }));
+    let lamp = materials.add(standard_material(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.8, 0.5),
+        ..default()
+    }));
     for z in 0..32 {
         for y in 0..13 {
             for x in 0..32 {
@@ -145,10 +119,12 @@ fn setup(
         },
         Transform::default().looking_to(Vec3::new(-0.4, -0.8, -0.5), Vec3::Y),
     ));
-    // The view tier adds the depth and normal prepasses it needs.
+    // `VoxelGiCamera` marks the cameras GI lights (it adds the depth and
+    // normal prepasses GI reads).
     let camera = commands
         .spawn((
             Camera3d::default(),
+            VoxelGiCamera,
             Transform::from_xyz(34.0, 9.0, 34.0).looking_at(Vec3::new(8.0, 3.0, 8.0), Vec3::Y),
         ))
         .id();

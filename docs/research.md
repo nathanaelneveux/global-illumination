@@ -84,21 +84,54 @@ mesh's material for a frame or two at startup.
 
 Experiments after 0.1, each judged against the same scenes on the M4:
 
-- **Scene builds that cost the change, not the world (decided 2026-11-02).**
-  Every scene build rebuilds the top-level empty-space field and copies the
-  region map for the whole loaded world, and probably repeats more
-  whole-world work. With `VOXEL_GI_LAB_FAR=64` (about 98,000 pages), builds
-  take over a second at 283k regions and 3 to 5 s at 566k. That bounds far
-  streaming and edit latency for every host with a large world (`3b4b5f6`
-  commit message; `world::stream_bench`). Profile a far-world build first,
-  then make the region map persistent and update the top-level field
-  locally. Judge by edit response in a far world (`response`, `tunnel`
-  profiles with `VOXEL_GI_LAB_FAR`) and by how quickly far lighting fills in.
-  It also shortens the black flashes along LoD band edges: a remeshed
-  chunk's faces are not GI's until the next build lands. A shader fallback
-  for them cost 1.5 ms or more per frame in every form tried, and was
-  reverted (`7e8c034`).
+- **Scene builds that cost the change, not the world (done 2026-11-15).**
+  The region map is persistent (`world::RegionMap`: 8³-region shards that
+  snapshots share, with per-shard bounds), and the top-level field is
+  updated in place: a cell turning blocked cuts the boxes holding it, and
+  boxes regrow by NAADF's merging rule from the changed cells, as NAADF
+  refines its chunk bounds over frames. Its boxes are 0.99 to 1.46 times the
+  full rebuild's mean volume. GPU packing rewrites only the region headers
+  whose bounds changed. `world::stream_bench`, 110k pages (dev profile, M4): a
+  sky edit costs 72 ms instead of about 2 s, a page past the world's edge
+  7 ms. Far gameplay (`VOXEL_GI_LAB_FAR=64`): streaming-phase frame p95/p99
+  fell from 70 to 94 / 87 to 99 ms to 24 to 25 / 29 to 30 ms, and freshly
+  streamed terrain no longer shows black while it waits for a build.
+  Frequent builds then left the trace worker more than the journal's 8
+  transitions behind, and its whole-world fallback diff cost ~60 ms a
+  batch; the fallback now skips shards both scenes share (2026-11-16,
+  worker p50 back to 0.4 ms, p99 1.5 against the old 12.7). Left:
+  a change of the world's bounds still copies the field and repacks every
+  region header, and the GPU starts a new buffer generation for it.
 
+- **The far tier's fixed cost (measured 2026-11-15; no change).** Its
+  per-pixel stage costs about 0.33 ms a frame at 1440p with no far cell on
+  screen, about 0.7 ms with ~2,000. With classification emptied it falls
+  to 0.13 ms, so ~0.2 ms is one depth read and distance test per 3x3 cell
+  (~410k cells). Discovery cannot classify for free (it skips stable
+  tiles), reusing last frame's answer would miss far faces a turn reveals,
+  and 8x8-cell workgroups changed nothing (branch `opt/far-classify`,
+  `a0a6baf`). A cheaper test needs a conservative far-depth bound per tile,
+  such as a depth pyramid.
+
+- **A far-tier crossover that follows resolution (planned for 0.2;
+  deferred 2026-11-16).** `far_tier.voxel_pixels` is a pixel size, so at a
+  fixed 8 px the world-space band of face receivers widens with viewport
+  height. voxel_engine's screen (2026-11-04, `docs/history/lighting-ownership-2026-11-04.md`
+  there) capped it at 128 world units, `voxel_pixels = max(focal_pixels /
+  128, 8)`: terrain at 4K went from 26.6 to 20.0 ms p99 in both orders
+  (active receivers ~26,100 to 6,700), 1440p 14.9 to 12.7, 720p unchanged,
+  asteroids no win. Not adopted: distant terraces and asteroid shadows look
+  different, and the far tier flickers more in motion. Qualify it in the
+  lab at 4K and 1440p with motion and the far-tier flicker as the gate,
+  after the far tier's motion stability improves (see jittered visibility
+  below).
+- **Per-pixel material cost in receipts (planned for 0.2; deferred
+  2026-11-16).** voxel_engine's asteroid integration (`docs/asteroids-integration.md`)
+  could not tell GI's compute (~0.8 ms idle) from its presentation passes
+  (~16 ms) and the GI-lit material's display path (~30 ms) without
+  ablations. `ViewReceipts` report GPU time for GI's passes but not the
+  material's per-pixel cost. Report a host-comparable figure (passes and
+  pixels shaded through `presentation`), additive, so a 0.2.x release.
 - **Selective GI geometry coverage (proposed 2026-11-03; untested).**
   The BVW connector declares every loaded chunk, and GI retains that geometry
   beyond the 64-voxel world-cache radius. Visible receiver identities and
@@ -130,17 +163,23 @@ Experiments after 0.1, each judged against the same scenes on the M4:
   Record any visible bias and boundary popping alongside savings. This is a
   future experiment, with no geometry policy or default changed.
 
-- **A host API that's pleasant to use (breaking, so with the 0.20 port).**
-  Writing the 0.1.1 quick start as code showed friction a newcomer hits in the
-  first minute: three resources wired by hand (`VoxelGiInput`,
-  `VoxelGiSource` set as `source.0 = Some(Arc::new(..))`, and the material
-  table replaced with `palette.table().clone()`); `u16` palette IDs against
-  `u8` page materials (`as u8` in every host); `standard_material(base,
-  &data)` needing GI's internal binding resource; and `sample_page`'s
-  `resample` flag, which simple sources must understand to ignore. Aim for one
-  obvious path (for example a setter for the source, palette IDs typed for
-  pages, materials that get their bindings from the plugin), and judge it by
-  rewriting `examples/minimal.rs` and both connectors against it.
+- **A host API that's pleasant to use: done for 0.2 (2026-11-15).** The
+  friction the 0.1.1 quick start showed is gone: `VoxelGiPlugins` and a
+  prelude; `VoxelGiSource::new` (closures are sources; `resample_page` is a
+  separate, defaulted method); `GiVoxel` in place of `u16` IDs, `u8`
+  materials and `AIR`; `VoxelGiMaterials::insert` in place of
+  `MaterialPalette` and its table copy; materials that get their bindings
+  from the plugin; `VoxelGiCamera` marking the cameras GI lights;
+  `VoxelGiSettings { .., ..default() }` compiling. The CHANGELOG has the
+  migration table. Considered and left out, each for its own reason:
+  - `#[non_exhaustive]` on settings and optics structs: it forbids
+    `..default()` outside the crate, and every Bevy release breaks GI's API
+    anyway, so new fields wait for those.
+  - Light units matching Bevy's (lux, nits) for `VoxelGiEnvironment` and
+    `MaterialTransport::emission`: it changes calibration and the look, so
+    it needs visual comparisons, not an API pass.
+  - GI's numbers in Bevy's `DiagnosticsStore`, and per-camera settings on
+    `VoxelGiCamera`: additive, so they can land in a 0.2.x release.
 - **MetalFX denoising.** [metalfx_wgpu](https://github.com/mate-h/metalfx_wgpu)
   wraps MetalFX's temporal denoised scaler (macOS 26, wgpu 30, so Bevy 0.20).
   Since July, Solari runs on Metal
@@ -181,3 +220,44 @@ Experiments after 0.1, each judged against the same scenes on the M4:
   [bevy#26127](https://github.com/bevyengine/bevy/pull/26127). Apply the same
   transmittance when importing suns, and check a sunset sweep against raster
   lighting.
+
+### What voxel_engine needs next (reviewed 2026-11-14)
+
+The engine (`~/Developer/voxel_engine`, StarWrought's host) now streams by
+visibility, draws a ray-traced far field and is heading for co-op, ships and
+planets. Its GI adapter and notes point at these gaps. Each is general: any
+streaming or ray-traced host meets it.
+
+- **Geometry demand: landed as `VoxelGiDemand` (2026-11-14), unqualified.**
+  It ranks pages by distance from the cameras and along each sun's shadow
+  column (the world cache's receivers swept 768 voxels toward the sun). It
+  costs a copy of the camera and sun inputs per frame, and only when they
+  change. The ranking's shape is reasoned, not measured: qualify it in the
+  engine (its sparse-near experiment lost offscreen shadow casters) by
+  comparing visibility-only acquisition, acquisition plus demand to a budget,
+  and full acquisition, on `house`-like returns and sun shadows. BVW has no
+  hook to keep chunks a consumer asks for, so the BVW connector cannot honor
+  demand yet.
+- **Unknown is not empty.** Undeclared pages are air to GI's rays, so sky
+  leaks through geometry a host has not loaded. A host-declared known region
+  (or known-empty pages) would let rays stop at unknown space instead of
+  counting it as sky. This changes light at the edge of every loaded world:
+  design what unknown space contributes before implementing it.
+- **The far tier under jittered visibility.** The engine's far records
+  jitter each pixel's sample, so a far pixel shows a different face each
+  time it is traced. Face lookups stay valid, but on its 4 km terrain at
+  1440p 41% of far-band pixels lacked indirect light against 16% without
+  jitter (2026-11-09, dark speckle near the horizon). Any host with
+  temporal anti-aliasing jitters the same way. Reproduce with a jittered
+  projection in the lab, then make the far tier's history follow the
+  surface rather than the face.
+- **Partial shapes and transmission.** GI transports opaque full cubes; the
+  engine keeps cutouts, glass, water and partial models on direct lighting.
+  StarWrought's first building material is quarter-block plating, so this
+  becomes visible early. Candidates: sub-voxel occupancy masks per material,
+  and a transmission flag for glass and water (with the deferred colored
+  transmission).
+- **Rigid local spaces.** Ships built from blocks are voxel grids that move.
+  GI's scene is one world-aligned grid; a ship needs a transform per grid
+  (separate scenes traced in their own frames, or re-voxelization), and its
+  light history must move with it. Not needed until the engine's rung 4.

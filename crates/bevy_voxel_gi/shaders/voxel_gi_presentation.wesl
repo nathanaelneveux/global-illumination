@@ -427,10 +427,30 @@ fn voxel_sky() -> bool {
     return use_voxel_sky();
 }
 
-/// The validation diagnostic mode (0 in normal presentation).
+/// The validation diagnostic mode: `DEBUG_NONE` in normal presentation,
+/// otherwise one of the `DEBUG_*` modes (`GiDebugView`'s index).
 fn debug_mode() -> u32 {
     return transport_settings.debug_irradiance;
 }
+
+/// Normal lit shading.
+const DEBUG_NONE: u32 = 0u;
+/// Sun and indirect light, without albedo.
+const DEBUG_IRRADIANCE: u32 = 1u;
+/// Which lookup supplied the indirect light (`IndirectLight::coverage`).
+const DEBUG_COVERAGE: u32 = 2u;
+/// Indirect light alone.
+const DEBUG_INDIRECT: u32 = 3u;
+/// GI's sunlight alone.
+const DEBUG_SUN: u32 = 4u;
+/// Sun traced from the face's own corners (the reference for `DEBUG_SUN`).
+const DEBUG_EXACT_SUN: u32 = 5u;
+/// Missing indirect support (red) and lookups outside exposed geometry (green).
+const DEBUG_FACE_VALIDITY: u32 = 6u;
+
+/// Converts `sunlight`'s transport units to Bevy's: multiply by diffuse
+/// albedo, this scale (10,000 / pi) and the view's exposure.
+const SUN_LAMBERT_SCALE: f32 = 3183.098861838;
 
 /// Indirect diffuse light arriving at a fragment, scaled by the display
 /// intensity: multiply by the surface albedo. `found` is false where no
@@ -488,10 +508,9 @@ fn sunlight_reference(position: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     return exact_corner_sun(position, normal).rgb;
 }
 
-/// The emitted light of the voxel under a face (zero for air or before the
-/// first view output).
+/// The emitted light of the voxel under a face (zero for air or before GI's
+/// first scene). Every camera has it, GI camera or not.
 fn emission(position: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
-    if far_view.shape.z == 0u { return vec3(0.0); }
     let material = voxel_material(vec3<i32>(floor(position - normal * 0.01)));
     if material >= 256u { return vec3(0.0); }
     return far_view.optical[material * 4u + 2u].rgb;
@@ -511,6 +530,55 @@ fn sun_direction(sun: u32) -> vec3<f32> {
 
 fn sun_color(sun: u32) -> vec3<f32> {
     return transport_settings.sun_color[sun].rgb;
+}
+
+/// What a diagnostic mode shows in place of the lit fragment.
+struct Diagnostic {
+    color: vec3<f32>,
+    /// A validation code (coverage, face validity): write `color` as it is,
+    /// without tone mapping or fog. Otherwise `color` is light without
+    /// albedo, in the view's exposed units: apply the usual display transform.
+    raw: bool,
+}
+
+/// The diagnostic view of a fragment, for `debug_mode() != DEBUG_NONE`:
+/// every GI host shows the same diagnostics this way. Arguments are as for
+/// `indirect_light` and `sunlight`; `exposure` is the view's
+/// (`view.exposure`). GI's sun appears only while `voxel_sky()` is on.
+fn diagnostic_view(
+    pixel: vec2<f32>,
+    position: vec3<f32>,
+    normal: vec3<f32>,
+    footprint: f32,
+    exposure: f32,
+) -> Diagnostic {
+    let mode = debug_mode();
+    let indirect = indirect_light(pixel, position, normal);
+    var out: Diagnostic;
+    out.raw = mode == DEBUG_COVERAGE || mode == DEBUG_FACE_VALIDITY;
+    if mode == DEBUG_FACE_VALIDITY {
+        // Independent channels survive MSAA resolve: red is missing indirect
+        // support, green a lookup outside exposed transport geometry. A tiny
+        // blue witness in the corner proves the diagnostic ran, so a fully
+        // covered view (an all-black mask) is not mistaken for a blank frame.
+        let valid = face_in_geometry(position, normal);
+        let witness = select(0.0, 0.5, all(pixel < vec2(4.0)));
+        out.color = vec3(1.0 - indirect.coverage.g, select(1.0, 0.0, valid), witness);
+        return out;
+    }
+    if mode == DEBUG_COVERAGE {
+        out.color = indirect.coverage;
+        return out;
+    }
+    out.color = select(indirect.light, vec3(0.0), mode >= DEBUG_SUN);
+    if mode != DEBUG_INDIRECT && use_voxel_sky() {
+        var sun = sunlight(position, normal, footprint);
+        if mode == DEBUG_EXACT_SUN {
+            sun = sunlight_reference(position, normal);
+        }
+        out.color += sun * SUN_LAMBERT_SCALE * exposure;
+    }
+    return out;
 }
 
 /// Whether this face is an exposed face of GI's geometry. GI's light

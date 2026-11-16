@@ -4,8 +4,8 @@
 use super::input::{PageEvent, VoxelGiInput, VoxelGiSource};
 use super::telemetry::GiWorkTimings;
 use super::world::{
-    PAGE_EDGE, PAGE_SIZE, PageVoxels, TransportScene, affected_probe_pages,
-    scan_surface_probe_pages,
+    PAGE_EDGE, PAGE_SIZE, PageVoxels, TransportScene, affected_probe_pages, focus_distance_squared,
+    page_distance, pages_within, scan_surface_probe_pages,
 };
 use super::{SceneBuildResult, VoxelGiRuntime, naadf, page_of};
 use bevy::platform::collections::{HashMap, HashSet};
@@ -18,13 +18,45 @@ use std::time::Instant;
 /// camera moving back and forth across it does not churn pages.
 const RECEIVER_HYSTERESIS: f32 = PAGE_EDGE as f32;
 
+/// The active `VoxelGiCamera`s this frame, read once: residency, demand,
+/// scene builds and dispatch all rank by `runtime.cameras`.
+pub(super) fn track_cameras(
+    mut runtime: ResMut<VoxelGiRuntime>,
+    settings: Res<super::VoxelGiSettings>,
+    cameras: Query<(&Camera, &GlobalTransform), With<super::VoxelGiCamera>>,
+    plain: Query<&Camera, (With<Camera3d>, Without<super::VoxelGiCamera>)>,
+    demand: Option<ResMut<super::VoxelGiDemand>>,
+) {
+    let active = cameras
+        .iter()
+        .filter(|(camera, _)| camera.is_active)
+        .map(|(_, transform)| transform.translation());
+    if !runtime.cameras.iter().copied().eq(active.clone()) {
+        runtime.cameras.clear();
+        runtime.cameras.extend(active);
+    }
+    if !runtime.loaded_pages.is_empty()
+        && runtime.cameras.is_empty()
+        && plain.iter().any(|camera| camera.is_active)
+    {
+        warn_once!(
+            "Voxel GI: no active camera has `VoxelGiCamera`, so nothing is lit; \
+             add it to the cameras that show your world"
+        );
+    }
+    if let Some(mut demand) = demand {
+        super::demand::refresh(&mut demand, &runtime, &settings);
+    }
+}
+
 /// Which loaded pages have world-cache receivers: those within
 /// `cache_radius` of any active camera (distance to the page's nearest point),
-/// kept until beyond the radius plus a hysteresis. Geometry is unaffected.
+/// kept until beyond the radius plus a hysteresis. With no active GI camera
+/// no page is in reach, so receivers retire; geometry (sun, emission) is
+/// unaffected either way.
 pub(super) fn update_receiver_residency(
     mut runtime: ResMut<VoxelGiRuntime>,
     settings: Res<super::VoxelGiSettings>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
 ) {
     let Some(radius) = settings.cache_radius() else {
         let left = runtime
@@ -35,50 +67,90 @@ pub(super) fn update_receiver_residency(
         mark_receivers(&mut runtime, Vec::new(), left.into_iter().collect());
         return;
     };
-    let foci: Vec<Vec3> = cameras
-        .iter()
-        .filter(|(camera, _)| camera.is_active)
-        .map(|(_, transform)| transform.translation())
-        .collect();
-    if foci.is_empty() {
-        return;
-    }
-    let distance = |page: IVec3| {
-        let minimum = (page * PAGE_EDGE as i32).as_vec3();
-        let maximum = minimum + Vec3::splat(PAGE_EDGE as f32);
-        foci.iter()
-            .map(|focus| focus.clamp(minimum, maximum).distance(*focus))
-            .fold(f32::INFINITY, f32::min)
-    };
+    let foci = runtime.cameras.clone();
     let first = runtime.receiver_pages.is_none();
     let mut allowed = runtime.receiver_pages.take().unwrap_or_default();
-    let (mut entered, mut left) = (Vec::new(), Vec::new());
-    for &page in &runtime.loaded_pages {
-        let d = distance(page);
-        if allowed.contains(&page) {
-            if d > radius + RECEIVER_HYSTERESIS {
-                left.push(page);
-            }
-        } else if d <= radius {
-            entered.push(page);
-        } else if first {
-            // Startup: pages outside lose their receivers.
-            left.push(page);
-        }
-    }
-    allowed.retain(|page| runtime.loaded_pages.contains(page));
-    for page in &entered {
-        allowed.insert(*page);
-    }
+    let (entered, left) = step_residency(&runtime.loaded_pages, &mut allowed, &foci, radius, first);
+    runtime.receiver_pages = Some(allowed);
+    mark_receivers(&mut runtime, entered, left);
+}
+
+/// One residency update: pages enter `allowed` within `radius` of a focus
+/// (distance to the page's nearest point) and leave beyond `radius` plus the
+/// hysteresis. Unloaded pages drop out silently. Returns the pages that
+/// entered and left; on the `first` update, every loaded page outside leaves
+/// (it may hold receivers from before residency) and none enter (allowed
+/// pages keep the receivers they have).
+///
+/// The cost follows the radius and the pages already allowed, not the loaded
+/// world: entering pages lie in the page box around a focus, so it visits
+/// those boxes, or the loaded set when that is smaller (a radius wider than
+/// the world).
+fn step_residency(
+    loaded: &HashSet<IVec3>,
+    allowed: &mut HashSet<IVec3>,
+    foci: &[Vec3],
+    radius: f32,
+    first: bool,
+) -> (Vec<IVec3>, Vec<IVec3>) {
+    let distance = |page: IVec3| {
+        foci.iter()
+            .map(|&focus| page_distance(page, focus))
+            .fold(f32::INFINITY, f32::min)
+    };
+    allowed.retain(|page| loaded.contains(page));
+    let mut left: Vec<_> = allowed
+        .iter()
+        .copied()
+        .filter(|&page| distance(page) > radius + RECEIVER_HYSTERESIS)
+        .collect();
     for page in &left {
         allowed.remove(page);
     }
-    runtime.receiver_pages = Some(allowed);
+    let mut entered = Vec::new();
+    let mut enter = |page: IVec3| {
+        if !allowed.contains(&page) && distance(page) <= radius && allowed.insert(page) {
+            entered.push(page);
+        }
+    };
+    let box_pages: f64 = foci
+        .iter()
+        .map(|&focus| {
+            let (minimum, maximum) = pages_within(focus, radius);
+            (maximum - minimum + IVec3::ONE)
+                .as_dvec3()
+                .element_product()
+        })
+        .sum();
+    if box_pages < loaded.len() as f64 {
+        for &focus in foci {
+            let (minimum, maximum) = pages_within(focus, radius);
+            for z in minimum.z..=maximum.z {
+                for y in minimum.y..=maximum.y {
+                    for x in minimum.x..=maximum.x {
+                        let page = IVec3::new(x, y, z);
+                        if loaded.contains(&page) {
+                            enter(page);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        loaded.iter().copied().for_each(enter);
+    }
     if first {
-        // Pages already allowed keep their receivers; only changes rescan.
+        // Startup: pages outside lose their receivers; pages already allowed
+        // keep theirs, so only later changes rescan.
+        left.extend(
+            loaded
+                .iter()
+                .copied()
+                .filter(|page| !allowed.contains(page)),
+        );
         entered.clear();
     }
-    mark_receivers(&mut runtime, entered, left);
+    (entered, left)
 }
 
 fn mark_receivers(runtime: &mut VoxelGiRuntime, entered: Vec<IVec3>, left: Vec<IVec3>) {
@@ -173,6 +245,13 @@ pub(super) fn ingest_input(
                     runtime.page_edits.0.remove(&page);
                 }
             }
+            PageEvent::Resample => {
+                runtime.page_edits.0.remove(&page);
+                if runtime.loaded_pages.contains(&page) {
+                    runtime.dirty_pages.insert(page);
+                    runtime.full_resample_pages.insert(page);
+                }
+            }
             PageEvent::Unloaded => {
                 runtime.loaded_pages.remove(&page);
                 runtime.interest.stale = true;
@@ -224,7 +303,6 @@ pub(super) const SCENE_SAMPLE_BUDGET: std::time::Duration = std::time::Duration:
 pub(super) fn start_scene_task(
     mut runtime: ResMut<VoxelGiRuntime>,
     source: Res<VoxelGiSource>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
     mut timings: ResMut<GiWorkTimings>,
 ) {
     let _timing = timings.main_scope(super::telemetry::MainStage::SceneDispatch);
@@ -242,7 +320,7 @@ pub(super) fn start_scene_task(
     {
         return;
     }
-    let Some(source) = source.0.clone() else {
+    let Some(source) = source.get().cloned() else {
         return;
     };
 
@@ -250,20 +328,25 @@ pub(super) fn start_scene_task(
     // Sample edited pages, then the nearest: the dense budget (a dense page
     // costs 64 KB; streaming a far world queues tens of thousands) and the
     // sampling time budget can each stop a build early, and the worker hands
-    // the rest back. Any queue can hit the time budget, so always sort.
-    let focus = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
-        page_of(camera.translation().floor().as_ivec3())
-    });
+    // the rest back. Any queue can hit the time budget, so always sort,
+    // nearest any active GI camera first (as residency and demand rank),
+    // or the origin without one.
+    let mut foci: Vec<IVec3> = runtime
+        .cameras
+        .iter()
+        .map(|camera| page_of(camera.floor().as_ivec3()))
+        .collect();
+    if foci.is_empty() {
+        foci.push(IVec3::ZERO);
+    }
+    let foci: Arc<[IVec3]> = foci.into();
     let edited: HashSet<IVec3> = runtime
         .dirty_voxels
         .iter()
         .map(|voxel| page_of(*voxel))
         .collect();
     dirty_pages.sort_unstable_by_key(|page| {
-        (
-            !edited.contains(page),
-            (page.as_i64vec3() - focus.as_i64vec3()).length_squared(),
-        )
+        (!edited.contains(page), focus_distance_squared(&foci, *page))
     });
     if dirty_pages.len() > MAX_SAMPLED_PAGES {
         let deferred = dirty_pages.split_off(MAX_SAMPLED_PAGES);
@@ -300,9 +383,6 @@ pub(super) fn start_scene_task(
     let retention_radius = super::retention::INFLUENCE_RADIUS;
     let materials = Arc::clone(&runtime.materials);
     let sources = runtime.sources.clone();
-    let focus_page = cameras.iter().next().map_or(IVec3::ZERO, |camera| {
-        page_of(camera.translation().floor().as_ivec3())
-    });
     let sample_budget = runtime.scene_sample_budget;
     runtime.scene_task = Some(AsyncComputeTaskPool::get().spawn(async move {
         let _span = info_span!("gi_scene_build").entered();
@@ -320,7 +400,11 @@ pub(super) fn start_scene_task(
                 break;
             }
             let origin = page * PAGE_EDGE as i32;
-            let sample = source.sample_page(page, resample);
+            let sample = if resample {
+                source.resample_page(page)
+            } else {
+                source.sample_page(page)
+            };
             let mut stride = sample.stride().trailing_zeros() as u8;
             let page_edits = edits.get(&page);
             let voxels = match sample.into_voxels() {
@@ -370,7 +454,7 @@ pub(super) fn start_scene_task(
                 Some(allowed) => affected_pages.intersection(allowed).copied().collect(),
                 None => affected_pages.clone(),
             };
-            scan_surface_probe_pages(&scene, &scanned, focus_page)
+            scan_surface_probe_pages(&scene, &scanned, &foci)
         } else {
             Vec::new()
         };
@@ -391,7 +475,7 @@ pub(super) fn start_scene_task(
         pages.sort_unstable_by_key(|(page, _)| {
             (
                 !exact_edits.iter().any(|v| page_of(*v) == *page),
-                (page.as_i64vec3() - focus_page.as_i64vec3()).length_squared(),
+                focus_distance_squared(&foci, *page),
             )
         });
         SceneBuildResult {
@@ -457,11 +541,123 @@ fn edited_stride(
 
 #[cfg(test)]
 mod tests {
+    use super::super::GiVoxel;
     use super::super::input::{VoxelGiInput, dense_page};
     use super::super::telemetry::GiWorkTimings;
     use super::super::world::{AIR, PAGE_SIZE};
     use super::super::{VoxelGiRuntime, naadf, page_of};
     use super::*;
+
+    /// The whole-world scan residency replaced: every loaded page, every update.
+    fn scan_residency(
+        loaded: &HashSet<IVec3>,
+        allowed: &mut HashSet<IVec3>,
+        foci: &[Vec3],
+        radius: f32,
+        first: bool,
+    ) -> (HashSet<IVec3>, HashSet<IVec3>) {
+        let distance = |page: IVec3| {
+            let minimum = (page * PAGE_EDGE as i32).as_vec3();
+            let maximum = minimum + Vec3::splat(PAGE_EDGE as f32);
+            foci.iter()
+                .map(|focus| focus.clamp(minimum, maximum).distance(*focus))
+                .fold(f32::INFINITY, f32::min)
+        };
+        allowed.retain(|page| loaded.contains(page));
+        let (mut entered, mut left) = (HashSet::new(), HashSet::new());
+        for &page in loaded {
+            let d = distance(page);
+            if allowed.contains(&page) {
+                if d > radius + RECEIVER_HYSTERESIS {
+                    left.insert(page);
+                }
+            } else if d <= radius {
+                entered.insert(page);
+            } else if first {
+                left.insert(page);
+            }
+        }
+        allowed.extend(entered.iter().copied());
+        allowed.retain(|page| !left.contains(page));
+        if first {
+            entered.clear();
+        }
+        (entered, left)
+    }
+
+    #[test]
+    #[ignore = "residency benchmark; run with --nocapture"]
+    fn bench_residency_in_a_far_world() {
+        // VOXEL_GI_LAB_FAR=64's shape: about 98,000 pages.
+        let loaded: HashSet<IVec3> = (-64..64)
+            .flat_map(|z| (-64..64).flat_map(move |x| (0..6).map(move |y| IVec3::new(x, y, z))))
+            .collect();
+        for (name, local) in [("whole-world scan", false), ("camera-local", true)] {
+            let mut allowed = HashSet::new();
+            let started = Instant::now();
+            let frames = 200;
+            for frame in 0..frames {
+                let foci = [Vec3::new(frame as f32 * 0.5, 80.0, 16.0)];
+                if local {
+                    step_residency(&loaded, &mut allowed, &foci, 64.0, frame == 0);
+                } else {
+                    scan_residency(&loaded, &mut allowed, &foci, 64.0, frame == 0);
+                }
+            }
+            eprintln!(
+                "{name}: {:.3} ms a frame over {} pages",
+                started.elapsed().as_secs_f64() * 1000.0 / frames as f64,
+                loaded.len()
+            );
+        }
+    }
+
+    #[test]
+    fn local_residency_matches_a_whole_world_scan() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move |n: u64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) % n
+        };
+        // Radii whose page boxes are smaller and larger than the loaded set.
+        for radius in [20.0, 64.0, 150.0, 1000.0] {
+            let mut loaded = HashSet::new();
+            for _ in 0..1500 {
+                let page = IVec3::new(next(24) as i32, next(8) as i32, next(24) as i32) - 4;
+                loaded.insert(page);
+            }
+            let (mut local, mut scan) = (HashSet::new(), HashSet::new());
+            for step in 0..60 {
+                // Streaming: some pages unload, others load.
+                for _ in 0..20 {
+                    let page = IVec3::new(next(24) as i32, next(8) as i32, next(24) as i32) - 4;
+                    if next(2) == 0 {
+                        loaded.remove(&page);
+                    } else {
+                        loaded.insert(page);
+                    }
+                }
+                let foci: Vec<Vec3> = (0..1 + next(3))
+                    .map(|_| {
+                        Vec3::new(next(800) as f32, next(300) as f32, next(800) as f32) - 128.0
+                    })
+                    .collect();
+                let first = step == 0;
+                let (entered, left) = step_residency(&loaded, &mut local, &foci, radius, first);
+                let (expected_entered, expected_left) =
+                    scan_residency(&loaded, &mut scan, &foci, radius, first);
+                assert_eq!(local, scan, "radius {radius}, step {step}");
+                assert_eq!(entered.len(), expected_entered.len());
+                assert_eq!(
+                    entered.into_iter().collect::<HashSet<_>>(),
+                    expected_entered
+                );
+                assert_eq!(left.into_iter().collect::<HashSet<_>>(), expected_left);
+            }
+        }
+    }
 
     fn app(tracked: bool) -> App {
         let mut app = App::new();
@@ -489,9 +685,9 @@ mod tests {
             .insert(page);
         {
             let mut input = app.world_mut().resource_mut::<VoxelGiInput>();
-            input.edit_voxel(position, Some(1));
-            input.edit_voxel(position, None);
-            input.edit_voxel(position, Some(2));
+            input.edit_voxel(position, GiVoxel::solid(1));
+            input.edit_voxel(position, GiVoxel::AIR);
+            input.edit_voxel(position, GiVoxel::solid(2));
         }
         app.update();
         app.world_mut()
@@ -508,7 +704,7 @@ mod tests {
         );
         {
             let mut input = app.world_mut().resource_mut::<VoxelGiInput>();
-            input.edit_voxel(position, None);
+            input.edit_voxel(position, GiVoxel::AIR);
             input.page_unloaded(page);
         }
         app.update();
@@ -519,7 +715,7 @@ mod tests {
         app.update();
         let runtime = app.world().resource::<VoxelGiRuntime>();
         assert!(runtime.dirty_pages.contains(&page));
-        let mut data = dense_page(page, |_| Some(1)).into_dense();
+        let mut data = dense_page(page, |_| GiVoxel::solid(1)).into_dense();
         apply_page_edits(&mut data, page * 32, &runtime.page_edits.0[&page]);
         assert_eq!(
             data[naadf::linear_index((position - page * 32).as_uvec3(), PAGE_SIZE)],
@@ -606,11 +802,13 @@ mod tests {
         // resample flags, unless unloaded meanwhile.
         struct Source;
         impl VoxelSource for Source {
-            fn sample_page(&self, page: IVec3, _: bool) -> PageSample {
+            fn sample_page(&self, page: IVec3) -> PageSample {
                 if page.y > 0 {
                     return PageSample::air();
                 }
-                dense_page(page, |voxel| (voxel.y < 3 + (voxel.x & 1)).then_some(1))
+                dense_page(page, |voxel| {
+                    (voxel.y < 3 + (voxel.x & 1)).then_some(GiVoxel::solid(1))
+                })
             }
         }
         let dense: Vec<_> = (0..MAX_DENSE_PAGES as i32 + 40)
@@ -620,7 +818,7 @@ mod tests {
             .map(|i| IVec3::new(i % 40, 1 + i / 1000, i / 40 % 25))
             .collect();
         let mut app = app(true);
-        app.insert_resource(VoxelGiSource(Some(Arc::new(Source))));
+        app.insert_resource(VoxelGiSource::new(Source));
         {
             let mut runtime = app.world_mut().resource_mut::<VoxelGiRuntime>();
             // The dense budget alone, whatever this machine's sampling speed.
@@ -711,7 +909,7 @@ mod tests {
         use bevy::ecs::system::RunSystemOnce;
         struct Slow;
         impl VoxelSource for Slow {
-            fn sample_page(&self, _: IVec3, _: bool) -> PageSample {
+            fn sample_page(&self, _: IVec3) -> PageSample {
                 std::thread::sleep(std::time::Duration::from_millis(2));
                 PageSample::air()
             }
@@ -720,7 +918,7 @@ mod tests {
             .map(|i| IVec3::new(i, 0, 0))
             .collect();
         let mut app = app(true);
-        app.insert_resource(VoxelGiSource(Some(Arc::new(Slow))));
+        app.insert_resource(VoxelGiSource::new(Slow));
         {
             let mut runtime = app.world_mut().resource_mut::<VoxelGiRuntime>();
             runtime.scene_sample_budget = std::time::Duration::from_millis(20);
@@ -760,7 +958,7 @@ mod tests {
         // the focus, so only edit-first ordering gets it into this build.
         struct Slow;
         impl VoxelSource for Slow {
-            fn sample_page(&self, _: IVec3, _: bool) -> PageSample {
+            fn sample_page(&self, _: IVec3) -> PageSample {
                 std::thread::sleep(std::time::Duration::from_millis(2));
                 PageSample::air()
             }
@@ -768,7 +966,7 @@ mod tests {
         let pages: Vec<_> = (0..40).map(|i| IVec3::new(i, 0, 0)).collect();
         let edited = IVec3::new(39, 0, 0);
         let mut app = app(true);
-        app.insert_resource(VoxelGiSource(Some(Arc::new(Slow))));
+        app.insert_resource(VoxelGiSource::new(Slow));
         {
             let mut runtime = app.world_mut().resource_mut::<VoxelGiRuntime>();
             runtime.scene_sample_budget = std::time::Duration::from_millis(10);
@@ -816,5 +1014,27 @@ mod tests {
             assert!(runtime.full_resample_pages.contains(&IVec3::ZERO));
             assert!(!runtime.page_edits.0.contains_key(&IVec3::ZERO));
         }
+    }
+
+    #[test]
+    fn a_reloaded_page_resamples_without_an_edit() {
+        let mut app = app(true);
+        // An overlay kept from before the page was unloaded.
+        app.world_mut()
+            .resource_mut::<VoxelGiRuntime>()
+            .page_edits
+            .insert(IVec3::ONE, 7);
+        let mut input = app.world_mut().resource_mut::<VoxelGiInput>();
+        input.page_loaded(IVec3::ZERO);
+        input.resample_page(IVec3::ZERO);
+        // Not loaded: dropped without marking anything.
+        input.resample_page(IVec3::X);
+        app.update();
+        let runtime = app.world().resource::<VoxelGiRuntime>();
+        assert!(runtime.dirty_pages.contains(&IVec3::ZERO));
+        assert!(runtime.full_resample_pages.contains(&IVec3::ZERO));
+        assert!(!runtime.page_edits.0.contains_key(&IVec3::ZERO));
+        assert!(runtime.dirty_voxels.is_empty() && !runtime.urgent_edit);
+        assert!(!runtime.dirty_pages.contains(&IVec3::X));
     }
 }

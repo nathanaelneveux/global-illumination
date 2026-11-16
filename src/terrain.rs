@@ -11,9 +11,7 @@ use crate::scene_presets::ScenePreset;
 use crate::structures::{Bounds, StructureLayer, VoxelOp, showcase};
 use crate::terrain_meshing::build_chunk_mesh;
 use crate::terrain_noise::{BEDROCK_FLOOR_Y, MAX_SURFACE_Y, TerrainColumn, TerrainNoise};
-use bevy_voxel_gi::{
-    MaterialTransport, VoxelGiInput, VoxelGiMaterialData, VoxelMaterialTransportTable,
-};
+use bevy_voxel_gi::{MaterialTransport, VoxelGiInput, VoxelGiMaterials};
 use bevy_voxel_gi_bvw::material_template;
 
 pub type MaterialIndex = u8;
@@ -101,13 +99,14 @@ pub fn terrain_view_distance() -> f32 {
 }
 
 /// Far-test LOD bands (chunks from the camera) and their samples per axis.
-/// A level-L chunk is `32 << L` voxels wide, so the strides are 1, 1, 2, 4
-/// and 8. Level 0 is a small full-resolution band near the camera and the
-/// only one that spawns colliders (`chunk_colliders`); level 1 is still full
-/// resolution, so full detail reaches farther than physics.
+/// A level-L chunk is `32 << L` voxels wide, so the strides are 1, 2, 4, 8
+/// and 16. Level 0 is a small full-resolution band near the camera and the
+/// only one that spawns colliders (`chunk_colliders`). bevy_voxel_world
+/// 0.19's mesher takes at most 62 samples inside a chunk, so a coarse chunk
+/// cannot keep 64 (0.1's lab kept full resolution to level 1 that way).
 const LOD_BANDS: [(f32, LodLevel, u32); 4] =
-    [(2.0, 0, 32), (8.0, 1, 64), (16.0, 2, 64), (32.0, 3, 64)];
-const LOD_FARTHEST: (LodLevel, u32) = (4, 64);
+    [(2.0, 0, 32), (8.0, 1, 32), (16.0, 2, 32), (32.0, 3, 32)];
+const LOD_FARTHEST: (LodLevel, u32) = (4, 32);
 const LOD_HYSTERESIS_CHUNKS: f32 = 1.0;
 
 fn lod_samples(lod: LodLevel) -> u32 {
@@ -130,28 +129,22 @@ impl Plugin for TerrainPlugin {
             (TerrainMaterial::SnowBrick, Vec3::new(0.46, 0.29, 0.20)),
             (TerrainMaterial::Snow, Vec3::new(0.82, 0.88, 0.94)),
         ] {
-            let mut table = app
-                .world_mut()
-                .resource_mut::<VoxelMaterialTransportTable>();
+            let mut table = app.world_mut().resource_mut::<VoxelGiMaterials>();
             let mut optical = table.get(material.index());
             optical.diffuse = visible;
             table.set(material.index(), optical);
         }
         // Register once, not on every placement: editing a lamp uses ordinary
         // geometry invalidation instead of changing the global material table.
-        app.world_mut()
-            .resource_mut::<VoxelMaterialTransportTable>()
-            .set(
-                TerrainMaterial::Emissive.index(),
-                emissive_block_transport(),
-            );
+        app.world_mut().resource_mut::<VoxelGiMaterials>().set(
+            TerrainMaterial::Emissive.index(),
+            emissive_block_transport(),
+        );
         if let Some(materials) = ScenePreset::current().materials() {
             app.insert_resource(materials);
         } else {
             let cave = crate::cave_scene::materials();
-            let mut table = app
-                .world_mut()
-                .resource_mut::<VoxelMaterialTransportTable>();
+            let mut table = app.world_mut().resource_mut::<VoxelGiMaterials>();
             for &(local, global) in &showcase::CAVE_PALETTE {
                 table.set(global.index(), cave.get(local));
             }
@@ -162,10 +155,9 @@ impl Plugin for TerrainPlugin {
                 .resource::<crate::assets::TemplateAssets>()
                 .voxel_texture
                 .clone();
-            let data = app.world().resource::<VoxelGiMaterialData>().clone();
             app.add_plugins(
                 VoxelWorldPlugin::with_config(PrototypeWorld::default())
-                    .with_material(material_template(texture, &data)),
+                    .with_material(material_template(texture)),
             );
         } else {
             // GI-off control: BVW's own standard voxel material.
@@ -693,7 +685,7 @@ mod tests {
         );
         assert_eq!(material.voxel(), WorldVoxel::Solid(4));
         assert_eq!(TerrainMaterial::texture_indices(material.index()), [0; 3]);
-        let mut table = VoxelMaterialTransportTable::default();
+        let mut table = VoxelGiMaterials::default();
         table.set(material.index(), emissive_block_transport());
         let emission = table.get(material.index()).emission;
         assert!(emission.min_element() > 0.0);

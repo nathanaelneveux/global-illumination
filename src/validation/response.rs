@@ -21,7 +21,7 @@ impl ResponseRun {
         edits: bool,
         world: &mut VoxelWorld<PrototypeWorld>,
         dirty: &mut VoxelGiInput,
-        materials: &mut VoxelMaterialTransportTable,
+        materials: &mut VoxelGiMaterials,
         commands: &mut Commands,
         cameras: &Query<Entity, With<Camera3d>>,
         transforms: &mut Query<&mut Transform, Without<Player>>,

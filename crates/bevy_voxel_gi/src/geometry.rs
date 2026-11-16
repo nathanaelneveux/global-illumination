@@ -89,10 +89,7 @@ pub(super) struct SceneChanges {
     pub transport: Option<GeometryChange>,
 }
 
-fn emission_luminance(
-    materials: Option<&super::world::VoxelMaterialTransportTable>,
-    material: u16,
-) -> f32 {
+fn emission_luminance(materials: Option<&super::world::VoxelGiMaterials>, material: u16) -> f32 {
     if material == AIR {
         return 0.0;
     }
@@ -114,7 +111,7 @@ impl SceneChanges {
         previous: &TransportScene,
         next: &TransportScene,
         radius: i32,
-        materials: Option<&super::world::VoxelMaterialTransportTable>,
+        materials: Option<&super::world::VoxelGiMaterials>,
     ) -> Self {
         let changed = next.changed_regions(previous);
         if changed.is_empty() {
@@ -123,14 +120,10 @@ impl SceneChanges {
                 transport: None,
             };
         }
-        let mut occupied_min = IVec3::MAX;
-        let mut occupied_max = IVec3::MIN;
-        for (&coordinate, region) in &previous.regions {
-            if region.any_solid {
-                occupied_min = occupied_min.min(coordinate);
-                occupied_max = occupied_max.max(coordinate);
-            }
-        }
+        let (occupied_min, occupied_max) = previous
+            .regions
+            .solid_bounds()
+            .unwrap_or((IVec3::MAX, IVec3::MIN));
         let mut result = Self {
             changed: false,
             transport: None,

@@ -92,7 +92,7 @@ impl PackedScene {
                     .chain(
                         self.regions
                             .keys()
-                            .filter(|key| !scene.regions.contains_key(*key)),
+                            .filter(|key| !scene.regions.contains_key(key)),
                     )
                     .copied()
                     .collect()
@@ -103,7 +103,7 @@ impl PackedScene {
         changed.dedup();
         let removed: Vec<_> = changed
             .iter()
-            .filter(|key| !scene.regions.contains_key(*key))
+            .filter(|key| !scene.regions.contains_key(key))
             .copied()
             .collect();
         let mut delta = SceneDelta::default();
@@ -247,12 +247,18 @@ impl PackedScene {
         // Region content and acceleration dependencies are different deltas.
         // A remote residency/occupancy change may alter an unchanged region's
         // skip bounds. Only reuse the headers when the shared field is identical.
-        if self
+        let field_changed = self
             .top_level
             .as_ref()
-            .is_none_or(|old| !old.shares_field(&scene.top_level))
-        {
-            for (&key, allocation) in &self.regions {
+            .is_none_or(|old| !old.shares_field(&scene.top_level));
+        if field_changed {
+            // A field updated in place from the one packed names its changed
+            // cells (new regions were packed above with the new field).
+            let changed = self
+                .top_level
+                .as_ref()
+                .and_then(|old| scene.top_level.changed_since(old));
+            let mut repack = |key: IVec3, allocation: &RegionAllocation| {
                 let top = scene.top_level.field(key);
                 let header = &mut self.headers[allocation.header];
                 let positive = pack_bytes(top.positive()) | stride_bits(&allocation.source);
@@ -261,6 +267,20 @@ impl PackedScene {
                     header.z = negative;
                     header.w = positive;
                     delta.headers.push(allocation.header..allocation.header + 1);
+                }
+            };
+            match changed {
+                Some(cells) => {
+                    for key in cells {
+                        if let Some(allocation) = self.regions.get(key) {
+                            repack(*key, allocation);
+                        }
+                    }
+                }
+                None => {
+                    for (&key, allocation) in &self.regions {
+                        repack(key, allocation);
+                    }
                 }
             }
         }

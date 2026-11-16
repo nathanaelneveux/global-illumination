@@ -25,7 +25,7 @@ fn sparse_geometry_uploads_survive_growth_and_residency_changes() {
     let mut reference = GpuTracer::new(candidate.context.clone()).unwrap();
     reference.full_geometry_uploads_for_benchmark = true;
     reference.packed.revisit_unchanged_for_benchmark = true;
-    let materials = VoxelMaterialTransportTable::default();
+    let materials = VoxelGiMaterials::default();
     let sources = TransportSources::default();
     let mut page = vec![AIR; volume_len(PAGE_SIZE)];
     for z in 0..32 {

@@ -16,7 +16,7 @@ Use the same version as the core crate.
 
 ```toml
 [dependencies]
-bevy_voxel_gi_debug = "0.1"
+bevy_voxel_gi_debug = "0.2"
 ```
 
 Add the plugin after GI. Include Bevy's frame diagnostics for the FPS

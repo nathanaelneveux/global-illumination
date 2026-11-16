@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 use bevy_voxel_world::prelude::WorldVoxel;
 
-use bevy_voxel_gi::{MaterialTransport, VoxelMaterialTransportTable};
+use bevy_voxel_gi::{MaterialTransport, VoxelGiMaterials};
 
 pub fn enabled() -> bool {
     if background_terrain_requested() {
@@ -35,8 +35,8 @@ pub fn sun_direction() -> Vec3 {
 }
 
 /// Artistic RGB emission and albedo, not calibrated lava/thorium physics.
-pub fn materials() -> VoxelMaterialTransportTable {
-    let mut table = VoxelMaterialTransportTable::default();
+pub fn materials() -> VoxelGiMaterials {
+    let mut table = VoxelGiMaterials::default();
     for (id, diffuse, emission) in [
         (2, Vec3::splat(0.55), Vec3::ZERO),
         (4, Vec3::splat(0.15), Vec3::new(3.0, 0.45, 0.02)),

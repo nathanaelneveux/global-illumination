@@ -2,8 +2,8 @@
 //! Bevy light adaptation lives here; estimators depend only on these values.
 use super::color::FiniteColor;
 use super::{
-    ReceiverField, VoxelGiRuntime, VoxelGiStats, VoxelMaterialTransportTable,
-    advance_transport_revision, telemetry::GiWorkTimings, update_stats_from_counters,
+    ReceiverField, VoxelGiMaterials, VoxelGiRuntime, VoxelGiStats, advance_transport_revision,
+    telemetry::GiWorkTimings, update_stats_from_counters,
 };
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
@@ -280,7 +280,7 @@ fn compare_vec3(a: Vec3, b: Vec3) -> std::cmp::Ordering {
 
 pub(super) fn synchronize_material_table(
     mut runtime: ResMut<VoxelGiRuntime>,
-    materials: Res<VoxelMaterialTransportTable>,
+    materials: Res<VoxelGiMaterials>,
     mut field: ResMut<ReceiverField>,
     mut stats: ResMut<VoxelGiStats>,
     mut timings: ResMut<GiWorkTimings>,

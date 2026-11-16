@@ -7,17 +7,18 @@
 //!
 //! | Task | API |
 //! | --- | --- |
-//! | Install GI and provide a snapshot | [`VoxelGiPlugin`], [`VoxelGiSource`], [`VoxelSource::sample_page`] |
+//! | Install GI and provide a snapshot | [`VoxelGiPlugins`], [`prelude`], [`VoxelGiCamera`], [`VoxelGiSource::new`], [`VoxelSource`] |
 //! | Build a page at the mesh's resolution | [`PageSample`], [`dense_page`], [`coarse_page`], [page edge](VOXEL_GI_PAGE_EDGE) |
 //! | Declare page residency | [`page_loaded`](VoxelGiInput::page_loaded), [`page_unloaded`](VoxelGiInput::page_unloaded) |
 //! | Send a known edit | [`edit_voxel`](VoxelGiInput::edit_voxel), [tracked input](VoxelGiInput::tracked) |
-//! | Refresh from the source | [`page_changed`](VoxelGiInput::page_changed), [`mark_voxel`](VoxelGiInput::mark_voxel), [`mark_all_loaded`](VoxelGiInput::mark_all_loaded) |
+//! | Refresh from the source | [`page_changed`](VoxelGiInput::page_changed), [`resample_page`](VoxelGiInput::resample_page), [`mark_voxel`](VoxelGiInput::mark_voxel), [`mark_all_loaded`](VoxelGiInput::mark_all_loaded) |
+//! | Choose which pages to load | [`VoxelGiDemand`] |
 //!
 //! ### Materials and lights
 //!
 //! | Task | API |
 //! | --- | --- |
-//! | Assign material IDs and optical properties | [`MaterialPalette`], [`VoxelMaterialTransportTable::set`], [`MaterialTransport`], [`AIR`] |
+//! | Give blocks optics | [`VoxelGiMaterials::insert`], [`MaterialTransport`], [`GiVoxel`], [`VoxelGiMaterials::set`] |
 //! | Make a glowing block | [`MaterialTransport::emission`] |
 //! | Light a scene with the sun, a point light or a sky | [Bevy directional light](DirectionalLight), [Bevy point light](PointLight), [`VoxelGiEnvironment`] |
 //! | Add a light for GI | [`VoxelGiEmitter`] |
@@ -36,7 +37,9 @@
 //! | Wait for geometry or read GPU cost | [`VoxelGiStats::geometry_pending`], [`ViewReceipts`], [system ordering](VoxelGiSystems) |
 //!
 #![warn(missing_docs)]
+mod camera;
 mod color;
+mod demand;
 mod dispatch;
 mod emission;
 mod field;
@@ -47,7 +50,6 @@ mod history;
 mod input;
 mod naadf;
 mod pages;
-mod palette;
 mod publication;
 mod reconstruction;
 pub(crate) mod render;
@@ -64,6 +66,7 @@ mod statistics;
 mod sun_changes;
 mod telemetry;
 mod tracer;
+mod voxel;
 mod work;
 mod world;
 
@@ -76,13 +79,15 @@ use std::time::{Duration, Instant};
 use bevy::prelude::*;
 use bevy::tasks::Task;
 
+pub use camera::VoxelGiCamera;
+pub use demand::VoxelGiDemand;
 use field::ReceiverField;
-pub use palette::{MaterialPalette, PaletteFull};
 pub use settings::{
     FarTierMeasure, FarTierSettings, TransportSettings, VoxelGiQuality, VoxelGiSettings,
 };
 pub use sources::{VoxelGiEmitter, VoxelGiEnvironment};
-pub use world::{AIR, MaterialTransport, VoxelMaterialTransportTable};
+pub use voxel::{GiVoxel, MaterialsFull};
+pub use world::{MaterialTransport, VoxelGiMaterials};
 
 use dispatch::{apply_trace_task, start_trace_task};
 pub use gpu::view::ViewReceipts;
@@ -107,9 +112,41 @@ use work::TraceWork;
 use world::{PAGE_EDGE, SurfaceProbe, SurfaceProbeDescriptor, TransportScene};
 
 /// Voxel GI: page ingestion, transport and the view tier. Materials bind
-/// `VoxelGiMaterialData` (the BVW connector's material does this); the debug
-/// HUD and panel are the opt-in `VoxelGiDebugPlugin`.
+/// `VoxelGiBindings` (the BVW connector's material does this); the debug
+/// HUD and panel are the opt-in `VoxelGiDebugPlugin`. [`VoxelGiPlugins`]
+/// adds it with the GI-lit `StandardMaterial`.
 pub struct VoxelGiPlugin;
+
+/// GI and the GI-lit `StandardMaterial`: [`VoxelGiPlugin`] and
+/// [`VoxelGiStandardMaterialPlugin`]. Add it beside Bevy's `DefaultPlugins`:
+///
+/// ```no_run
+/// # use bevy::prelude::*;
+/// # use bevy_voxel_gi::prelude::*;
+/// App::new().add_plugins((DefaultPlugins, VoxelGiPlugins)).run();
+/// ```
+///
+/// A host that lights only its own materials can add `VoxelGiPlugin` alone,
+/// or disable the standard material here.
+pub struct VoxelGiPlugins;
+
+impl bevy::app::PluginGroup for VoxelGiPlugins {
+    fn build(self) -> bevy::app::PluginGroupBuilder {
+        bevy::app::PluginGroupBuilder::start::<Self>()
+            .add(VoxelGiPlugin)
+            .add(VoxelGiStandardMaterialPlugin)
+    }
+}
+
+/// The types most hosts use: `use bevy_voxel_gi::prelude::*;`.
+pub mod prelude {
+    pub use crate::{
+        GiVoxel, MaterialTransport, PageSample, VoxelGiCamera, VoxelGiDemand, VoxelGiDisplay,
+        VoxelGiEmitter, VoxelGiEnvironment, VoxelGiInput, VoxelGiMaterials, VoxelGiPlugin,
+        VoxelGiPlugins, VoxelGiQuality, VoxelGiSettings, VoxelGiSource, VoxelGiStandardMaterial,
+        VoxelGiStats, VoxelGiSystems, VoxelSource, coarse_page, dense_page, standard_material,
+    };
+}
 
 /// Schedule host readers after this set to observe this frame's published
 /// diagnostics. Worker results remain asynchronous.
@@ -127,11 +164,13 @@ impl Plugin for VoxelGiPlugin {
             .init_resource::<GiWorkTimings>()
             .init_resource::<VoxelGiSettings>()
             .init_resource::<VoxelGiEnvironment>()
-            .init_resource::<VoxelMaterialTransportTable>()
+            .init_resource::<VoxelGiMaterials>()
+            .init_resource::<VoxelGiDemand>()
             .add_systems(
                 Update,
                 (
                     ingest_input,
+                    pages::track_cameras,
                     pages::update_receiver_residency,
                     synchronize_transport_sources,
                     synchronize_material_table,
@@ -252,9 +291,12 @@ pub struct SchedulerStats {
 struct VoxelGiRuntime {
     scene: Arc<TransportScene>,
     sources: TransportSources,
-    materials: Arc<VoxelMaterialTransportTable>,
+    materials: Arc<VoxelGiMaterials>,
     transport: TransportSettings,
     loaded_pages: HashSet<IVec3>,
+    /// The active `VoxelGiCamera`s' positions this frame (`pages::track_cameras`).
+    /// Residency, demand, scene builds and dispatch all rank by these.
+    cameras: Vec<Vec3>,
     /// Bounds of `loaded_pages`: the host's declared geometry interest.
     interest: pages::Interest,
     dirty_pages: HashSet<IVec3>,
@@ -320,9 +362,10 @@ impl Default for VoxelGiRuntime {
         Self {
             scene: Arc::new(TransportScene::default()),
             sources: TransportSources::default(),
-            materials: Arc::new(VoxelMaterialTransportTable::default()),
+            materials: Arc::new(VoxelGiMaterials::default()),
             transport: TransportSettings::default(),
             loaded_pages: HashSet::new(),
+            cameras: Vec::new(),
             interest: default(),
             dirty_pages: HashSet::new(),
             full_resample_pages: HashSet::new(),

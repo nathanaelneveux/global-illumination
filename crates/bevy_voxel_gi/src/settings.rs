@@ -3,6 +3,16 @@ use std::time::Duration;
 
 /// Quality and work limits for GPU transport and view presentation.
 /// Insert before `VoxelGiPlugin` or change this resource at runtime.
+///
+/// ```
+/// # use bevy::prelude::*;
+/// # use bevy_voxel_gi::prelude::*;
+/// let settings = VoxelGiSettings {
+///     cache_radius: 32.0,
+///     ..default()
+/// };
+/// # assert_eq!(settings.cache_radius, 32.0);
+/// ```
 #[derive(Resource, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct VoxelGiSettings {
@@ -51,9 +61,11 @@ pub struct VoxelGiSettings {
     pub cache_share: f32,
     /// Per-pixel lighting for faces small on screen (see `FarTierSettings`).
     pub far_tier: FarTierSettings,
-    /// Scheduler work bounds: measured, not host policy.
+    /// Scheduler work bounds: measured, not host policy. Public only so
+    /// `VoxelGiSettings { .., ..default() }` compiles outside the crate.
+    #[doc(hidden)]
     #[serde(skip)]
-    pub(crate) scheduler: SchedulerSettings,
+    pub scheduler: SchedulerSettings,
 }
 
 /// The far tier: faces small on screen are lit per pixel, in the manner of
@@ -154,9 +166,10 @@ impl FarTierSettings {
     }
 }
 
-/// The world-cache scheduler's batch and audit bounds.
+/// The world-cache scheduler's batch and audit bounds (internal).
+#[doc(hidden)]
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct SchedulerSettings {
+pub struct SchedulerSettings {
     /// New paths per selected face, not a lifetime sample limit. Smaller batches
     /// refresh more receivers sooner but pay more scheduling/transfer overhead.
     pub(crate) samples_per_dispatch: u32,

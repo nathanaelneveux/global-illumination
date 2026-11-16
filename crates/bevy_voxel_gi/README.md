@@ -40,76 +40,58 @@ stone to see the difference.
 Start with a layer of stone and give GI the same surface you draw.
 
 1. **Give blocks optical properties.** A `MaterialTransport` describes
-   diffuse reflectance and emission. Use `MaterialPalette` to assign
-   transport IDs and copy its table into `VoxelMaterialTransportTable`.
-2. **Provide a voxel snapshot.** Put your `VoxelSource` in `VoxelGiSource`.
-   Use `dense_page` to return a material per voxel and `None` for air.
-   Worker threads read this snapshot.
+   diffuse reflectance and emission. `VoxelGiMaterials::insert` gives it a
+   `GiVoxel` material; identical optics share one.
+2. **Provide a voxel source.** Insert a `VoxelGiSource`: a closure from a
+   32³ page to its voxels, or your own `VoxelSource`. `dense_page` calls a
+   lookup per voxel; return a `GiVoxel`, or `None` for air. Worker threads
+   read it, so give it an immutable snapshot of your data.
 3. **Declare the loaded pages.** Call `VoxelGiInput::page_loaded` for each
    32³ page. Page `(1, 0, 0)` starts at voxel `(32, 0, 0)`.
-4. **Draw the same surfaces.** Use `standard_material` to make a GI-lit
-   Bevy material. Draw the mesh on the same boundaries as the source.
-   Here the stone ends at `y = 4`, so the plane goes there too.
+4. **Draw the same surfaces, and mark the camera.** Use `standard_material`
+   to make a GI-lit Bevy material, on the same boundaries as the source:
+   here the stone ends at `y = 4`, so the plane goes there too. Add
+   `VoxelGiCamera` to the camera GI should light.
 
 <details>
 <summary>Copy the complete main.rs for a sunlit plane</summary>
 
 ```rust,no_run
 use bevy::prelude::*;
-use bevy_voxel_gi::{
-    MaterialPalette, MaterialTransport, PageSample, VoxelGiInput, VoxelGiMaterialData,
-    VoxelGiPlugin, VoxelGiSource, VoxelGiStandardMaterial, VoxelGiStandardMaterialPlugin,
-    VoxelMaterialTransportTable, VoxelSource, dense_page, standard_material,
-};
-use std::sync::Arc;
+use bevy_voxel_gi::prelude::*;
 
 fn main() {
     App::new()
-        // GI itself, and Bevy's `StandardMaterial` lit by GI.
-        .add_plugins((DefaultPlugins, VoxelGiPlugin, VoxelGiStandardMaterialPlugin))
+        // GI, and Bevy's `StandardMaterial` lit by GI.
+        .add_plugins((DefaultPlugins, VoxelGiPlugins))
         .add_systems(Startup, setup)
         .run();
 }
 
-/// GI reads your world through a `VoxelSource`, one 32³ page at a time, on
-/// worker threads: give it an immutable snapshot of your voxel data.
-struct Flat {
-    stone: u8,
-}
-
-impl VoxelSource for Flat {
-    // `resample` asks for authoritative data after a change GI wasn't told
-    // the details of; a source with one representation can ignore it.
-    fn sample_page(&self, page: IVec3, _resample: bool) -> PageSample {
-        // A transport material per voxel; `None` is air.
-        dense_page(page, |voxel| (voxel.y < 4).then_some(self.stone))
-    }
-}
-
 fn setup(
     mut commands: Commands,
-    mut palette_table: ResMut<VoxelMaterialTransportTable>,
-    mut source: ResMut<VoxelGiSource>,
+    mut gi_materials: ResMut<VoxelGiMaterials>,
     mut input: ResMut<VoxelGiInput>,
-    gi_bindings: Res<VoxelGiMaterialData>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<VoxelGiStandardMaterial>>,
 ) {
-    // 1. Optics. The palette gives each distinct optics a transport ID
-    //    (blocks with identical optics share one); GI reads the table.
-    let mut palette = MaterialPalette::new();
-    let stone = MaterialTransport {
-        diffuse: Vec3::splat(0.6),
-        emission: Vec3::ZERO, // a lamp would set this
-    };
-    let stone = palette.insert("stone", stone).unwrap() as u8;
-    *palette_table = palette.table().clone();
+    // 1. Optics. Each distinct optics gets a material (blocks with
+    //    identical optics share one).
+    let stone = gi_materials
+        .insert(MaterialTransport {
+            diffuse: Vec3::splat(0.6),
+            ..default() // a lamp would set `emission`
+        })
+        .unwrap();
 
-    // 2. Voxels: the source GI samples from.
-    source.0 = Some(Arc::new(Flat { stone }));
+    // 2. Voxels. GI samples 32³ pages from the source on worker threads:
+    //    stone below y = 4, air above.
+    commands.insert_resource(VoxelGiSource::new(move |page: IVec3| {
+        dense_page(page, |voxel| (voxel.y < 4).then_some(stone))
+    }));
 
-    // 3. Pages: the 32³ pages GI knows about are its whole world. Tell it
-    //    as they load and unload (`page_unloaded`); report edits with
+    // 3. Pages. The pages GI knows about are its whole world. Tell it as
+    //    they load and unload (`page_unloaded`); report edits with
     //    `edit_voxel` so it relights only what changed.
     for x in -2..2 {
         for z in -2..2 {
@@ -119,17 +101,12 @@ fn setup(
 
     // 4. Meshes. GI lights a fragment from the voxel face it lies on, so
     //    meshes sit on voxel faces: here, the top of the stone at y = 4.
-    //    `gi_bindings` carries GI's GPU data; the plugin keeps it current.
-    let ground = materials.add(standard_material(
-        StandardMaterial {
-            base_color: Color::srgb(0.6, 0.6, 0.6),
-            ..default()
-        },
-        &gi_bindings,
-    ));
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(128.0, 128.0))),
-        MeshMaterial3d(ground),
+        MeshMaterial3d(materials.add(standard_material(StandardMaterial {
+            base_color: Color::srgb(0.6, 0.6, 0.6),
+            ..default()
+        }))),
         Transform::from_xyz(0.0, 4.0, 0.0),
     ));
 
@@ -143,9 +120,10 @@ fn setup(
         },
         Transform::default().looking_to(Vec3::new(-0.4, -0.8, -0.5), Vec3::Y),
     ));
-    // Each camera gets the depth and normal prepasses GI needs.
+    // GI lights the cameras marked `VoxelGiCamera`.
     commands.spawn((
         Camera3d::default(),
+        VoxelGiCamera,
         Transform::from_xyz(20.0, 12.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 }
@@ -165,6 +143,18 @@ Tell GI whenever the world changes:
   GI resamples the page from your source, so the source must already hold
   the change.
 - **A chunk unloaded.** Call `page_unloaded`.
+- **A chunk came back with new contents** (regenerated, or reloaded from a
+  save). Call `page_loaded`, then `resample_page`. GI keeps a page's exact
+  edits across unloading; this drops them and samples your source.
+
+### Choosing what to load
+
+GI lights the pages you declare and treats the rest as empty. If you stream
+only what the camera sees, light changes when you turn: the walls behind
+the camera stop bouncing light, and terrain toward the sun stops casting
+shadows. `VoxelGiDemand` ranks pages by GI's need for them, from the cameras
+outward and along each sun's shadow column. Spend a loading budget in that
+order. If you keep everything near the camera loaded, you can ignore it.
 
 To watch an edit change the light, run the
 [`edits` example](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi/examples/edits.rs):
@@ -179,8 +169,9 @@ With a stride of 4, each 4³ block has one material.
 
 ## How lighting follows the camera
 
-**Visible faces.** Each camera's depth and normal prepasses tell GI which
-voxel faces to light. GI keeps each face's history as the camera moves and
+**Visible faces.** Each `VoxelGiCamera`'s depth and normal prepasses tell
+GI which voxel faces to light. Other cameras (a minimap, a portal view) cost
+GI nothing. GI keeps each face's history as the camera moves and
 blends nearby samples while a face is still noisy.
 
 **Off-screen faces.** The world cache keeps light on faces within 64 voxels
@@ -193,9 +184,10 @@ terrain with a cost tied to the view.
 
 ## Lighting your own material
 
-Wrap your material in `ExtendedMaterial<YourMaterial, VoxelGiBindings>`.
-Add `VoxelGiMaterialPlugin::<_>::extended()` so the bindings follow GI's
-buffer updates. Reserve binding 104 and bindings 106–111 in the material
+Wrap your material in `ExtendedMaterial<YourMaterial, VoxelGiBindings>`,
+with `VoxelGiBindings::default()` as the extension. Add
+`VoxelGiMaterialPlugin::<_>::extended()`: it fills the bindings in when the
+material is added and keeps them current with GI's buffers. Reserve binding 104 and bindings 106–111 in the material
 bind group for GI.
 
 Choose forward rendering on the base material. For `StandardMaterial`, set
@@ -234,7 +226,9 @@ depth and normal prepasses.
 | `emission(position, normal)` | Add the voxel's emitted RGB once. |
 | `face_in_geometry(position, normal)` | True for an exposed face in the published scene. Provide host lighting for other surfaces. |
 | `sun_count()`, `sun_direction(i)`, `sun_color(i)` | Read the same suns for your own visibility test. Index from 0 to count − 1. Direction points toward the sun. Color is in transport units. |
-| `enabled()`, `voxel_sky()`, `debug_mode()` | Read the indirect toggle, the GI sunlight toggle and the diagnostic mode. |
+| `enabled()`, `voxel_sky()`, `debug_mode()` | Read the indirect toggle, the GI sunlight toggle and the diagnostic mode, one of the `DEBUG_*` constants (`DEBUG_NONE` in normal presentation). |
+| `diagnostic_view(pixel, position, normal, footprint, exposure)` | When `debug_mode() != DEBUG_NONE`, show `.color` in place of the lit fragment, so every host shows the same diagnostics. Write a `.raw` colour (a validation code) as it is; apply your display transform to the others. |
+| `SUN_LAMBERT_SCALE` | 10,000 / π: `sunlight` × albedo × this × the view's exposure is the diffuse sun in Bevy's units. |
 | `sunlight_reference(position, normal)` | Trace the face's own four sun corners for a diagnostic comparison. |
 
 </details>
@@ -309,10 +303,11 @@ world). Tracing comes on top, within the GPU budget you set.
 
 For a blank scene, check the render log and run the
 [room example](#quick-start) on the same backend. In your app, confirm an
-active 3D camera, declared pages and a GI-lit material.
+active camera with `VoxelGiCamera`, declared pages and a GI-lit material.
 
 | What you see | What to check |
 | --- | --- |
+| No indirect light anywhere | Add `VoxelGiCamera` to the camera. GI warns once when only unmarked cameras are active. |
 | A chunk is dark as it appears | Check `VoxelGiStats::geometry_pending`. The mesh can arrive before its GI geometry. Once ready, check that the page is declared and its mesh matches the voxel source. |
 | Lighting ignores an edit | Send the voxel edit along with the remesh. For resampling, make sure the current source contains the change. [Reporting edits](#reporting-edits) |
 | A glowing texture casts no light | Set the block's `MaterialTransport::emission` and check the source's material ID. For BVW, use the original block index in the transport table. [Block optics](https://github.com/nathanaelneveux/global-illumination/blob/HEAD/crates/bevy_voxel_gi_bvw/README.md#textures-and-light) |

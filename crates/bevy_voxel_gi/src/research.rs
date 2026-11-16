@@ -1,7 +1,7 @@
 //! Deterministic transport fixtures shared by opt-in research studies. These
 //! reuse the host scenes' geometry/material policy and allocate only in tests.
 use super::{
-    MaterialTransport, TransportSources, VoxelMaterialTransportTable,
+    MaterialTransport, TransportSources, VoxelGiMaterials,
     naadf::{linear_index, volume_len},
     sources::DirectionalTransportLight,
     world::{AIR, FACE_OFFSETS, PAGE_SIZE, SurfaceProbe, TransportScene},
@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 pub(super) struct ResearchFixture {
     pub scene: Arc<TransportScene>,
-    pub materials: VoxelMaterialTransportTable,
+    pub materials: VoxelGiMaterials,
     pub sources: TransportSources,
     pub receivers: Vec<SurfaceProbe>,
 }
@@ -34,7 +34,7 @@ pub(super) fn skylight_room() -> ResearchFixture {
             }
         }
     }
-    let mut materials = VoxelMaterialTransportTable::default();
+    let mut materials = VoxelGiMaterials::default();
     materials.set(
         3,
         super::MaterialTransport {
@@ -79,7 +79,7 @@ pub(super) fn furnace() -> ResearchFixture {
             }
         }
     }
-    let mut materials = VoxelMaterialTransportTable::default();
+    let mut materials = VoxelGiMaterials::default();
     materials.set(
         4,
         super::MaterialTransport {
@@ -160,7 +160,7 @@ pub(super) fn hallway() -> ResearchFixture {
         pages,
         &[],
     ));
-    let mut materials = VoxelMaterialTransportTable::default();
+    let mut materials = VoxelGiMaterials::default();
     materials.set(
         rock as u8,
         MaterialTransport {
@@ -206,8 +206,8 @@ fn cave_sun() -> Vec3 {
     Vec3::new(-0.2, 1.0, -0.15).normalize()
 }
 
-fn cave_materials() -> VoxelMaterialTransportTable {
-    let mut table = VoxelMaterialTransportTable::default();
+fn cave_materials() -> VoxelGiMaterials {
+    let mut table = VoxelGiMaterials::default();
     for (id, diffuse, emission) in [
         (2, 0.55, Vec3::ZERO),
         (4, 0.15, Vec3::new(3.0, 0.45, 0.02)),

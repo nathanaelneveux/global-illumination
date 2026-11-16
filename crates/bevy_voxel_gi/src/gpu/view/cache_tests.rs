@@ -15,7 +15,7 @@ struct Fixture {
     work: TraceWork,
     scene: Arc<TransportScene>,
     sources: TransportSources,
-    materials: VoxelMaterialTransportTable,
+    materials: VoxelGiMaterials,
     emitters: Arc<EmissionDistribution>,
     renderer: ViewRenderer,
     camera: CameraState,
@@ -41,7 +41,7 @@ impl Fixture {
             (
                 scene,
                 sources,
-                VoxelMaterialTransportTable::default(),
+                VoxelGiMaterials::default(),
                 TraceWork::from_probes(&probes[264..265]),
             )
         };

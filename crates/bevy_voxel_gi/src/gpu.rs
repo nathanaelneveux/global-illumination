@@ -21,7 +21,7 @@ use super::tracer::HISTORY_LIMIT;
 use super::work::TraceWork;
 #[cfg(test)]
 use super::world::SurfaceProbe;
-use super::world::{TransportScene, VoxelMaterialTransportTable};
+use super::world::{TransportScene, VoxelGiMaterials};
 
 /// The world-space consumer with the shared transport and traversal included.
 static SHADER: std::sync::LazyLock<String> =
@@ -337,7 +337,7 @@ pub(crate) struct GpuTracer {
     cells: UploadBuffer,
     geometry_staging: UploadBuffer,
     materials: UploadBuffer,
-    material_table: Option<VoxelMaterialTransportTable>,
+    material_table: Option<VoxelGiMaterials>,
     view_transport: super::TransportSettings,
     lights: UploadBuffer,
     sources: Option<TransportSources>,
@@ -598,7 +598,7 @@ impl GpuTracer {
         &mut self,
         scene: Arc<TransportScene>,
         sources: &TransportSources,
-        materials: &VoxelMaterialTransportTable,
+        materials: &VoxelGiMaterials,
         probes: &mut [SurfaceProbe],
         samples: u32,
         emitters: &Arc<EmissionDistribution>,
@@ -611,7 +611,7 @@ impl GpuTracer {
         &mut self,
         scene: Arc<TransportScene>,
         sources: &TransportSources,
-        materials: &VoxelMaterialTransportTable,
+        materials: &VoxelGiMaterials,
         probes: &mut [SurfaceProbe],
         samples: u32,
         emitters: &Arc<EmissionDistribution>,
@@ -630,7 +630,7 @@ impl GpuTracer {
         &mut self,
         scene: Arc<TransportScene>,
         sources: &TransportSources,
-        materials: &VoxelMaterialTransportTable,
+        materials: &VoxelGiMaterials,
         work: &mut TraceWork,
         samples: u32,
         emitters: &Arc<EmissionDistribution>,
@@ -648,7 +648,7 @@ impl GpuTracer {
         &mut self,
         scene: Arc<TransportScene>,
         sources: &TransportSources,
-        materials: &VoxelMaterialTransportTable,
+        materials: &VoxelGiMaterials,
         work: &mut TraceWork,
         samples: u32,
         emitters: &Arc<EmissionDistribution>,
@@ -1424,7 +1424,7 @@ pub(super) mod tests {
             &[],
         ));
         let sources = TransportSources::default();
-        let materials = VoxelMaterialTransportTable::default();
+        let materials = VoxelGiMaterials::default();
         let emitters = Arc::new(EmissionDistribution::default());
         let mut before = vec![SurfaceProbe::new(voxel, 1)];
         let mut after = before.clone();
@@ -1479,7 +1479,7 @@ pub(super) mod tests {
     fn static_dispatch_resources_reuse_and_rebind_after_growth() {
         let mut gpu = native_tracer();
         let (scene, mut sources, mut probes) = super::super::sky::contact_shadow_fixture();
-        let mut materials = VoxelMaterialTransportTable::default();
+        let mut materials = VoxelGiMaterials::default();
         let emitters = Arc::new(EmissionDistribution::default());
         gpu.trace_work(
             scene.clone(),
@@ -1574,7 +1574,7 @@ pub(super) mod tests {
             vec![(IVec3::ZERO, page)],
             &[],
         ));
-        let mut materials = VoxelMaterialTransportTable::default();
+        let mut materials = VoxelGiMaterials::default();
         materials.set(
             4,
             MaterialTransport {
