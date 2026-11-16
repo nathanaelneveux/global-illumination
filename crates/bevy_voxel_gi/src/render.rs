@@ -482,42 +482,54 @@ struct BindingsAccess<M: Material>(fn(&mut M) -> &mut VoxelGiBindings);
 
 impl<M: Material> Plugin for VoxelGiMaterialPlugin<M> {
     fn build(&self, app: &mut App) {
-        // Before Bevy flushes this frame's asset events: a material rewritten
-        // after the flush reaches the render world a frame late, binding the
-        // previous geometry and output buffers for that frame.
+        // Extraction reads this frame's flushed asset events and clones the
+        // asset as it is then. GI's buffers changing rewrites every material
+        // before the flush, so the rewrite's `Modified` is flushed this frame;
+        // a material the host added or replaced is completed after the flush,
+        // once its event exists, so its first extraction is already bound.
         app.insert_resource(BindingsAccess::<M>(self.access))
             .add_systems(
                 PostUpdate,
-                sync_bindings::<M>.before(bevy::asset::AssetEventSystems),
+                (
+                    rebind_materials::<M>.before(bevy::asset::AssetEventSystems),
+                    bind_new_materials::<M>.after(bevy::asset::AssetEventSystems),
+                ),
             );
     }
 }
 
-fn sync_bindings<M: Material>(
+fn rebind_materials<M: Material>(
+    data: Res<VoxelGiMaterialData>,
+    access: Res<BindingsAccess<M>>,
+    mut materials: ResMut<Assets<M>>,
+) {
+    if !data.is_changed() {
+        return;
+    }
+    let current = VoxelGiBindings::from(&*data);
+    for (_, material) in materials.iter_mut() {
+        let bindings = (access.0)(material);
+        if *bindings != current {
+            *bindings = current.clone();
+        }
+    }
+}
+
+/// Materials added or replaced at their handle: a host builds them with
+/// default bindings. Completing one sends another `Modified`, which finds
+/// it current, so this settles.
+fn bind_new_materials<M: Material>(
     data: Res<VoxelGiMaterialData>,
     access: Res<BindingsAccess<M>>,
     mut materials: ResMut<Assets<M>>,
     mut events: MessageReader<AssetEvent<M>>,
 ) {
-    if !data.is_changed() && events.is_empty() {
+    if events.is_empty() {
         return;
     }
     let current = VoxelGiBindings::from(&*data);
-    if data.is_changed() {
-        events.clear();
-        for (_, material) in materials.iter_mut() {
-            let bindings = (access.0)(material);
-            if *bindings != current {
-                *bindings = current.clone();
-            }
-        }
-        return;
-    }
-    // Materials added since: a host builds them with default bindings.
-    // Rewriting one sends `Modified` (so a copy already extracted is
-    // replaced), not `Added`, so this does not repeat.
     for event in events.read() {
-        let AssetEvent::Added { id } = *event else {
+        let (AssetEvent::Added { id } | AssetEvent::Modified { id }) = *event else {
             continue;
         };
         let Some(mut material) = materials.get_mut(id) else {
@@ -576,15 +588,14 @@ mod standard_tests {
     }
 
     #[test]
-    fn added_materials_get_current_bindings_without_the_host_passing_them() {
+    fn added_and_replaced_materials_are_bound_by_their_first_extraction() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
             .init_asset::<ShaderBuffer>()
             .init_asset::<VoxelGiStandardMaterial>()
-            .insert_resource(BindingsAccess::<VoxelGiStandardMaterial>(|material| {
-                &mut material.base.extension
-            }))
-            .add_systems(PostUpdate, sync_bindings::<VoxelGiStandardMaterial>);
+            .add_plugins(VoxelGiMaterialPlugin::<VoxelGiStandardMaterial>::new(
+                |material| &mut material.base.extension,
+            ));
         let buffer = app
             .world_mut()
             .resource_mut::<Assets<ShaderBuffer>>()
@@ -599,15 +610,43 @@ mod standard_tests {
             settings: default(),
         });
         app.update();
+        let current = VoxelGiBindings::from(app.world().resource::<VoxelGiMaterialData>());
+        // Extraction runs after `PostUpdate` and clones the asset whose
+        // event this frame flushed: the asset after one update is what the
+        // render world first sees.
+        let bound = |app: &App, handle: &Handle<VoxelGiStandardMaterial>| {
+            app.world()
+                .resource::<Assets<VoxelGiStandardMaterial>>()
+                .get(handle)
+                .unwrap()
+                .base
+                .extension
+                .clone()
+        };
         let handle = app
             .world_mut()
             .resource_mut::<Assets<VoxelGiStandardMaterial>>()
             .add(standard_material(StandardMaterial::default()));
         app.update();
+        assert_eq!(bound(&app, &handle), current, "added");
+        // Replacing the asset at its handle sends `Modified`, not `Added`.
+        app.world_mut()
+            .resource_mut::<Assets<VoxelGiStandardMaterial>>()
+            .insert(handle.id(), standard_material(StandardMaterial::default()))
+            .unwrap();
         app.update();
-        let current = VoxelGiBindings::from(app.world().resource::<VoxelGiMaterialData>());
-        let materials = app.world().resource::<Assets<VoxelGiStandardMaterial>>();
-        assert_eq!(materials.get(&handle).unwrap().base.extension, current);
+        assert_eq!(bound(&app, &handle), current, "replaced");
+        // Completing a material settles: no event a frame later rewrites it.
+        app.update();
+        let mut cursor = app
+            .world()
+            .resource::<Messages<AssetEvent<VoxelGiStandardMaterial>>>()
+            .get_cursor_current();
+        app.update();
+        let messages = app
+            .world()
+            .resource::<Messages<AssetEvent<VoxelGiStandardMaterial>>>();
+        assert_eq!(cursor.read(messages).count(), 0);
     }
 
     #[test]
