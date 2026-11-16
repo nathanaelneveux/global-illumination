@@ -7,7 +7,7 @@ description = "Voxel GI lab: the BVW prototype world, scenes and validation harn
 publish = false
 
 [workspace]
-members = ["crates/*", "vendor/*"]
+members = ["crates/*"]
 
 [workspace.package]
 version = "0.2.0"
@@ -56,9 +56,8 @@ bevy = { workspace = true, features = ["bevy_feathers", "system_clipboard"] }
 bevy_voxel_gi.workspace = true
 bevy_voxel_gi_bvw.workspace = true
 bevy_voxel_gi_debug.workspace = true
-# Vendored and ported to Bevy 0.20 until upstream releases; see
-# vendor/bevy_ahoy/VENDORED.md.
-bevy_ahoy = { path = "vendor/bevy_ahoy" }
+# The lab's player controller uses no pickup.
+bevy_ahoy = { version = "0.3", default-features = false }
 bevy_asset_loader = "0.28"
 bevy_common_assets = { version = "0.18", features = ["ron"] }
 bevy_enhanced_input = "0.27"
