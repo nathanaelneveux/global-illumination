@@ -161,6 +161,10 @@ fn dig<C: VoxelWorldConfig<MaterialIndex = u8>>(
 }
 ```
 
+GI keeps the exact values `set_voxel` reports over BVW's republished
+chunks. A voxel written with BVW's own `set_voxel` reaches GI when its
+chunk republishes; write each voxel through one of the two.
+
 GI lights what BVW has loaded, including geometry behind the camera that
 blocks or bounces light. BVW's default unloads chunks out of view beyond
 `min_despawn_distance` chunks of a camera. A room then relights when you

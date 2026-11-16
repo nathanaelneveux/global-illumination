@@ -57,6 +57,10 @@ The crates share one version. The format follows
 - GI-lit materials replaced at their handle (`Assets::insert`) get GI's
   bindings, and added or replaced materials have them on their first frame
   drawn instead of the next.
+- `bevy_voxel_gi_bvw`: with default input tracking, a chunk BVW republishes
+  or swaps for another level is sampled at its stride, as drawn. It was
+  resampled through BVW's edit map at full resolution, 32,768 lookups a
+  page (about 134 million for a level-4 chunk).
 
 ### Added
 

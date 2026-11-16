@@ -220,12 +220,16 @@ impl<C> PageCoverage<C> {
         for page in dirty {
             let now = finest_published(page, &chunk).map(|data| data.key());
             match (self.pages.get(&page).copied(), now) {
+                // A chunk published, republished or replacing another is
+                // what BVW draws: GI samples it at its stride. `page_changed`
+                // would resample it authoritatively with default tracking,
+                // through BVW's full-resolution edit map.
                 (None, Some(key)) => {
                     input.page_loaded(page);
                     self.pages.insert(page, key);
                 }
                 (Some(before), Some(key)) if before != key || content.contains(&key) => {
-                    input.page_changed(page);
+                    input.page_loaded(page);
                     self.pages.insert(page, key);
                 }
                 (Some(_), None) => {
@@ -528,7 +532,7 @@ mod tests {
         gi.publish(fine.clone());
         assert_eq!(
             gi.step(&[fine.key], &[fine.key], &[]),
-            expect(|i| i.page_changed(IVec3::X)),
+            expect(|i| i.page_loaded(IVec3::X)),
             "only the page the finer chunk covers is resampled"
         );
         assert_eq!(
@@ -573,7 +577,7 @@ mod tests {
             gi.step(&[], &[], &[]),
             expect(|i| pages(IVec3::ZERO, 2)
                 .into_iter()
-                .for_each(|p| i.page_changed(p))),
+                .for_each(|p| i.page_loaded(p))),
             "every page moves to the coarse chunk once the fine ones are gone"
         );
     }
@@ -588,16 +592,37 @@ mod tests {
         gi.step(&[coarse.key, fine.key], &[coarse.key, fine.key], &[]);
         assert_eq!(
             gi.step(&[], &[fine.key], &[]),
-            expect(|i| i.page_changed(IVec3::ZERO))
+            expect(|i| i.page_loaded(IVec3::ZERO))
         );
         assert_eq!(
             gi.step(&[], &[coarse.key], &[]),
             expect(|i| pages(IVec3::ZERO, 2)
                 .into_iter()
                 .filter(|p| *p != IVec3::ZERO)
-                .for_each(|p| i.page_changed(p))),
+                .for_each(|p| i.page_loaded(p))),
             "a coarse remesh leaves the page a finer chunk covers alone"
         );
+    }
+
+    #[test]
+    fn default_tracking_samples_republished_chunks_at_their_stride() {
+        // `page_changed` with default tracking would resample the page
+        // authoritatively: 32³ point lookups, at full resolution.
+        let mut input = VoxelGiInput::default();
+        let mut coverage = PageCoverage::<TestWorld>::default();
+        let coarse = FakeChunk::new(IVec3::ZERO, 2);
+        let lookup = |key: ChunkKey| (key == coarse.key).then(|| coarse.clone());
+        coverage.update(&mut input, [coarse.key], [coarse.key], [], lookup);
+        coverage.update(&mut input, [], [coarse.key], [], lookup);
+        let mut expected = VoxelGiInput::default();
+        for _ in 0..2 {
+            pages(IVec3::ZERO, 4)
+                .into_iter()
+                .for_each(|p| expected.page_loaded(p));
+        }
+        assert_eq!(input, expected);
+        let sample = sample_chunk(IVec3::ONE, &coarse, |_| WorldVoxel::Unset);
+        assert_eq!(sample.stride(), 4, "a level-2 chunk samples every 4 voxels");
     }
 
     #[test]
