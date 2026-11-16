@@ -113,6 +113,25 @@ Experiments after 0.1, each judged against the same scenes on the M4:
   `a0a6baf`). A cheaper test needs a conservative far-depth bound per tile,
   such as a depth pyramid.
 
+- **A far-tier crossover that follows resolution (planned for 0.2;
+  deferred 2026-11-16).** `far_tier.voxel_pixels` is a pixel size, so at a
+  fixed 8 px the world-space band of face receivers widens with viewport
+  height. voxel_engine's screen (2026-11-04, `docs/history/lighting-ownership-2026-11-04.md`
+  there) capped it at 128 world units, `voxel_pixels = max(focal_pixels /
+  128, 8)`: terrain at 4K went from 26.6 to 20.0 ms p99 in both orders
+  (active receivers ~26,100 to 6,700), 1440p 14.9 to 12.7, 720p unchanged,
+  asteroids no win. Not adopted: distant terraces and asteroid shadows look
+  different, and the far tier flickers more in motion. Qualify it in the
+  lab at 4K and 1440p with motion and the far-tier flicker as the gate,
+  after the far tier's motion stability improves (see jittered visibility
+  below).
+- **Per-pixel material cost in receipts (planned for 0.2; deferred
+  2026-11-16).** voxel_engine's asteroid integration (`docs/asteroids-integration.md`)
+  could not tell GI's compute (~0.8 ms idle) from its presentation passes
+  (~16 ms) and the GI-lit material's display path (~30 ms) without
+  ablations. `ViewReceipts` report GPU time for GI's passes but not the
+  material's per-pixel cost. Report a host-comparable figure (passes and
+  pixels shaded through `presentation`), additive, so a 0.2.x release.
 - **Selective GI geometry coverage (proposed 2026-11-03; untested).**
   The BVW connector declares every loaded chunk, and GI retains that geometry
   beyond the 64-voxel world-cache radius. Visible receiver identities and
